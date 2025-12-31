@@ -1,0 +1,65 @@
+[
+    {
+        "name": "commands.run",
+        "request": {
+            "jsonrpc": "2.0",
+            "method": "commands.run",
+            "params": {
+                "command": "goto 100 64 100"
+            },
+            "id": 1
+        },
+        "response": {
+            "jsonrpc": "2.0",
+            "result": {
+                "status": "accepted",
+                "echo": "goto 100 64 100"
+            },
+            "id": 1
+        }
+    },
+    {
+        "name": "events.subscribe",
+        "request": {
+            "jsonrpc": "2.0",
+            "method": "events.subscribe",
+            "params": {
+                "events": [
+                    "ChatEvent"
+                ]
+            },
+            "id": 2
+        },
+        "response": {
+            "jsonrpc": "2.0",
+            "result": {
+                "subscriptionId": "sub-123",
+                "activeEvents": [
+                    "ChatEvent"
+                ]
+            },
+            "id": 2
+        }
+    },
+    {
+        "name": "schematics.upload.init",
+        "request": {
+            "jsonrpc": "2.0",
+            "method": "schematics.upload.init",
+            "params": {
+                "name": "house.litematic",
+                "size": 123456,
+                "hash": "sha256-hash-value"
+            },
+            "id": 3
+        },
+        "response": {
+            "jsonrpc": "2.0",
+            "result": {
+                "uploadId": "uuid-upload-1",
+                "maxChunkSize": 65536
+            },
+            "id": 3
+        }
+    }
+]

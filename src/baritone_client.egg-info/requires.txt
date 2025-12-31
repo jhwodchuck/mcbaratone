@@ -1,0 +1,7 @@
+py4j>=0.10.9.9
+websockets>=12.0
+pydantic>=2.7
+
+[dev]
+pytest>=7.0
+requests>=2.31

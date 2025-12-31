@@ -416,3 +416,13 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Java/Gradle
+build/
+.gradle/
+bin/
+*.class
+*.jar
+
+# Ignore the embedded baritone source tree
+baritone_src/

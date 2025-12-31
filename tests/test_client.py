@@ -50,7 +50,7 @@ class ClientFacadeTest(TestCase):
         self.assertEqual({"name": "allowSprint", "value": True}, response["payload"])
 
     def test_builder_process_selection(self):
-        selection = Selection(better_block_pos(0, 64, 0), better_block_pos(1, 65, 1))
+        selection = Selection(start=better_block_pos(0, 64, 0), end=better_block_pos(1, 65, 1))
         builder = BuilderProcess(self.transport)
         result = builder.start("house", selection=selection)
         self.assertEqual("process/builder/start", result["route"])

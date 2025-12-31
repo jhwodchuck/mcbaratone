@@ -1,0 +1,32 @@
+{
+    "schemaVersion": 1,
+    "id": "baritone-api-bridge",
+    "version": "${version}",
+    "name": "Baritone API Bridge",
+    "description": "Bridge for Python control of Baritone",
+    "authors": [
+        "Baritone Python Client"
+    ],
+    "contact": {
+        "homepage": "https://github.com/cabaletta/baritone",
+        "sources": "https://github.com/cabaletta/baritone"
+    },
+    "license": "LGPL-3.0",
+    "icon": "assets/modid/icon.png",
+    "environment": "*",
+    "entrypoints": {
+        "main": [
+            "com.minecraftbot.baritone.BaritoneAPIBridge"
+        ]
+    },
+    "mixins": [],
+    "depends": {
+        "fabricloader": ">=0.15.11",
+        "minecraft": "~1.21",
+        "java": ">=21",
+        "fabric-api": "*"
+    },
+    "suggests": {
+        "another-mod": "*"
+    }
+}

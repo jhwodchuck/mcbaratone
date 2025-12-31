@@ -1,0 +1,68 @@
+Metadata-Version: 2.4
+Name: baritone-client
+Version: 0.1.0
+Summary: Python facade for controlling Baritone via a lightweight transport layer
+Author: OpenAI Agent
+Project-URL: Homepage, https://example.com/baritone-client
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: py4j>=0.10.9.9
+Requires-Dist: websockets>=12.0
+Requires-Dist: pydantic>=2.7
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: requests>=2.31; extra == "dev"
+
+# mcbaratone
+
+A Python-friendly control surface for the Baritone mod. This repository documents the Java API surface and introduces a transport-agnostic Python facade that can be backed by a lightweight HTTP/socket bridge into Baritone's `IBaritone` entrypoints.
+
+## Quickstart
+
+1. Install dependencies (optional extras provide HTTP helpers and pytest):
+
+```bash
+python -m pip install -e .[dev]
+```
+
+2. Create a client with your chosen transport (HTTP in this example):
+
+```python
+from baritone_client.client import Client
+from baritone_client.transport import HttpTransport
+from baritone_client.goals import GoalFactory
+
+transport = HttpTransport("http://localhost:25600/api")
+client = Client(transport)
+
+# navigate to a coordinate
+goal = GoalFactory.goal_block(10, 65, -20)
+client.goals.apply(goal)
+
+# run a chat-level command
+client.command.run("goto 10 65 -20")
+
+# start a mine process
+client.process.mine.start(target_block="diamond_ore")
+```
+
+3. Run the unit tests:
+
+```bash
+python -m pytest
+```
+
+## What is included
+
+- API surface map for Baritone commands, processes, goals, selections, schematics, and settings (see `docs/api_surface.md`).
+- Architecture notes covering transport choice, control flows, lifecycle, validation, and error handling (see `docs/architecture.md`).
+- A detailed package summary scraped from Baritone's Javadocs for quick lookup of settings, processes, and utilities (see `docs/package-summary.md`).
+- Python facade mirroring Baritone concepts (client/process/goal/setting/event helpers).
+- Unit tests that mock the transport layer to verify serialization and dispatch behavior.
+
+## Notes
+
+This project assumes a Baritone-side bridge that exposes Baritone's `IBaritone` entrypoints over HTTP or sockets. The Python facade is transport-agnostic and can be adapted to other bridges (e.g., Py4J) if desired.

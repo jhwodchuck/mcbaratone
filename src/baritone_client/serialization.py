@@ -42,4 +42,4 @@ def validate_setting(name: str, value: Any) -> Any:
 
 
 def better_block_pos(x: int, y: int, z: int) -> BetterBlockPos:
-    return BetterBlockPos(validate_coordinate(x, "x"), validate_coordinate(y, "y"), validate_coordinate(z, "z"))
+    return BetterBlockPos(x=validate_coordinate(x, "x"), y=validate_coordinate(y, "y"), z=validate_coordinate(z, "z"))
