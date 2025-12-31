@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "baritone-client"
+version = "0.1.0"
+description = "Python facade for controlling Baritone via a lightweight transport layer"
+authors = [{name = "OpenAI Agent"}]
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "requests>=2.31"]
+
+[project.urls]
+Homepage = "https://example.com/baritone-client"
