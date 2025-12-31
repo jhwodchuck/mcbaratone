@@ -1,0 +1,32 @@
+[project]
+name = "baritone-client"
+version = "0.1.0"
+description = "Python client and CLI for the Baritone HTTP control API"
+authors = [{ name = "mcbaratone contributors" }]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "requests>=2.32.0",
+  "typing-extensions>=4.12.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "responses>=0.25.0"
+]
+
+[build-system]
+requires = ["setuptools>=69.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+addopts = "-q --disable-warnings"
+testpaths = ["tests"]
+
+[tool.setuptools]
+packages = ["baritone_client"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+baritone_client = ["data/*.html", "data/*.json"]
