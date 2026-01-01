@@ -12,6 +12,7 @@ Description-Content-Type: text/markdown
 Requires-Dist: py4j>=0.10.9.9
 Requires-Dist: websockets>=12.0
 Requires-Dist: pydantic>=2.7
+Requires-Dist: mcp>=1.25.0
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
 Requires-Dist: requests>=2.31; extra == "dev"
@@ -66,3 +67,75 @@ python -m pytest
 ## Notes
 
 This project assumes a Baritone-side bridge that exposes Baritone's `IBaritone` entrypoints over HTTP or sockets. The Python facade is transport-agnostic and can be adapted to other bridges (e.g., Py4J) if desired.
+
+## Mission Toolkit
+
+`baritone_client.scripts.endgame` provides an opinionated helper that sequences every milestone required to reach and defeat the Ender Dragon. The helpers talk directly to the Java bridge's mission controller so state survives reconnects:
+
+```python
+from baritone_client import Client, TcpTransport, EndGameMission
+
+client = Client(TcpTransport())
+mission = EndGameMission(client)
+
+# Run each stage explicitly...
+mission.bootstrap_world()
+mission.establish_base()
+# ...or delegate the entire run:
+mission.run_full_mission()
+
+# Mission telemetry (phase, health, queue) is available at any time
+status = mission.synchronize()
+print(status.phase, status.telemetry)
+```
+
+Under the hood the bridge exposes `mission_status`, `mission_macro`, `mission_queue`, and `mission_checkpoint` commands so external orchestrators can push/pull the active plan or request built-in macros such as `resource_pipeline`, `enter_nether`, and `fight_dragon`.
+
+Mission macros now include:
+- `scout_spawn` – gather spawn telemetry and proposed exploration waypoints before any mining begins.
+- `establish_base` – clear and level an area so defensive walls, storage, and a portal fit.
+- `resource_pipeline` – queue multi-stage mining jobs (iron → diamond → obsidian/blaze) that the bridge executes sequentially.
+- `enter_nether`, `craft_eyes`, `dragon_prep`, `locate_stronghold`, and `fight_dragon` – each macro reports structured telemetry and can be queued atomically via `mission_queue`.
+
+Every mission command emits mission events via the existing `get_events` API (`type: mission`) so clients that reconnect can rebuild queue/phase context.
+
+## MCP Server
+
+`baritone_client.mcp_server` (also exposed via the `baritone-mcp-server` console script) publishes the bridge over the [Model Context Protocol](https://modelcontextprotocol.io) so MCP-aware agents can inspect telemetry and invoke Baritone actions.
+
+Example usage:
+
+```bash
+# Stdio transport for Claude Desktop / Claude Code
+python -m baritone_client.mcp_server --host localhost --port 5555
+
+# Streamable HTTP transport for the MCP Inspector
+python -m baritone_client.mcp_server --transport streamable-http --http-host 127.0.0.1 --http-port 8000
+```
+
+The server exposes resources at `baritone://state`, `baritone://inventory`, and `baritone://mission/status` plus tools for running commands, applying/clearing goals, queueing and checkpointing mission macros, driving the mining process, and retrieving combined telemetry snapshots. Refer to `src/baritone_client/mcp_server.py` for the complete list.
+
+## Common Helper Recipes
+
+The `baritone_client.common` package now exposes higher-level helpers that keep orchestration scripts declarative:
+
+- `spiral_explore`, `column_clear`, and `safe_return` (in `common.navigation`) compose the lower-level `goto`/`explore_until` primitives so spawn-safe exploration and base cleanup require one call.
+- `ensure_supplies` (in `common.resources`) compares live inventory counts against a requirement dictionary (such as `ResourceManager.PHASE_REQUIREMENTS`) and automatically issues craft/mine requests for shortfalls, responding with a structured `TaskResult`.
+- `hunt_mobs` (in `common.combat`) consolidates the blaze/ender/food hunting logic so callers only provide mob types and required drops.
+- `phase_task`/`PhaseContext` (in `common.playbook`) wrap `Task` execution with `StateManager` + `ResourceManager` awareness, allowing scripts to skip idempotent phases and persist checkpoint payloads without reimplementing boilerplate.
+
+Example:
+
+```python
+from baritone_client.common import phase_task, spiral_explore
+
+phase = phase_task(
+    "Scout spawn ring",
+    lambda client, ctx: spiral_explore(client, condition=lambda: ctx.metadata.get("found_ruin")),
+    state=state_manager,
+    resources=resource_manager,
+    phase=Phase.INITIAL_GATHERING,
+)
+result = phase.run(client)
+print(result.reason, result.data)
+```

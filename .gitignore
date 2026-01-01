@@ -426,3 +426,11 @@ bin/
 
 # Ignore the embedded baritone source tree
 baritone_src/
+
+# Ignore bundled JDKs in bridge
+bridge/jdk17/
+bridge/jdk21/
+bridge/jdk17.zip
+bridge/jdk21.zip
+bridge/jdk17*
+bridge/jdk21*

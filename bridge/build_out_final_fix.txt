@@ -1,0 +1,39 @@
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::load has been called by net.rubygrapefruit.platform.internal.NativeLibraryLoader in an unnamed module (file:/C:/Users/jason/.gradle/wrapper/dists/gradle-8.12-bin/cetblhg4pflnnks72fxwobvgv/gradle-8.12/lib/native-platform-0.22-milestone-27.jar)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+
+> Configure project :
+Fabric Loom: 1.9.2
+
+> Task :compileJava FAILED
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1400: error: cannot find symbol
+                PlayerInventory inv = client.player.getInventory();
+                ^
+  symbol:   class PlayerInventory
+  location: class BaritoneAPIBridge
+Note: C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java uses or overrides a deprecated API.
+Note: Recompile with -Xlint:deprecation for details.
+1 error
+
+[Incubating] Problems report is available at: file:///C:/gh/mcbaratone/bridge/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':compileJava'.
+> Compilation failed; see the compiler output below.
+  Note: Recompile with -Xlint:deprecation for details.C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1400: error: cannot find symbol
+                  PlayerInventory inv = client.player.getInventory();
+                  ^
+    symbol:   class PlayerInventory
+    location: class BaritoneAPIBridgeNote: C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java uses or overrides a deprecated API.
+  1 error
+
+* Try:
+> Check your code and dependencies to fix the compilation error(s)
+> Run with --scan to get full insights.
+
+BUILD FAILED in 2s
+1 actionable task: 1 executed

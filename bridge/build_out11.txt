@@ -1,0 +1,66 @@
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::load has been called by net.rubygrapefruit.platform.internal.NativeLibraryLoader in an unnamed module (file:/C:/Users/jason/.gradle/wrapper/dists/gradle-8.12-bin/cetblhg4pflnnks72fxwobvgv/gradle-8.12/lib/native-platform-0.22-milestone-27.jar)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+
+> Configure project :
+Fabric Loom: 1.9.2
+
+> Task :compileJava
+Note: C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java uses or overrides a deprecated API.
+Note: Recompile with -Xlint:deprecation for details.
+
+> Task :processResources
+> Task :classes
+> Task :jar
+> Task :compileTestJava
+> Task :processIncludeJars
+> Task :sourcesJar
+> Task :processTestResources NO-SOURCE
+> Task :testClasses
+> Task :test FAILED
+> Task :remapSourcesJar FAILED
+> Task :remapJar
+
+[Incubating] Problems report is available at: file:///C:/gh/mcbaratone/bridge/build/reports/problems/problems-report.html
+
+FAILURE: Build completed with 2 failures.
+
+1: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':test'.
+> java.io.IOException: Unable to delete directory 'C:\gh\mcbaratone\bridge\build\test-results\test\binary'
+    Failed to delete some children. This might happen because a process has files open or has its working directory set in the target directory.
+    - C:\gh\mcbaratone\bridge\build\test-results\test\binary\output.bin
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+==============================================================================
+
+2: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':remapSourcesJar'.
+> A failure occurred while executing net.fabricmc.loom.task.RemapSourcesJarTask$RemapSourcesAction
+   > Failed to remap sources
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+==============================================================================
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.12/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD FAILED in 37s
+9 actionable tasks: 9 executed

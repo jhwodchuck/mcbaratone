@@ -1,0 +1,2 @@
+[console_scripts]
+baritone-mcp-server = baritone_client.mcp_server:main

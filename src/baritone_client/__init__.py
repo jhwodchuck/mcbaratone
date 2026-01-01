@@ -24,7 +24,7 @@ Example:
     ```
 """
 
-from .client import Client
+from .client import Client, MissionFacade
 from .enums import MovementStatus, PathCalculationResultType, PathingCommandType, TransportEvent
 from .exceptions import CommandError, RouteError, TransportError, ValidationError
 from .goals import GoalFactory, GoalManager
@@ -32,6 +32,7 @@ from .lifecycle import Ticker
 from .models import BetterBlockPos, BlockPos, Goal, Selection
 from .processes import ProcessFacade
 from .schematics import SchematicManager
+from .scripts.endgame import EndGameMission, MissionPhase, MissionState
 from .transport import Py4JTransport, TcpTransport, Transport, WebSocketTransport
 
 __all__ = [
@@ -57,6 +58,10 @@ __all__ = [
     "RouteError",
     "TransportError",
     "ValidationError",
+    "MissionFacade",
+    "EndGameMission",
+    "MissionState",
+    "MissionPhase",
 ]
 
 

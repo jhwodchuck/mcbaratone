@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .enums import TransportEvent
 from .exceptions import ValidationError
@@ -82,6 +82,32 @@ class CommandFacade:
         """
         return self.transport.dispatch("command/get_block", {"x": x, "y": y, "z": z})
 
+    def craft(self, recipe_id: str, count: int = 1) -> Dict[str, Any]:
+        """
+        Craft an item using a bridge-supported recipe.
+
+        Args:
+            recipe_id: Identifier for the recipe on the bridge side.
+            count: Number of times to craft.
+
+        Returns:
+            Response data from the bridge.
+        """
+        payload = {"recipe_id": recipe_id, "count": count}
+        return self.transport.dispatch("craft", payload)
+
+    def smelt(self, input_item: str, count: int = 1, fuel_item: str = "minecraft:coal") -> Dict[str, Any]:
+        """
+        Smelt items in a furnace (bridge stub).
+
+        Args:
+            input_item: Item id to smelt.
+            count: Number of items to smelt.
+            fuel_item: Fuel item id (defaults to coal).
+        """
+        payload = {"input_item": input_item, "count": count, "fuel_item": fuel_item}
+        return self.transport.dispatch("smelt", payload)
+
 
 class SettingsFacade:
     """Facade for managing Baritone settings."""
@@ -138,6 +164,60 @@ class SettingsFacade:
         return self.transport.dispatch("settings/reset", payload)
 
 
+class MissionFacade:
+    """Facade for bridge-side mission coordination helpers."""
+
+    def __init__(self, transport: Transport) -> None:
+        self.transport = transport
+
+    def status(self) -> Dict[str, Any]:
+        """Retrieve aggregated mission telemetry."""
+        return self.transport.dispatch("mission/status", {})
+
+    def checkpoint(self, phase: str, note: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Update the bridge's mission checkpoint.
+
+        Args:
+            phase: Mission phase identifier
+            note: Optional note or context
+        """
+        payload: Dict[str, Any] = {"phase": phase}
+        if note:
+            payload["note"] = note
+        return self.transport.dispatch("mission/checkpoint", payload)
+
+    def queue(self, actions: List[str], clear: bool = False) -> Dict[str, Any]:
+        """Queue macros on the bridge for later execution."""
+        payload: Dict[str, Any] = {"actions": actions}
+        if clear:
+            payload["clear"] = True
+        return self.transport.dispatch("mission/queue", payload)
+
+    def macro(
+        self,
+        name: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        dequeue: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Trigger a macro on the bridge.
+
+        Args:
+            name: Macro identifier. If omitted and dequeue=True, the oldest queued macro runs.
+            params: Optional parameters forwarded to the bridge.
+            dequeue: Whether to consume the earliest queued macro before execution.
+        """
+        payload: Dict[str, Any] = {}
+        if name:
+            payload["name"] = name
+        if params:
+            payload["params"] = params
+        if dequeue:
+            payload["dequeue"] = True
+        return self.transport.dispatch("mission/macro", payload)
+
+
 class Client:
     """
     Main client for interacting with Baritone.
@@ -181,6 +261,7 @@ class Client:
         self.goals = GoalManager(transport)
         self.settings = SettingsFacade(transport)
         self.schematics = SchematicManager(transport)
+        self.mission = MissionFacade(transport)
 
     def on(self, event: TransportEvent, callback) -> None:
         """

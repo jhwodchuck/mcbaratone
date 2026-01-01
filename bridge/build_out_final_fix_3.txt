@@ -1,0 +1,626 @@
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::load has been called by net.rubygrapefruit.platform.internal.NativeLibraryLoader in an unnamed module (file:/C:/Users/jason/.gradle/wrapper/dists/gradle-8.12-bin/cetblhg4pflnnks72fxwobvgv/gradle-8.12/lib/native-platform-0.22-milestone-27.jar)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+
+> Configure project :
+Fabric Loom: 1.9.2
+
+> Task :compileJava FAILED
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1461: error: <identifier> expected
+            itemData.addProperty("id", Registries.ITEM.getId(stack.getItem()).toString());
+                                ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1461: error: illegal start of type
+            itemData.addProperty("id", Registries.ITEM.getId(stack.getItem()).toString());
+                                 ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1462: error: <identifier> expected
+            itemData.addProperty("count", stack.getCount());
+                                ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1462: error: illegal start of type
+            itemData.addProperty("count", stack.getCount());
+                                 ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1463: error: <identifier> expected
+            itemData.addProperty("max_count", stack.getMaxCount());
+                                ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1463: error: illegal start of type
+            itemData.addProperty("max_count", stack.getMaxCount());
+                                 ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1464: error: <identifier> expected
+            itemData.addProperty("damage", stack.getDamage());
+                                ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1464: error: illegal start of type
+            itemData.addProperty("damage", stack.getDamage());
+                                 ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1465: error: <identifier> expected
+            itemData.addProperty("max_damage", stack.getMaxDamage());
+                                ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1465: error: illegal start of type
+            itemData.addProperty("max_damage", stack.getMaxDamage());
+                                 ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1466: error: illegal start of type
+            try {
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1468: error: illegal start of type
+            } catch (Exception e) {
+              ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1468: error: ';' expected
+            } catch (Exception e) {
+                                ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1474: error: class, interface, enum, or record expected
+        return itemData;
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1475: error: class, interface, enum, or record expected
+    }
+    ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1480: error: class, interface, enum, or record expected
+            return;
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1481: error: class, interface, enum, or record expected
+        }
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1484: error: unnamed classes are a preview feature and are disabled by default.
+        int button = params.has("button") ? params.get("button").getAsInt() : 0;
+        ^
+  (use --enable-preview to enable unnamed classes)
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1491: error: class, interface, enum, or record expected
+        try {
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1493: error: class, interface, enum, or record expected
+        } catch (IllegalArgumentException e) {
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1495: error: class, interface, enum, or record expected
+            return;
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1496: error: class, interface, enum, or record expected
+        }
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1500: error: class, interface, enum, or record expected
+            data.addProperty("clicked", true);
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1501: error: class, interface, enum, or record expected
+            data.addProperty("slot", slot);
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1502: error: class, interface, enum, or record expected
+            data.addProperty("type", type.toString());
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1503: error: class, interface, enum, or record expected
+            data.addProperty("button", button);
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1504: error: class, interface, enum, or record expected
+        } catch (Exception e) {
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1506: error: class, interface, enum, or record expected
+            data.addProperty("error", "Click failed: " + e.getMessage());
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1507: error: class, interface, enum, or record expected
+        }
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1513: error: class, interface, enum, or record expected
+            return;
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1514: error: class, interface, enum, or record expected
+        }
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1528: error: class, interface, enum, or record expected
+        try {
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1530: error: class, interface, enum, or record expected
+            data.addProperty("interacted", true);
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1531: error: class, interface, enum, or record expected
+        } catch (Exception e) {
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1533: error: class, interface, enum, or record expected
+        }
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1539: error: class, interface, enum, or record expected
+            return;
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1540: error: class, interface, enum, or record expected
+        }
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1543: error: class, interface, enum, or record expected
+        if (handler == null) {
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1545: error: class, interface, enum, or record expected
+            return;
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1546: error: class, interface, enum, or record expected
+        }
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1549: error: class, interface, enum, or record expected
+        data.addProperty("type", handler.getClass().getSimpleName());
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1552: error: class, interface, enum, or record expected
+        for (int i = 0; i < handler.slots.size(); i++) {
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1552: error: class, interface, enum, or record expected
+        for (int i = 0; i < handler.slots.size(); i++) {
+                        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1552: error: class, interface, enum, or record expected
+        for (int i = 0; i < handler.slots.size(); i++) {
+                                                  ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1554: error: class, interface, enum, or record expected
+            slots.add(serializeItemStack(slot.getStack(), i));
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1555: error: class, interface, enum, or record expected
+        }
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1557: error: class, interface, enum, or record expected
+        data.addProperty("total_slots", handler.slots.size());
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1558: error: class, interface, enum, or record expected
+    }
+    ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1562: error: class, interface, enum, or record expected
+        client.player.closeHandledScreen();
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1563: error: class, interface, enum, or record expected
+        data.addProperty("closed", true);
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1564: error: class, interface, enum, or record expected
+    }
+    ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1619: error: class, interface, enum, or record expected
+    }
+    ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1624: error: class, interface, enum, or record expected
+        while ((event = eventBuffer.poll()) != null) {
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1626: error: class, interface, enum, or record expected
+        }
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1628: error: class, interface, enum, or record expected
+        data.addProperty("count", events.size());
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1629: error: class, interface, enum, or record expected
+    }
+    ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1635: error: class, interface, enum, or record expected
+        if (currentHealth < lastHealth) {
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1637: error: class, interface, enum, or record expected
+            damageData.addProperty("health", currentHealth);
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1638: error: class, interface, enum, or record expected
+            damageData.addProperty("max_health", client.player.getMaxHealth());
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1639: error: class, interface, enum, or record expected
+            damageData.addProperty("damage_taken", lastHealth - currentHealth);
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1640: error: class, interface, enum, or record expected
+            bufferEvent("damage", damageData);
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1643: error: class, interface, enum, or record expected
+            if (currentHealth <= 0) {
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1645: error: class, interface, enum, or record expected
+                deathData.addProperty("x", client.player.getX());
+                ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1646: error: class, interface, enum, or record expected
+                deathData.addProperty("y", client.player.getY());
+                ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1647: error: class, interface, enum, or record expected
+                deathData.addProperty("z", client.player.getZ());
+                ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1648: error: class, interface, enum, or record expected
+                bufferEvent("death", deathData);
+                ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1649: error: class, interface, enum, or record expected
+            }
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1652: error: class, interface, enum, or record expected
+    }
+    ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1657: error: class, interface, enum, or record expected
+            return;
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1658: error: class, interface, enum, or record expected
+        }
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1662: error: class, interface, enum, or record expected
+        if (params.has("entity_id")) {
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1666: error: class, interface, enum, or record expected
+            if (target == null) {
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1668: error: class, interface, enum, or record expected
+                return;
+                ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1669: error: class, interface, enum, or record expected
+            }
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1671: error: class, interface, enum, or record expected
+            targetY = target.getEyeY();
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1672: error: class, interface, enum, or record expected
+            targetZ = target.getZ();
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1673: error: class, interface, enum, or record expected
+        } else {
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1676: error: class, interface, enum, or record expected
+            targetY = params.get("y").getAsDouble();
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1677: error: class, interface, enum, or record expected
+            targetZ = params.get("z").getAsDouble();
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1678: error: class, interface, enum, or record expected
+        }
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1689: error: class, interface, enum, or record expected
+        client.player.setYaw(yaw);
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1690: error: class, interface, enum, or record expected
+        client.player.setPitch(pitch);
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1692: error: class, interface, enum, or record expected
+        data.addProperty("yaw", yaw);
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1693: error: class, interface, enum, or record expected
+        data.addProperty("pitch", pitch);
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1694: error: class, interface, enum, or record expected
+    }
+    ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1699: error: class, interface, enum, or record expected
+            return;
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1700: error: class, interface, enum, or record expected
+        }
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1705: error: class, interface, enum, or record expected
+        client.options.useKey.setPressed(true);
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1707: error: class, interface, enum, or record expected
+        if (durationMs > 0) {
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1712: error: class, interface, enum, or record expected
+                } catch (InterruptedException e) {
+                ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1714: error: class, interface, enum, or record expected
+                }
+                ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1716: error: class, interface, enum, or record expected
+            }).start();
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1717: error: class, interface, enum, or record expected
+            data.addProperty("holding", true);
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1718: error: class, interface, enum, or record expected
+            data.addProperty("duration_ms", durationMs);
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1719: error: class, interface, enum, or record expected
+        } else {
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1722: error: class, interface, enum, or record expected
+            data.addProperty("used", true);
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1723: error: class, interface, enum, or record expected
+        }
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1729: error: class, interface, enum, or record expected
+            return;
+            ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1730: error: class, interface, enum, or record expected
+        }
+        ^
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1735: error: class, interface, enum, or record expected
+        if (target == null) {
+        ^
+100 errors
+
+[Incubating] Problems report is available at: file:///C:/gh/mcbaratone/bridge/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':compileJava'.
+> Compilation failed; see the compiler output below.
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1484: error: unnamed classes are a preview feature and are disabled by default.
+          int button = params.has("button") ? params.get("button").getAsInt() : 0;
+          ^
+    (use --enable-preview to enable unnamed classes)C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1461: error: <identifier> expected
+              itemData.addProperty("id", Registries.ITEM.getId(stack.getItem()).toString());
+                                  ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1462: error: <identifier> expected
+              itemData.addProperty("count", stack.getCount());
+                                  ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1463: error: <identifier> expected
+              itemData.addProperty("max_count", stack.getMaxCount());
+                                  ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1464: error: <identifier> expected
+              itemData.addProperty("damage", stack.getDamage());
+                                  ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1465: error: <identifier> expected
+              itemData.addProperty("max_damage", stack.getMaxDamage());
+                                  ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1468: error: ';' expected
+              } catch (Exception e) {
+                                  ^C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1461: error: illegal start of type
+              itemData.addProperty("id", Registries.ITEM.getId(stack.getItem()).toString());
+                                   ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1462: error: illegal start of type
+              itemData.addProperty("count", stack.getCount());
+                                   ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1463: error: illegal start of type
+              itemData.addProperty("max_count", stack.getMaxCount());
+                                   ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1464: error: illegal start of type
+              itemData.addProperty("damage", stack.getDamage());
+                                   ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1465: error: illegal start of type
+              itemData.addProperty("max_damage", stack.getMaxDamage());
+                                   ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1466: error: illegal start of type
+              try {
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1468: error: illegal start of type
+              } catch (Exception e) {
+                ^C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1474: error: class, interface, enum, or record expected
+          return itemData;
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1475: error: class, interface, enum, or record expected
+      }
+      ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1480: error: class, interface, enum, or record expected
+              return;
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1481: error: class, interface, enum, or record expected
+          }
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1491: error: class, interface, enum, or record expected
+          try {
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1493: error: class, interface, enum, or record expected
+          } catch (IllegalArgumentException e) {
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1495: error: class, interface, enum, or record expected
+              return;
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1496: error: class, interface, enum, or record expected
+          }
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1500: error: class, interface, enum, or record expected
+              data.addProperty("clicked", true);
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1501: error: class, interface, enum, or record expected
+              data.addProperty("slot", slot);
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1502: error: class, interface, enum, or record expected
+              data.addProperty("type", type.toString());
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1503: error: class, interface, enum, or record expected
+              data.addProperty("button", button);
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1504: error: class, interface, enum, or record expected
+          } catch (Exception e) {
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1506: error: class, interface, enum, or record expected
+              data.addProperty("error", "Click failed: " + e.getMessage());
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1507: error: class, interface, enum, or record expected
+          }
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1513: error: class, interface, enum, or record expected
+              return;
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1514: error: class, interface, enum, or record expected
+          }
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1528: error: class, interface, enum, or record expected
+          try {
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1530: error: class, interface, enum, or record expected
+              data.addProperty("interacted", true);
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1531: error: class, interface, enum, or record expected
+          } catch (Exception e) {
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1533: error: class, interface, enum, or record expected
+          }
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1539: error: class, interface, enum, or record expected
+              return;
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1540: error: class, interface, enum, or record expected
+          }
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1543: error: class, interface, enum, or record expected
+          if (handler == null) {
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1545: error: class, interface, enum, or record expected
+              return;
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1546: error: class, interface, enum, or record expected
+          }
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1549: error: class, interface, enum, or record expected
+          data.addProperty("type", handler.getClass().getSimpleName());
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1552: error: class, interface, enum, or record expected
+          for (int i = 0; i < handler.slots.size(); i++) {
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1552: error: class, interface, enum, or record expected
+          for (int i = 0; i < handler.slots.size(); i++) {
+                          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1552: error: class, interface, enum, or record expected
+          for (int i = 0; i < handler.slots.size(); i++) {
+                                                    ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1554: error: class, interface, enum, or record expected
+              slots.add(serializeItemStack(slot.getStack(), i));
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1555: error: class, interface, enum, or record expected
+          }
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1557: error: class, interface, enum, or record expected
+          data.addProperty("total_slots", handler.slots.size());
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1558: error: class, interface, enum, or record expected
+      }
+      ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1562: error: class, interface, enum, or record expected
+          client.player.closeHandledScreen();
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1563: error: class, interface, enum, or record expected
+          data.addProperty("closed", true);
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1564: error: class, interface, enum, or record expected
+      }
+      ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1619: error: class, interface, enum, or record expected
+      }
+      ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1624: error: class, interface, enum, or record expected
+          while ((event = eventBuffer.poll()) != null) {
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1626: error: class, interface, enum, or record expected
+          }
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1628: error: class, interface, enum, or record expected
+          data.addProperty("count", events.size());
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1629: error: class, interface, enum, or record expected
+      }
+      ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1635: error: class, interface, enum, or record expected
+          if (currentHealth < lastHealth) {
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1637: error: class, interface, enum, or record expected
+              damageData.addProperty("health", currentHealth);
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1638: error: class, interface, enum, or record expected
+              damageData.addProperty("max_health", client.player.getMaxHealth());
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1639: error: class, interface, enum, or record expected
+              damageData.addProperty("damage_taken", lastHealth - currentHealth);
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1640: error: class, interface, enum, or record expected
+              bufferEvent("damage", damageData);
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1643: error: class, interface, enum, or record expected
+              if (currentHealth <= 0) {
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1645: error: class, interface, enum, or record expected
+                  deathData.addProperty("x", client.player.getX());
+                  ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1646: error: class, interface, enum, or record expected
+                  deathData.addProperty("y", client.player.getY());
+                  ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1647: error: class, interface, enum, or record expected
+                  deathData.addProperty("z", client.player.getZ());
+                  ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1648: error: class, interface, enum, or record expected
+                  bufferEvent("death", deathData);
+                  ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1649: error: class, interface, enum, or record expected
+              }
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1652: error: class, interface, enum, or record expected
+      }
+      ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1657: error: class, interface, enum, or record expected
+              return;
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1658: error: class, interface, enum, or record expected
+          }
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1662: error: class, interface, enum, or record expected
+          if (params.has("entity_id")) {
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1666: error: class, interface, enum, or record expected
+              if (target == null) {
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1668: error: class, interface, enum, or record expected
+                  return;
+                  ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1669: error: class, interface, enum, or record expected
+              }
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1671: error: class, interface, enum, or record expected
+              targetY = target.getEyeY();
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1672: error: class, interface, enum, or record expected
+              targetZ = target.getZ();
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1673: error: class, interface, enum, or record expected
+          } else {
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1676: error: class, interface, enum, or record expected
+              targetY = params.get("y").getAsDouble();
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1677: error: class, interface, enum, or record expected
+              targetZ = params.get("z").getAsDouble();
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1678: error: class, interface, enum, or record expected
+          }
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1689: error: class, interface, enum, or record expected
+          client.player.setYaw(yaw);
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1690: error: class, interface, enum, or record expected
+          client.player.setPitch(pitch);
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1692: error: class, interface, enum, or record expected
+          data.addProperty("yaw", yaw);
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1693: error: class, interface, enum, or record expected
+          data.addProperty("pitch", pitch);
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1694: error: class, interface, enum, or record expected
+      }
+      ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1699: error: class, interface, enum, or record expected
+              return;
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1700: error: class, interface, enum, or record expected
+          }
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1705: error: class, interface, enum, or record expected
+          client.options.useKey.setPressed(true);
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1707: error: class, interface, enum, or record expected
+          if (durationMs > 0) {
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1712: error: class, interface, enum, or record expected
+                  } catch (InterruptedException e) {
+                  ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1714: error: class, interface, enum, or record expected
+                  }
+                  ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1716: error: class, interface, enum, or record expected
+              }).start();
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1717: error: class, interface, enum, or record expected
+              data.addProperty("holding", true);
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1718: error: class, interface, enum, or record expected
+              data.addProperty("duration_ms", durationMs);
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1719: error: class, interface, enum, or record expected
+          } else {
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1722: error: class, interface, enum, or record expected
+              data.addProperty("used", true);
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1723: error: class, interface, enum, or record expected
+          }
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1729: error: class, interface, enum, or record expected
+              return;
+              ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1730: error: class, interface, enum, or record expected
+          }
+          ^
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1735: error: class, interface, enum, or record expected
+          if (target == null) {
+          ^
+  100 errors
+
+* Try:
+> Check your code and dependencies to fix the compilation error(s)
+> Run with --scan to get full insights.
+
+BUILD FAILED in 2s
+1 actionable task: 1 executed

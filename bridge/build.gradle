@@ -1,6 +1,10 @@
 plugins {
-    id 'fabric-loom' version '1.6.9'
+    id 'fabric-loom' version '1.9.2'
     id 'maven-publish'
+}
+
+loom {
+    accessWidenerPath = file("src/main/resources/baritone-api-bridge.accesswidener")
 }
 
 repositories {

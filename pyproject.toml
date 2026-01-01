@@ -18,6 +18,7 @@ dependencies = [
     "py4j>=0.10.9.9",
     "websockets>=12.0",
     "pydantic>=2.7",
+    "mcp>=1.25.0",
 ]
 
 [project.optional-dependencies]
@@ -25,3 +26,9 @@ dev = ["pytest>=7.0", "requests>=2.31"]
 
 [project.urls]
 Homepage = "https://example.com/baritone-client"
+
+[project.scripts]
+baritone-mcp-server = "baritone_client.mcp_server:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

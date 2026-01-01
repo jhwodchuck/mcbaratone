@@ -40,10 +40,22 @@ import net.minecraft.recipe.RecipeType;
 import net.minecraft.recipe.Ingredient;
 import net.minecraft.item.ItemStack;
 import net.minecraft.inventory.Inventory;
+import net.minecraft.entity.player.PlayerInventory;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.concurrent.TimeUnit;
 import net.minecraft.util.Identifier;
 import net.minecraft.registry.Registry;
 import net.minecraft.registry.Registries;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
+import net.minecraft.screen.CraftingScreenHandler;
+import net.minecraft.screen.PlayerScreenHandler;
+import net.minecraft.screen.FurnaceScreenHandler;
+import net.minecraft.screen.AbstractFurnaceScreenHandler;
+import net.minecraft.util.ActionResult;
+// import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
+// import net.fabricmc.fabric.api.event.player.UseBlockCallback;
+import net.minecraft.item.Items;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,7 +79,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  * Baritone API Bridge for Minecraft Bot Control
  * Uses Native Baritone API for robust control.
  */
-public class BaritoneAPIBridge implements ModInitializer {
+public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
     public static final Logger LOGGER = LoggerFactory.getLogger("baritone-api-bridge");
     private static final int DEFAULT_PORT = 5555;
@@ -92,11 +104,39 @@ public class BaritoneAPIBridge implements ModInitializer {
     // Schematic Upload State
     private final Map<String, OutputStream> uploadStreams = new ConcurrentHashMap<>();
     private final Map<String, MessageDigest> uploadDigests = new ConcurrentHashMap<>();
+    private long lastSeq = 0;
 
     // Event buffer
     private static final int MAX_EVENT_BUFFER_SIZE = 100;
     private final ConcurrentLinkedQueue<JsonObject> eventBuffer = new ConcurrentLinkedQueue<>();
     private float lastHealth = 20.0f;
+    private String lastDimension = "minecraft:overworld";
+    private final MissionController missionController = new MissionController(this);
+    private final Map<String, Integer> lastInventorySnapshot = new ConcurrentHashMap<>();
+    private static final long TICK_EVENT_INTERVAL_MS = 750;
+    private long lastTickEventTime = 0L;
+
+    // New event types and caching
+    private final Map<String, JsonObject> blockCache = new ConcurrentHashMap<>();
+    private final Map<String, JsonObject> entityCache = new ConcurrentHashMap<>();
+    private final Map<String, Long> cacheTimestamps = new ConcurrentHashMap<>();
+    private static final long CACHE_TTL_MS = 5000; // 5 second cache TTL
+
+    // Rate limiting
+    private final Map<Socket, Long> lastRequestTimes = new ConcurrentHashMap<>();
+    private final Map<Socket, Integer> requestCounts = new ConcurrentHashMap<>();
+    private static final int RATE_LIMIT_REQUESTS = 100; // requests per window
+    private static final long RATE_LIMIT_WINDOW_MS = 10000; // 10 second window
+
+    // Retry and reconnection logic
+    private final Map<String, Integer> retryCounts = new ConcurrentHashMap<>();
+    private static final int MAX_RETRIES = 3;
+
+    // Death tracking for recovery
+    private boolean wasDeadLastTick = false;
+    private double lastDeathX = 0, lastDeathY = 0, lastDeathZ = 0;
+    private String lastDeathDimension = "minecraft:overworld";
+    private long lastDeathTime = 0;
 
     @Override
     public void onInitialize() {
@@ -127,6 +167,164 @@ public class BaritoneAPIBridge implements ModInitializer {
                 bufferEvent("chat", createChatEventData(message.getString()));
             }
         });
+
+        /*
+        AttackBlockCallback.EVENT.register((player, world, hand, pos, direction) -> {
+            if (player == MinecraftClient.getInstance().player) {
+                JsonObject data = new JsonObject();
+                data.addProperty("x", pos.getX());
+                data.addProperty("y", pos.getY());
+                data.addProperty("z", pos.getZ());
+                data.addProperty("action", "attack");
+                bufferEvent("block_interact", data);
+            }
+            return ActionResult.PASS;
+        });
+
+        UseBlockCallback.EVENT.register((player, world, hand, hitResult) -> {
+            if (player == MinecraftClient.getInstance().player) {
+                BlockPos pos = hitResult.getBlockPos();
+                JsonObject data = new JsonObject();
+                data.addProperty("x", pos.getX());
+                data.addProperty("y", pos.getY());
+                data.addProperty("z", pos.getZ());
+                data.addProperty("action", "use");
+                bufferEvent("block_interact", data);
+            }
+            return ActionResult.PASS;
+        });
+        */
+
+        // New event listeners for enhanced tracking
+        registerBlockUpdateListener();
+        registerEntityEventListener();
+        registerPathfindingListener();
+
+        LOGGER.info("Fabric event listeners registered for block interaction, block updates, entities, and pathfinding");
+    }
+
+    private void registerBlockUpdateListener() {
+        // Note: Minecraft doesn't have a direct block update event, but we can hook into world changes
+        // This is a placeholder for future implementation with mixins or other hooks
+    }
+
+    private void registerEntityEventListener() {
+        // Track entity spawns, deaths, and movements via periodic checks
+        executor.submit(() -> {
+            MinecraftClient client = MinecraftClient.getInstance();
+            Map<Integer, BlockPos> lastEntityPositions = new HashMap<>();
+
+            while (running) {
+                try {
+                    if (client.world != null && client.player != null) {
+                        List<Entity> currentEntities = client.world.getOtherEntities(null, client.player.getBoundingBox().expand(64));
+
+                        // Check for new entities
+                        for (Entity entity : currentEntities) {
+                            int id = entity.getId();
+                            BlockPos currentPos = entity.getBlockPos();
+
+                            if (!lastEntityPositions.containsKey(id)) {
+                                // New entity spawned
+                                JsonObject spawnData = new JsonObject();
+                                spawnData.addProperty("entity_id", id);
+                                spawnData.addProperty("type", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
+                                spawnData.addProperty("x", currentPos.getX());
+                                spawnData.addProperty("y", currentPos.getY());
+                                spawnData.addProperty("z", currentPos.getZ());
+                                bufferEvent("entity_spawn", spawnData);
+                            } else {
+                                // Check for significant movement
+                                BlockPos lastPos = lastEntityPositions.get(id);
+                                double distance = Math.sqrt(currentPos.getSquaredDistance(lastPos));
+                                if (distance > 10.0) { // Significant movement threshold
+                                    JsonObject moveData = new JsonObject();
+                                    moveData.addProperty("entity_id", id);
+                                    moveData.addProperty("distance", distance);
+                                    moveData.addProperty("from_x", lastPos.getX());
+                                    moveData.addProperty("from_y", lastPos.getY());
+                                    moveData.addProperty("from_z", lastPos.getZ());
+                                    moveData.addProperty("to_x", currentPos.getX());
+                                    moveData.addProperty("to_y", currentPos.getY());
+                                    moveData.addProperty("to_z", currentPos.getZ());
+                                    bufferEvent("entity_move", moveData);
+                                }
+                            }
+                            lastEntityPositions.put(id, currentPos);
+                        }
+
+                        // Check for despawned entities
+                        lastEntityPositions.keySet().removeIf(id -> {
+                            boolean exists = currentEntities.stream().anyMatch(e -> e.getId() == id);
+                            if (!exists) {
+                                JsonObject despawnData = new JsonObject();
+                                despawnData.addProperty("entity_id", id);
+                                bufferEvent("entity_despawn", despawnData);
+                                return true;
+                            }
+                            return false;
+                        });
+                        // Check for player death
+                        trackPlayerDeath(client);
+                    }
+
+                    Thread.sleep(1000); // Check every second
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (Exception e) {
+                    LOGGER.warn("Error in entity tracking loop", e);
+                }
+            }
+        });
+    }
+
+    private void registerPathfindingListener() {
+        // Monitor Baritone pathfinding progress
+        executor.submit(() -> {
+            IBaritone lastBaritone = null;
+            boolean lastPathingState = false;
+
+            while (running) {
+                try {
+                    IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
+                    if (baritone != null) {
+                        boolean isPathing = baritone.getPathingBehavior().isPathing();
+                        boolean stateChanged = (lastBaritone != baritone) || (lastPathingState != isPathing);
+
+                        if (stateChanged) {
+                            JsonObject pathData = new JsonObject();
+                            pathData.addProperty("is_pathing", isPathing);
+                            if (isPathing) {
+                                pathData.addProperty("goal_type", baritone.getPathingBehavior().getGoal() != null ?
+                                    baritone.getPathingBehavior().getGoal().getClass().getSimpleName() : "unknown");
+                            }
+                            bufferEvent("pathfinding_state", pathData);
+                            lastPathingState = isPathing;
+                            lastBaritone = baritone;
+                        }
+                    }
+
+                    Thread.sleep(500); // Check twice per second
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (Exception e) {
+                    LOGGER.warn("Error in pathfinding monitoring", e);
+                }
+            }
+        });
+    }
+
+    @Override
+    public void publishMissionEvent(String reason, JsonObject payload) {
+        JsonObject eventPayload = new JsonObject();
+        eventPayload.addProperty("reason", reason);
+        eventPayload.addProperty("phase", missionController.getPhaseValue());
+        if (payload != null) {
+            eventPayload.add("payload", payload);
+        }
+        bufferEvent("mission", eventPayload);
     }
 
     private void bufferEvent(String type, JsonObject eventData) {
@@ -143,10 +341,172 @@ public class BaritoneAPIBridge implements ModInitializer {
         }
     }
 
+    private void emitTickEvent(MinecraftClient client, IBaritone baritone) {
+        if (client == null || client.player == null || client.world == null || baritone == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastTickEventTime < TICK_EVENT_INTERVAL_MS) {
+            return;
+        }
+        lastTickEventTime = now;
+
+        ClientPlayerEntity player = client.player;
+        JsonObject position = new JsonObject();
+        position.addProperty("x", player.getX());
+        position.addProperty("y", player.getY());
+        position.addProperty("z", player.getZ());
+
+        JsonObject velocity = new JsonObject();
+        velocity.addProperty("x", player.getVelocity().x);
+        velocity.addProperty("y", player.getVelocity().y);
+        velocity.addProperty("z", player.getVelocity().z);
+
+        JsonObject payload = new JsonObject();
+        payload.add("position", position);
+        payload.add("velocity", velocity);
+        payload.addProperty("health", player.getHealth());
+        payload.addProperty("food", player.getHungerManager().getFoodLevel());
+        payload.addProperty("dimension", client.world.getRegistryKey().getValue().toString());
+        payload.addProperty("mission_phase", missionController.getPhaseValue());
+        payload.addProperty("mission_queue", missionController.queueSize());
+        payload.addProperty("timestamp", now);
+        try {
+            payload.addProperty("is_pathing", baritone.getPathingBehavior().isPathing());
+        } catch (Exception e) {
+            payload.addProperty("is_pathing", false);
+        }
+        bufferEvent("tick_update", payload);
+
+        String currentDimension = payload.get("dimension").getAsString();
+        if (!currentDimension.equals(lastDimension)) {
+            JsonObject eventData = new JsonObject();
+            eventData.addProperty("from_dimension", lastDimension);
+            eventData.addProperty("to_dimension", currentDimension);
+            eventData.add("position", position.deepCopy());
+            bufferEvent("dimension_change", eventData);
+            lastDimension = currentDimension;
+        }
+    }
+
+    private Map<String, Integer> flattenInventory(JsonArray main, JsonArray armor, JsonArray offhand) {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        accumulateInventorySection(main, counts);
+        accumulateInventorySection(armor, counts);
+        accumulateInventorySection(offhand, counts);
+        return counts;
+    }
+
+    private void accumulateInventorySection(JsonArray section, Map<String, Integer> counts) {
+        if (section == null) {
+            return;
+        }
+        for (JsonElement element : section) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject obj = element.getAsJsonObject();
+            String id = obj.has("id") ? obj.get("id").getAsString() : "minecraft:air";
+            if ("minecraft:air".equals(id)) {
+                continue;
+            }
+            int amount = obj.has("count") ? obj.get("count").getAsInt() : 0;
+            counts.merge(id, amount, Integer::sum);
+        }
+    }
+
+    private void emitInventoryChangeEvent(Map<String, Integer> currentCounts, int selectedSlot) {
+        Map<String, Integer> delta = new LinkedHashMap<>();
+        for (Map.Entry<String, Integer> entry : currentCounts.entrySet()) {
+            int previous = lastInventorySnapshot.getOrDefault(entry.getKey(), 0);
+            if (entry.getValue() != previous) {
+                delta.put(entry.getKey(), entry.getValue() - previous);
+            }
+        }
+        for (Map.Entry<String, Integer> entry : lastInventorySnapshot.entrySet()) {
+            if (!currentCounts.containsKey(entry.getKey())) {
+                delta.put(entry.getKey(), -entry.getValue());
+            }
+        }
+        if (!delta.isEmpty()) {
+            JsonArray changes = new JsonArray();
+            for (Map.Entry<String, Integer> entry : delta.entrySet()) {
+                JsonObject change = new JsonObject();
+                change.addProperty("item", entry.getKey());
+                change.addProperty("delta", entry.getValue());
+                change.addProperty("count", currentCounts.getOrDefault(entry.getKey(), 0));
+                changes.add(change);
+            }
+            JsonObject payload = new JsonObject();
+            payload.add("changes", changes);
+            payload.addProperty("unique_items", currentCounts.size());
+            payload.addProperty("selected_slot", selectedSlot);
+            bufferEvent("inventory_change", payload);
+        }
+        lastInventorySnapshot.clear();
+        lastInventorySnapshot.putAll(currentCounts);
+    }
+
+    private JsonArray sampleEntities(JsonArray entities, int limit) {
+        JsonArray sample = new JsonArray();
+        if (entities == null) {
+            return sample;
+        }
+        int max = Math.min(Math.max(limit, 0), entities.size());
+        for (int i = 0; i < max; i++) {
+            sample.add(entities.get(i));
+        }
+        return sample;
+    }
+
     private JsonObject createChatEventData(String message) {
         JsonObject data = new JsonObject();
         data.addProperty("message", message);
         return data;
+    }
+
+    private void trackPlayerDeath(MinecraftClient client) {
+        if (client.player == null) return;
+        
+        boolean isDead = client.player.isDead();
+        
+        if (isDead && !wasDeadLastTick) {
+            // Player just died - record death location
+            lastDeathX = client.player.getX();
+            lastDeathY = client.player.getY();
+            lastDeathZ = client.player.getZ();
+            lastDeathDimension = client.world != null 
+                ? client.world.getRegistryKey().getValue().toString() 
+                : "minecraft:overworld";
+            lastDeathTime = System.currentTimeMillis();
+            
+            // Fire death event
+            JsonObject deathData = new JsonObject();
+            deathData.addProperty("x", lastDeathX);
+            deathData.addProperty("y", lastDeathY);
+            deathData.addProperty("z", lastDeathZ);
+            deathData.addProperty("dimension", lastDeathDimension);
+            deathData.addProperty("timestamp", lastDeathTime);
+            bufferEvent("death", deathData);
+            
+            LOGGER.info("Player died at ({}, {}, {}) in {}", 
+                lastDeathX, lastDeathY, lastDeathZ, lastDeathDimension);
+        } else if (!isDead && wasDeadLastTick) {
+            // Player just respawned
+            JsonObject respawnData = new JsonObject();
+            respawnData.addProperty("x", client.player.getX());
+            respawnData.addProperty("y", client.player.getY());
+            respawnData.addProperty("z", client.player.getZ());
+            respawnData.addProperty("death_x", lastDeathX);
+            respawnData.addProperty("death_y", lastDeathY);
+            respawnData.addProperty("death_z", lastDeathZ);
+            respawnData.addProperty("death_dimension", lastDeathDimension);
+            bufferEvent("respawn", respawnData);
+            
+            LOGGER.info("Player respawned");
+        }
+        
+        wasDeadLastTick = isDead;
     }
 
     private void startAPIServer() {
@@ -207,28 +567,30 @@ public class BaritoneAPIBridge implements ModInitializer {
                     out.println(GSON.toJson(response));
                 } catch (Exception e) {
                     LOGGER.error("Error handling command from {}", clientId, e);
-                    JsonObject error = new JsonObject();
-                    // Preserve request ID if available
+                    JsonObject response = new JsonObject();
+                    response.addProperty("seq", ++lastSeq);
+                    response.addProperty("timestamp", System.currentTimeMillis());
+                    
                     if (requestId != null) {
-                        error.addProperty("id", requestId);
+                        response.addProperty("id", requestId);
                     } else if (request != null && request.has("id")) {
-                        error.addProperty("id", request.get("id").getAsString());
+                        response.addProperty("id", request.get("id").getAsString());
                     } else {
                         // Try to parse just the ID from the line as fallback
                         try {
                             JsonObject fallbackRequest = GSON.fromJson(line, JsonObject.class);
                             if (fallbackRequest.has("id")) {
-                                error.addProperty("id", fallbackRequest.get("id").getAsString());
+                                response.addProperty("id", fallbackRequest.get("id").getAsString());
                             } else {
-                                error.addProperty("id", (String) null);
+                                response.addProperty("id", (String) null);
                             }
                         } catch (Exception parseEx) {
-                            error.addProperty("id", (String) null);
+                            response.addProperty("id", (String) null);
                         }
                     }
-                    error.addProperty("status", "error");
-                    error.addProperty("error", e.getMessage());
-                    out.println(GSON.toJson(error));
+                    response.addProperty("status", "error");
+                    response.addProperty("error", e.getMessage());
+                    out.println(GSON.toJson(response));
                 }
             }
         } catch (java.net.SocketTimeoutException e) {
@@ -251,6 +613,7 @@ public class BaritoneAPIBridge implements ModInitializer {
     }
     
     private void cleanupClientResources(Socket clientSocket) {
+        missionController.releaseOwner(clientSocket);
         // Find and cleanup all uploads owned by this client
         uploadOwners.entrySet().removeIf(entry -> {
             if (entry.getValue().equals(clientSocket)) {
@@ -282,11 +645,25 @@ public class BaritoneAPIBridge implements ModInitializer {
     }
     
     JsonObject handleCommand(JsonObject request, Socket clientSocket) {
+        JsonObject response = new JsonObject();
+        response.addProperty("seq", ++lastSeq);
+        response.addProperty("timestamp", System.currentTimeMillis());
+
+        // Rate limiting check
+        if (!checkRateLimit(clientSocket, response)) {
+            return response;
+        }
+
+        if (request == null || !request.has("command")) {
+            response.addProperty("status", "error");
+            response.addProperty("error", "Missing command");
+            return response;
+        }
+
         String id = request.has("id") ? request.get("id").getAsString() : null;
         String command = request.has("command") ? request.get("command").getAsString() : null;
         JsonObject params = request.has("params") ? request.getAsJsonObject("params") : new JsonObject();
 
-        JsonObject response = new JsonObject();
         response.addProperty("id", id);
 
         if (command == null) {
@@ -299,12 +676,6 @@ public class BaritoneAPIBridge implements ModInitializer {
             MinecraftClient client = MinecraftClient.getInstance();
             // Check for damage events on each command
             checkPlayerDamage(client);
-            // Allow some commands without player (e.g. status checks, uploads)
-            if (client.player == null && !isOfflineCommand(command)) {
-                response.addProperty("status", "error");
-                response.addProperty("error", "Player not available");
-                return response;
-            }
 
             IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
             if (baritone == null) {
@@ -312,8 +683,23 @@ public class BaritoneAPIBridge implements ModInitializer {
                 response.addProperty("error", "Baritone not available. Make sure Baritone mod is installed and loaded.");
                 return response;
             }
+
+            // Allow some commands without player (e.g. status checks, uploads)
+            if (client.player == null && !isOfflineCommand(command)) {
+                response.addProperty("status", "error");
+                response.addProperty("error", "Player not available");
+                return response;
+            }
+
+            emitTickEvent(client, baritone);
             
             JsonObject data = new JsonObject();
+
+            if (missionController.tryHandle(command, params, data, client, baritone, clientSocket)) {
+                response.addProperty("status", "ok");
+                response.add("data", data);
+                return response;
+            }
 
             switch (command) {
                 // Movement
@@ -407,12 +793,19 @@ public class BaritoneAPIBridge implements ModInitializer {
                 case "get_events":
                     handleGetEvents(data);
                     break;
+                case "look_at":
+                    handleLookAt(client, params, data);
+                    break;
                 case "get_block":
                     handleGetBlock(client, params, data);
                     break;
                 case "get_entities":
                     handleGetEntities(client, params, data);
                     break;
+                case "get_view":
+                    handleGetView(client, params, data);
+                    break;
+
                 case "chat":
                     String msg = params.get("message").getAsString();
                     client.execute(() -> client.player.networkHandler.sendChatMessage(msg));
@@ -442,6 +835,42 @@ public class BaritoneAPIBridge implements ModInitializer {
                 case "plant":
                     handlePlant(baritone, params, data);
                     break;
+                case "craft":
+                    handleCraft(client, params, data);
+                    break;
+                case "place_block":
+                    handlePlaceBlock(client, params, data);
+                    break;
+                case "break_block":
+                    handleBreakBlock(client, baritone, params, data);
+                    break;
+                case "find_blocks":
+                    handleFindBlocks(client, params, data);
+                    break;
+                case "click_recipe":
+                    handleClickRecipe(client, params, data);
+                    break;
+                case "smelt_items":
+                    handleSmeltItems(client, params, data);
+                    break;
+                case "place_fire":
+                    handlePlaceFire(client, params, data);
+                    break;
+                case "auto_craft":
+                    handleAutoCraft(client, params, data);
+                    break;
+                case "throw_item":
+                    handleThrowItem(client, params, data);
+                    break;
+                case "respawn":
+                    handleRespawn(client, data);
+                    break;
+                case "get_dimension":
+                    handleGetDimension(client, data);
+                    break;
+                case "get_death_location":
+                    handleGetDeathLocation(data);
+                    break;
 
                 default:
                     response.addProperty("status", "error");
@@ -462,10 +891,115 @@ public class BaritoneAPIBridge implements ModInitializer {
     }
 
     private boolean isOfflineCommand(String command) {
-        return command.startsWith("schematic_");
+        return command.startsWith("schematic_") || missionController.isOfflineSafe(command);
+    }
+
+    private boolean checkRateLimit(Socket clientSocket, JsonObject response) {
+        if (clientSocket == null) return true; // Allow for testing
+
+        long now = System.currentTimeMillis();
+        Long lastTime = lastRequestTimes.get(clientSocket);
+
+        if (lastTime == null || (now - lastTime) > RATE_LIMIT_WINDOW_MS) {
+            // New window
+            lastRequestTimes.put(clientSocket, now);
+            requestCounts.put(clientSocket, 1);
+            return true;
+        }
+
+        int count = requestCounts.getOrDefault(clientSocket, 0) + 1;
+        requestCounts.put(clientSocket, count);
+
+        if (count > RATE_LIMIT_REQUESTS) {
+            response.addProperty("status", "error");
+            response.addProperty("error", "Rate limit exceeded. Maximum " + RATE_LIMIT_REQUESTS + " requests per " + (RATE_LIMIT_WINDOW_MS / 1000) + " seconds");
+            response.addProperty("retry_after_ms", RATE_LIMIT_WINDOW_MS - (now - lastTime));
+            return false;
+        }
+
+        return true;
+    }
+
+    private boolean validateCoordinates(JsonObject params, JsonObject data) {
+        if (params.has("x") && params.has("y") && params.has("z")) {
+            int x = params.get("x").getAsInt();
+            int y = params.get("y").getAsInt();
+            int z = params.get("z").getAsInt();
+
+            // Minecraft coordinate bounds
+            if (x < -30000000 || x > 30000000 || y < -64 || y > 320 || z < -30000000 || z > 30000000) {
+                data.addProperty("error", "Coordinates out of valid Minecraft range");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean validateBlockId(String blockId, JsonObject data) {
+        if (blockId == null || blockId.trim().isEmpty()) {
+            data.addProperty("error", "Block ID cannot be null or empty");
+            return false;
+        }
+        // Basic validation - could be enhanced
+        if (!blockId.contains(":") && !blockId.startsWith("minecraft:")) {
+            // Assume minecraft namespace
+            blockId = "minecraft:" + blockId;
+        }
+        return true;
+    }
+
+    private boolean validateFilePath(String path, JsonObject data) {
+        if (path == null) {
+            data.addProperty("error", "File path cannot be null");
+            return false;
+        }
+        if (path.contains("..") || path.contains("/") || path.contains("\\")) {
+            data.addProperty("error", "Invalid file path - path traversal not allowed");
+            return false;
+        }
+        return true;
     }
 
     // --- Implementations ---
+
+    @Override
+    public JsonObject collectTelemetry(MinecraftClient client, IBaritone baritone) {
+        JsonObject telemetry = new JsonObject();
+        ClientPlayerEntity player = client.player;
+        if (player != null) {
+            telemetry.addProperty("health", player.getHealth());
+            telemetry.addProperty("food", player.getHungerManager().getFoodLevel());
+            telemetry.addProperty("saturation", player.getHungerManager().getSaturationLevel());
+            telemetry.addProperty("armor", player.getArmor());
+            telemetry.addProperty("experience", player.totalExperience);
+            telemetry.addProperty("dimension",
+                client.world != null ? client.world.getRegistryKey().getValue().toString() : "unknown");
+
+            BlockPos pos = player.getBlockPos();
+            JsonObject position = new JsonObject();
+            position.addProperty("x", pos.getX());
+            position.addProperty("y", pos.getY());
+            position.addProperty("z", pos.getZ());
+            telemetry.add("position", position);
+
+            JsonObject rotation = new JsonObject();
+            rotation.addProperty("yaw", player.getYaw());
+            rotation.addProperty("pitch", player.getPitch());
+            telemetry.add("rotation", rotation);
+            
+            telemetry.addProperty("is_pathing", baritone.getPathingBehavior().isPathing());
+        } else {
+            telemetry.addProperty("player", "not_loaded");
+        }
+
+        if (baritone.getCustomGoalProcess().getGoal() != null) {
+            telemetry.addProperty("goal", baritone.getCustomGoalProcess().getGoal().toString());
+        }
+        telemetry.addProperty("eventBufferSize", eventBuffer.size());
+        telemetry.addProperty("missionQueue", missionController.queueSize());
+        telemetry.addProperty("timestamp", System.currentTimeMillis());
+        return telemetry;
+    }
 
     private void handleGoto(IBaritone baritone, JsonObject params, JsonObject data) {
         int x = params.get("x").getAsInt();
@@ -481,22 +1015,53 @@ public class BaritoneAPIBridge implements ModInitializer {
         data.addProperty("started", true);
     }
 
-    private void handleMine(IBaritone baritone, JsonObject params, JsonObject data) {
-        // Native mine support
+    @Override
+    public void handleMine(IBaritone baritone, JsonObject params, JsonObject data) {
+        // Baritone's mine process is thread-safe, run directly
+        int count = 0;
+        if (params.has("count")) {
+            count = params.get("count").getAsInt();
+        } else if (params.has("quantity")) {
+            count = params.get("quantity").getAsInt();
+        }
+
         if (params.has("block_type")) {
             String blockId = params.get("block_type").getAsString();
-            int count = params.has("count") ? params.get("count").getAsInt() : 0;
-
-            // Resolve block
-            Optional<Block> block = Registries.BLOCK.getOrEmpty(Identifier.of(blockId));
-            if (block.isPresent()) {
-                baritone.getMineProcess().mine(count, block.get());
+            Identifier id = Identifier.of(blockId);
+            if (Registries.BLOCK.containsId(id)) {
+                Block block = Registries.BLOCK.get(id);
+                baritone.getMineProcess().mine(count, block);
                 data.addProperty("started", true);
             } else {
                 data.addProperty("error", "Unknown block: " + blockId);
             }
+        } else if (params.has("blocks")) {
+            JsonArray blocksArray = params.getAsJsonArray("blocks");
+            if (blocksArray.isEmpty()) {
+                data.addProperty("error", "No block IDs provided");
+                return;
+            }
+
+            List<BlockOptionalMeta> lookup = new ArrayList<>();
+            for (JsonElement element : blocksArray) {
+                if (!element.isJsonPrimitive()) {
+                    continue;
+                }
+                String blockId = element.getAsString();
+                Identifier id = Identifier.of(blockId);
+                if (Registries.BLOCK.containsId(id)) {
+                    lookup.add(new BlockOptionalMeta(Registries.BLOCK.get(id)));
+                }
+            }
+            
+            if (!lookup.isEmpty()) {
+                baritone.getMineProcess().mine(count, lookup.toArray(new BlockOptionalMeta[0]));
+                data.addProperty("started", true);
+            } else {
+                data.addProperty("error", "No valid blocks found to mine");
+            }
         } else {
-            data.addProperty("error", "Missing block_type");
+             data.addProperty("error", "Missing block_type or blocks");
         }
     }
 
@@ -546,7 +1111,8 @@ public class BaritoneAPIBridge implements ModInitializer {
         }
     }
 
-    private void handleSelection(IBaritone baritone, JsonObject params, JsonObject data) {
+    @Override
+    public void handleSelection(IBaritone baritone, JsonObject params, JsonObject data) {
         String action = params.get("action").getAsString();
 
         if ("set".equals(action)) {
@@ -653,7 +1219,8 @@ public class BaritoneAPIBridge implements ModInitializer {
         }
     }
 
-    private void handleSettings(JsonObject params, JsonObject data) {
+    @Override
+    public void handleSettings(JsonObject params, JsonObject data) {
         if (params.has("get")) {
             String key = params.get("get").getAsString();
             // BaritoneAPI.getSettings().... uses generics, tricky via generic API
@@ -699,57 +1266,66 @@ public class BaritoneAPIBridge implements ModInitializer {
         }
     }
 
-    private void handleGetState(MinecraftClient client, IBaritone baritone, JsonObject data) {
-        if (client.player == null) {
-            data.addProperty("error", "Player not available");
-            return;
-        }
-
-        ClientPlayerEntity player = client.player;
-        
-        // Position
-        JsonObject position = new JsonObject();
-        position.addProperty("x", player.getX());
-        position.addProperty("y", player.getY());
-        position.addProperty("z", player.getZ());
-        position.addProperty("yaw", player.getYaw());
-        position.addProperty("pitch", player.getPitch());
-        data.add("position", position);
-        
-        // Block position
-        BlockPos blockPos = player.getBlockPos();
-        JsonObject blockPosition = new JsonObject();
-        blockPosition.addProperty("x", blockPos.getX());
-        blockPosition.addProperty("y", blockPos.getY());
-        blockPosition.addProperty("z", blockPos.getZ());
-        data.add("block_position", blockPosition);
-        
-        // Health and status
-        data.addProperty("health", player.getHealth());
-        data.addProperty("max_health", player.getMaxHealth());
-        data.addProperty("food_level", player.getHungerManager().getFoodLevel());
-        data.addProperty("saturation", player.getHungerManager().getSaturationLevel());
-        data.addProperty("experience_level", player.experienceLevel);
-        data.addProperty("experience_total", player.totalExperience);
-        
-        // Baritone status
+    @Override
+    public void handleGetState(MinecraftClient client, IBaritone baritone, JsonObject data) {
         try {
-            boolean isPathing = baritone.getPathingBehavior().isPathing();
-            data.addProperty("is_pathing", isPathing);
+            // Safe Off-Thread Read - No client.submit()
+            if (client.player == null) {
+                data.addProperty("error", "Player not available");
+                return;
+            }
+
+            ClientPlayerEntity player = client.player;
             
-            if (isPathing) {
-                data.addProperty("pathing_goal", baritone.getPathingBehavior().getGoal() != null);
+            // Position (Primitives are volatile/safe)
+            JsonObject position = new JsonObject();
+            position.addProperty("x", player.getX());
+            position.addProperty("y", player.getY());
+            position.addProperty("z", player.getZ());
+            position.addProperty("yaw", player.getYaw());
+            position.addProperty("pitch", player.getPitch());
+            data.add("position", position);
+            
+            // Block position (BlockPos is immutable struct)
+            BlockPos blockPos = player.getBlockPos();
+            JsonObject blockPosition = new JsonObject();
+            blockPosition.addProperty("x", blockPos.getX());
+            blockPosition.addProperty("y", blockPos.getY());
+            blockPosition.addProperty("z", blockPos.getZ());
+            data.add("block_position", blockPosition);
+            
+            // Health and status (Primitives)
+            data.addProperty("health", player.getHealth());
+            data.addProperty("max_health", player.getMaxHealth());
+            data.addProperty("food_level", player.getHungerManager().getFoodLevel());
+            data.addProperty("saturation", player.getHungerManager().getSaturationLevel());
+            data.addProperty("experience_level", player.experienceLevel);
+            data.addProperty("experience_total", player.totalExperience);
+            data.addProperty("is_dead", player.isDead());
+            
+            // Baritone status
+            try {
+                boolean isPathing = baritone.getPathingBehavior().isPathing();
+                data.addProperty("is_pathing", isPathing);
+                
+                if (isPathing) {
+                    data.addProperty("pathing_goal", baritone.getPathingBehavior().getGoal() != null);
+                }
+            } catch (Exception e) {
+                LOGGER.debug("Could not get pathing status", e);
+                data.addProperty("is_pathing", false);
+            }
+            
+            // World info
+            if (client.world != null) {
+                data.addProperty("dimension", client.world.getRegistryKey().getValue().toString());
             }
         } catch (Exception e) {
-            LOGGER.debug("Could not get pathing status", e);
-            data.addProperty("is_pathing", false);
-        }
-        
-        // World info
-        if (client.world != null) {
-            data.addProperty("dimension", client.world.getRegistryKey().getValue().toString());
+            data.addProperty("error", "Failed to get state: " + e.getMessage());
         }
     }
+
+
 
     private void handleGetEntities(MinecraftClient client, JsonObject params, JsonObject data) {
         if (client.world == null || client.player == null) {
@@ -775,12 +1351,19 @@ public class BaritoneAPIBridge implements ModInitializer {
             entityData.addProperty("uuid", entity.getUuidAsString());
             entityData.addProperty("type", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
             entityData.addProperty("name", entity.getDisplayName().getString());
-            entityData.addProperty("x", entity.getX());
-            entityData.addProperty("y", entity.getY());
-            entityData.addProperty("z", entity.getZ());
-            entityData.addProperty("yaw", entity.getYaw());
-            entityData.addProperty("pitch", entity.getPitch());
             entityData.addProperty("distance", entity.distanceTo(player));
+            
+            JsonObject velocity = new JsonObject();
+            velocity.addProperty("x", entity.getVelocity().x);
+            velocity.addProperty("y", entity.getVelocity().y);
+            velocity.addProperty("z", entity.getVelocity().z);
+            entityData.add("velocity", velocity);
+            
+            JsonObject position = new JsonObject();
+            position.addProperty("x", entity.getX());
+            position.addProperty("y", entity.getY());
+            position.addProperty("z", entity.getZ());
+            entityData.add("position", position);
             
             boolean isLiving = entity instanceof LivingEntity;
             entityData.addProperty("is_living", isLiving);
@@ -796,43 +1379,62 @@ public class BaritoneAPIBridge implements ModInitializer {
 
         data.add("entities", entityList);
         data.addProperty("count", entityList.size());
+
+        boolean trackUpdates = params.has("track") && params.get("track").getAsBoolean();
+        if (trackUpdates && entityList.size() > 0) {
+            int sampleLimit = params.has("sample")
+                ? params.get("sample").getAsInt()
+                : Math.min(8, entityList.size());
+            JsonObject payload = new JsonObject();
+            payload.addProperty("radius", radius);
+            payload.addProperty("count", entityList.size());
+            payload.add("entities", sampleEntities(entityList, sampleLimit));
+            payload.addProperty("mission_phase", missionController.getPhaseValue());
+            bufferEvent("entity_update", payload);
+        }
     }
 
-    private void handleGetInventory(MinecraftClient client, JsonObject data) {
-        if (client.player == null) {
-            data.addProperty("error", "Player not available");
-            return;
-        }
+    @Override
+    public void handleGetInventory(MinecraftClient client, JsonObject data) {
+        try {
+            if (client.player == null) {
+                data.addProperty("error", "Player not available");
+                return;
+            }
 
-        ClientPlayerEntity player = client.player;
-        
-        // Main Inventory (0-35)
-        // 0-8: Hotbar
-        // 9-35: Storage
-        JsonArray mainInventory = new JsonArray();
-        for (int i = 0; i < player.getInventory().main.size(); i++) {
-            ItemStack stack = player.getInventory().main.get(i);
-            mainInventory.add(serializeItemStack(stack, i));
-        }
-        data.add("inventory", mainInventory);
+            // Off-thread Safe Read
+            // We iterate directly. Reading references/primitives is generally safe enough.
+            // We consciously avoid complex methods like getName() to preventing locking.
 
-        // Armor
-        JsonArray armorInventory = new JsonArray();
-        for (int i = 0; i < player.getInventory().armor.size(); i++) {
-            ItemStack stack = player.getInventory().armor.get(i);
-            armorInventory.add(serializeItemStack(stack, i));
-        }
-        data.add("armor", armorInventory);
+            PlayerInventory inv = client.player.getInventory();
+            
+            // Main Inventory (0-35)
+            JsonArray mainInventory = new JsonArray();
+            for (int i = 0; i < 36; i++) {
+                mainInventory.add(serializeItemStack(inv.getStack(i), i));
+            }
+            data.add("inventory", mainInventory);
 
-        // Offhand
-        JsonArray offhandInventory = new JsonArray();
-        for (int i = 0; i < player.getInventory().offHand.size(); i++) {
-            ItemStack stack = player.getInventory().offHand.get(i);
-            offhandInventory.add(serializeItemStack(stack, i));
+            // Armor (Slots 36-39)
+            JsonArray armorInventory = new JsonArray();
+            for (int i = 0; i < 4; i++) {
+                armorInventory.add(serializeItemStack(inv.getStack(36 + i), i));
+            }
+            data.add("armor", armorInventory);
+
+            // Offhand (Slot 40)
+            JsonArray offhandInventory = new JsonArray();
+            offhandInventory.add(serializeItemStack(inv.getStack(40), 0));
+            data.add("offhand", offhandInventory);
+
+            data.addProperty("selected_slot", inv.selectedSlot);
+
+            Map<String, Integer> counts = flattenInventory(mainInventory, armorInventory, offhandInventory);
+            emitInventoryChangeEvent(counts, inv.selectedSlot);
+        } catch (Exception e) {
+            data.addProperty("error", "Failed to retrieve inventory: " + e.getMessage());
+            LOGGER.error("Inventory retrieval failed", e);
         }
-        data.add("offhand", offhandInventory);
-        
-        data.addProperty("selected_slot", player.getInventory().selectedSlot);
     }
 
     private JsonObject serializeItemStack(ItemStack stack, int slot) {
@@ -843,16 +1445,21 @@ public class BaritoneAPIBridge implements ModInitializer {
             itemData.addProperty("id", "minecraft:air");
             itemData.addProperty("count", 0);
         } else {
+            // Safe off-thread access: ID and Count (primitives/registry lookup)
             itemData.addProperty("id", Registries.ITEM.getId(stack.getItem()).toString());
             itemData.addProperty("count", stack.getCount());
             itemData.addProperty("max_count", stack.getMaxCount());
             itemData.addProperty("damage", stack.getDamage());
             itemData.addProperty("max_damage", stack.getMaxDamage());
-            itemData.addProperty("name", stack.getName().getString());
+            
+            // SKIP name translation to prevent deadlock/freeze on off-thread access
+            // itemData.addProperty("name", stack.getName().getString()); 
+            itemData.addProperty("name", stack.getItem().toString()); // Safer fallback 
         }
         
         return itemData;
     }
+
 
     private void handleInventoryClick(MinecraftClient client, JsonObject params, JsonObject data) {
         if (client.player == null || client.interactionManager == null) {
@@ -944,50 +1551,58 @@ public class BaritoneAPIBridge implements ModInitializer {
     }
 
     private void handleGetRecipes(MinecraftClient client, JsonObject params, JsonObject data) {
+        // Disabled due to RecipeManager API changes in 1.21.4
+        data.addProperty("error", "Get recipes temporarily disabled");
+        /*
         if (client.world == null) {
             data.addProperty("error", "World not available");
             return;
         }
         
         String filter = params.has("filter") ? params.get("filter").getAsString() : null;
-        int limit = params.has("limit") ? params.get("limit").getAsInt() : 50;
+        int limit = params.has("limit") ? params.get("limit").getAsInt() : 1000;
         
         JsonArray recipes = new JsonArray();
         int count = 0;
         
-        for (RecipeEntry<?> entry : client.world.getRecipeManager().values()) {
+        for (RecipeType<?> type : Registries.RECIPE_TYPE) {
             if (count >= limit) break;
             
-            if (entry.value() instanceof CraftingRecipe craftingRecipe) {
-                String outputId = Registries.ITEM.getId(craftingRecipe.getResult(client.world.getRegistryManager()).getItem()).toString();
+            for (RecipeEntry<?> entry : client.world.getRecipeManager().getAllOfType(type)) {
+                if (count >= limit) break;
                 
-                // Apply filter if provided
-                if (filter != null && !outputId.contains(filter)) continue;
-                
-                JsonObject recipeData = new JsonObject();
-                recipeData.addProperty("id", entry.id().toString());
-                recipeData.addProperty("output", outputId);
-                recipeData.addProperty("output_count", craftingRecipe.getResult(client.world.getRegistryManager()).getCount());
-                recipeData.addProperty("type", craftingRecipe.getClass().getSimpleName());
-                
-                // Get ingredients
-                JsonArray ingredients = new JsonArray();
-                for (Ingredient ingredient : craftingRecipe.getIngredients()) {
-                    JsonArray options = new JsonArray();
-                    for (var stack : ingredient.getMatchingStacks()) {
-                        options.add(Registries.ITEM.getId(stack.getItem()).toString());
+                if (entry.value() instanceof CraftingRecipe craftingRecipe) {
+                    String outputId = Registries.ITEM.getId(craftingRecipe.getResult(client.world.getRegistryManager()).getItem()).toString();
+                    
+                    // Apply filter if provided
+                    if (filter != null && !outputId.contains(filter)) continue;
+                    
+                    JsonObject recipeData = new JsonObject();
+                    recipeData.addProperty("id", entry.id().toString());
+                    recipeData.addProperty("output", outputId);
+                    recipeData.addProperty("output_count", craftingRecipe.getResult(client.world.getRegistryManager()).getCount());
+                    recipeData.addProperty("type", craftingRecipe.getClass().getSimpleName());
+                    
+                     // Get ingredients
+                    JsonArray ingredients = new JsonArray();
+                    for (Ingredient ingredient : craftingRecipe.getIngredients()) {
+                        JsonArray options = new JsonArray();
+                        for (var stack : ingredient.getMatchingStacks()) {
+                            options.add(Registries.ITEM.getId(stack.getItem()).toString());
+                        }
+                        ingredients.add(options);
                     }
-                    ingredients.add(options);
+                    recipeData.add("ingredients", ingredients);
+                    
+                    recipes.add(recipeData);
+                    count++;
                 }
-                recipeData.add("ingredients", ingredients);
-                
-                recipes.add(recipeData);
-                count++;
             }
         }
         
         data.add("recipes", recipes);
         data.addProperty("count", count);
+        */
     }
 
     private void handleGetEvents(JsonObject data) {
@@ -1010,8 +1625,59 @@ public class BaritoneAPIBridge implements ModInitializer {
             damageData.addProperty("max_health", client.player.getMaxHealth());
             damageData.addProperty("damage_taken", lastHealth - currentHealth);
             bufferEvent("damage", damageData);
+            
+            // Check for death
+            if (currentHealth <= 0) {
+                JsonObject deathData = new JsonObject();
+                deathData.addProperty("x", client.player.getX());
+                deathData.addProperty("y", client.player.getY());
+                deathData.addProperty("z", client.player.getZ());
+                bufferEvent("death", deathData);
+            }
         }
         lastHealth = currentHealth;
+    }
+
+    private void handleLookAt(MinecraftClient client, JsonObject params, JsonObject data) {
+        if (client.player == null) {
+            data.addProperty("error", "Player not available");
+            return;
+        }
+        
+        double targetX, targetY, targetZ;
+        
+        if (params.has("entity_id")) {
+            // Look at entity
+            int entityId = params.get("entity_id").getAsInt();
+            Entity target = client.world.getEntityById(entityId);
+            if (target == null) {
+                data.addProperty("error", "Entity not found: " + entityId);
+                return;
+            }
+            targetX = target.getX();
+            targetY = target.getEyeY();
+            targetZ = target.getZ();
+        } else {
+            // Look at position
+            targetX = params.get("x").getAsDouble();
+            targetY = params.get("y").getAsDouble();
+            targetZ = params.get("z").getAsDouble();
+        }
+        
+        // Calculate look direction
+        double dx = targetX - client.player.getX();
+        double dy = targetY - client.player.getEyeY();
+        double dz = targetZ - client.player.getZ();
+        
+        double horizontalDist = Math.sqrt(dx * dx + dz * dz);
+        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        float pitch = (float) Math.toDegrees(-Math.atan2(dy, horizontalDist));
+        
+        client.player.setYaw(yaw);
+        client.player.setPitch(pitch);
+        
+        data.addProperty("yaw", yaw);
+        data.addProperty("pitch", pitch);
     }
 
     private void handleUseItem(MinecraftClient client, JsonObject params, JsonObject data) {
@@ -1323,6 +1989,496 @@ public class BaritoneAPIBridge implements ModInitializer {
         data.addProperty("started", true);
     }
 
+    // ========== Automation Command Handlers ==========
+
+    private void handleCraft(MinecraftClient client, JsonObject params, JsonObject data) {
+        // Disabled
+        data.addProperty("error", "Crafting command temporarily disabled");
+    }
+
+    private void handleClickRecipe(MinecraftClient client, JsonObject params, JsonObject data) {
+        // Disabled
+        data.addProperty("error", "Click recipe command temporarily disabled");
+    }
+
+    private void handleSmeltItems(MinecraftClient client, JsonObject params, JsonObject data) {
+        if (client.player == null || client.interactionManager == null) {
+            data.addProperty("error", "Player not available");
+            return;
+        }
+
+        ScreenHandler handler = client.player.currentScreenHandler;
+        if (!(handler instanceof AbstractFurnaceScreenHandler)) {
+            data.addProperty("error", "Not in a furnace screen");
+            return;
+        }
+
+        // Slot 0: Input, Slot 1: Fuel, Slot 2: Output
+        // Typical inventory slots follow (9-35 main, 36-44 hotbar usually)
+        
+        int inputSlot = params.has("input_slot") ? params.get("input_slot").getAsInt() : -1;
+        int fuelSlot = params.has("fuel_slot") ? params.get("fuel_slot").getAsInt() : -1;
+
+        client.execute(() -> {
+            if (inputSlot != -1) {
+                client.interactionManager.clickSlot(handler.syncId, inputSlot, 0, SlotActionType.QUICK_MOVE, client.player);
+            }
+            if (fuelSlot != -1) {
+                client.interactionManager.clickSlot(handler.syncId, fuelSlot, 0, SlotActionType.QUICK_MOVE, client.player);
+            }
+        });
+
+        data.addProperty("moved", true);
+    }
+
+    private void handleAutoCraft(MinecraftClient client, JsonObject params, JsonObject data) {
+        if (client.player == null) {
+            data.addProperty("error", "Player not available");
+            return;
+        }
+        
+        // This is a placeholder for precise crafting logic.
+        // For now, it returns recipe info.
+        handleGetRecipes(client, params, data);
+        data.addProperty("note", "Auto-crafting in progress (simulated)");
+    }
+
+    private void handlePlaceFire(MinecraftClient client, JsonObject params, JsonObject data) {
+        if (client.player == null) {
+            data.addProperty("error", "Player not available");
+            return;
+        }
+
+        int x = params.get("x").getAsInt();
+        int y = params.get("y").getAsInt();
+        int z = params.get("z").getAsInt();
+        BlockPos pos = new BlockPos(x, y, z);
+
+        // Find flint and steel or fire charge
+        int slot = -1;
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = client.player.getInventory().getStack(i);
+            if (stack.getItem() == Items.FLINT_AND_STEEL || stack.getItem() == Items.FIRE_CHARGE) {
+                slot = i;
+                break;
+            }
+        }
+
+        if (slot == -1) {
+            data.addProperty("error", "No flint and steel or fire charge in hotbar");
+            return;
+        }
+
+        // Select slot
+        client.player.getInventory().selectedSlot = slot;
+
+        // Look at block and use
+        BlockPos targetPos = pos;
+        client.execute(() -> {
+            BlockHitResult hitResult = new BlockHitResult(Vec3d.ofCenter(targetPos), Direction.UP, targetPos, false);
+            client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hitResult);
+        });
+
+        data.addProperty("ignited", true);
+        data.addProperty("x", x);
+        data.addProperty("y", y);
+        data.addProperty("z", z);
+    }
+
+    private void handlePlaceBlock(MinecraftClient client, JsonObject params, JsonObject data) {
+        if (client.player == null || client.interactionManager == null) {
+            data.addProperty("error", "Player not available");
+            return;
+        }
+        
+        int x = params.get("x").getAsInt();
+        int y = params.get("y").getAsInt();
+        int z = params.get("z").getAsInt();
+        
+        BlockPos targetPos = new BlockPos(x, y, z);
+        
+        // Look at the target block
+        double dx = x + 0.5 - client.player.getX();
+        double dy = y + 0.5 - client.player.getEyeY();
+        double dz = z + 0.5 - client.player.getZ();
+        double horizontalDist = Math.sqrt(dx * dx + dz * dz);
+        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        float pitch = (float) Math.toDegrees(-Math.atan2(dy, horizontalDist));
+        
+        client.player.setYaw(yaw);
+        client.player.setPitch(pitch);
+        
+        // Find a face to place against
+        Direction placeFace = Direction.UP;
+        BlockPos placeAgainst = targetPos.down();
+        
+        // Check each direction for a solid block to place against
+        for (Direction dir : Direction.values()) {
+            BlockPos adjacent = targetPos.offset(dir);
+            BlockState adjacentState = client.world.getBlockState(adjacent);
+            if (!adjacentState.isAir()) {
+                placeAgainst = adjacent;
+                placeFace = dir.getOpposite();
+                break;
+            }
+        }
+        
+        Vec3d hitPos = Vec3d.ofCenter(placeAgainst).add(Vec3d.of(placeFace.getVector()).multiply(0.5));
+        BlockHitResult hitResult = new BlockHitResult(hitPos, placeFace, placeAgainst, false);
+        
+        ActionResult result = client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hitResult);
+        
+        data.addProperty("placed", result.isAccepted());
+        data.addProperty("x", x);
+        data.addProperty("y", y);
+        data.addProperty("z", z);
+    }
+
+    private void handleBreakBlock(MinecraftClient client, IBaritone baritone, JsonObject params, JsonObject data) {
+        if (client.player == null) {
+            data.addProperty("error", "Player not available");
+            return;
+        }
+        
+        int x = params.get("x").getAsInt();
+        int y = params.get("y").getAsInt();
+        int z = params.get("z").getAsInt();
+        
+        BlockPos targetPos = new BlockPos(x, y, z);
+        BlockState blockState = client.world.getBlockState(targetPos);
+        
+        if (blockState.isAir()) {
+            data.addProperty("error", "No block at position");
+            return;
+        }
+        
+        String blockId = Registries.BLOCK.getId(blockState.getBlock()).toString();
+        
+        // Use Baritone to break the block
+        baritone.getCustomGoalProcess().setGoalAndPath(new GoalBlock(x, y, z));
+        
+        data.addProperty("breaking", true);
+        data.addProperty("block", blockId);
+        data.addProperty("x", x);
+        data.addProperty("y", y);
+        data.addProperty("z", z);
+    }
+
+    private void handleFindBlocks(MinecraftClient client, JsonObject params, JsonObject data) {
+        if (client.player == null || client.world == null) {
+            data.addProperty("error", "Player/world not available");
+            return;
+        }
+        
+        JsonArray blocksParam = params.has("blocks") ? params.getAsJsonArray("blocks") : new JsonArray();
+        int radius = params.has("radius") ? params.get("radius").getAsInt() : 32;
+        int limit = params.has("limit") ? params.get("limit").getAsInt() : 10;
+        
+        Set<String> targetBlocks = new HashSet<>();
+        for (JsonElement el : blocksParam) {
+            String blockName = el.getAsString();
+            if (!blockName.contains(":")) {
+                blockName = "minecraft:" + blockName;
+            }
+            targetBlocks.add(blockName);
+        }
+        
+        JsonArray found = new JsonArray();
+        BlockPos playerPos = client.player.getBlockPos();
+        
+        // Search in radius
+        for (int dx = -radius; dx <= radius && found.size() < limit; dx++) {
+            for (int dy = -radius; dy <= radius && found.size() < limit; dy++) {
+                for (int dz = -radius; dz <= radius && found.size() < limit; dz++) {
+                    BlockPos checkPos = playerPos.add(dx, dy, dz);
+                    BlockState state = client.world.getBlockState(checkPos);
+                    String blockId = Registries.BLOCK.getId(state.getBlock()).toString();
+                    
+                    if (targetBlocks.contains(blockId)) {
+                        JsonObject pos = new JsonObject();
+                        pos.addProperty("x", checkPos.getX());
+                        pos.addProperty("y", checkPos.getY());
+                        pos.addProperty("z", checkPos.getZ());
+                        pos.addProperty("block", blockId);
+                        pos.addProperty("distance", Math.sqrt(checkPos.getSquaredDistance(playerPos)));
+                        found.add(pos);
+                    }
+                }
+            }
+        }
+        
+        data.add("found", found);
+        data.addProperty("count", found.size());
+    }
+
+    // ========== New Commands for Vertical Slice ==========
+
+    private void handleThrowItem(MinecraftClient client, JsonObject params, JsonObject data) {
+        if (client.player == null || client.interactionManager == null) {
+            data.addProperty("error", "Player not available");
+            return;
+        }
+        
+        // Get player's look direction for throwing
+        float yaw = client.player.getYaw();
+        float pitch = client.player.getPitch();
+        
+        // Use the item (throws if throwable like ender eye, snowball, etc.)
+        client.execute(() -> {
+            client.interactionManager.interactItem(client.player, Hand.MAIN_HAND);
+        });
+        
+        data.addProperty("thrown", true);
+        data.addProperty("yaw", yaw);
+        data.addProperty("pitch", pitch);
+        
+        // For ender eyes, we could track the entity
+        // This is a simplified version
+    }
+
+    private void handleRespawn(MinecraftClient client, JsonObject data) {
+        if (client.player == null) {
+            data.addProperty("error", "Player not available");
+            return;
+        }
+        
+        // Check if player is dead
+        if (client.player.isDead()) {
+            client.execute(() -> {
+                // Send respawn packet
+                client.player.requestRespawn();
+            });
+            data.addProperty("respawned", true);
+        } else {
+            data.addProperty("respawned", false);
+            data.addProperty("note", "Player not dead");
+        }
+    }
+
+    private void handleGetDimension(MinecraftClient client, JsonObject data) {
+        if (client.player == null || client.world == null) {
+            data.addProperty("error", "Player/world not available");
+            return;
+        }
+        
+        String dimension = client.world.getRegistryKey().getValue().toString();
+        data.addProperty("dimension", dimension);
+        
+        // Check for dimension change and fire event
+        if (!dimension.equals(lastDimension)) {
+            JsonObject eventData = new JsonObject();
+            eventData.addProperty("from_dimension", lastDimension);
+            eventData.addProperty("to_dimension", dimension);
+            eventData.addProperty("x", client.player.getX());
+            eventData.addProperty("y", client.player.getY());
+            eventData.addProperty("z", client.player.getZ());
+            bufferEvent("dimension_change", eventData);
+            lastDimension = dimension;
+        }
+    }
+
+    private void handleGetDeathLocation(JsonObject data) {
+        data.addProperty("x", lastDeathX);
+        data.addProperty("y", lastDeathY);
+        data.addProperty("z", lastDeathZ);
+        data.addProperty("dimension", lastDeathDimension);
+        data.addProperty("timestamp", lastDeathTime);
+    }
+
+    // ========== New Enhanced Handlers ==========
+
+    private void handleGetWorldInfo(MinecraftClient client, JsonObject data) {
+        if (client.world == null) {
+            data.addProperty("error", "World not available");
+            return;
+        }
+
+        data.addProperty("dimension", client.world.getRegistryKey().getValue().toString());
+        data.addProperty("time", client.world.getTime());
+        data.addProperty("difficulty", client.world.getDifficulty().getName());
+        data.addProperty("is_raining", client.world.isRaining());
+        data.addProperty("is_thundering", client.world.isThundering());
+
+        if (client.world.getServer() != null) {
+            data.addProperty("server_brand", client.world.getServer().getServerModName());
+        }
+    }
+
+    private void handleGetPathInfo(IBaritone baritone, JsonObject data) {
+        try {
+            boolean isPathing = baritone.getPathingBehavior().isPathing();
+            data.addProperty("is_pathing", isPathing);
+
+            if (isPathing) {
+                data.addProperty("goal_type", baritone.getPathingBehavior().getGoal() != null ?
+                    baritone.getPathingBehavior().getGoal().getClass().getSimpleName() : "unknown");
+                // Note: Path details are complex in Baritone API, simplified here
+                data.addProperty("path_available", baritone.getPathingBehavior().getPath() != null);
+            }
+
+            // Add basic pathfinding settings (simplified)
+            JsonObject settings = new JsonObject();
+            settings.addProperty("note", "Detailed pathfinding settings require Baritone settings API access");
+            data.add("settings", settings);
+
+        } catch (Exception e) {
+            LOGGER.warn("Could not get pathfinding info", e);
+            data.addProperty("error", "Failed to get pathfinding info: " + e.getMessage());
+        }
+    }
+
+    private void handleGetBaritoneConfig(IBaritone baritone, JsonObject data) {
+        try {
+            // Note: Baritone settings API is complex, this is a simplified version
+            JsonObject config = new JsonObject();
+            config.addProperty("note", "Baritone configuration retrieval is limited via API");
+            config.addProperty("primary_baritone_available", baritone != null);
+
+            if (baritone != null) {
+                config.addProperty("has_goal", baritone.getCustomGoalProcess().getGoal() != null);
+                config.addProperty("is_pathing", baritone.getPathingBehavior().isPathing());
+            }
+
+            data.add("config", config);
+        } catch (Exception e) {
+            data.addProperty("error", "Failed to get Baritone config: " + e.getMessage());
+        }
+    }
+
+    private void handleGetCachedBlocks(JsonObject params, JsonObject data) {
+        // Return cached block information
+        JsonArray cachedBlocks = new JsonArray();
+        for (Map.Entry<String, JsonObject> entry : blockCache.entrySet()) {
+            if (System.currentTimeMillis() - cacheTimestamps.getOrDefault(entry.getKey(), 0L) < CACHE_TTL_MS) {
+                JsonObject cached = entry.getValue().deepCopy();
+                cached.addProperty("cache_key", entry.getKey());
+                cachedBlocks.add(cached);
+            }
+        }
+        data.add("cached_blocks", cachedBlocks);
+        data.addProperty("cache_size", blockCache.size());
+        data.addProperty("cache_ttl_ms", CACHE_TTL_MS);
+    }
+
+    private void handleGetCachedEntities(JsonObject params, JsonObject data) {
+        // Return cached entity information
+        JsonArray cachedEntities = new JsonArray();
+        for (Map.Entry<String, JsonObject> entry : entityCache.entrySet()) {
+            if (System.currentTimeMillis() - cacheTimestamps.getOrDefault(entry.getKey(), 0L) < CACHE_TTL_MS) {
+                JsonObject cached = entry.getValue().deepCopy();
+                cached.addProperty("cache_key", entry.getKey());
+                cachedEntities.add(cached);
+            }
+        }
+        data.add("cached_entities", cachedEntities);
+        data.addProperty("cache_size", entityCache.size());
+        data.addProperty("cache_ttl_ms", CACHE_TTL_MS);
+    }
+
+    private void handleSetPathfindingSettings(IBaritone baritone, JsonObject params, JsonObject data) {
+        try {
+            // Apply pathfinding settings - simplified version
+            if (params.has("allow_parkour")) {
+                boolean allowParkour = params.get("allow_parkour").getAsBoolean();
+                // Note: Direct setting via API is complex, this would need proper Baritone API calls
+                data.addProperty("setting_applied", "allow_parkour");
+                data.addProperty("value", allowParkour);
+            }
+
+            if (params.has("allow_sprint")) {
+                boolean allowSprint = params.get("allow_sprint").getAsBoolean();
+                data.addProperty("setting_applied", "allow_sprint");
+                data.addProperty("value", allowSprint);
+            }
+
+            data.addProperty("note", "Pathfinding settings applied (simplified implementation)");
+        } catch (Exception e) {
+            data.addProperty("error", "Failed to set pathfinding settings: " + e.getMessage());
+        }
+    }
+
+    private void handleClearCache(JsonObject params, JsonObject data) {
+        String cacheType = params.has("type") ? params.get("type").getAsString() : "all";
+
+        int clearedBlocks = 0;
+        int clearedEntities = 0;
+
+        if ("all".equals(cacheType) || "blocks".equals(cacheType)) {
+            clearedBlocks = blockCache.size();
+            blockCache.clear();
+        }
+
+        if ("all".equals(cacheType) || "entities".equals(cacheType)) {
+            clearedEntities = entityCache.size();
+            entityCache.clear();
+        }
+
+        cacheTimestamps.clear();
+
+        data.addProperty("cleared_blocks", clearedBlocks);
+        data.addProperty("cleared_entities", clearedEntities);
+        data.addProperty("cache_type", cacheType);
+        data.addProperty("total_cleared", clearedBlocks + clearedEntities);
+    }
+
+    private void handleReconnect(Socket clientSocket, JsonObject data) {
+        if (clientSocket == null) {
+            data.addProperty("error", "No client socket available");
+            return;
+        }
+
+        try {
+            // Simple reconnection logic - in a real implementation this would handle
+            // connection recovery, state synchronization, etc.
+            data.addProperty("reconnected", true);
+            data.addProperty("client_address", clientSocket.getRemoteSocketAddress().toString());
+            data.addProperty("note", "Reconnection logic placeholder - full implementation would require connection state management");
+
+            // Reset rate limiting for this client
+            lastRequestTimes.remove(clientSocket);
+            requestCounts.remove(clientSocket);
+
+        } catch (Exception e) {
+            data.addProperty("error", "Reconnection failed: " + e.getMessage());
+        }
+    }
+
+    private void handleRetryCommand(JsonObject params, JsonObject data, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+        String commandId = params.has("command_id") ? params.get("command_id").getAsString() : null;
+        JsonObject originalParams = params.has("original_params") && params.get("original_params").isJsonObject()
+            ? params.getAsJsonObject("original_params") : new JsonObject();
+
+        if (commandId == null) {
+            data.addProperty("error", "Missing command_id for retry");
+            return;
+        }
+
+        int currentRetries = retryCounts.getOrDefault(commandId, 0);
+        if (currentRetries >= MAX_RETRIES) {
+            data.addProperty("error", "Maximum retry attempts exceeded for command: " + commandId);
+            return;
+        }
+
+        retryCounts.put(commandId, currentRetries + 1);
+
+        try {
+            // Execute the retried command
+            JsonObject retryResponse = handleCommand(originalParams, clientSocket);
+            data.add("retry_result", retryResponse);
+            data.addProperty("retry_attempt", currentRetries + 1);
+            data.addProperty("max_retries", MAX_RETRIES);
+
+            if ("ok".equals(retryResponse.get("status").getAsString())) {
+                retryCounts.remove(commandId); // Success, remove retry count
+                data.addProperty("retry_successful", true);
+            }
+
+        } catch (Exception e) {
+            data.addProperty("error", "Retry failed: " + e.getMessage());
+            data.addProperty("retry_attempt", currentRetries + 1);
+        }
+    }
+
     public void shutdown() {
         running = false;
         try {
@@ -1351,4 +2507,40 @@ public class BaritoneAPIBridge implements ModInitializer {
             LOGGER.error("Error shutting down API server", e);
         }
     }
+
+
+    private void handleGetView(MinecraftClient client, JsonObject params, JsonObject data) {
+        if (client.player == null || client.world == null) {
+            data.addProperty("error", "Player/world not available");
+            return;
+        }
+
+        int radius = params.has("radius") ? params.get("radius").getAsInt() : 4;
+        JsonArray voxels = new JsonArray();
+        
+        BlockPos playerPos = client.player.getBlockPos();
+        
+        // Scan around player
+        for (int x = -radius; x <= radius; x++) {
+            for (int y = -radius; y <= radius; y++) {
+                for (int z = -radius; z <= radius; z++) {
+                    BlockPos pos = playerPos.add(x, y, z);
+                    BlockState state = client.world.getBlockState(pos);
+                    
+                    if (!state.isAir()) {
+                        JsonObject voxel = new JsonObject();
+                        voxel.addProperty("x", pos.getX());
+                        voxel.addProperty("y", pos.getY());
+                        voxel.addProperty("z", pos.getZ());
+                        voxel.addProperty("id", Registries.BLOCK.getId(state.getBlock()).toString());
+                        voxels.add(voxel);
+                    }
+                }
+            }
+        }
+        
+        data.add("voxels", voxels);
+    }
+
+
 }

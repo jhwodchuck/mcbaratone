@@ -1,0 +1,156 @@
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::load has been called by net.rubygrapefruit.platform.internal.NativeLibraryLoader in an unnamed module (file:/C:/Users/jason/.gradle/wrapper/dists/gradle-8.12-bin/cetblhg4pflnnks72fxwobvgv/gradle-8.12/lib/native-platform-0.22-milestone-27.jar)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+
+> Configure project :
+Fabric Loom: 1.9.2
+
+> Task :compileJava FAILED
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1021: error: cannot find symbol
+            Optional<Block> block = Registries.BLOCK.getOrEmpty(Identifier.of(blockId));
+                                                    ^
+  symbol:   method getOrEmpty(Identifier)
+  location: variable BLOCK of type DefaultedRegistry<Block>
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1560: error: cannot find symbol
+            for (RecipeEntry<?> entry : client.world.getRecipeManager().listAllOfType(type)) {
+                                                                       ^
+  symbol:   method listAllOfType(RecipeType<CAP#1>)
+  location: interface RecipeManager
+  where CAP#1 is a fresh type-variable:
+    CAP#1 extends Recipe<?> from capture of ?
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1564: error: cannot find symbol
+                    String outputId = Registries.ITEM.getId(craftingRecipe.getResult(client.world.getRegistryManager()).getItem()).toString();
+                                                                          ^
+  symbol:   method getResult(DynamicRegistryManager)
+  location: variable craftingRecipe of type CraftingRecipe
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1572: error: cannot find symbol
+                    recipeData.addProperty("output_count", craftingRecipe.getResult(client.world.getRegistryManager()).getCount());
+                                                                         ^
+  symbol:   method getResult(DynamicRegistryManager)
+  location: variable craftingRecipe of type CraftingRecipe
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1577: error: cannot find symbol
+                    for (Ingredient ingredient : craftingRecipe.getIngredients()) {
+                                                               ^
+  symbol:   method getIngredients()
+  location: variable craftingRecipe of type CraftingRecipe
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1579: error: cannot find symbol
+                        for (var stack : ingredient.getMatchingStacks()) {
+                                                   ^
+  symbol:   method getMatchingStacks()
+  location: variable ingredient of type Ingredient
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1998: error: cannot find symbol
+        for (RecipeEntry<?> entry : client.world.getRecipeManager().listAllOfType(RecipeType.CRAFTING)) {
+                                                                   ^
+  symbol:   method listAllOfType(RecipeType<CraftingRecipe>)
+  location: interface RecipeManager
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:2000: error: cannot find symbol
+                String outputId = Registries.ITEM.getId(craftingRecipe.getResult(client.world.getRegistryManager()).getItem()).toString();
+                                                                      ^
+  symbol:   method getResult(DynamicRegistryManager)
+  location: variable craftingRecipe of type CraftingRecipe
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:2017: error: incompatible types: RecipeEntry<CAP#1> cannot be converted to NetworkRecipeId
+            client.interactionManager.clickRecipe(handler.syncId, finalRecipe, count > 1);
+                                                                  ^
+  where CAP#1 is a fresh type-variable:
+    CAP#1 extends Recipe<?> from capture of ?
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:2037: error: cannot find symbol
+            for (RecipeEntry<?> entry : client.world.getRecipeManager().listAllOfType(type)) {
+                                                                       ^
+  symbol:   method listAllOfType(RecipeType<CAP#1>)
+  location: interface RecipeManager
+  where CAP#1 is a fresh type-variable:
+    CAP#1 extends Recipe<?> from capture of ?
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:2052: error: incompatible types: RecipeEntry<CAP#1> cannot be converted to NetworkRecipeId
+            client.interactionManager.clickRecipe(handler.syncId, recipe.get(), craftAll);
+                                                                            ^
+  where CAP#1 is a fresh type-variable:
+    CAP#1 extends Recipe<?> from capture of ?
+C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:2184: error: cannot find symbol
+        ActionResult result = client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hitResult);
+        ^
+  symbol:   class ActionResult
+  location: class BaritoneAPIBridge
+Note: C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java uses or overrides a deprecated API.
+Note: Recompile with -Xlint:deprecation for details.
+Note: Some messages have been simplified; recompile with -Xdiags:verbose to get full output
+12 errors
+
+[Incubating] Problems report is available at: file:///C:/gh/mcbaratone/bridge/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':compileJava'.
+> Compilation failed; see the compiler output below.
+  Note: Some messages have been simplified; recompile with -Xdiags:verbose to get full outputNote: Recompile with -Xlint:deprecation for details.C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:2184: error: cannot find symbol
+          ActionResult result = client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hitResult);
+          ^
+    symbol:   class ActionResult
+    location: class BaritoneAPIBridgeC:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:2017: error: incompatible types: RecipeEntry<CAP#1> cannot be converted to NetworkRecipeId
+              client.interactionManager.clickRecipe(handler.syncId, finalRecipe, count > 1);
+                                                                    ^
+    where CAP#1 is a fresh type-variable:
+      CAP#1 extends Recipe<?> from capture of ?
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:2052: error: incompatible types: RecipeEntry<CAP#1> cannot be converted to NetworkRecipeId
+              client.interactionManager.clickRecipe(handler.syncId, recipe.get(), craftAll);
+                                                                              ^
+    where CAP#1 is a fresh type-variable:
+      CAP#1 extends Recipe<?> from capture of ?C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1021: error: cannot find symbol
+              Optional<Block> block = Registries.BLOCK.getOrEmpty(Identifier.of(blockId));
+                                                      ^
+    symbol:   method getOrEmpty(Identifier)
+    location: variable BLOCK of type DefaultedRegistry<Block>
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1560: error: cannot find symbol
+              for (RecipeEntry<?> entry : client.world.getRecipeManager().listAllOfType(type)) {
+                                                                         ^
+    symbol:   method listAllOfType(RecipeType<CAP#1>)
+    location: interface RecipeManager
+    where CAP#1 is a fresh type-variable:
+      CAP#1 extends Recipe<?> from capture of ?
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1564: error: cannot find symbol
+                      String outputId = Registries.ITEM.getId(craftingRecipe.getResult(client.world.getRegistryManager()).getItem()).toString();
+                                                                            ^
+    symbol:   method getResult(DynamicRegistryManager)
+    location: variable craftingRecipe of type CraftingRecipe
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1572: error: cannot find symbol
+                      recipeData.addProperty("output_count", craftingRecipe.getResult(client.world.getRegistryManager()).getCount());
+                                                                           ^
+    symbol:   method getResult(DynamicRegistryManager)
+    location: variable craftingRecipe of type CraftingRecipe
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1577: error: cannot find symbol
+                      for (Ingredient ingredient : craftingRecipe.getIngredients()) {
+                                                                 ^
+    symbol:   method getIngredients()
+    location: variable craftingRecipe of type CraftingRecipe
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1579: error: cannot find symbol
+                          for (var stack : ingredient.getMatchingStacks()) {
+                                                     ^
+    symbol:   method getMatchingStacks()
+    location: variable ingredient of type Ingredient
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:1998: error: cannot find symbol
+          for (RecipeEntry<?> entry : client.world.getRecipeManager().listAllOfType(RecipeType.CRAFTING)) {
+                                                                     ^
+    symbol:   method listAllOfType(RecipeType<CraftingRecipe>)
+    location: interface RecipeManager
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:2000: error: cannot find symbol
+                  String outputId = Registries.ITEM.getId(craftingRecipe.getResult(client.world.getRegistryManager()).getItem()).toString();
+                                                                        ^
+    symbol:   method getResult(DynamicRegistryManager)
+    location: variable craftingRecipe of type CraftingRecipe
+  C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java:2037: error: cannot find symbol
+              for (RecipeEntry<?> entry : client.world.getRecipeManager().listAllOfType(type)) {
+                                                                         ^
+    symbol:   method listAllOfType(RecipeType<CAP#1>)
+    location: interface RecipeManager
+    where CAP#1 is a fresh type-variable:
+      CAP#1 extends Recipe<?> from capture of ?Note: C:\gh\mcbaratone\bridge\src\main\java\com\minecraftbot\baritone\BaritoneAPIBridge.java uses or overrides a deprecated API.
+  12 errors
+
+* Try:
+> Check your code and dependencies to fix the compilation error(s)
+> Run with --scan to get full insights.
+
+BUILD FAILED in 2s
+1 actionable task: 1 executed
