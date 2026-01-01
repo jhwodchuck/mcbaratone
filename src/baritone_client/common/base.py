@@ -5,6 +5,7 @@ Base building utilities - Shelter, storage, and infrastructure.
 import time
 from typing import Optional, Tuple
 from .navigation import goto, find_nearby_block
+from .automation_utils import get_player_pos
 from .inventory import count_item, select_item, craft
 
 
@@ -290,3 +291,242 @@ def open_furnace(client) -> bool:
     time.sleep(0.5)
     
     return True
+
+
+def sleep_through_night(client, timeout: int = 30) -> bool:
+    """
+    Attempt to place a bed, sleep, and then retrieve the bed.
+    Checks time/weather to see if sleep is possible/needed.
+    """
+    try:
+        # Check time/weather
+        state = client.transport.dispatch("get_state", {})
+        world_time = state.get("world_time", 0)
+        is_raining = state.get("is_raining", False)
+        
+        # Minecraft Night is roughly 13000 to 23000
+        is_night = (world_time % 24000) >= 12542
+        
+        if not (is_night or is_raining):
+            return True # Not needed
+            
+        print(f"Night/Rain detected (time={world_time%24000}). Attempting to sleep...")
+        
+        # Check for bed
+        bed_types = [
+            "minecraft:white_bed", "minecraft:red_bed", "minecraft:blue_bed",
+            "minecraft:green_bed", "minecraft:black_bed", "minecraft:yellow_bed",
+            "minecraft:orange_bed", "minecraft:pink_bed", "minecraft:purple_bed",
+            # Add others if needed
+        ]
+        has_bed = False
+        for bed in bed_types:
+            if count_item(client, bed) > 0:
+                has_bed = True
+                break
+        
+        if not has_bed:
+            print("No bed to sleep in!")
+            return False
+            
+        # Find flat spot
+        pos = find_flat_ground(client, radius=10)
+        if not pos:
+            # Try current pos
+            pos = get_player_pos(client)
+            if not pos:
+                return False
+            x, y, z = int(pos[0]), int(pos[1]), int(pos[2])
+            pos = (x, y, z)
+            
+        x, y, z = pos
+        # Place bed slightly offset to avoid suffocating or overlapping
+        # x+1, z+1
+        bx, by, bz = x+1, y, z+1 # Simple offset
+        
+        print(f"Placing bed at {bx}, {by}, {bz}")
+        client.transport.dispatch("place_block", {"x": bx, "y": by, "z": bz}) # This might need specific bed item selection handled by place_bed?
+        # place_bed handles selection!
+        if not place_bed(client, bx, by, bz):
+            print("Failed to place bed")
+            return False
+            
+        # Sleep
+        print("Sleeping...")
+        client.transport.dispatch("interact_block", {"x": bx, "y": by, "z": bz})
+        
+        # Wait for morning
+        # We can wait for time to change or just fixed delay
+        time.sleep(10) 
+        
+        # Verify it's morning? 
+        state = client.transport.dispatch("get_state", {})
+        new_time = state.get("world_time", 0)
+        if (new_time % 24000) < 1000:
+            print("Woke up! Morning.")
+        
+        # Retrieve bed
+        print("Mining bed to retrieve it...")
+        client.transport.dispatch("mine", {"blocks": bed_types, "quantity": 1})
+        time.sleep(3) # Wait for mine
+        client.transport.dispatch("cancel", {})
+        
+        # Pickup item? (Auto-pickup usually works if close)
+        return True
+        
+    except Exception as e:
+        print(f"Sleep error: {e}")
+        return False
+
+
+def build_emergency_shelter(client) -> bool:
+    """
+    Build a quick 1x2x1 hole or dirt hut to survive the night.
+    Strategy: Dig 3 blocks down and place a block above head.
+    """
+    try:
+        print("Building EMERGENCY SHELTER!")
+        # 1. Dig down 3 blocks
+        pos = get_player_pos(client)
+        x, y, z = int(pos[0]), int(pos[1]), int(pos[2])
+        
+        # Dig under feet
+        client.transport.dispatch("mine", {"blocks": ["minecraft:dirt", "minecraft:grass_block", "minecraft:stone"], "quantity": 1})
+        time.sleep(2)
+        # Drop down? Baritone might resist. simpler is to build UP walls.
+        # Let's simple "surround" via blocks.
+        
+        # New Strategy: 3x3x3 dirt box around player.
+        # Needs blocks.
+        if count_item(client, "minecraft:dirt") < 20 and count_item(client, "minecraft:cobblestone") < 20:
+             print("Not enough blocks for shelter. Digging down...")
+             # Just dig a hole and stay in it?
+             client.transport.dispatch("mine", {"x": x, "y": y-1, "z": z, "quantity": 1})
+             time.sleep(1)
+             client.transport.dispatch("mine", {"x": x, "y": y-2, "z": z, "quantity": 1})
+             time.sleep(1)
+             client.transport.dispatch("mine", {"x": x, "y": y-3, "z": z, "quantity": 1})
+             time.sleep(1)
+             client.transport.dispatch("goto", {"x": x, "y": y-3, "z": z})
+             time.sleep(2)
+             # Cover top
+             client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
+             return True
+             
+        # Build box
+        return build_dirt_shelter(client, x-1, y, z-1, size=1)
+        
+    except Exception as e:
+        print(f"Emergency shelter failed: {e}")
+        return False
+
+
+def build_good_house(client, x: int, y: int, z: int) -> bool:
+    """
+    Build a nicer house using planks and cobblestone.
+    Size: 7x7 outer dimensions, 4 high.
+    Materials: Cobble floor, Plank walls, Glass windows if possible.
+    """
+    try:
+        size = 7
+        height = 4
+        
+        # Needs materials
+        wood_needed = (size * 4 * height) // 4 # Roughly wall blocks
+        cobble_needed = size * size # Floor
+        
+        current_planks = count_item(client, "minecraft:oak_planks")
+        if current_planks < 64:
+             print("Gathering wood for good house...")
+             # Need roughly 20 logs
+             from .resources import gather_wood
+             gather_wood(client, count=32)
+             craft(client, "minecraft:oak_planks", 32)
+             
+        current_cobble = count_item(client, "minecraft:cobblestone")
+        if current_cobble < 64:
+             print("Gathering stone for good house...")
+             from .resources import gather_stone
+             gather_stone(client, count=64)
+
+        # 1. Floor (Cobble)
+        # Dig out floor area?? Or just place on top. Assume on top of flat ground.
+        print("Building Good House Floor...")
+        for dx in range(size):
+            for dz in range(size):
+                if not select_item(client, "minecraft:cobblestone"):
+                    break # Failed
+                client.transport.dispatch("place_block", {"x": x+dx, "y": y, "z": z+dz})
+                time.sleep(0.1)
+                
+        # 2. Walls (Planks)
+        # Corners can be logs if we had them? Let's stick to planks.
+        print("Building Good House Walls...")
+        if not select_item(client, "minecraft:oak_planks"):
+             select_item(client, "minecraft:birch_planks") # Try others
+             
+        for dy in range(1, height):
+           # Outer perimeter
+           for dx in range(size):
+               # North/South
+               client.transport.dispatch("place_block", {"x": x+dx, "y": y+dy, "z": z})
+               client.transport.dispatch("place_block", {"x": x+dx, "y": y+dy, "z": z+size-1})
+               # East/West (exclude corners to avoid double place)
+           for dz in range(1, size-1):
+               client.transport.dispatch("place_block", {"x": x, "y": y+dy, "z": z+dz})
+               client.transport.dispatch("place_block", {"x": x+size-1, "y": y+dy, "z": z+dz})
+           time.sleep(0.5)
+
+        # 3. Roof (Cobble or Wood)
+        print("Building Roof...")
+        select_item(client, "minecraft:oak_planks")
+        for dx in range(size):
+            for dz in range(size):
+                client.transport.dispatch("place_block", {"x": x+dx, "y": y+height, "z": z+dz})
+                
+        # 4. Door and Torch
+        # Leave a hole for door?
+        # Place door at x+size//2, y, z
+        door_x, door_z = x + size // 2, z
+        
+        # Clear blocks at door pos (if any)
+        client.transport.dispatch("mine", {"x": door_x, "y": y+1, "z": door_z, "quantity": 1})
+        client.transport.dispatch("mine", {"x": door_x, "y": y+2, "z": door_z, "quantity": 1})
+        time.sleep(1)
+
+        # Place Door
+        door_types = [
+            "minecraft:oak_door", "minecraft:spruce_door", "minecraft:birch_door", 
+            "minecraft:jungle_door", "minecraft:acacia_door", "minecraft:dark_oak_door",
+            "minecraft:crimson_door", "minecraft:warped_door"
+        ]
+        
+        has_door = False
+        for door in door_types:
+            if count_item(client, door) > 0:
+                if select_item(client, door):
+                    has_door = True
+                    break
+        
+        if not has_door:
+             # Try craft door
+             if count_item(client, "minecraft:oak_planks") >= 6:
+                 craft(client, "minecraft:oak_door", 3)
+                 select_item(client, "minecraft:oak_door")
+                 has_door = True
+        
+        if has_door:
+            print("Placing Door...")
+            # Place bottom half
+            client.transport.dispatch("place_block", {"x": door_x, "y": y+1, "z": door_z})
+            time.sleep(0.5)
+        else:
+             print("No door available")
+
+        print("Good House Complete!")
+        return True
+        
+    except Exception as e:
+        print(f"Good house build failed: {e}")
+        return False
+

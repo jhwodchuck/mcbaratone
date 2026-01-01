@@ -4,8 +4,10 @@ Resource gathering utilities - Wood, stone, ores, and materials.
 
 import time
 from typing import Any, Callable, Dict, Optional
-from .inventory import count_item, craft
+from .inventory import count_item, craft, select_item
 from .tasks import TaskResult
+from .combat import hunt_mobs
+from .navigation import find_nearby_block, goto
 
 # Log block types (full IDs)
 LOG_BLOCKS = [
@@ -132,6 +134,63 @@ def go_to_y_level(client, y: int, timeout: int = 120) -> bool:
         return False
 
 
+
+def gather_gravel(client, count: int, timeout: int = 300) -> bool:
+    """Gather gravel until specific amount of flint is obtained."""
+    try:
+        # Request mining a lot of gravel (10% drop rate for flint)
+        client.transport.dispatch("mine", {"blocks": ["minecraft:gravel"], "quantity": count * 20})
+        start = time.time()
+        while time.time() - start < timeout:
+            total = count_item(client, "minecraft:flint")
+            if total >= count:
+                client.transport.dispatch("cancel", {})
+                return True
+            time.sleep(3)
+        client.transport.dispatch("cancel", {})
+        return False
+    except Exception as exc:
+        print(f"Gravel gathering error: {exc}")
+        return False
+
+
+def gather_water(client, count: int = 1, timeout: int = 60) -> bool:
+    """Find water and fill bucket."""
+    try:
+        # Check if we have a bucket
+        if count_item(client, "minecraft:bucket") < 1:
+             # Just fail, let the strategy handle crafting if it strictly needs water bucket
+             # But usually ensuring "water_bucket" implies crafting "bucket" first which is handled by ensure_dependencies?
+             # Actually ensure_supplies handles strict items. If we need water_bucket, we call this.
+             pass
+
+        # Find water
+        # Search for water block
+        water_pos = find_nearby_block(client, ["minecraft:water"], radius=32)
+        if not water_pos:
+            print("No water found nearby")
+            return False
+            
+        # Go to water
+        goto(client, water_pos[0], water_pos[1], water_pos[2], tolerance=2)
+        
+        # Select bucket
+        if not select_item(client, "minecraft:bucket"):
+            print("No empty bucket to fill")
+            return False
+            
+        # Interact with water
+        client.transport.dispatch("look_at", {"x": water_pos[0], "y": water_pos[1], "z": water_pos[2]})
+        time.sleep(0.5)
+        client.transport.dispatch("use_item", {}) # Right click
+        time.sleep(0.5)
+        
+        return count_item(client, "minecraft:water_bucket") >= count
+    except Exception as exc:
+        print(f"Water gathering error: {exc}")
+        return False
+
+
 def _default_mine(client, block_id: str, quantity: int) -> bool:
     try:
         client.transport.dispatch("mine", {"blocks": [block_id], "quantity": max(1, quantity)})
@@ -159,6 +218,12 @@ DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
     "minecraft:diamond_sword": lambda client, qty: craft(client, "minecraft:diamond_sword", qty) or True,
     "minecraft:bow": lambda client, qty: craft(client, "minecraft:bow", qty) or True,
     "minecraft:arrow": lambda client, qty: craft(client, "minecraft:arrow", max(qty, 32)) or True,
+    "minecraft:string": lambda client, qty: hunt_mobs(client, ["spider", "cave_spider"], {"minecraft:string": qty}, search_radius=64, timeout=300).success,
+    "minecraft:feather": lambda client, qty: hunt_mobs(client, ["chicken"], {"minecraft:feather": qty}, search_radius=50, timeout=300).success,
+    "minecraft:flint": lambda client, qty: gather_gravel(client, count=qty),
+    "minecraft:shield": lambda client, qty: craft(client, "minecraft:shield", qty) or True,
+    "minecraft:bucket": lambda client, qty: craft(client, "minecraft:bucket", qty) or True,
+    "minecraft:water_bucket": lambda client, qty: gather_water(client, count=qty),
 }
 
 

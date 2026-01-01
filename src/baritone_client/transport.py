@@ -9,6 +9,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from .enums import TransportEvent
+from .event_manager import EventManager
 from .exceptions import CommandError, RouteError, TransportError
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,8 @@ def connect(host: str, port: int, timeout: float = 2.0):
 class Transport(abc.ABC):
     """Abstract transport base class."""
 
-    def __init__(self) -> None:
+    def __init__(self, event_manager: Optional[EventManager] = None) -> None:
+        self._event_manager = event_manager
         self._subscriptions: Dict[TransportEvent, List[Callable]] = {}
 
     @abc.abstractmethod
@@ -49,6 +51,11 @@ class Transport(abc.ABC):
         self._subscriptions[event].append(callback)
 
     def emit(self, event: TransportEvent, payload: Dict[str, Any]) -> None:
+        # Publish to EventManager if available
+        if self._event_manager:
+            self._event_manager.publish_event(event, payload)
+
+        # Also notify direct subscribers for backward compatibility
         for cb in self._subscriptions.get(event, []):
             try:
                 cb(payload)
@@ -62,8 +69,8 @@ class TcpTransport(Transport):
     queue keyed by request id.
     """
 
-    def __init__(self, host: str = "localhost", port: int = 5555, timeout: float = 15.0) -> None:
-        super().__init__()
+    def __init__(self, host: str = "localhost", port: int = 5555, timeout: float = 15.0, event_manager: Optional[EventManager] = None) -> None:
+        super().__init__(event_manager)
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -89,6 +96,10 @@ class TcpTransport(Transport):
         if route == "process/status":
             mapped_route = "get_state"
             params = {}
+        elif route == "command":
+            # Direct command dispatch for handler-based execution
+            mapped_route = payload.get("command", "")
+            params = payload.get("params", {})
         elif route == "command/run":
             mapped_route = "chat"
             params = {"message": payload.get("command", "")}
@@ -262,8 +273,8 @@ class WebSocketTransport(Transport):
     `result` field from the JSON-RPC response.
     """
 
-    def __init__(self, url: str):
-        super().__init__()
+    def __init__(self, url: str, event_manager: Optional[EventManager] = None):
+        super().__init__(event_manager)
         self.url = url
         # Parse host and port from URL like ws://host:port
         try:
@@ -331,8 +342,8 @@ class WebSocketTransport(Transport):
 class Py4JTransport(Transport):
     """Stub Py4J transport for tests and imports."""
 
-    def __init__(self, gateway_params: Optional[Dict[str, Any]] = None):
-        super().__init__()
+    def __init__(self, gateway_params: Optional[Dict[str, Any]] = None, event_manager: Optional[EventManager] = None):
+        super().__init__(event_manager)
         self.gateway_params = gateway_params or {}
 
     def dispatch(self, route: str, payload: Dict[str, Any], timeout: Optional[float] = None) -> Dict[str, Any]:

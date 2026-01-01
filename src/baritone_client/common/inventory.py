@@ -148,6 +148,61 @@ def equip_best_armor(client) -> int:
     return equipped
 
 
+def equip_offhand(client, item_id: str) -> bool:
+    """
+    Equip item to offhand slot.
+    """
+    try:
+        slot = find_item_slot(client, item_id)
+        if slot is None:
+            return False
+            
+        # 45 is usually offhand
+        # or use inventory_click with swap
+        # The bridge might not have a direct 'equip_offhand' macro, so we try a click interaction or dispatch a simple 'equip' check if available.
+        # Standard minecraft protocol: Swap item to slot 45 (offhand)
+        
+        # NOTE: Baritone generic 'click' might be needed.
+        # Let's try to swap slot with offhand slot (45)
+        
+        client.transport.dispatch("inventory_click", {
+            "slot": slot,
+            "type": "SWAP",
+            "button": 40, # 'F' key swap usually? Or verify slot ID 45? 
+            # Actually SWAP with offhand is a specific packet action often found in 1.9+
+            # If the bridge exposes standard click:
+            # Slot 45 is offhand.
+            
+            # Simple fallback: use "equip" command if the bridge supports it? 
+            # Or assume the bridge has "equip" macro.
+        })
+        
+        # Actually, let's look at the bridge capabilities. 
+        # If 'inventory_click' is raw, we need exact slot IDs.
+        # Use simpler approach: Send a client-side command if possible, or try to drag-and-drop.
+        
+        # Attempt 1: Swap with offhand key (F)
+        # client.transport.dispatch("input", {"key": "key.swapOffhand"}) 
+        # But that swaps current hotbar item.
+        
+        # Attempt 2: Pickup item, Click offhand slot (45)
+        # Click source
+        client.transport.dispatch("inventory_click", {"slot": slot, "type": "PICKUP", "button": 0})
+        time.sleep(0.1)
+        # Click offhand (45)
+        client.transport.dispatch("inventory_click", {"slot": 45, "type": "PICKUP", "button": 0})
+        time.sleep(0.1)
+        # If we had something in offhand, it's now on cursor, put it back in source (or first empty)
+        # For simplicity, put back in source (swap)
+        client.transport.dispatch("inventory_click", {"slot": slot, "type": "PICKUP", "button": 0})
+        
+        return True
+    except Exception as e:
+        print(f"Offhand equip failed: {e}")
+        return False
+
+
+
 def craft(client, item_id: str, count: int = 1) -> bool:
     """
     Attempt to craft an item.

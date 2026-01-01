@@ -8,10 +8,10 @@ primarily used by higher-level scripts as orchestration primitives.
 
 import logging
 import time
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
-from .combat import hunt_mobs
-from .inventory import count_item
+from .combat import hunt_mobs, find_entity_by_type
+from .inventory import count_item, find_item_slot
 
 logger = logging.getLogger(__name__)
 
@@ -309,3 +309,113 @@ def craft_eyes_of_ender(client, required: int = 12) -> bool:
     except Exception as exc:
         logger.error("Eye crafting failed: %s", exc)
         return False
+
+
+def mine_nether_gold(client, count: int = 64, timeout: int = 300) -> bool:
+    """
+    Mine Nether Gold Ore to collect gold nuggets.
+    One ore drops 2-6 nuggets. 9 nuggets = 1 Gold Ingot.
+    """
+    try:
+        # Mine nether gold ores
+        client.transport.dispatch("mine", {
+            "blocks": ["minecraft:nether_gold_ore"], 
+            "quantity": count // 2  # conservative estimate
+        })
+        
+        start = time.time()
+        while time.time() - start < timeout:
+            total = count_item(client, "minecraft:gold_nugget")
+            if total >= count:
+                client.transport.dispatch("cancel", {})
+                return True
+            time.sleep(3)
+            
+        client.transport.dispatch("cancel", {})
+        return False
+    except Exception as exc:
+        logger.error("Gold mining failed: %s", exc)
+        return False
+
+
+def barter_with_piglins(client, gold_ingots_count: int, timeout: int = 300) -> Dict[str, int]:
+    """
+    Find Piglins and barter gold ingots.
+    Returns dict of gained items.
+    """
+    start_inventory = client.transport.dispatch("get_inventory", {}).get("inventory", [])
+    initial_counts = {} # track gained items
+
+    bartered = 0
+    start_time = time.time()
+    
+    while bartered < gold_ingots_count and time.time() - start_time < timeout:
+        # 1. Find Piglin
+        piglin = find_entity_by_type(client, ["piglin"], radius=32)
+        if not piglin:
+            logger.info("No Piglins found nearby to barter with")
+            time.sleep(2)
+            # Maybe move around?
+            continue
+            
+        # 2. Goto Piglin
+        px, py, pz = piglin.get("position", {}).values()
+        client.transport.dispatch("goto", {"x": int(px), "y": int(py), "z": int(pz)})
+        
+        # Wait until close
+        time.sleep(2)
+        
+        # 3. Look at Piglin
+        client.transport.dispatch("look_at", {"entity_id": piglin["id"]})
+        
+        # 4. Drop Gold Ingot
+        # Find slot
+        slot = find_item_slot(client, "minecraft:gold_ingot")
+        if slot is None:
+            logger.warning("No gold ingots left to barter")
+            break
+            
+        # Select and drop
+        client.transport.dispatch("select_slot", {"slot": slot})
+        time.sleep(0.5)
+        # Drop one item
+        client.transport.dispatch("drop_item", {"count": 1})
+        bartered += 1
+        
+        # 5. Wait for barter (Piglin examines gold for ~6-8 seconds)
+        logger.info(f"Bartered ingot {bartered}/{gold_ingots_count}. Waiting for return...")
+        time.sleep(8) 
+        
+        # 6. Collect items (walk forward a bit?)
+        # Baritone generic "pickup" might auto-happen if close, but let's ensure we are close
+        client.transport.dispatch("goto", {"x": int(px), "y": int(py), "z": int(pz)})
+    
+    # Calculate gained items
+    # (Simplified: just returning what we think we got based on inventory diff if we implemented that, 
+    # but for now just return empty dict or implement diff logic properly)
+    # Calculate gained items
+    end_inventory = client.transport.dispatch("get_inventory", {}).get("inventory", [])
+    
+    # Simple diff: Check what increased
+    # Needs to handle stacking
+    
+    def agg_inv(inv):
+        counts = {}
+        for item in inv:
+            if not item: continue
+            iid = item.get("id", "minecraft:air")
+            if iid == "minecraft:air": continue
+            counts[iid] = counts.get(iid, 0) + item.get("count", 0)
+        return counts
+        
+    start_counts = agg_inv(start_inventory)
+    end_counts = agg_inv(end_inventory)
+    
+    diff = {}
+    for iid, count in end_counts.items():
+        start_count = start_counts.get(iid, 0)
+        if count > start_count:
+            diff[iid] = count - start_count
+            
+    return diff
+

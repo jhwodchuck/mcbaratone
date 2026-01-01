@@ -1,228 +1,25 @@
 from typing import Any, Dict, List, Optional
 
+from .cache_manager import CacheManager
+from .command_dispatcher import CommandDispatcher
+from .commands import CommandFacade
 from .enums import TransportEvent
-from .exceptions import ValidationError
+from .event_manager import EventManager
 from .goals import GoalManager
+from .missions import MissionFacade
 from .processes import ProcessFacade
 from .schematics import SchematicManager
-from .serialization import validate_setting
+from .settings import SettingsFacade
 from .transport import Transport
-
-
-class CommandFacade:
-    """Facade for executing Baritone commands."""
-    
-    def __init__(self, transport: Transport) -> None:
-        self.transport = transport
-
-    def run(self, command: str) -> Dict[str, Any]:
-        """
-        Execute a Baritone command string.
-        
-        Args:
-            command: Command string (e.g., "#goto 100 64 200" or "goto 100 64 200")
-        
-        Returns:
-            Response dictionary from the bridge
-        
-        Raises:
-            ValidationError: If command is empty
-            CommandError: If command execution fails
-            TransportError: If transport fails
-        """
-        if not command or not command.strip():
-            raise ValidationError("Command cannot be empty", field="command")
-        return self.transport.dispatch("command/run", {"command": command})
-    
-    def explore(self, x: int = 0, z: int = 0) -> Dict[str, Any]:
-        """
-        Start exploration process.
-        
-        Args:
-            x: Starting X coordinate (default: 0)
-            z: Starting Z coordinate (default: 0)
-        
-        Returns:
-            Response dictionary
-        """
-        return self.transport.dispatch("command/explore", {"x": x, "z": z})
-    
-    def follow(self, entity: str = "player") -> Dict[str, Any]:
-        """
-        Follow an entity.
-        
-        Args:
-            entity: Entity name or "player" (default: "player")
-        
-        Returns:
-            Response dictionary
-        """
-        return self.transport.dispatch("command/follow", {"entity": entity})
-    
-    def cancel(self) -> Dict[str, Any]:
-        """
-        Cancel current operation.
-        
-        Returns:
-            Response dictionary
-        """
-        return self.transport.dispatch("command/cancel", {})
-    
-    def get_block(self, x: int, y: int, z: int) -> Dict[str, Any]:
-        """
-        Get block information at coordinates.
-        
-        Args:
-            x: X coordinate
-            y: Y coordinate
-            z: Z coordinate
-        
-        Returns:
-            Block information dictionary
-        """
-        return self.transport.dispatch("command/get_block", {"x": x, "y": y, "z": z})
-
-    def craft(self, recipe_id: str, count: int = 1) -> Dict[str, Any]:
-        """
-        Craft an item using a bridge-supported recipe.
-
-        Args:
-            recipe_id: Identifier for the recipe on the bridge side.
-            count: Number of times to craft.
-
-        Returns:
-            Response data from the bridge.
-        """
-        payload = {"recipe_id": recipe_id, "count": count}
-        return self.transport.dispatch("craft", payload)
-
-    def smelt(self, input_item: str, count: int = 1, fuel_item: str = "minecraft:coal") -> Dict[str, Any]:
-        """
-        Smelt items in a furnace (bridge stub).
-
-        Args:
-            input_item: Item id to smelt.
-            count: Number of items to smelt.
-            fuel_item: Fuel item id (defaults to coal).
-        """
-        payload = {"input_item": input_item, "count": count, "fuel_item": fuel_item}
-        return self.transport.dispatch("smelt", payload)
-
-
-class SettingsFacade:
-    """Facade for managing Baritone settings."""
-    
-    def __init__(self, transport: Transport) -> None:
-        self.transport = transport
-
-    def set(self, name: str, value: Any) -> Dict[str, Any]:
-        """
-        Set a Baritone setting.
-        
-        Args:
-            name: Setting name
-            value: Setting value (must be str, bool, int, or float)
-        
-        Returns:
-            Response dictionary
-        
-        Raises:
-            ValidationError: If value type is invalid
-            CommandError: If setting fails
-        """
-        validated_value = validate_setting(name, value)
-        return self.transport.dispatch("settings/set", {"name": name, "value": validated_value})
-
-    def get(self, name: str) -> Dict[str, Any]:
-        """
-        Get a Baritone setting value.
-        
-        Args:
-            name: Setting name
-        
-        Returns:
-            Response dictionary containing setting value
-        
-        Raises:
-            CommandError: If setting retrieval fails
-        """
-        return self.transport.dispatch("settings/get", {"name": name})
-
-    def reset(self, name: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Reset Baritone setting(s) to default.
-        
-        Args:
-            name: Setting name to reset, or None to reset all settings
-        
-        Returns:
-            Response dictionary
-        """
-        payload: Dict[str, Any] = {}
-        if name:
-            payload["name"] = name
-        return self.transport.dispatch("settings/reset", payload)
-
-
-class MissionFacade:
-    """Facade for bridge-side mission coordination helpers."""
-
-    def __init__(self, transport: Transport) -> None:
-        self.transport = transport
-
-    def status(self) -> Dict[str, Any]:
-        """Retrieve aggregated mission telemetry."""
-        return self.transport.dispatch("mission/status", {})
-
-    def checkpoint(self, phase: str, note: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Update the bridge's mission checkpoint.
-
-        Args:
-            phase: Mission phase identifier
-            note: Optional note or context
-        """
-        payload: Dict[str, Any] = {"phase": phase}
-        if note:
-            payload["note"] = note
-        return self.transport.dispatch("mission/checkpoint", payload)
-
-    def queue(self, actions: List[str], clear: bool = False) -> Dict[str, Any]:
-        """Queue macros on the bridge for later execution."""
-        payload: Dict[str, Any] = {"actions": actions}
-        if clear:
-            payload["clear"] = True
-        return self.transport.dispatch("mission/queue", payload)
-
-    def macro(
-        self,
-        name: Optional[str] = None,
-        params: Optional[Dict[str, Any]] = None,
-        dequeue: bool = False,
-    ) -> Dict[str, Any]:
-        """
-        Trigger a macro on the bridge.
-
-        Args:
-            name: Macro identifier. If omitted and dequeue=True, the oldest queued macro runs.
-            params: Optional parameters forwarded to the bridge.
-            dequeue: Whether to consume the earliest queued macro before execution.
-        """
-        payload: Dict[str, Any] = {}
-        if name:
-            payload["name"] = name
-        if params:
-            payload["params"] = params
-        if dequeue:
-            payload["dequeue"] = True
-        return self.transport.dispatch("mission/macro", payload)
+from .upload_manager import UploadManager
 
 
 class Client:
     """
     Main client for interacting with Baritone.
-    
-    Provides facades for commands, processes, goals, settings, and schematics.
+
+    Provides facades for commands, processes, goals, settings, schematics, missions,
+    caching, uploads, and command dispatching.
     Supports event subscription for real-time updates (WebSocket transport recommended).
     
     Example:
@@ -248,38 +45,80 @@ class Client:
         ```
     """
     
-    def __init__(self, transport: Transport) -> None:
+    def __init__(self, transport: Transport, event_manager: Optional[EventManager] = None) -> None:
         """
         Initialize the client with a transport.
-        
+
         Args:
             transport: Transport instance (TcpTransport, WebSocketTransport, or Py4JTransport)
+            event_manager: Optional EventManager for advanced event handling
         """
+        self.event_manager = event_manager or EventManager()
+        # Update transport with EventManager if it supports it
+        if hasattr(transport, '_event_manager') and transport._event_manager is None:
+            transport._event_manager = self.event_manager
+
         self.transport = transport
+        self.command_dispatcher = CommandDispatcher(transport)
         self.command = CommandFacade(transport)
         self.process = ProcessFacade(transport)
         self.goals = GoalManager(transport)
         self.settings = SettingsFacade(transport)
         self.schematics = SchematicManager(transport)
         self.mission = MissionFacade(transport)
+        self.cache = CacheManager(transport)
+        self.upload = UploadManager(transport)
 
     def on(self, event: TransportEvent, callback) -> None:
         """
         Subscribe to transport events.
-        
+
         Args:
             event: Event type to subscribe to
             callback: Callback function that receives event payload
-        
+
         Note:
             TCP transport has limited event support. Use WebSocketTransport for full event support.
         """
         self.transport.subscribe(event, callback)
 
+    def subscribe_events(self, callback, event_types=None, predicate=None):
+        """
+        Subscribe to events using the EventManager with advanced filtering.
+
+        Args:
+            callback: Callback function that receives Event object
+            event_types: Optional set of event types to filter by
+            predicate: Optional predicate function for additional filtering
+        """
+        self.event_manager.subscribe(callback, event_types=event_types, predicate=predicate)
+
+    def poll_events(self, event_types=None, predicate=None, max_events=None, remove=True):
+        """
+        Poll events from the EventManager buffer.
+
+        Args:
+            event_types: Optional set of event types to filter by
+            predicate: Optional predicate function
+            max_events: Maximum number of events to return
+            remove: Whether to remove events from buffer
+
+        Returns:
+            List of Event objects
+        """
+        return self.event_manager.poll_events(
+            event_types=event_types, predicate=predicate, max_events=max_events, remove=remove
+        )
+
+    def get_event_buffer_size(self):
+        """Get current event buffer size."""
+        return self.event_manager.get_buffer_size()
+
     def shutdown(self) -> None:
         """
         Shutdown the client and close transport connections.
-        
+
         Should be called when done with the client to clean up resources.
         """
+        self.event_manager.shutdown()
         self.transport.shutdown()

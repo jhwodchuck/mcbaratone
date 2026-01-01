@@ -15,7 +15,7 @@ class DummyTransport:
         self.dispatched = []
         self.events = MagicMock()
 
-    def dispatch(self, route, payload):
+    def dispatch(self, route, payload, **kwargs):
         self.dispatched.append((route, payload))
         return {"route": route, "payload": payload}
 
@@ -36,8 +36,9 @@ class ClientFacadeTest(TestCase):
 
     def test_command_dispatch(self):
         response = self.client.command.run("goto 1 64 1")
-        self.assertIn(("command/run", {"command": "goto 1 64 1"}), self.transport.dispatched)
-        self.assertEqual("command/run", response["route"])
+        expected_payload = {"command": "chat", "params": {"message": "goto 1 64 1"}}
+        self.assertIn(("command", expected_payload), self.transport.dispatched)
+        self.assertEqual(expected_payload, response)
 
     def test_goal_serialization_and_apply(self):
         goal = GoalFactory.goal_block(1, 2, 3)

@@ -24,7 +24,9 @@ Example:
     ```
 """
 
+from .cache_manager import CacheManager, CacheStats
 from .client import Client, MissionFacade
+from .command_dispatcher import CommandDispatcher, CommandResult
 from .enums import MovementStatus, PathCalculationResultType, PathingCommandType, TransportEvent
 from .exceptions import CommandError, RouteError, TransportError, ValidationError
 from .goals import GoalFactory, GoalManager
@@ -34,6 +36,7 @@ from .processes import ProcessFacade
 from .schematics import SchematicManager
 from .scripts.endgame import EndGameMission, MissionPhase, MissionState
 from .transport import Py4JTransport, TcpTransport, Transport, WebSocketTransport
+from .upload_manager import UploadManager, UploadPriority, UploadProgress, UploadStatus
 
 __all__ = [
     "Client",
@@ -41,6 +44,14 @@ __all__ = [
     "Py4JTransport",
     "TcpTransport",
     "WebSocketTransport",
+    "CommandDispatcher",
+    "CommandResult",
+    "CacheManager",
+    "CacheStats",
+    "UploadManager",
+    "UploadPriority",
+    "UploadProgress",
+    "UploadStatus",
     "GoalFactory",
     "GoalManager",
     "ProcessFacade",

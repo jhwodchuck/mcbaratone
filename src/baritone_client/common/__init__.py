@@ -31,6 +31,9 @@ from .nether import (
     hunt_blazes,
     hunt_endermen,
     craft_eyes_of_ender,
+    mine_nether_gold,
+    barter_with_piglins,
+
 )
 from .end import (
     triangulate_stronghold,
@@ -47,7 +50,9 @@ from .base import (
     place_bed,
     setup_base,
     open_crafting_table,
+    open_crafting_table,
     open_furnace,
+    sleep_through_night,
 )
 from .automation_utils import get_player_pos, place_block, safe_goto
 
@@ -58,6 +63,7 @@ __all__ = [
     "get_player_pos",
     "place_block",
     "safe_goto",
+    "sleep_through_night",
     # State
     "WorldState",
     "PlayerState",
@@ -102,6 +108,9 @@ __all__ = [
     "hunt_blazes",
     "hunt_endermen",
     "craft_eyes_of_ender",
+    "mine_nether_gold",
+    "barter_with_piglins",
+
     # End
     "triangulate_stronghold",
     "find_end_portal",

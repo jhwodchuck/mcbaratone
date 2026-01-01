@@ -1,23 +1,20 @@
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, Optional, Set, Union
 
 from .enums import TransportEvent
-
-
-@dataclass
-class EventListener:
-    event: TransportEvent
-    callback: Callable[[Dict[str, Any]], None]
+from .event_manager import EventManager
 
 
 class EventRegistry:
-    def __init__(self) -> None:
-        self._listeners: List[EventListener] = []
+    """Legacy compatibility layer for EventManager."""
+
+    def __init__(self, event_manager: Optional[EventManager] = None) -> None:
+        self.event_manager = event_manager or EventManager()
 
     def subscribe(self, event: TransportEvent, callback: Callable[[Dict[str, Any]], None]) -> None:
-        self._listeners.append(EventListener(event=event, callback=callback))
+        self.event_manager.subscribe(
+            callback=lambda e: callback(e.data),
+            event_types={event}
+        )
 
     def dispatch(self, event: TransportEvent, payload: Dict[str, Any]) -> None:
-        for listener in self._listeners:
-            if listener.event == event:
-                listener.callback(payload)
+        self.event_manager.publish_event(event, payload)

@@ -1,9 +1,45 @@
 from __future__ import annotations
 
+import json
+import time
 import pytest
+from contextlib import asynccontextmanager
+from unittest.mock import Mock, MagicMock, patch
 
 from baritone_client.exceptions import TransportError
-from baritone_client.mcp_server import BridgeConfig, BridgeSession
+from baritone_client.mcp_server import BridgeConfig, BridgeSession, BridgeLifespanContext, create_mcp_server, _call_bridge, _format_json, _session_from_context
+from baritone_client.cache_manager import CacheStats
+from baritone_client.upload_manager import UploadProgress
+from baritone_client.command_dispatcher import CommandResult
+from typing import List
+
+
+@pytest.fixture
+def mock_client():
+    client = Mock()
+    # Set up mock facades
+    client.command_dispatcher = Mock()
+    client.mission = Mock()
+    client.process = Mock()
+    client.goals = Mock()
+    client.cache = Mock()
+    client.upload = Mock()
+    client.poll_events = Mock(return_value=[])
+    return client
+
+
+@pytest.fixture
+def bridge_session(mock_client):
+    session = BridgeSession(BridgeConfig(), client_factory=lambda: mock_client)
+    yield session
+    session.close()
+
+
+@pytest.fixture
+def mock_request_context(bridge_session):
+    ctx = Mock()
+    ctx.request_context.lifespan_context = BridgeLifespanContext(session=bridge_session)
+    return ctx
 
 
 class DummyClient:
@@ -80,3 +116,137 @@ def test_bridge_session_close_is_idempotent() -> None:
     session.close()
     # Second close should not raise or double shutdown
     session.close()
+
+
+def test_create_mcp_server_initialization():
+    config = BridgeConfig(host="test", port=1234, timeout=10.0)
+    server = create_mcp_server(config)
+    assert server.name == "mcbaratone-bridge"
+    assert "Baritone bridge controls" in server.instructions
+
+
+
+def test_server_lifespan_context_creation():
+    # Test that the lifespan context manager creates proper context
+    config = BridgeConfig()
+    session = BridgeSession(config)
+
+    @asynccontextmanager
+    async def lifespan(_server):
+        try:
+            yield BridgeLifespanContext(session=session)
+        finally:
+            session.close()
+
+    # Test the lifespan function creates correct context
+    async def test_lifespan():
+        async with lifespan(None) as ctx:
+            assert isinstance(ctx, BridgeLifespanContext)
+            assert ctx.session == session
+
+    import asyncio
+    asyncio.run(test_lifespan())
+
+
+
+
+
+# Error handling and rate limiting tests
+def test_call_bridge_success(mock_request_context, mock_client):
+    mock_client.some_method.return_value = "success"
+    session = mock_request_context.request_context.lifespan_context.session
+
+    def action(client):
+        return client.some_method()
+
+    result = _call_bridge(mock_request_context, "test", action)
+    assert result == "success"
+
+
+def test_call_bridge_transport_error_reconnects(mock_request_context, mock_client):
+    # First call raises TransportError, should reconnect and succeed on second
+    mock_client.some_method.side_effect = [TransportError("connection lost"), "success"]
+    session = mock_request_context.request_context.lifespan_context.session
+
+    def action(client):
+        return client.some_method()
+
+    result = _call_bridge(mock_request_context, "test", action)
+    assert result == "success"
+    assert mock_client.some_method.call_count == 2
+
+
+@patch('time.sleep')
+def test_call_bridge_rate_limit_retry(mock_sleep, mock_request_context, mock_client):
+    # Rate limit error should retry with backoff
+    mock_client.some_method.side_effect = [Exception("rate limit exceeded"), "success"]
+
+    def action(client):
+        return client.some_method()
+
+    result = _call_bridge(mock_request_context, "test", action)
+    assert result == "success"
+    mock_sleep.assert_called_with(2)  # First retry wait time
+
+
+def test_call_bridge_max_retries_exceeded(mock_request_context, mock_client):
+    mock_client.some_method.side_effect = TransportError("persistent error")
+    session = mock_request_context.request_context.lifespan_context.session
+
+    def action(client):
+        return client.some_method()
+
+    with pytest.raises(RuntimeError, match="persistent error"):
+        _call_bridge(mock_request_context, "test", action, max_retries=2)
+
+    assert mock_client.some_method.call_count == 2
+
+
+
+
+
+def test_format_json_utility():
+    # Test the JSON formatting utility
+    data = {"test": "value", "number": 42}
+    result = _format_json(data)
+    assert result == '{\n  "number": 42,\n  "test": "value"\n}'
+
+
+def test_bridge_config_defaults():
+    config = BridgeConfig()
+    assert config.host == "localhost"
+    assert config.port == 5555
+    assert config.timeout == 15.0
+
+
+def test_bridge_session_config_passthrough():
+    config = BridgeConfig(host="custom", port=9999, timeout=30.0)
+    session = BridgeSession(config)
+    assert session.config == config
+
+
+# Performance and edge cases
+def test_concurrent_access_thread_safety(bridge_session):
+    import threading
+    results = []
+    errors = []
+
+    def worker():
+        try:
+            result = bridge_session.run(lambda client: "ok")
+            results.append(result)
+        except Exception as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(results) == 10
+    assert len(errors) == 0
+    assert all(r == "ok" for r in results)
+
+
+

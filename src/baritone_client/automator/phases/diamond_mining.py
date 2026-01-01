@@ -7,8 +7,10 @@ import time
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
-from ...common import gather_ores, craft, equip_best_armor, go_to_y_level
+from ...common import gather_ores, craft, equip_best_armor, go_to_y_level, sleep_through_night
 from ...common.tasks import TaskResult
+from ...common.combat import hunt_passive_mobs
+from ...common.inventory import count_item
 
 
 class DiamondMiningHandler(PhaseHandler):
@@ -28,6 +30,7 @@ class DiamondMiningHandler(PhaseHandler):
             return ready
 
         resources.refresh_inventory()
+        self._restock_food(client)
         starting_diamonds = resources.get_item_count("minecraft:diamond")
         starting_obsidian = resources.get_item_count("minecraft:obsidian")
 
@@ -36,7 +39,23 @@ class DiamondMiningHandler(PhaseHandler):
         go_to_y_level(client, -59)
 
         # 1. Mine Diamonds
-        if not gather_ores(client, "diamond", count=20, timeout=1200):
+        target_diamonds = 20
+        print(f"Mining diamonds (Target: {target_diamonds})...")
+        
+        # Loop to allow sleeping
+        start_mining = time.time()
+        while resources.get_item_count("minecraft:diamond") < target_diamonds:
+            # Sleep check
+            sleep_through_night(client)
+            
+            # Mine (short timeout to allow sleep checks)
+            gather_ores(client, "diamond", count=target_diamonds, timeout=180)
+            
+            resources.refresh_inventory()
+            if time.time() - start_mining > 1200: # 20 mins total cap
+                 break
+
+        if resources.get_item_count("minecraft:diamond") < target_diamonds:
             missing = resources.check_phase_requirements(Phase.DIAMOND_MINING)
             return TaskResult.fail("Failed to gather diamonds", missing=missing)
         resources.refresh_inventory()
@@ -85,3 +104,14 @@ class DiamondMiningHandler(PhaseHandler):
             crafted_pick=crafted_pick,
             crafted_sword=crafted_sword,
         )
+
+    def _restock_food(self, client) -> bool:
+        """Hunt for food if low."""
+        food_items = ["minecraft:cooked_beef", "minecraft:cooked_porkchop", 
+                      "minecraft:cooked_chicken", "minecraft:cooked_mutton",
+                      "minecraft:bread"]
+        current_food = sum(count_item(client, item) for item in food_items)
+        if current_food < 16:
+            print(f"Food low ({current_food}), hunting...")
+            hunt_passive_mobs(client, target_count=10)
+        return True

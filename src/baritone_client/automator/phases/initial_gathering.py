@@ -6,6 +6,7 @@ from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
 from ...common import gather_wood, gather_stone, craft
+from ...common.base import build_emergency_shelter, sleep_through_night
 from ...common.combat import hunt_passive_mobs
 from ...common.tasks import TaskResult, SequentialTask, ActionTask
 
@@ -54,9 +55,22 @@ class InitialGatheringHandler(PhaseHandler):
         5. Craft leather armor
         6. Hunt for 10+ food items
         """
-        ready = resources.phase_ready_result(Phase.INITIAL_GATHERING, "Initial gathering already satisfied")
         if ready:
             return ready
+
+        # 0. Safety Check
+        # If night falls and we have no bed, build emergency shelter
+        if not sleep_through_night(client):
+             # Sleep failed (no bed or not night). If night, build shelter.
+             state_data = client.transport.dispatch("get_state", {})
+             time_val = state_data.get("world_time", 0) % 24000
+             if time_val >= 13000:
+                 print("Nightfall detected! Building Emergency Shelter...")
+                 build_emergency_shelter(client)
+                 # Wait for morning
+                 import time
+                 time.sleep(30) # Wait a bit
+                 return TaskResult.fail("Built emergency shelter due to night")
 
         # Define subtasks
         tasks = [
