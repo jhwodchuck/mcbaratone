@@ -4,6 +4,7 @@ Inventory management - Item counting, crafting, and organization.
 
 from typing import Dict, Optional, List
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -89,12 +90,13 @@ def find_item_slot(client, item_id: str) -> Optional[int]:
         return None
 
 
-def select_item(client, item_id: str) -> bool:
+def select_item(client, item_id: str, allow_swap: bool = False) -> bool:
     """
     Select item in hotbar.
     
     Args:
         item_id: Item to select
+        allow_swap: If True, swap item from inventory to hotbar if needed
         
     Returns:
         True if item found and selected
@@ -108,7 +110,33 @@ def select_item(client, item_id: str) -> bool:
         client.transport.dispatch("select_slot", {"slot": slot})
         return True
     
-    # Item not in hotbar - would need to move it
+    if allow_swap:
+        # Move to Hotbar 0 (Protocol 36)
+        # Use PICKUP sequence
+        client.transport.dispatch('inventory_click', {'slot': slot, 'type': 'PICKUP', 'button': 0})
+        time.sleep(0.15)
+        client.transport.dispatch('inventory_click', {'slot': 36, 'type': 'PICKUP', 'button': 0})
+        time.sleep(0.15)
+        client.transport.dispatch('inventory_click', {'slot': slot, 'type': 'PICKUP', 'button': 0})
+        time.sleep(0.15)
+        client.transport.dispatch('select_slot', {'slot': 0})
+        return True
+        
+    return False
+
+
+def equip_best_weapon(client) -> bool:
+    """Equip best available weapon/tool."""
+    weapons = [
+        "minecraft:netherite_sword", "minecraft:diamond_sword", "minecraft:iron_sword", "minecraft:stone_sword", "minecraft:golden_sword", "minecraft:wooden_sword",
+        "minecraft:netherite_axe", "minecraft:diamond_axe", "minecraft:iron_axe", "minecraft:stone_axe", "minecraft:golden_axe", "minecraft:wooden_axe",
+        "minecraft:netherite_pickaxe", "minecraft:diamond_pickaxe", "minecraft:iron_pickaxe", "minecraft:stone_pickaxe", "minecraft:wooden_pickaxe"
+    ]
+    
+    for weapon in weapons:
+        if select_item(client, weapon, allow_swap=True):
+            return True
+            
     return False
 
 

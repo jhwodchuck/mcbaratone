@@ -98,25 +98,37 @@ class BaseConstructionHandler(PhaseHandler):
         if ready:
             return ready
 
-        # Define subtasks
-        tasks = [
-            ActionTask("Find flat ground location", self._find_location),
-            ActionTask("Build basic shelter", self._build_shelter),
-            ActionTask("Establish base infrastructure", self._setup_infrastructure),
-            ActionTask("Plant wheat farm", self._plant_farm),
-        ]
-        
-        # Execute sequentially
-        sequential_task = SequentialTask("Base Construction", tasks)
-        result = sequential_task.run(client)
-        
-        if result.success:
-            resources.refresh_inventory()
-            summary = resources.get_summary()
-            return TaskResult.ok("Base construction complete", inventory=summary["inventory"])
-        else:
-            missing = resources.check_phase_requirements(Phase.BASE_CONSTRUCTION)
-            return TaskResult.fail(f"Base construction failed: {result.reason}", missing=missing)
+        # Gather necessary materials if missing
+        missing = resources.check_phase_requirements(Phase.BASE_CONSTRUCTION)
+        if missing:
+            ensure_result = resources.ensure_phase_supplies(client, Phase.BASE_CONSTRUCTION)
+            if not ensure_result.success:
+                return TaskResult.fail("Failed to gather materials for base construction", missing=missing)
+
+        # Find a suitable location
+        location = find_flat_ground(client)
+        if location is None:
+            return TaskResult.fail("No suitable flat ground location found for base")
+
+        x, y, z = location
+
+        # Build basic shelter
+        if not build_dirt_shelter(client, x, y, z):
+            return TaskResult.fail("Failed to build dirt shelter")
+
+        # Set up base infrastructure
+        success, _ = setup_base(client, location)
+        if not success:
+            return TaskResult.fail("Failed to set up base infrastructure")
+
+        # Plant wheat farm
+        if not plant_wheat_farm(client, x, y, z):
+            return TaskResult.fail("Failed to plant wheat farm")
+
+        # Success
+        resources.refresh_inventory()
+        summary = resources.get_summary()
+        return TaskResult.ok("Base construction complete", inventory=summary["inventory"])
     
     def _find_location(self, client) -> bool:
         """Find a flat ground location for the base."""

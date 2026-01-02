@@ -20,7 +20,10 @@ from .inventory import (
     equip_best_armor,
     craft,
     get_inventory,
+    craft,
+    get_inventory,
     select_item,
+    equip_best_weapon,
 )
 from .combat import attack_nearest, safe_combat, heal_if_needed, hunt_passive_mobs
 from .tasks import Task, TaskResult, SequentialTask, RetryTask, ActionTask
@@ -88,7 +91,9 @@ __all__ = [
     "equip_best_armor",
     "craft",
     "get_inventory",
+    "get_inventory",
     "select_item",
+    "equip_best_weapon",
     # Combat
     "attack_nearest",
     "safe_combat",

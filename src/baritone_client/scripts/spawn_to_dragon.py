@@ -368,32 +368,32 @@ class DeathRecoveryTask(Task):
         return "Recover from Death"
     
     def run(self, client) -> TaskResult:
-        print("  💀 Player is dead! Starting recovery...")
-        
+        print("  Player is dead! Starting recovery...")
+
         # 1. Respawn
         client.transport.dispatch("respawn", {})
         time.sleep(2.0)
-        
+
         # 2. Get death location
         response = client.transport.dispatch("get_death_location", {})
         if response.get("status") != "ok":
             return TaskResult.fail("Could not get death location")
-        
+
         data = response.get("data", {})
         x, y, z = data.get("x"), data.get("y"), data.get("z")
         dim = data.get("dimension")
-        
+
         if x is None:
             return TaskResult.fail("No death location recorded")
-            
-        print(f"  📍 Recorded death at ({x}, {y}, {z}) in {dim}")
+
+        print(f"  Recorded death at ({x}, {y}, {z}) in {dim}")
         
         # 3. Handle dimension mismatch
         current_dim_resp = client.transport.dispatch("get_dimension", {})
         current_dim = current_dim_resp.get("data", {}).get("dimension", "")
 
         if current_dim != dim:
-            print(f"  ⚠️ Death in {dim}, currently in {current_dim}. Need to travel back.")
+            print(f"  Death in {dim}, currently in {current_dim}. Need to travel back.")
             # Simple case: if death in nether, need to find a portal
             if dim == "minecraft:the_nether":
                 print("  Recovery in Nether required. Finding portal from spawn...")
@@ -405,16 +405,16 @@ class DeathRecoveryTask(Task):
                 success = enter_nether_portal(client, timeout=30)
                 if not success:
                     return TaskResult.fail("Could not enter portal to return to Overworld")
-                print("  ✅ Returned to Overworld via portal")
+                print("  Returned to Overworld via portal")
             elif dim == "minecraft:overworld":
                 print("  Death in Overworld. Proceeding.")
         
         # 4. Navigate to death location
-        print(f"  🏃 Running to death location to recover items...")
+        print(f"  Running to death location to recover items...")
         success = goto(client, int(x), int(y), int(z), timeout=600)
-        
+
         if success:
-            print("  ✅ Reached death location. Gathering items...")
+            print("  Reached death location. Gathering items...")
             # Wait a bit for items to be picked up
             time.sleep(2.0)
             return TaskResult.ok("Recovered items")
@@ -423,7 +423,7 @@ class DeathRecoveryTask(Task):
 
     def _find_nether_portal_from_spawn(self, client) -> bool:
         """Find a Nether portal from spawn coordinates in the Nether."""
-        print("  🔍 Searching for Nether portal from spawn...")
+        print("  Searching for Nether portal from spawn...")
 
         # Nether spawn is at (0, 0) in Nether coordinates (which corresponds to overworld 0,0)
         # Portals are usually built near spawn or in common locations
@@ -472,10 +472,10 @@ class DeathRecoveryTask(Task):
                     portal_count = sum(1 for block in blocks if block.get("type") == "minecraft:nether_portal")
 
                     if obsidian_count >= 10 or portal_count > 0:
-                        print(f"  🎯 Found portal structure at ({x}, {y}, {z}) - {obsidian_count} obsidian, {portal_count} portal blocks")
+                        print(f"  Found portal structure at ({x}, {y}, {z}) - {obsidian_count} obsidian, {portal_count} portal blocks")
                         return True
 
-        print("  ❌ No portal found in common locations")
+        print("  No portal found in common locations")
         return False
 
 
@@ -531,19 +531,19 @@ def run_automation(client, start_phase: int = 1, resume: bool = False):
     executor.register_handler(Phase.DRAGON_FIGHT, DragonFightHandler())
 
     print("\n" + "=" * 60)
-    print("  🎮 SPAWN TO DRAGON AUTOMATION 🐉")
+    print("  SPAWN TO DRAGON AUTOMATION")
     print("=" * 60)
     print(f"  Starting from Phase {start_phase}")
     print("=" * 60 + "\n")
 
     for i, (phase_name, create_fn) in enumerate(PHASES, start=1):
         if i < start_phase:
-            print(f"⏭️  Skipping {phase_name}")
+            print(f"Skipping {phase_name}")
             continue
 
-        print(f"\n{'─' * 60}")
+        print(f"\n{'-' * 60}")
         print(f"  {phase_name}")
-        print(f"{'─' * 60}")
+        print(f"{'-' * 60}")
 
         # Check if dead before starting phase
         try:
@@ -592,7 +592,7 @@ def run_automation(client, start_phase: int = 1, resume: bool = False):
                 if i < len(phase_order):
                     state_manager.set_phase(phase_order[i])
             else:
-                print(f"\n❌ Failed at {phase_name}: {result.reason}")
+                print(f"\nFailed at {phase_name}: {result.reason}")
         else:
             # No handler or task, skip
             success = True
@@ -606,7 +606,7 @@ def run_automation(client, start_phase: int = 1, resume: bool = False):
         print(f"  ✅ {phase_name} complete!")
 
     print("\n" + "=" * 60)
-    print("  🎉🐉 ENDER DRAGON DEFEATED! VICTORY! 🐉🎉")
+    print("  ENDER DRAGON DEFEATED! VICTORY!")
     print("=" * 60 + "\n")
 
     return True
@@ -635,13 +635,13 @@ def main():
         sys.exit(0 if success else 1)
         
     except ConnectionRefusedError:
-        print("❌ Could not connect to bridge. Is Minecraft running with the mod?")
+        print("Could not connect to bridge. Is Minecraft running with the mod?")
         sys.exit(1)
     except KeyboardInterrupt:
-        print("\n⏹️  Interrupted by user")
+        print("\nInterrupted by user")
         sys.exit(130)
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

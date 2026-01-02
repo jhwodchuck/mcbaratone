@@ -26,15 +26,28 @@ def main():
     print(f"Connecting to Baritone Bridge at {args.host}:{args.port}...")
     
     try:
-        transport = TcpTransport(host=args.host, port=args.port, timeout=args.timeout)
-        client = Client(transport)
+        print("Waiting for Bridge connection and Player...")
+        transport = None
+        client = None
         
-        # Test connection
-        try:
-            client.transport.dispatch("get_state", {})
-        except Exception as exc:
-            print(f"Error: Could not query bridge state: {exc}")
-            sys.exit(1)
+        while True:
+            try:
+                if client:
+                    try:
+                        client.shutdown()
+                    except: pass
+                
+                transport = TcpTransport(host=args.host, port=args.port, timeout=args.timeout)
+                client = Client(transport)
+                
+                state = client.transport.dispatch("get_state", {})
+                if 'error' not in state:
+                    break
+                print(f"Waiting for player... State: {state.get('error')}")
+            except Exception as e:
+                print(f"Waiting for connection... ({e})")
+            
+            time.sleep(5.0)
         
         print("Connected successfully!")
         

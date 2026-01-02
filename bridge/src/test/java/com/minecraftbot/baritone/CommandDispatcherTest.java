@@ -9,6 +9,7 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.net.Socket;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -17,164 +18,320 @@ import static org.mockito.Mockito.*;
 public class CommandDispatcherTest {
 
     @Mock
-    private MissionController missionController;
+    private MissionController mockMissionController;
+
     @Mock
-    private LegacyCommandHandler legacyHandler;
+    private LegacyCommandHandler mockLegacyHandler;
+
     @Mock
-    private MinecraftClient minecraftClient;
+    private MinecraftClient mockClient;
+
     @Mock
-    private IBaritone baritone;
+    private IBaritone mockBaritone;
+
     @Mock
-    private Socket clientSocket;
+    private Socket mockSocket;
+
+    @Mock
+    private CommandHandler mockCommandHandler;
 
     private CommandDispatcher dispatcher;
 
     @BeforeEach
-    public void setUp() {
+    void setUp() {
         MockitoAnnotations.openMocks(this);
-        dispatcher = new CommandDispatcher(missionController, legacyHandler);
+        dispatcher = new CommandDispatcher(mockMissionController, mockLegacyHandler);
+
+        // Clear the factory registry for each test
+        CommandHandlerFactory.clearRegistry();
     }
 
     @Test
-    public void testDispatchCommandMissingCommand() {
-        JsonObject request = new JsonObject();
+    void testDispatchCommand_NullRequest_ShouldReturnError() {
+        CommandResult result = dispatcher.dispatchCommand(null, mockSocket, mockClient, mockBaritone);
 
-        CommandResult result = dispatcher.dispatchCommand(request, clientSocket, minecraftClient, baritone);
-
+        assertNotNull(result);
         assertFalse(result.isSuccess());
         assertEquals("Missing command", result.getErrorMessage());
     }
 
     @Test
-    public void testDispatchCommandHandledByMissionController() {
+    void testDispatchCommand_RequestWithoutCommand_ShouldReturnError() {
         JsonObject request = new JsonObject();
-        request.addProperty("command", "mission");
-        request.addProperty("id", "123");
+
+        CommandResult result = dispatcher.dispatchCommand(request, mockSocket, mockClient, mockBaritone);
+
+        assertNotNull(result);
+        assertFalse(result.isSuccess());
+        assertEquals("Missing command", result.getErrorMessage());
+    }
+
+    @Test
+    void testDispatchCommand_MissionControllerHandlesCommand_ShouldReturnSuccess() {
+        JsonObject request = new JsonObject();
+        request.addProperty("command", "mission_status");
+        request.add("params", new JsonObject());
 
         JsonObject missionData = new JsonObject();
-        missionData.addProperty("mission_started", true);
+        missionData.addProperty("phase", "idle");
 
-        when(missionController.tryHandle(eq("mission"), any(), any(), any(), any(), any())).thenReturn(true);
+        when(mockMissionController.tryHandle(eq("mission_status"), any(JsonObject.class), eq(missionData), eq(mockClient), eq(mockBaritone), eq(mockSocket)))
+            .thenReturn(true);
 
-        CommandResult result = dispatcher.dispatchCommand(request, clientSocket, minecraftClient, baritone);
+        CommandResult result = dispatcher.dispatchCommand(request, mockSocket, mockClient, mockBaritone);
 
+        assertNotNull(result);
         assertTrue(result.isSuccess());
         assertEquals(missionData, result.getData());
-        verify(missionController).tryHandle(eq("mission"), any(), any(), any(), any(), any());
+        verify(mockMissionController).tryHandle("mission_status", request.getAsJsonObject("params"), missionData, mockClient, mockBaritone, mockSocket);
+        verifyNoInteractions(mockLegacyHandler);
     }
 
     @Test
-    public void testDispatchCommandHandledByFactory() {
+    void testDispatchCommand_HandlerFactoryProvidesHandler_ShouldExecuteHandler() {
         JsonObject request = new JsonObject();
-        request.addProperty("command", "goto");
-        request.addProperty("id", "123");
-
+        request.addProperty("command", "test_command");
         JsonObject params = new JsonObject();
-        params.addProperty("x", 100);
-        params.addProperty("y", 64);
-        params.addProperty("z", 200);
         request.add("params", params);
 
-        // Mock a command handler
-        CommandHandler mockHandler = mock(CommandHandler.class);
-        when(mockHandler.handle(any(), any(), any(), any())).thenReturn(CommandResult.success(new JsonObject()));
+        CommandResult expectedResult = CommandResult.success(new JsonObject());
+        when(mockCommandHandler.handle(params, mockClient, mockBaritone, mockSocket)).thenReturn(expectedResult);
+        when(mockCommandHandler.getCommandName()).thenReturn("test_command");
 
-        // Temporarily register the handler
-        CommandHandlerFactory.registerHandler("goto", mockHandler.getClass());
+        // Register handler in factory
+        CommandHandlerFactory.registerHandler("test_command", TestCommandHandler.class);
 
+        // Mock the factory to return our mock handler
         try {
-            CommandResult result = dispatcher.dispatchCommand(request, clientSocket, minecraftClient, baritone);
-
-            assertTrue(result.isSuccess());
-            verify(mockHandler).handle(eq(params), eq(minecraftClient), eq(baritone), eq(clientSocket));
-        } finally {
-            // Clean up
-            CommandHandlerFactory.clearRegistry();
+            CommandHandlerFactory.class.getDeclaredField("handlerInstances").setAccessible(true);
+            java.util.Map<String, CommandHandler> instances =
+                (java.util.Map<String, CommandHandler>) CommandHandlerFactory.class.getDeclaredField("handlerInstances").get(null);
+            instances.put("test_command", mockCommandHandler);
+        } catch (Exception e) {
+            fail("Failed to setup mock handler");
         }
+
+        CommandResult result = dispatcher.dispatchCommand(request, mockSocket, mockClient, mockBaritone);
+
+        assertNotNull(result);
+        assertEquals(expectedResult, result);
+        verify(mockCommandHandler).handle(params, mockClient, mockBaritone, mockSocket);
+        verify(mockMissionController).tryHandle(eq("test_command"), any(JsonObject.class), any(JsonObject.class), eq(mockClient), eq(mockBaritone), eq(mockSocket));
+        verifyNoInteractions(mockLegacyHandler);
     }
 
     @Test
-    public void testDispatchCommandFallbackToLegacy() {
+    void testDispatchCommand_NoHandlerFound_ShouldFallbackToLegacy() {
         JsonObject request = new JsonObject();
         request.addProperty("command", "unknown_command");
-        request.addProperty("id", "123");
+        request.add("params", new JsonObject());
 
-        JsonObject legacyResult = new JsonObject();
-        legacyResult.addProperty("legacy_handled", true);
+        CommandResult legacyResult = CommandResult.success(new JsonObject());
+        when(mockLegacyHandler.handleLegacyCommand("unknown_command", request.getAsJsonObject("params"), mockClient, mockBaritone, mockSocket))
+            .thenReturn(legacyResult);
 
-        when(missionController.tryHandle(any(), any(), any(), any(), any(), any())).thenReturn(false);
-        when(legacyHandler.handleLegacyCommand(eq("unknown_command"), any(), any(), any(), any()))
-            .thenReturn(CommandResult.success(legacyResult));
+        CommandResult result = dispatcher.dispatchCommand(request, mockSocket, mockClient, mockBaritone);
 
-        CommandResult result = dispatcher.dispatchCommand(request, clientSocket, minecraftClient, baritone);
-
-        assertTrue(result.isSuccess());
-        assertEquals(legacyResult, result.getData());
-        verify(legacyHandler).handleLegacyCommand(eq("unknown_command"), any(), any(), any(), any());
+        assertNotNull(result);
+        assertEquals(legacyResult, result);
+        verify(mockLegacyHandler).handleLegacyCommand("unknown_command", request.getAsJsonObject("params"), mockClient, mockBaritone, mockSocket);
     }
 
     @Test
-    public void testRateLimiting() {
+    void testDispatchCommand_NoLegacyHandler_ShouldReturnError() {
+        // Create dispatcher without legacy handler
+        CommandDispatcher dispatcherNoLegacy = new CommandDispatcher(mockMissionController, null);
+
         JsonObject request = new JsonObject();
-        request.addProperty("command", "goto");
-        request.addProperty("id", "123");
+        request.addProperty("command", "unknown_command");
+        request.add("params", new JsonObject());
 
-        // Make multiple requests quickly to trigger rate limit
-        for (int i = 0; i < 101; i++) {
-            dispatcher.dispatchCommand(request, clientSocket, minecraftClient, baritone);
-        }
+        CommandResult result = dispatcherNoLegacy.dispatchCommand(request, mockSocket, mockClient, mockBaritone);
 
-        CommandResult result = dispatcher.dispatchCommand(request, clientSocket, minecraftClient, baritone);
-
+        assertNotNull(result);
         assertFalse(result.isSuccess());
-        assertTrue(result.getError().contains("Rate limit exceeded"));
+        assertEquals("Unknown command: unknown_command (no legacy handler configured)", result.getErrorMessage());
     }
 
     @Test
-    public void testRateLimitResetAfterWindow() throws InterruptedException {
+    void testDispatchCommand_ExceptionDuringDispatch_ShouldReturnError() {
         JsonObject request = new JsonObject();
-        request.addProperty("command", "goto");
-        request.addProperty("id", "123");
+        request.addProperty("command", "mission_status");
 
-        // Mock the last request time to be older than the rate limit window
-        dispatcher.clearRateLimit(clientSocket);
-
-        // Wait for rate limit window to pass (simulate)
-        Thread.sleep(11000); // 11 seconds > 10 second window
-
-        CommandResult result = dispatcher.dispatchCommand(request, clientSocket, minecraftClient, baritone);
-
-        // Should not be rate limited since window passed
-        assertFalse(result.getError() != null && result.getError().contains("Rate limit exceeded"));
-    }
-
-    @Test
-    public void testExceptionHandling() {
-        JsonObject request = new JsonObject();
-        request.addProperty("command", "goto");
-
-        when(missionController.tryHandle(any(), any(), any(), any(), any(), any()))
+        when(mockMissionController.tryHandle(any(), any(), any(), any(), any(), any()))
             .thenThrow(new RuntimeException("Test exception"));
 
-        CommandResult result = dispatcher.dispatchCommand(request, clientSocket, minecraftClient, baritone);
+        CommandResult result = dispatcher.dispatchCommand(request, mockSocket, mockClient, mockBaritone);
 
+        assertNotNull(result);
         assertFalse(result.isSuccess());
-        assertTrue(result.getError().contains("Command execution failed"));
+        assertTrue(result.getErrorMessage().contains("Command execution failed"));
+        assertTrue(result.getErrorMessage().contains("Test exception"));
     }
 
     @Test
-    public void testNoLegacyHandler() {
-        // Create dispatcher without legacy handler
-        CommandDispatcher noLegacyDispatcher = new CommandDispatcher(missionController, null);
+    void testCheckRateLimit_NullSocket_ShouldAllow() {
+        // Null socket should be allowed for testing
+        CommandResult result = dispatcher.dispatchCommand(createValidRequest("test"), null, mockClient, mockBaritone);
 
-        JsonObject request = new JsonObject();
-        request.addProperty("command", "unknown_command");
+        // Should proceed to fallback since no handler found
+        verify(mockLegacyHandler).handleLegacyCommand(any(), any(), any(), any(), isNull());
+    }
 
-        when(missionController.tryHandle(any(), any(), any(), any(), any(), any())).thenReturn(false);
+    @Test
+    void testCheckRateLimit_WithinLimit_ShouldAllow() {
+        // First request should be allowed
+        CommandResult result1 = dispatcher.dispatchCommand(createValidRequest("test"), mockSocket, mockClient, mockBaritone);
+        // Should proceed to legacy handler
 
-        CommandResult result = noLegacyDispatcher.dispatchCommand(request, clientSocket, minecraftClient, baritone);
+        // Second request within window should still be allowed (under 100)
+        CommandResult result2 = dispatcher.dispatchCommand(createValidRequest("test"), mockSocket, mockClient, mockBaritone);
 
+        verify(mockLegacyHandler, times(2)).handleLegacyCommand(any(), any(), any(), any(), eq(mockSocket));
+    }
+
+    @Test
+    void testCheckRateLimit_ExceedsLimit_ShouldBlock() {
+        // Simulate exceeding the rate limit by directly calling checkRateLimit
+        // This is tricky to test without exposing internal methods, so we'll test through dispatch
+
+        // Create a custom dispatcher to manipulate rate limiting
+        CommandDispatcher testDispatcher = new CommandDispatcher(mockMissionController, mockLegacyHandler);
+
+        // Make many requests quickly
+        for (int i = 0; i < 101; i++) {
+            testDispatcher.dispatchCommand(createValidRequest("test"), mockSocket, mockClient, mockBaritone);
+        }
+
+        // The 101st request should be rate limited
+        CommandResult result = testDispatcher.dispatchCommand(createValidRequest("test"), mockSocket, mockClient, mockBaritone);
+
+        assertNotNull(result);
         assertFalse(result.isSuccess());
-        assertTrue(result.getError().contains("no legacy handler configured"));
+        assertTrue(result.getErrorMessage().contains("Rate limit exceeded"));
+        assertTrue(result.getErrorMessage().contains("100 requests per 10 seconds"));
+    }
+
+    @Test
+    void testCheckRateLimit_AfterWindowExpires_ShouldReset() throws InterruptedException {
+        // Make requests up to the limit
+        for (int i = 0; i < 100; i++) {
+            dispatcher.dispatchCommand(createValidRequest("test"), mockSocket, mockClient, mockBaritone);
+        }
+
+        // Wait for the rate limit window to expire
+        Thread.sleep(10001); // Wait 10+ seconds
+
+        // Next request should be allowed
+        CommandResult result = dispatcher.dispatchCommand(createValidRequest("test"), mockSocket, mockClient, mockBaritone);
+
+        // Should proceed to legacy handler, not be rate limited
+        verify(mockLegacyHandler, atLeast(101)).handleLegacyCommand(any(), any(), any(), any(), eq(mockSocket));
+    }
+
+    @Test
+    void testExecuteWithTimeout_HandlerThrowsException_ShouldReturnError() {
+        JsonObject request = new JsonObject();
+        request.addProperty("command", "test_command");
+        JsonObject params = new JsonObject();
+        request.add("params", params);
+
+        when(mockCommandHandler.handle(params, mockClient, mockBaritone, mockSocket))
+            .thenThrow(new RuntimeException("Handler exception"));
+
+        // Register and setup mock handler
+        CommandHandlerFactory.registerHandler("test_command", TestCommandHandler.class);
+        try {
+            java.util.Map<String, CommandHandler> instances =
+                (java.util.Map<String, CommandHandler>) CommandHandlerFactory.class.getDeclaredField("handlerInstances").get(null);
+            instances.put("test_command", mockCommandHandler);
+        } catch (Exception e) {
+            fail("Failed to setup mock handler");
+        }
+
+        CommandResult result = dispatcher.dispatchCommand(request, mockSocket, mockClient, mockBaritone);
+
+        assertNotNull(result);
+        assertFalse(result.isSuccess());
+        assertTrue(result.getErrorMessage().contains("Command execution failed"));
+    }
+
+    @Test
+    void testClearRateLimit_ShouldResetCounts() {
+        // Make some requests to build up counts
+        for (int i = 0; i < 10; i++) {
+            dispatcher.dispatchCommand(createValidRequest("test"), mockSocket, mockClient, mockBaritone);
+        }
+
+        // Clear rate limit
+        dispatcher.clearRateLimit(mockSocket);
+
+        // Next request should reset the window
+        CommandResult result = dispatcher.dispatchCommand(createValidRequest("test"), mockSocket, mockClient, mockBaritone);
+
+        // Should proceed normally
+        verify(mockLegacyHandler, times(11)).handleLegacyCommand(any(), any(), any(), any(), eq(mockSocket));
+    }
+
+    @Test
+    void testFallbackOrder_MissionControllerFirst() {
+        JsonObject request = createValidRequest("mission_status");
+
+        // Mission controller returns false (doesn't handle)
+        when(mockMissionController.tryHandle(any(), any(), any(), any(), any(), any())).thenReturn(false);
+
+        // Handler factory has no handler
+        // Should fall back to legacy
+
+        CommandResult result = dispatcher.dispatchCommand(request, mockSocket, mockClient, mockBaritone);
+
+        verify(mockMissionController).tryHandle(eq("mission_status"), any(), any(), eq(mockClient), eq(mockBaritone), eq(mockSocket));
+        verify(mockLegacyHandler).handleLegacyCommand(eq("mission_status"), any(), eq(mockClient), eq(mockBaritone), eq(mockSocket));
+    }
+
+    @Test
+    void testFallbackOrder_HandlerFactoryBeforeLegacy() {
+        JsonObject request = createValidRequest("registered_command");
+
+        // Mission controller doesn't handle
+        when(mockMissionController.tryHandle(any(), any(), any(), any(), any(), any())).thenReturn(false);
+
+        // Register a handler
+        CommandHandlerFactory.registerHandler("registered_command", TestCommandHandler.class);
+        CommandResult handlerResult = CommandResult.success(new JsonObject());
+        try {
+            java.util.Map<String, CommandHandler> instances =
+                (java.util.Map<String, CommandHandler>) CommandHandlerFactory.class.getDeclaredField("handlerInstances").get(null);
+            instances.put("registered_command", mockCommandHandler);
+        } catch (Exception e) {
+            fail("Failed to setup mock handler");
+        }
+        when(mockCommandHandler.handle(any(), eq(mockClient), eq(mockBaritone), eq(mockSocket))).thenReturn(handlerResult);
+
+        CommandResult result = dispatcher.dispatchCommand(request, mockSocket, mockClient, mockBaritone);
+
+        verify(mockMissionController).tryHandle(any(), any(), any(), any(), any(), any());
+        verify(mockCommandHandler).handle(any(), eq(mockClient), eq(mockBaritone), eq(mockSocket));
+        verifyNoInteractions(mockLegacyHandler);
+    }
+
+    private JsonObject createValidRequest(String command) {
+        JsonObject request = new JsonObject();
+        request.addProperty("command", command);
+        request.add("params", new JsonObject());
+        return request;
+    }
+
+    // Test implementation of CommandHandler for registry testing
+    private static class TestCommandHandler implements CommandHandler {
+        @Override
+        public CommandResult handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+            return CommandResult.success(new JsonObject());
+        }
+
+        @Override
+        public String getCommandName() {
+            return "test";
+        }
     }
 }

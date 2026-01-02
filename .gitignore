@@ -434,3 +434,12 @@ bridge/jdk17.zip
 bridge/jdk21.zip
 bridge/jdk17*
 bridge/jdk21*
+
+# Infrastructure/Debug
+crash-reports/
+downloads/
+*.json
+!package.json
+!composer.json
+!tsconfig.json
+!*.md

@@ -6,7 +6,7 @@ from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
 from ...common import craft
-from ...common.resources import gather_ores, ensure_supplies, gather_wood
+from ...common.resources import gather_ores, ensure_supplies, gather_wood, go_to_y_level
 from ...common.combat import hunt_passive_mobs
 from ...common.tasks import TaskResult, SequentialTask, ActionTask
 from ...common.base import open_furnace, sleep_through_night, build_good_house
@@ -92,6 +92,30 @@ def craft_iron_armor(client) -> bool:
     return True
 
 
+def gather_iron_with_depth(client, count: int = 24, timeout: int = 900) -> bool:
+    """Gather iron ore after navigating to optimal depth and ensuring pickaxe."""
+    # Navigate to optimal iron ore depth
+    if not go_to_y_level(client, -16):
+        print("Failed to navigate to iron ore depth")
+        return False
+
+    # Ensure player has a pickaxe (stone or better)
+    pickaxes = ["minecraft:iron_pickaxe", "minecraft:stone_pickaxe", "minecraft:wooden_pickaxe"]
+    has_pickaxe = any(count_item(client, pickaxe) > 0 for pickaxe in pickaxes)
+    if not has_pickaxe:
+        # Try to craft stone pickaxe if materials available
+        if count_item(client, "minecraft:stick") >= 2 and count_item(client, "minecraft:cobblestone") >= 3:
+            if not craft(client, "minecraft:stone_pickaxe", 1):
+                print("Failed to craft stone pickaxe")
+                return False
+        else:
+            print("No pickaxe and insufficient materials to craft one")
+            return False
+
+    # Gather iron ore with extended timeout
+    return gather_ores(client, "iron", count=count, timeout=timeout)
+
+
 class IronAgeHandler(PhaseHandler):
     """Handler for iron age phase using common library functions."""
 
@@ -110,11 +134,10 @@ class IronAgeHandler(PhaseHandler):
         if ready:
             return ready
 
-        # Define initial subtasks
-        # Define initial subtasks
+        # Define initial subtasks (skip mining due to threading issues)
         tasks = [
             ActionTask("Restock Food", self._restock_food),
-            ActionTask("Mine iron ore", gather_ores, ore_type="iron", count=24, timeout=600),
+            ActionTask("Gather iron ore", lambda client: gather_iron_with_depth(client, count=24, timeout=900)),
             ActionTask("Smelt iron ingots", smelt_iron, required_ingots=24),
             ActionTask("Craft iron tools", craft_iron_tools),
             ActionTask("Craft iron armor", craft_iron_armor),
@@ -122,9 +145,6 @@ class IronAgeHandler(PhaseHandler):
             ActionTask("Build Good Base", self._build_good_base),
             ActionTask("Acquire Water Bucket", self._acquire_water_bucket),
             ActionTask("Acquire Ranged Weapon", self._acquire_bow_and_arrows),
-
-            ActionTask("Acquire Ranged Weapon", self._acquire_bow_and_arrows),
-
         ]
 
         # Execute initial setup sequentially
@@ -135,14 +155,15 @@ class IronAgeHandler(PhaseHandler):
             missing = resources.check_phase_requirements(Phase.IRON_AGE)
             return TaskResult.fail(f"Iron age setup failed: {result.reason}", missing=missing)
 
-        # After initial setup, enter mining loop
-        loop_result = self._mining_loop(client, resources, state)
-        if loop_result.success:
-            resources.refresh_inventory()
-            summary = resources.get_summary()
-            return TaskResult.ok("Iron age complete with mining loop", inventory=summary["inventory"])
-        else:
-            return TaskResult.fail(f"Mining loop failed: {loop_result.reason}")
+        # Establish iterative mining progression
+        mining_result = self._mining_loop(client, resources, state)
+        if not mining_result.success:
+            missing = resources.check_phase_requirements(Phase.IRON_AGE)
+            return TaskResult.fail(f"Mining loop failed: {mining_result.reason}", missing=missing)
+
+        resources.refresh_inventory()
+        summary = resources.get_summary()
+        return TaskResult.ok("Iron age complete with mining loop", inventory=summary["inventory"])
 
     def _mining_loop(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
         """Establish mining loop: mine more iron -> smelt -> upgrade gear -> repeat."""
@@ -155,7 +176,7 @@ class IronAgeHandler(PhaseHandler):
             sleep_through_night(client)
 
             # Mine additional iron ore
-            if not gather_ores(client, "iron", count=10, timeout=300):
+            if not gather_iron_with_depth(client, count=10, timeout=900):
                 failures += 1
                 break  # No more iron to mine
 

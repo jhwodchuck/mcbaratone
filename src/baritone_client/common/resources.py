@@ -49,10 +49,12 @@ def gather_wood(client, count: int = 16, timeout: int = 180) -> bool:
         start = time.time()
         while time.time() - start < timeout:
             total = sum(count_item(client, block) for block in LOG_BLOCKS)
+            print(f"DEBUG: gather_wood total={total}/{count}")
             if total >= count:
                 client.transport.dispatch("cancel", {})
                 return True
             time.sleep(3)
+        print("DEBUG: gather_wood timeout")
         client.transport.dispatch("cancel", {})
         return False
     except Exception as exc:
@@ -67,10 +69,13 @@ def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
         start = time.time()
         while time.time() - start < timeout:
             total = count_item(client, "minecraft:cobblestone") + count_item(client, "minecraft:cobbled_deepslate")
+            print(f"DEBUG: gather_stone loop: total={total}/{count}")
             if total >= count:
+                print(f"DEBUG: gather_stone success! total={total}")
                 client.transport.dispatch("cancel", {})
                 return True
             time.sleep(3)
+        print("DEBUG: gather_stone timeout")
         client.transport.dispatch("cancel", {})
         return False
     except Exception as exc:
@@ -110,14 +115,14 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
         return False
 
 
-def go_to_y_level(client, y: int, timeout: int = 120) -> bool:
+def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
     """Navigate to specific Y level for mining."""
     try:
-        state = client.transport.dispatch("get_state", {})
-        position = state.get("block_position", state.get("position", {}))
-        x = int(position.get("x", state.get("x", 0)))
-        z = int(position.get("z", state.get("z", 0)))
-        client.transport.dispatch("goto", {"x": x, "y": y, "z": z})
+        # Ensure Baritone settings allow breaking and placing blocks
+        client.transport.dispatch("set_setting", {"name": "allowBreak", "value": True})
+        client.transport.dispatch("set_setting", {"name": "allowPlace", "value": True})
+
+        client.transport.dispatch("goal", {"type": "yLevel", "value": y})
         start = time.time()
         while time.time() - start < timeout:
             state = client.transport.dispatch("get_state", {})

@@ -29,8 +29,9 @@ public class CommandHandlerFactory {
         registerHandler("mine", MineCommandHandler.class);
 
         // Inventory commands
-        registerHandler("get_inventory", InventoryCommandHandler.class);
-        registerHandler("inventory_click", InventoryCommandHandler.class);
+        // Inventory commands
+        registerHandler("get_inventory", GetInventoryCommandHandler.class);
+        registerHandler("inventory_click", InventoryClickCommandHandler.class);
 
         // State commands
         registerHandler("get_state", StateCommandHandler.class);
@@ -42,6 +43,12 @@ public class CommandHandlerFactory {
 
         // Mission commands
         registerHandler("mission", MissionCommandHandler.class);
+        
+        // Explicit fixes for commands previously relying on legacy fallback
+        registerHandler("place_block", PlaceBlockCommandHandler.class);
+        registerHandler("get_block", GetBlockCommandHandler.class);
+        registerHandler("chat", ChatCommandHandler.class);
+        registerHandler("select_slot", SelectSlotCommandHandler.class);
     }
 
     /**

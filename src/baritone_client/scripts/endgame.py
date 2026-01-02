@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from ..client import Client
-from ..enums import TransportEvent
+from ..core.client import Client
+from ..transport.enums import TransportEvent
 
 
 class MissionPhase(Enum):

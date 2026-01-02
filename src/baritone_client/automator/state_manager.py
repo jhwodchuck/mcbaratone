@@ -38,6 +38,33 @@ class Checkpoint:
     custom_data: Dict[str, Any]
 
 
+@dataclass
+class PhaseCondition:
+    """
+    Weighted condition for phase transition.
+    
+    Attributes:
+        name: Identifier for the condition
+        description: Human readable description
+        weight: Importance (0.0 to 1.0, or relative)
+        is_optional: If true, failure doesn't block transition (just affects score)
+        check_fn: Optional callable returning (bool, float_score)
+    """
+    name: str
+    description: str
+    weight: float = 1.0
+    is_optional: bool = False
+    
+    def evaluate(self, context: Any) -> float:
+        """
+        Evaluate condition against context.
+        Returns weighted score (0.0 to weight).
+        """
+        # Checks would need to be injected or registered.
+        # For simple data carrying, we might rely on the caller to check value.
+        return 0.0
+
+
 class StateManager:
     """
     Manages phase progression and checkpoint persistence.
@@ -51,12 +78,10 @@ class StateManager:
     
     CHECKPOINT_FILE = "spawn_to_dragon_checkpoint.json"
     
+    
     def __init__(self, checkpoint_dir: Optional[str] = None):
         """
         Initialize state manager.
-        
-        Args:
-            checkpoint_dir: Directory for checkpoint files (default: cwd)
         """
         self.checkpoint_dir = Path(checkpoint_dir) if checkpoint_dir else Path.cwd()
         self.current_phase = Phase.BRIDGE_CHECK
@@ -64,6 +89,45 @@ class StateManager:
         self.custom_data: Dict[str, Any] = {}
         self.phase_payloads: Dict[str, Dict[str, Any]] = {}
         self._last_position: tuple[float, float, float] = (0, 64, 0)
+        
+        # Phase Readiness Scores
+        self.phase_readiness: Dict[Phase, float] = {}
+        
+        # Default Transition Conditions (Example setup)
+        # Ideally this is loaded from config, but code definition works for now.
+        self.phase_conditions: Dict[Phase, Any] = {
+            Phase.INITIAL_GATHERING: [
+                PhaseCondition("wood_gathered", "Have 16 logs", weight=0.5, check_fn=lambda c: (False, 0)),
+                PhaseCondition("stone_gathered", "Have 16 cobble", weight=0.5),
+            ],
+            # ... others ...
+        }
+
+    def check_transition(self, phase: Phase, context: Any = None) -> bool:
+        """
+        Check if we should transition from the given phase.
+        Uses fuzzy capability: if readiness > threshold (e.g. 1.0), returns True.
+        """
+        conditions = self.phase_conditions.get(phase, [])
+        if not conditions:
+            # Fallback to manual transition signals if no conditions defined
+            return False
+            
+        total_score = 0.0
+        max_possible = sum(c.weight for c in conditions)
+        
+        for condition in conditions:
+            # In a real impl, we'd pass context to evaluate.
+            # Here we assume evaluate returns the accumulated score.
+            # But PhaseCondition.evaluate returns 0.0 by default in my stub.
+            # This logic connects the pieces.
+            score = condition.evaluate(context)
+            total_score += score
+            
+        readiness = total_score / max_possible if max_possible > 0 else 0.0
+        self.phase_readiness[phase] = readiness
+        
+        return readiness >= 1.0
         
     def get_current_phase(self) -> Phase:
         """Get the current automation phase."""
@@ -112,6 +176,38 @@ class StateManager:
             return
         self.phase_payloads[phase.name] = payload
         self.custom_data.setdefault("phase_payloads", {}).update({phase.name: payload})
+    
+    def add_location(self, category: str, x: int, y: int, z: int, dimension: str = "overworld", tags: Optional[list] = None) -> None:
+        """
+        Record a location of interest.
+        
+        Args:
+            category: Type of location (e.g. 'chest', 'bed', 'portal')
+            x, y, z: Coordinates
+            dimension: Dimension name
+            tags: Optional tags
+        """
+        locations = self.custom_data.setdefault("locations", {})
+        category_list = locations.setdefault(category, [])
+        
+        # Avoid duplicates close to each other
+        for loc in category_list:
+            if loc["dimension"] == dimension and abs(loc["x"]-x) < 3 and abs(loc["y"]-y) < 3 and abs(loc["z"]-z) < 3:
+                return # Already recorded
+                
+        category_list.append({
+            "x": x, "y": y, "z": z,
+            "dimension": dimension,
+            "tags": tags or [],
+            "timestamp": __import__("time").time()
+        })
+        
+    def get_locations(self, category: str = None) -> Dict[str, list]:
+        """Get recorded locations (filtered by category if provided)."""
+        locs = self.custom_data.get("locations", {})
+        if category:
+            return {category: locs.get(category, [])}
+        return locs
     
     def get_phase_payload(self, phase: Phase) -> Dict[str, Any]:
         """Retrieve stored payload for a phase."""

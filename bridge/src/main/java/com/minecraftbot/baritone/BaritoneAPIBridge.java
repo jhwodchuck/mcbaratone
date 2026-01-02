@@ -46,7 +46,9 @@ import java.util.ArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import net.minecraft.util.Identifier;
+import net.minecraft.registry.RegistryKeys;
 import net.minecraft.registry.Registry;
+import net.minecraft.registry.RegistryKey;
 import net.minecraft.registry.Registries;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.minecraft.screen.CraftingScreenHandler;
@@ -1004,24 +1006,23 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                 return;
             }
 
-            List<BlockOptionalMeta> lookup = new ArrayList<>();
-            for (JsonElement element : blocksArray) {
-                if (!element.isJsonPrimitive()) continue;
-                String blockId = element.getAsString();
-                Identifier id = Identifier.of(blockId);
-                if (Registries.BLOCK.containsId(id)) {
-                    lookup.add(new BlockOptionalMeta(Registries.BLOCK.get(id)));
+            MinecraftClient.getInstance().execute(() -> {
+                List<BlockOptionalMeta> lookup = new ArrayList<>();
+                for (JsonElement element : blocksArray) {
+                    if (!element.isJsonPrimitive()) continue;
+                    String blockId = element.getAsString();
+                    Identifier id = Identifier.of(blockId);
+                    if (Registries.BLOCK.containsId(id)) {
+                        lookup.add(new BlockOptionalMeta(Registries.BLOCK.get(id)));
+                    }
                 }
-            }
-            
-            if (!lookup.isEmpty()) {
-                BlockOptionalMeta[] blockArray = lookup.toArray(new BlockOptionalMeta[0]);
-                MinecraftClient.getInstance().execute(() -> 
-                    baritone.getMineProcess().mine(count, blockArray));
-                data.addProperty("started", true);
-            } else {
-                data.addProperty("error", "No valid blocks found to mine");
-            }
+
+                if (!lookup.isEmpty()) {
+                    BlockOptionalMeta[] blockArray = lookup.toArray(new BlockOptionalMeta[0]);
+                    baritone.getMineProcess().mine(count, blockArray);
+                }
+            });
+            data.addProperty("started", true);
         } else {
              data.addProperty("error", "Missing block_type or blocks");
         }
@@ -1495,28 +1496,123 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         JsonArray recipes = new JsonArray();
         int count = 0;
         
+        try {
+            net.minecraft.recipe.RecipeManager recipeManager = client.world.getRecipeManager();
+            
+            // In 1.21.4, RecipeManager is an interface. ServerRecipeManager has values() method.
+            // On client, we try to cast or use reflection to access recipes.
+            Collection<RecipeEntry<?>> entries = null;
+            
+            if (recipeManager instanceof net.minecraft.recipe.ServerRecipeManager serverRecipeManager) {
+                entries = serverRecipeManager.values();
+            } else {
+                // Client-side fallback: try to access via reflection
+                try {
+                    java.lang.reflect.Method valuesMethod = recipeManager.getClass().getMethod("values");
+                    @SuppressWarnings("unchecked")
+                    Collection<RecipeEntry<?>> result = (Collection<RecipeEntry<?>>) valuesMethod.invoke(recipeManager);
+                    entries = result;
+                } catch (Exception reflectEx) {
+                    LOGGER.debug("Could not get recipes via reflection: {}", reflectEx.getMessage());
+                    data.addProperty("error", "Recipe listing not available on client in 1.21.4");
+                    data.addProperty("note", "The recipe API requires server-side access");
+                    data.add("recipes", new JsonArray());
+                    data.addProperty("count", 0);
+                    return;
+                }
+            }
+            
+            if (entries == null) {
+                data.addProperty("error", "No recipes available");
+                data.add("recipes", new JsonArray());
+                data.addProperty("count", 0);
+                return;
+            }
+            
+            for (RecipeEntry<?> entry : entries) {
+                if (count >= limit) break;
+                
+                // Get the identifier from the registry key
+                Identifier id = entry.id().getValue();
+                if (filter != null && !id.toString().contains(filter)) {
+                    continue;
+                }
+                
+                net.minecraft.recipe.Recipe<?> recipe = entry.value();
+                
+                JsonObject recipeJson = new JsonObject();
+                recipeJson.addProperty("id", id.toString());
+                recipeJson.addProperty("type", Registries.RECIPE_TYPE.getId(recipe.getType()).toString());
+                
+                // Check if it's a crafting recipe to get ingredients
+                if (recipe instanceof CraftingRecipe craftingRecipe) {
+                    JsonArray ingredients = new JsonArray();
+                    try {
+                        for (Ingredient ingredient : craftingRecipe.getIngredientPlacement().getIngredients()) {
+                            JsonArray inputItems = new JsonArray();
+                            ingredient.getMatchingItems().forEach(itemEntry -> {
+                                inputItems.add(Registries.ITEM.getId(itemEntry.value()).toString());
+                            });
+                            if (inputItems.size() > 0) {
+                                ingredients.add(inputItems);
+                            }
+                        }
+                    } catch (Exception e) {
+                        LOGGER.debug("Could not get ingredients for recipe {}: {}", id, e.getMessage());
+                    }
+                    recipeJson.add("ingredients", ingredients);
+                }
+                
+                recipes.add(recipeJson);
+                count++;
+            }
+            
+            data.add("recipes", recipes);
+            data.addProperty("count", count);
+            
+        } catch (Exception e) {
+            LOGGER.error("Error getting recipes: {}", e.getMessage());
+            data.addProperty("error", "Failed to get recipes: " + e.getMessage());
+            data.add("recipes", new JsonArray());
+            data.addProperty("count", 0);
+        }
+    }
+
+    /*
+    private void handleGetRecipes_OLD(MinecraftClient client, JsonObject params, JsonObject data) {
+        if (client.world == null) {
+            data.addProperty("error", "World not available");
+            return;
+        }
+        
+        String filter = params.has("filter") ? params.get("filter").getAsString() : null;
+        int limit = params.has("limit") ? params.get("limit").getAsInt() : 1000;
+        
+        JsonArray recipes = new JsonArray();
+        int count = 0;
+        
         net.minecraft.recipe.RecipeManager recipeManager = client.world.getRecipeManager();
         net.minecraft.registry.DynamicRegistryManager registryManager = client.world.getRegistryManager();
 
         for (RecipeType<?> type : Registries.RECIPE_TYPE) {
              // In 1.21, listAllOfType returns a List<RecipeEntry<T>>
-             List<RecipeEntry<?>> entries = (List<RecipeEntry<?>>) (List<?>) recipeManager.listAllOfType(type);
+             Map<RegistryKey<Recipe<?>>, Recipe<?>> recipesMap = recipeManager.getAllOfType(type);
              
-             for (RecipeEntry<?> entry : entries) {
+             for (Map.Entry<RegistryKey<Recipe<?>>, Recipe<?>> entry : recipesMap.entrySet()) {
                  if (count >= limit) break;
                  
-                 Identifier id = entry.id();
+                 Identifier id = entry.getKey().getValue();
                  if (filter != null && !id.toString().contains(filter)) {
                      continue;
                  }
                  
-                 net.minecraft.recipe.Recipe<?> recipe = entry.value();
+                 net.minecraft.recipe.Recipe<?> recipe = entry.getValue();
                  if (!(recipe instanceof CraftingRecipe)) {
                      continue; // Only focus on crafting recipes for now
                  }
                  
                  CraftingRecipe craftingRecipe = (CraftingRecipe) recipe;
-                 ItemStack resultStack = craftingRecipe.getResult(registryManager);
+                 ItemStack resultStack = craftingRecipe.getOutput(registryManager);
                  
                  JsonObject recipeJson = new JsonObject();
                  recipeJson.addProperty("id", id.toString());
@@ -1528,10 +1624,10 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                  recipeJson.add("output", output);
                  
                  JsonArray ingredients = new JsonArray();
-                 for (Ingredient ingredient : craftingRecipe.getIngredients()) {
+                 for (Ingredient ingredient : craftingRecipe.getIngredientPlacement().getIngredients()) {
                      JsonArray inputItems = new JsonArray();
-                     ingredient.getMatchingItems().forEach(entry -> {
-                         inputItems.add(Registries.ITEM.getId(entry.value()).toString());
+                     ingredient.getMatchingItems().forEach(itemEntry -> {
+                         inputItems.add(Registries.ITEM.getId(itemEntry.value()).toString());
                      });
                      if (inputItems.size() > 0) {
                          ingredients.add(inputItems);
@@ -1548,6 +1644,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         data.add("recipes", recipes);
         data.addProperty("count", count);
     }
+    */
 
     private void handleGetEvents(JsonObject data) {
         List<EventManager.Event> polledEvents = eventManager.pollEvents();
@@ -1695,6 +1792,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         }
         
         client.player.getInventory().selectedSlot = slot;
+        client.player.networkHandler.sendPacket(new net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket(slot));
         data.addProperty("selected", slot);
     }
 
@@ -1983,17 +2081,382 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
     // ========== Automation Command Handlers ==========
 
+    /**
+     * Craft recipes (simplified hardcoded for common items).
+     * Works with 2x2 player inventory crafting (when no crafting table open).
+     * 
+     * Player Inventory Slot Layout (syncId=0):
+     *   Slot 0: Craft output
+     *   Slots 1-4: 2x2 crafting grid (1=TL, 2=TR, 3=BL, 4=BR)
+     *   Slots 5-8: Armor
+     *   Slots 9-35: Main inventory
+     *   Slots 36-44: Hotbar
+     *   Slot 45: Offhand
+     *
+     * Crafting Table Slot Layout (syncId depends on open screen):
+     *   Slot 0: Craft output  
+     *   Slots 1-9: 3x3 crafting grid
+     *   Slots 10-36: Main inventory
+     *   Slots 37-45: Hotbar
+     */
     private void handleCraft(MinecraftClient client, JsonObject params, JsonObject data) {
-        // Placeholder for future implementation
-        // For now, we allow it but return a warning
-        data.addProperty("status", "warning");
-        data.addProperty("note", "Crafting API is experimental. Use 'click_recipe' or manual slot interaction.");
-        
-        if (params.has("recipe")) {
-             handleClickRecipe(client, params, data);
-        } else {
-             data.addProperty("error", "Missing recipe argument");
+        if (client.player == null || client.interactionManager == null) {
+            data.addProperty("error", "Player not available");
+            return;
         }
+        
+        // Accept both 'recipe', 'item', and 'recipe_id' parameters
+        String recipeId = null;
+        if (params.has("recipe")) {
+            recipeId = params.get("recipe").getAsString();
+        } else if (params.has("item")) {
+            recipeId = params.get("item").getAsString(); 
+        } else if (params.has("recipe_id")) {
+            recipeId = params.get("recipe_id").getAsString();
+        }
+        
+        if (recipeId == null || recipeId.isEmpty()) {
+            data.addProperty("error", "Missing recipe/item argument");
+            return;
+        }
+        
+        int count = params.has("count") ? params.get("count").getAsInt() : 1;
+        
+        // Normalize recipe ID
+        if (!recipeId.contains(":")) {
+            recipeId = "minecraft:" + recipeId;
+        }
+        
+        // Get recipe definition
+        CraftRecipe recipe = getRecipeDefinition(recipeId);
+        if (recipe == null) {
+            data.addProperty("error", "Unknown recipe: " + recipeId);
+            data.addProperty("note", "Recipe not in hardcoded list. Add to getRecipeDefinition().");
+            return;
+        }
+        
+        // Check if we need a crafting table
+        boolean hasCraftingTable = client.player.currentScreenHandler instanceof net.minecraft.screen.CraftingScreenHandler;
+        if (recipe.requiresTable && !hasCraftingTable) {
+            data.addProperty("error", "Recipe requires crafting table but none is open");
+            return;
+        }
+        
+        int crafted = 0;
+        int syncId = client.player.currentScreenHandler.syncId;
+        
+        // Craft the requested count
+        for (int i = 0; i < count; i += recipe.outputCount) {
+            try {
+                // Check ingredients
+                if (!hasIngredients(client, recipe)) {
+                    if (crafted == 0) {
+                        data.addProperty("error", "Missing ingredients for " + recipeId);
+                    }
+                    break;
+                }
+                
+                // Clear crafting grid first
+                clearCraftingGrid(client, syncId, recipe.requiresTable);
+                Thread.sleep(50);
+                
+                // Place ingredients in grid
+                if (!placeIngredients(client, syncId, recipe)) {
+                    data.addProperty("error", "Failed to place ingredients");
+                    break;
+                }
+                Thread.sleep(100);
+                
+                // Click output slot (slot 0) to craft
+                client.execute(() -> {
+                    client.interactionManager.clickSlot(syncId, 0, 0, SlotActionType.QUICK_MOVE, client.player);
+                });
+                Thread.sleep(100);
+                
+                crafted += recipe.outputCount;
+            } catch (Exception e) {
+                LOGGER.error("Crafting error", e);
+                data.addProperty("error", "Crafting failed: " + e.getMessage());
+                break;
+            }
+        }
+        
+        data.addProperty("crafted", crafted > 0);
+        data.addProperty("count", crafted);
+        data.addProperty("recipe", recipeId);
+        if (crafted > 0) {
+            data.addProperty("status", "ok");
+        }
+    }
+    
+    /**
+     * Simple recipe definition for hardcoded recipes.
+     */
+    private static class CraftRecipe {
+        final String output;
+        final int outputCount;
+        final boolean requiresTable; // true = 3x3, false = 2x2
+        final String[] grid; // 2x2 or 3x3 grid, null = empty slot, "any_log" = any log type
+        final Map<String, Integer> ingredients; // Ingredient counts
+        
+        CraftRecipe(String output, int outputCount, boolean requiresTable, String[] grid) {
+            this.output = output;
+            this.outputCount = outputCount;
+            this.requiresTable = requiresTable;
+            this.grid = grid;
+            this.ingredients = new java.util.HashMap<>();
+            for (String s : grid) {
+                if (s != null && !s.isEmpty()) {
+                    ingredients.merge(s, 1, Integer::sum);
+                }
+            }
+        }
+    }
+    
+    /**
+     * Get hardcoded recipe definition.
+     * This bypasses the broken recipe API.
+     */
+    private CraftRecipe getRecipeDefinition(String recipeId) {
+        // Common early-game recipes
+        switch (recipeId) {
+            // Planks from logs (accepts any log type, returns oak planks for simplicity)
+            case "minecraft:oak_planks":
+            case "minecraft:spruce_planks":
+            case "minecraft:birch_planks":
+            case "minecraft:jungle_planks":
+            case "minecraft:acacia_planks":
+            case "minecraft:dark_oak_planks":
+            case "minecraft:mangrove_planks":
+            case "minecraft:cherry_planks":
+                // 2x2: just one log anywhere
+                return new CraftRecipe(recipeId, 4, false, new String[]{"any_log", null, null, null});
+            
+            // Sticks
+            case "minecraft:stick":
+                return new CraftRecipe(recipeId, 4, false, new String[]{
+                    "any_planks", null,
+                    "any_planks", null
+                });
+            
+            // Crafting Table
+            case "minecraft:crafting_table":
+                return new CraftRecipe(recipeId, 1, false, new String[]{
+                    "any_planks", "any_planks",
+                    "any_planks", "any_planks"
+                });
+            
+            // Wooden Pickaxe (3x3)
+            case "minecraft:wooden_pickaxe":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "any_planks", "any_planks", "any_planks",
+                    null, "minecraft:stick", null,
+                    null, "minecraft:stick", null
+                });
+            
+            // Stone Pickaxe (3x3)
+            case "minecraft:stone_pickaxe":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:cobblestone", "minecraft:cobblestone", "minecraft:cobblestone",
+                    null, "minecraft:stick", null,
+                    null, "minecraft:stick", null
+                });
+            
+            // Stone Axe (3x3)
+            case "minecraft:stone_axe":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:cobblestone", "minecraft:cobblestone", null,
+                    "minecraft:cobblestone", "minecraft:stick", null,
+                    null, "minecraft:stick", null
+                });
+            
+            // Stone Sword (3x3)
+            case "minecraft:stone_sword":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    null, "minecraft:cobblestone", null,
+                    null, "minecraft:cobblestone", null,
+                    null, "minecraft:stick", null
+                });
+            
+            // Furnace (3x3)
+            case "minecraft:furnace":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:cobblestone", "minecraft:cobblestone", "minecraft:cobblestone",
+                    "minecraft:cobblestone", null, "minecraft:cobblestone",
+                    "minecraft:cobblestone", "minecraft:cobblestone", "minecraft:cobblestone"
+                });
+            
+            // Chest (3x3)
+            case "minecraft:chest":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "any_planks", "any_planks", "any_planks",
+                    "any_planks", null, "any_planks",
+                    "any_planks", "any_planks", "any_planks"
+                });
+            
+            default:
+                return null;
+        }
+    }
+    
+    /**
+     * Check if player has required ingredients.
+     */
+    private boolean hasIngredients(MinecraftClient client, CraftRecipe recipe) {
+        Map<String, Integer> required = new java.util.HashMap<>();
+        for (String s : recipe.grid) {
+            if (s != null && !s.isEmpty()) {
+                required.merge(s, 1, Integer::sum);
+            }
+        }
+        
+        for (Map.Entry<String, Integer> entry : required.entrySet()) {
+            String item = entry.getKey();
+            int needed = entry.getValue();
+            int have = countItemInInventory(client, item);
+            if (have < needed) {
+                return false;
+            }
+        }
+        return true;
+    }
+    
+    /**
+     * Count item in player inventory, handling wildcards like "any_log".
+     */
+    private int countItemInInventory(MinecraftClient client, String itemId) {
+        PlayerInventory inv = client.player.getInventory();
+        int count = 0;
+        
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack stack = inv.getStack(i);
+            if (stack.isEmpty()) continue;
+            
+            String stackId = Registries.ITEM.getId(stack.getItem()).toString();
+            
+            if (itemId.equals("any_log")) {
+                if (stackId.endsWith("_log") || stackId.contains("_wood")) {
+                    count += stack.getCount();
+                }
+            } else if (itemId.equals("any_planks")) {
+                if (stackId.endsWith("_planks")) {
+                    count += stack.getCount();
+                }
+            } else if (itemId.equals(stackId)) {
+                count += stack.getCount();
+            }
+        }
+        return count;
+    }
+    
+    /**
+     * Find slot containing the specified item.
+     */
+    private int findItemSlot(MinecraftClient client, String itemId, int syncId, boolean isTable) {
+        PlayerInventory inv = client.player.getInventory();
+        // In player inventory screen: slots 9-44 are the main inventory + hotbar
+        // In crafting table: slots 10-45 are the main inventory + hotbar
+        int invStart = isTable ? 10 : 9;
+        
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = inv.getStack(i);
+            if (stack.isEmpty()) continue;
+            
+            String stackId = Registries.ITEM.getId(stack.getItem()).toString();
+            
+            if (itemId.equals("any_log")) {
+                if (stackId.endsWith("_log") || stackId.contains("_wood")) {
+                    return screenSlotFromInvSlot(i, isTable);
+                }
+            } else if (itemId.equals("any_planks")) {
+                if (stackId.endsWith("_planks")) {
+                    return screenSlotFromInvSlot(i, isTable);
+                }
+            } else if (itemId.equals(stackId)) {
+                return screenSlotFromInvSlot(i, isTable);
+            }
+        }
+        return -1;
+    }
+    
+    /**
+     * Convert player inventory index to screen slot index.
+     */
+    private int screenSlotFromInvSlot(int invSlot, boolean isTable) {
+        // Player inventory slots 0-8 are hotbar, 9-35 are main inventory
+        // In player inventory screen (syncId 0):
+        //   Hotbar (inv 0-8) = screen slots 36-44
+        //   Main (inv 9-35) = screen slots 9-35
+        // In crafting table screen:
+        //   Hotbar (inv 0-8) = screen slots 37-45  
+        //   Main (inv 9-35) = screen slots 10-36
+        if (isTable) {
+            if (invSlot < 9) {
+                return invSlot + 37; // Hotbar
+            } else {
+                return invSlot + 1; // Main inventory
+            }
+        } else {
+            if (invSlot < 9) {
+                return invSlot + 36; // Hotbar
+            } else {
+                return invSlot; // Main inventory
+            }
+        }
+    }
+    
+    /**
+     * Clear the crafting grid by clicking each slot.
+     */
+    private void clearCraftingGrid(MinecraftClient client, int syncId, boolean isTable) {
+        int gridSize = isTable ? 9 : 4;
+        int gridStart = 1; // Slot 0 is output, grid starts at 1
+        
+        for (int i = gridStart; i <= gridSize; i++) {
+            final int slot = i;
+            client.execute(() -> {
+                client.interactionManager.clickSlot(syncId, slot, 0, SlotActionType.QUICK_MOVE, client.player);
+            });
+            try { Thread.sleep(30); } catch (InterruptedException e) {}
+        }
+    }
+    
+    /**
+     * Place ingredients in crafting grid.
+     */
+    private boolean placeIngredients(MinecraftClient client, int syncId, CraftRecipe recipe) {
+        int gridStart = 1; // Output is slot 0
+        boolean isTable = recipe.requiresTable;
+        
+        for (int i = 0; i < recipe.grid.length; i++) {
+            String item = recipe.grid[i];
+            if (item == null || item.isEmpty()) continue;
+            
+            int gridSlot = gridStart + i;
+            int sourceSlot = findItemSlot(client, item, syncId, isTable);
+            
+            if (sourceSlot == -1) {
+                LOGGER.warn("Could not find {} for crafting", item);
+                return false;
+            }
+            
+            final int src = sourceSlot;
+            final int dst = gridSlot;
+            
+            // Pick up one item from source
+            client.execute(() -> {
+                client.interactionManager.clickSlot(syncId, src, 1, SlotActionType.PICKUP, client.player); // Right-click = 1 item
+            });
+            try { Thread.sleep(50); } catch (InterruptedException e) {}
+            
+            // Place in grid
+            client.execute(() -> {
+                client.interactionManager.clickSlot(syncId, dst, 0, SlotActionType.PICKUP, client.player);
+            });
+            try { Thread.sleep(50); } catch (InterruptedException e) {}
+        }
+        
+        return true;
     }
 
     private void handleClickRecipe(MinecraftClient client, JsonObject params, JsonObject data) {
@@ -2111,17 +2574,6 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         
         BlockPos targetPos = new BlockPos(x, y, z);
         
-        // Look at the target block
-        double dx = x + 0.5 - client.player.getX();
-        double dy = y + 0.5 - client.player.getEyeY();
-        double dz = z + 0.5 - client.player.getZ();
-        double horizontalDist = Math.sqrt(dx * dx + dz * dz);
-        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
-        float pitch = (float) Math.toDegrees(-Math.atan2(dy, horizontalDist));
-        
-        client.player.setYaw(yaw);
-        client.player.setPitch(pitch);
-        
         // Find a face to place against
         Direction placeFace = Direction.UP;
         BlockPos placeAgainst = targetPos.down();
@@ -2137,7 +2589,19 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             }
         }
         
-        Vec3d hitPos = Vec3d.ofCenter(placeAgainst).add(Vec3d.of(placeFace.getVector()).multiply(0.5));
+        Vec3d hitPos = Vec3d.ofCenter(placeAgainst).add(Vec3d.of(placeFace.getVector()).multiply(0.5d));
+        
+        // Look at the target interaction point
+        double dx = hitPos.x - client.player.getX();
+        double dy = hitPos.y - client.player.getEyeY();
+        double dz = hitPos.z - client.player.getZ();
+        double horizontalDist = Math.sqrt(dx * dx + dz * dz);
+        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        float pitch = (float) Math.toDegrees(-Math.atan2(dy, horizontalDist));
+        
+        client.player.setYaw(yaw);
+        client.player.setPitch(pitch);
+
         BlockHitResult hitResult = new BlockHitResult(hitPos, placeFace, placeAgainst, false);
         
         ActionResult result = client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hitResult);

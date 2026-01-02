@@ -5,7 +5,7 @@ Combat utilities - Mob engagement, retreat logic, and healing.
 import time
 from typing import Dict, List, Optional
 
-from .inventory import count_item
+from .inventory import count_item, equip_best_weapon
 from .tasks import TaskResult
 
 
@@ -68,6 +68,9 @@ def attack_nearest(
     entity_id = entity.get("id")
     if entity_id is None:
         return False
+        
+    # Equip weapon
+    equip_best_weapon(client)
     
     try:
         # Look at entity
@@ -101,6 +104,9 @@ def safe_combat(
     Returns:
         True if target killed, False if retreated or failed
     """
+    # Equip weapon
+    equip_best_weapon(client)
+    
     start = time.time()
     
     while time.time() - start < max_duration:
@@ -248,18 +254,45 @@ def hunt_mobs(
     if not missing and not target_kills:
         return TaskResult.ok("Already satisfied", kills=kills, missing={})
 
+    exploring = False
+    last_time_check = 0
+    
     while (missing or (target_kills and kills < target_kills)) and time.time() - start < timeout:
+        # Check for night every 10 seconds
+        if time.time() - last_time_check > 10:
+            last_time_check = time.time()
+            state = client.transport.dispatch("get_state", {})
+            if state.get("world_time", 0) % 24000 >= 13000:
+                 print("  Night detected! Aborting hunt.")
+                 if exploring:
+                      client.transport.dispatch("chat", {"message": "#stop"})
+                 return TaskResult.fail("Night detected")
+
         heal_if_needed(client, threshold=heal_threshold)
         entity = find_entity_by_type(client, mob_types, radius=search_radius)
+        
         if entity is None:
+            if not exploring:
+                print("  No targets found, starting exploration...")
+                # Dispatch explore command (using chat command via API or strict explore)
+                # Since handleExplore expects X/Z, providing current or origin is common.
+                # But #explore works best.
+                client.transport.dispatch("chat", {"message": "#explore"})
+                exploring = True
             time.sleep(3)
             continue
+
+        if exploring:
+             print("  Target found! Stopping exploration.")
+             client.transport.dispatch("chat", {"message": "#stop"})
+             exploring = False
+             time.sleep(0.5)
 
         target_id = entity.get("id")
         if target_id is None:
             time.sleep(1)
             continue
-
+            
         if safe_combat(client, target_id, retreat_health=heal_threshold - 2, max_duration=40):
             kills += 1
             missing = _missing()

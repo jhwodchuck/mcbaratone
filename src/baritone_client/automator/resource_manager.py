@@ -32,7 +32,8 @@ class ResourceManager:
     # Crafting Recipes (item_id -> ingredients)
     # Ingredients: List of (item_id, count)
     # This is a simplified model.
-    RECIPES: Dict[str, Dict[str, Any]] = {
+    # Default fallback recipes
+    DEFAULT_RECIPES: Dict[str, Dict[str, Any]] = {
         "minecraft:oak_planks": {"ingredients": [("minecraft:oak_log", 1)], "yield": 4},
         "minecraft:birch_planks": {"ingredients": [("minecraft:birch_log", 1)], "yield": 4},
         "minecraft:spruce_planks": {"ingredients": [("minecraft:spruce_log", 1)], "yield": 4},
@@ -110,6 +111,106 @@ class ResourceManager:
         self.client = client
         self.cached_inventory: Dict[str, int] = {}
         self.crafting_queue: List[CraftingTask] = []
+        self.recipes = self.DEFAULT_RECIPES.copy()
+        
+        # Resource locking
+        self.reserved_resources: Dict[str, int] = {}
+        self.active_requests: List[Dict] = []  # List of {item: str, amount: int, priority: int}
+        
+        # Efficiency Tracking
+        self.stats = {
+            "gathered": {},
+            "start_time": {},
+            "rates": {}
+        }
+
+    # Material Equivalencies
+    EQUIVALENCIES = {
+        "#logs": [
+            "minecraft:oak_log", "minecraft:birch_log", "minecraft:spruce_log",
+            "minecraft:jungle_log", "minecraft:acacia_log", "minecraft:dark_oak_log",
+            "minecraft:crimson_stem", "minecraft:warped_stem"
+        ],
+        "#planks": [
+            "minecraft:oak_planks", "minecraft:birch_planks", "minecraft:spruce_planks",
+            "minecraft:jungle_planks", "minecraft:acacia_planks", "minecraft:dark_oak_planks",
+            "minecraft:crimson_planks", "minecraft:warped_planks"
+        ],
+        "#stone_tool_material": ["minecraft:cobblestone", "minecraft:blackstone"],
+        "#coals": ["minecraft:coal", "minecraft:charcoal"],
+    }
+
+    def initialize_recipes(self) -> None:
+        """Fetch recipes from the game if available."""
+        try:
+            print("Fetching recipes from bridge...")
+            data = self.client.transport.dispatch("get_recipes", {})
+            
+            fetched_count = 0
+            if "recipes" in data:
+                raw_recipes = data["recipes"]
+                for r in raw_recipes:
+                    recipe_id = r.get("id")
+                    output = r.get("output", {})
+                    
+                    # Some responses might be simplified
+                    output_item = output.get("item")
+                    output_count = output.get("count", 1)
+                    
+                    if not output_item: 
+                        # Try to infer from ID if output not explicit (depends on bridge version)
+                        # The simple bridge might just return raw data
+                         continue
+
+                    ingredients = []
+                    # Parse ingredients... (Bridge format varies, assuming simplified here)
+                    # For now, we trust the defaults more but this is the hook to expand.
+                    # Implementation depends on bridge 'get_recipes' structure.
+                    
+                    # self.recipes[output_item] = ... 
+                    fetched_count += 1
+            
+            print(f"Fetched {fetched_count} recipes (Support limited in this version). Using fallback defaults.")
+            
+        except Exception as e:
+            print(f"Failed to fetch recipes: {e}. Using defaults.")
+
+    def request_resources(self, item_id: str, quantity: int, priority: int = 10) -> None:
+        """
+        Register a dynamic resource request.
+        
+        Args:
+            item_id: Item needed
+            quantity: Amount needed
+            priority: Importance (higher = more urgent)
+        """
+        self.active_requests.append({
+            "item": item_id,
+            "quantity": quantity,
+            "priority": priority
+        })
+        self.active_requests.sort(key=lambda x: -x["priority"])
+
+    def reserve_resource(self, item_id: str, quantity: int) -> bool:
+        """
+        Attempt to reserve a resource for exclusive use.
+        
+        Returns:
+            True if sufficient unreserved resources exist.
+        """
+        current_total = self.get_item_count(item_id)
+        current_reserved = self.reserved_resources.get(item_id, 0)
+        
+        available = current_total - current_reserved
+        if available >= quantity:
+            self.reserved_resources[item_id] = current_reserved + quantity
+            return True
+        return False
+
+    def release_resource(self, item_id: str, quantity: int) -> None:
+        """Release reserved resources."""
+        if item_id in self.reserved_resources:
+            self.reserved_resources[item_id] = max(0, self.reserved_resources[item_id] - quantity)
     
     def refresh_inventory(self) -> Dict[str, int]:
         """
@@ -141,18 +242,42 @@ class ResourceManager:
                     counts[item_id] = counts.get(item_id, 0) + count
 
         self.cached_inventory = counts
+        self._update_efficiency_stats(counts)
         return counts
+        
+    def _update_efficiency_stats(self, current_inventory: Dict[str, int]):
+        """Update efficiency tracking metrics."""
+        import time
+        now = time.time()
+        
+        for item, count in current_inventory.items():
+            if item not in self.stats["start_time"]:
+                self.stats["start_time"][item] = now
+            
+            # Simple rate tracking (items per minute since tracking started)
+            start = self.stats["start_time"][item]
+            duration = (now - start) / 60.0
+            if duration > 0.1:
+                self.stats["rates"][item] = count / duration
     
-    def get_item_count(self, item_id: str) -> int:
+    def get_item_count(self, item_id: str, include_reserved: bool = True) -> int:
         """
-        Get count of specific item in inventory.
+        Get count of specific item or item group (starting with #).
         
         Args:
-            item_id: Minecraft item ID (e.g., "minecraft:diamond")
+            item_id: Minecraft item ID or Group ID (e.g., "#logs")
             
         Returns:
             Count of item in inventory
         """
+        if item_id.startswith("#"):
+            # Sum all items in the group
+            group = self.EQUIVALENCIES.get(item_id, [])
+            total = 0
+            for specific_item in group:
+                total += self.cached_inventory.get(specific_item, 0)
+            return total
+            
         return self.cached_inventory.get(item_id, 0)
     
     def has_items(self, requirements: Dict[str, int]) -> bool:

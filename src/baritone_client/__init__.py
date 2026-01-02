@@ -24,19 +24,20 @@ Example:
     ```
 """
 
-from .cache_manager import CacheManager, CacheStats
-from .client import Client, MissionFacade
-from .command_dispatcher import CommandDispatcher, CommandResult
-from .enums import MovementStatus, PathCalculationResultType, PathingCommandType, TransportEvent
-from .exceptions import CommandError, RouteError, TransportError, ValidationError
-from .goals import GoalFactory, GoalManager
-from .lifecycle import Ticker
-from .models import BetterBlockPos, BlockPos, Goal, Selection
-from .processes import ProcessFacade
-from .schematics import SchematicManager
+from .core.client import Client
+from .core.facades.missions import MissionFacade
+from .transport.command_dispatcher import CommandDispatcher, CommandResult
+from .transport.enums import MovementStatus, PathCalculationResultType, PathingCommandType, TransportEvent
+from .core.exceptions import CommandError, RouteError, TransportError, ValidationError
+from .core.facades.goals import GoalFactory, GoalManager
+from .events.lifecycle import Ticker
+from .models.models import BetterBlockPos, BlockPos, Goal, Selection
+from .core.facades.processes import ProcessFacade
+from .core.facades.schematics import SchematicManager
 from .scripts.endgame import EndGameMission, MissionPhase, MissionState
-from .transport import Py4JTransport, TcpTransport, Transport, WebSocketTransport
-from .upload_manager import UploadManager, UploadPriority, UploadProgress, UploadStatus
+from .transport.transport import Py4JTransport, TcpTransport, Transport, WebSocketTransport
+from .utils.cache_manager import CacheManager, CacheStats
+from .utils.upload_manager import UploadManager, UploadPriority, UploadProgress, UploadStatus
 
 __all__ = [
     "Client",

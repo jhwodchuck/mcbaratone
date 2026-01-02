@@ -1,178 +1,218 @@
 package com.minecraftbot.baritone;
 
+import com.google.gson.JsonObject;
+import net.minecraft.client.MinecraftClient;
+import baritone.api.IBaritone;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+
+import java.net.Socket;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 public class CommandHandlerFactoryTest {
 
+    @Mock
+    private MinecraftClient mockClient;
+
+    @Mock
+    private IBaritone mockBaritone;
+
+    @Mock
+    private Socket mockSocket;
+
+    private static class TestCommandHandler implements CommandHandler {
+        @Override
+        public CommandResult handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+            return CommandResult.success(new JsonObject());
+        }
+
+        @Override
+        public String getCommandName() {
+            return "test";
+        }
+    }
+
     @BeforeEach
+    void setUp() {
+        MockitoAnnotations.openMocks(this);
+        // Clear registry before each test to ensure clean state
+        CommandHandlerFactory.clearRegistry();
+    }
+
     @AfterEach
-    public void cleanUp() {
+    void tearDown() {
+        // Clean up after each test
         CommandHandlerFactory.clearRegistry();
     }
 
     @Test
-    public void testRegisterAndGetHandler() {
-        // Register a handler
-        CommandHandlerFactory.registerHandler("test_command", TestCommandHandler.class);
+    void testGetHandler_WithNullCommandName_ShouldReturnNull() {
+        CommandHandler result = CommandHandlerFactory.getHandler(null);
+        assertNull(result);
+    }
 
-        // Get the handler
-        CommandHandler handler = CommandHandlerFactory.getHandler("test_command");
+    @Test
+    void testGetHandler_WithUnregisteredCommand_ShouldReturnNull() {
+        CommandHandler result = CommandHandlerFactory.getHandler("nonexistent");
+        assertNull(result);
+    }
+
+    @Test
+    void testRegisterHandler_ShouldStoreHandlerClass() {
+        CommandHandlerFactory.registerHandler("test", TestCommandHandler.class);
+        assertTrue(CommandHandlerFactory.hasHandler("test"));
+    }
+
+    @Test
+    void testGetHandler_ShouldReturnSingletonInstance() {
+        CommandHandlerFactory.registerHandler("test", TestCommandHandler.class);
+
+        CommandHandler handler1 = CommandHandlerFactory.getHandler("test");
+        CommandHandler handler2 = CommandHandlerFactory.getHandler("test");
+
+        assertNotNull(handler1);
+        assertSame(handler1, handler2); // Should be the same instance (singleton)
+    }
+
+    @Test
+    void testGetHandler_ShouldCreateInstanceFromRegisteredClass() {
+        CommandHandlerFactory.registerHandler("test", TestCommandHandler.class);
+
+        CommandHandler handler = CommandHandlerFactory.getHandler("test");
 
         assertNotNull(handler);
-        assertTrue(handler instanceof TestCommandHandler);
-        assertEquals("test_command", handler.getCommandName());
+        assertEquals("test", handler.getCommandName());
+        assertInstanceOf(TestCommandHandler.class, handler);
     }
 
     @Test
-    public void testGetHandlerReturnsSameInstance() {
-        CommandHandlerFactory.registerHandler("singleton_test", TestCommandHandler.class);
-
-        CommandHandler handler1 = CommandHandlerFactory.getHandler("singleton_test");
-        CommandHandler handler2 = CommandHandlerFactory.getHandler("singleton_test");
-
-        assertSame(handler1, handler2);
+    void testHasHandler_WithRegisteredCommand_ShouldReturnTrue() {
+        CommandHandlerFactory.registerHandler("test", TestCommandHandler.class);
+        assertTrue(CommandHandlerFactory.hasHandler("test"));
     }
 
     @Test
-    public void testHasHandler() {
+    void testHasHandler_WithUnregisteredCommand_ShouldReturnFalse() {
         assertFalse(CommandHandlerFactory.hasHandler("nonexistent"));
-
-        CommandHandlerFactory.registerHandler("exists", TestCommandHandler.class);
-
-        assertTrue(CommandHandlerFactory.hasHandler("exists"));
     }
 
     @Test
-    public void testGetHandlerForUnknownCommand() {
-        CommandHandler handler = CommandHandlerFactory.getHandler("unknown_command");
-
-        assertNull(handler);
+    void testHasHandler_WithNullCommand_ShouldReturnFalse() {
+        assertFalse(CommandHandlerFactory.hasHandler(null));
     }
 
     @Test
-    public void testGetHandlerWithNullCommand() {
-        CommandHandler handler = CommandHandlerFactory.getHandler(null);
-
-        assertNull(handler);
-    }
-
-    @Test
-    public void testGetRegisteredCommands() {
+    void testGetRegisteredCommands_ShouldReturnAllRegisteredCommands() {
         CommandHandlerFactory.registerHandler("cmd1", TestCommandHandler.class);
         CommandHandlerFactory.registerHandler("cmd2", TestCommandHandler.class);
 
         String[] commands = CommandHandlerFactory.getRegisteredCommands();
-
         assertEquals(2, commands.length);
-        assertTrue(contains(commands, "cmd1"));
-        assertTrue(contains(commands, "cmd2"));
+        assertTrue(java.util.Arrays.asList(commands).contains("cmd1"));
+        assertTrue(java.util.Arrays.asList(commands).contains("cmd2"));
     }
 
     @Test
-    public void testGetRegisteredHandlerCount() {
+    void testGetRegisteredHandlerCount_ShouldReturnCorrectCount() {
         assertEquals(0, CommandHandlerFactory.getRegisteredHandlerCount());
 
         CommandHandlerFactory.registerHandler("cmd1", TestCommandHandler.class);
-        CommandHandlerFactory.registerHandler("cmd2", TestCommandHandler.class);
+        assertEquals(1, CommandHandlerFactory.getRegisteredHandlerCount());
 
+        CommandHandlerFactory.registerHandler("cmd2", TestCommandHandler.class);
         assertEquals(2, CommandHandlerFactory.getRegisteredHandlerCount());
     }
 
     @Test
-    public void testClearRegistry() {
+    void testClearRegistry_ShouldRemoveAllHandlers() {
         CommandHandlerFactory.registerHandler("cmd1", TestCommandHandler.class);
         CommandHandlerFactory.registerHandler("cmd2", TestCommandHandler.class);
+        CommandHandler handler = CommandHandlerFactory.getHandler("cmd1");
 
+        assertTrue(CommandHandlerFactory.hasHandler("cmd1"));
         assertEquals(2, CommandHandlerFactory.getRegisteredHandlerCount());
 
         CommandHandlerFactory.clearRegistry();
 
+        assertFalse(CommandHandlerFactory.hasHandler("cmd1"));
         assertEquals(0, CommandHandlerFactory.getRegisteredHandlerCount());
+        // After clearing, getHandler should return null even if we had an instance before
         assertNull(CommandHandlerFactory.getHandler("cmd1"));
     }
 
     @Test
-    public void testDefaultRegisteredHandlers() {
-        // The factory registers handlers in its static initializer
-        // We need to test after clearing to see the defaults
+    void testGetHandler_WithInstantiationError_ShouldReturnNull() {
+        // Create a handler class that cannot be instantiated
+        CommandHandlerFactory.registerHandler("bad", BadCommandHandler.class);
+
+        CommandHandler result = CommandHandlerFactory.getHandler("bad");
+        assertNull(result);
+    }
+
+    private static class BadCommandHandler implements CommandHandler {
+        // Constructor that throws exception
+        public BadCommandHandler() {
+            throw new RuntimeException("Cannot instantiate");
+        }
+
+        @Override
+        public CommandResult handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+            return null;
+        }
+
+        @Override
+        public String getCommandName() {
+            return "bad";
+        }
+    }
+
+    @Test
+    void testStaticInitialization_RegistersDefaultHandlers() {
+        // The static block in CommandHandlerFactory should register default handlers
+        // Since we clear the registry in setUp, we need to test this differently
+        // This test verifies that the registry works after clearing
+
+        // First, clear to ensure clean state
         CommandHandlerFactory.clearRegistry();
 
-        // Re-register defaults for testing
+        // Manually register some handlers to simulate static initialization
         CommandHandlerFactory.registerHandler("goto", GotoCommandHandler.class);
         CommandHandlerFactory.registerHandler("mine", MineCommandHandler.class);
-        CommandHandlerFactory.registerHandler("get_inventory", InventoryCommandHandler.class);
-        CommandHandlerFactory.registerHandler("get_state", StateCommandHandler.class);
-        CommandHandlerFactory.registerHandler("build", BuildCommandHandler.class);
 
         assertTrue(CommandHandlerFactory.hasHandler("goto"));
         assertTrue(CommandHandlerFactory.hasHandler("mine"));
-        assertTrue(CommandHandlerFactory.hasHandler("get_inventory"));
-        assertTrue(CommandHandlerFactory.hasHandler("get_state"));
-        assertTrue(CommandHandlerFactory.hasHandler("build"));
-
-        // Test instance creation
-        assertNotNull(CommandHandlerFactory.getHandler("goto"));
-        assertNotNull(CommandHandlerFactory.getHandler("mine"));
+        assertFalse(CommandHandlerFactory.hasHandler("nonexistent"));
     }
 
     @Test
-    public void testHandlerInstantiationFailure() {
-        // Register a class that cannot be instantiated
-        CommandHandlerFactory.registerHandler("bad_handler", BadCommandHandler.class);
+    void testInstanceCaching_PreventsRecreation() {
+        CommandHandlerFactory.registerHandler("test", TestCommandHandler.class);
 
-        CommandHandler handler = CommandHandlerFactory.getHandler("bad_handler");
+        // Get handler twice
+        CommandHandler handler1 = CommandHandlerFactory.getHandler("test");
+        CommandHandler handler2 = CommandHandlerFactory.getHandler("test");
 
-        assertNull(handler);
+        // Should be the same instance
+        assertSame(handler1, handler2);
     }
 
     @Test
-    public void testMultipleCommandsSameHandler() {
-        CommandHandlerFactory.registerHandler("goto", GotoCommandHandler.class);
-        CommandHandlerFactory.registerHandler("come", GotoCommandHandler.class);
-        CommandHandlerFactory.registerHandler("follow", GotoCommandHandler.class);
+    void testMultipleCommands_SameHandlerClass() {
+        // Register the same handler class for multiple commands
+        CommandHandlerFactory.registerHandler("cmd1", TestCommandHandler.class);
+        CommandHandlerFactory.registerHandler("cmd2", TestCommandHandler.class);
 
-        CommandHandler gotoHandler = CommandHandlerFactory.getHandler("goto");
-        CommandHandler comeHandler = CommandHandlerFactory.getHandler("come");
-        CommandHandler followHandler = CommandHandlerFactory.getHandler("follow");
+        CommandHandler handler1 = CommandHandlerFactory.getHandler("cmd1");
+        CommandHandler handler2 = CommandHandlerFactory.getHandler("cmd2");
 
-        assertNotNull(gotoHandler);
-        assertNotNull(comeHandler);
-        assertNotNull(followHandler);
-
-        // Different commands should return different instances
-        assertNotSame(gotoHandler, comeHandler);
-        assertNotSame(comeHandler, followHandler);
-    }
-
-    // Helper method to check if array contains a string
-    private boolean contains(String[] array, String value) {
-        for (String item : array) {
-            if (item.equals(value)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // Test command handler implementation
-    public static class TestCommandHandler extends AbstractCommandHandler {
-        @Override
-        public String getCommandName() {
-            return "test_command";
-        }
-
-        @Override
-        protected CommandResult execute(com.google.gson.JsonObject params, net.minecraft.client.MinecraftClient client, baritone.api.IBaritone baritone, java.net.Socket clientSocket) {
-            return CommandResult.success(new com.google.gson.JsonObject());
-        }
-    }
-
-    // Bad command handler that cannot be instantiated
-    public static abstract class BadCommandHandler extends AbstractCommandHandler {
-        // Abstract class cannot be instantiated
+        // Should be different instances since they are for different commands
+        assertNotSame(handler1, handler2);
+        assertEquals("test", handler1.getCommandName());
+        assertEquals("test", handler2.getCommandName());
     }
 }

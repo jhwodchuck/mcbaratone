@@ -12,6 +12,9 @@ import net.minecraft.util.math.Box;
 import net.minecraft.world.World;
 
 import java.net.Socket;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Command handler for state queries: get_state, get_entities.
@@ -38,62 +41,88 @@ public class StateCommandHandler extends AbstractCommandHandler {
     }
 
     private CommandResult handleGetState(MinecraftClient client, IBaritone baritone) {
-        try {
-            if (client.player == null) {
-                return CommandResult.error("Player not available");
-            }
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<JsonObject> dataRef = new AtomicReference<>();
+        AtomicReference<String> errorRef = new AtomicReference<>();
 
-            ClientPlayerEntity player = client.player;
-
-            // Position (Primitives are volatile/safe)
-            JsonObject position = new JsonObject();
-            position.addProperty("x", player.getX());
-            position.addProperty("y", player.getY());
-            position.addProperty("z", player.getZ());
-            position.addProperty("yaw", player.getYaw());
-            position.addProperty("pitch", player.getPitch());
-
-            // Block position (BlockPos is immutable struct)
-            var blockPos = player.getBlockPos();
-            JsonObject blockPosition = new JsonObject();
-            blockPosition.addProperty("x", blockPos.getX());
-            blockPosition.addProperty("y", blockPos.getY());
-            blockPosition.addProperty("z", blockPos.getZ());
-
-            // Health and status (Primitives)
-            JsonObject data = new JsonObject();
-            data.add("position", position);
-            data.add("block_position", blockPosition);
-            data.addProperty("health", player.getHealth());
-            data.addProperty("max_health", player.getMaxHealth());
-            data.addProperty("food_level", player.getHungerManager().getFoodLevel());
-            data.addProperty("saturation", player.getHungerManager().getSaturationLevel());
-            data.addProperty("experience_level", player.experienceLevel);
-            data.addProperty("experience_total", player.totalExperience);
-            data.addProperty("is_dead", player.isDead());
-
-            // Baritone status
+        client.execute(() -> {
             try {
-                boolean isPathing = baritone.getPathingBehavior().isPathing();
-                data.addProperty("is_pathing", isPathing);
-
-                if (isPathing) {
-                    data.addProperty("pathing_goal", baritone.getPathingBehavior().getGoal() != null);
+                if (client.player == null) {
+                    errorRef.set("Player not available");
+                    return;
                 }
-            } catch (Exception e) {
-                logger.debug("Could not get pathing status", e);
-                data.addProperty("is_pathing", false);
-            }
 
-            // World info
-            if (client.world != null) {
+                if (client.world == null) {
+                    errorRef.set("World not available");
+                    return;
+                }
+
+                ClientPlayerEntity player = client.player;
+
+                // Position (Primitives are volatile/safe)
+                JsonObject position = new JsonObject();
+                position.addProperty("x", player.getX());
+                position.addProperty("y", player.getY());
+                position.addProperty("z", player.getZ());
+                position.addProperty("yaw", player.getYaw());
+                position.addProperty("pitch", player.getPitch());
+
+                // Block position (BlockPos is immutable struct)
+                var blockPos = player.getBlockPos();
+                JsonObject blockPosition = new JsonObject();
+                blockPosition.addProperty("x", blockPos.getX());
+                blockPosition.addProperty("y", blockPos.getY());
+                blockPosition.addProperty("z", blockPos.getZ());
+
+                // Health and status (Primitives)
+                JsonObject data = new JsonObject();
+                data.add("position", position);
+                data.add("block_position", blockPosition);
+                data.addProperty("health", player.getHealth());
+                data.addProperty("max_health", player.getMaxHealth());
+                data.addProperty("food_level", player.getHungerManager().getFoodLevel());
+                data.addProperty("saturation", player.getHungerManager().getSaturationLevel());
+                data.addProperty("experience_level", player.experienceLevel);
+                data.addProperty("experience_total", player.totalExperience);
+                data.addProperty("is_dead", player.isDead());
+
+                // Baritone status
+                try {
+                    boolean isPathing = baritone.getPathingBehavior().isPathing();
+                    data.addProperty("is_pathing", isPathing);
+
+                    if (isPathing) {
+                        data.addProperty("pathing_goal", baritone.getPathingBehavior().getGoal() != null);
+                    }
+                } catch (Exception e) {
+                    logger.debug("Could not get pathing status", e);
+                    data.addProperty("is_pathing", false);
+                }
+
+                // World info
                 data.addProperty("dimension", client.world.getRegistryKey().getValue().toString());
-            }
 
-            return CommandResult.success(data);
-        } catch (Exception e) {
-            return CommandResult.error("Failed to get state: " + e.getMessage());
+                dataRef.set(data);
+            } catch (Exception e) {
+                errorRef.set("Failed to get state: " + e.getMessage());
+            } finally {
+                latch.countDown();
+            }
+        });
+
+        try {
+            if (!latch.await(5, TimeUnit.SECONDS)) {
+                return CommandResult.error("Timeout waiting for state data");
+            }
+        } catch (InterruptedException e) {
+            return CommandResult.error("Interrupted while waiting for state data");
         }
+
+        if (errorRef.get() != null) {
+            return CommandResult.error(errorRef.get());
+        }
+
+        return CommandResult.success(dataRef.get());
     }
 
     private CommandResult handleGetEntities(MinecraftClient client, JsonObject params) {

@@ -7,6 +7,8 @@ from typing import Optional, Callable, Any
 from .state_manager import StateManager, Phase
 from .resource_manager import ResourceManager
 from .phase_executor import PhaseExecutor, PhaseHandler
+from .coordination_hub import CoordinationHub, SystemEvent, EventType
+from .systems import SafetySystem, HungerSystem, MappingSystem
 
 
 class EndGameAutomator:
@@ -51,7 +53,13 @@ class EndGameAutomator:
         self.client = client
         self.state = StateManager(checkpoint_dir)
         self.resources = ResourceManager(client)
-        self.executor = PhaseExecutor(client, self.resources, self.state)
+        self.coordination = CoordinationHub()
+        self.systems = [
+            SafetySystem(client, self.coordination, resources=self.resources),
+            HungerSystem(client, self.coordination, resources=self.resources),
+            MappingSystem(client, self.coordination, resources=self.resources)
+        ]
+        self.executor = PhaseExecutor(client, self.resources, self.state, self.coordination)
         
         self.auto_checkpoint = auto_checkpoint
         self.checkpoint_interval = checkpoint_interval
@@ -128,6 +136,13 @@ class EndGameAutomator:
         
         if resume:
             self.load_or_start()
+            
+        # Initialize dynamic resources
+        self.resources.initialize_recipes()
+        
+        # Start background systems
+        for system in self.systems:
+            system.start()
         
         print(f"\n{'#'*60}")
         print(f"#  EndGame Automator Started")
@@ -183,6 +198,8 @@ class EndGameAutomator:
     def stop(self) -> None:
         """Stop the automation loop."""
         self._running = False
+        for system in self.systems:
+            system.stop()
         self._save_checkpoint()
     
     def _maybe_checkpoint(self) -> None:

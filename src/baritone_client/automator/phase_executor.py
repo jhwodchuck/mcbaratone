@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, Optional
 from .state_manager import Phase, StateManager
 from ..common.tasks import TaskResult
 from .resource_manager import ResourceManager
+from .coordination_hub import CoordinationHub, SystemEvent, EventType
 
 
 class PhaseHandler(ABC):
@@ -60,6 +61,7 @@ class PhaseExecutor:
         client,
         resources: ResourceManager,
         state: StateManager,
+        coordination_hub: Optional["CoordinationHub"] = None,
         max_retries: int = 3,
         retry_delay: float = 5.0,
     ):
@@ -76,6 +78,7 @@ class PhaseExecutor:
         self.client = client
         self.resources = resources
         self.state = state
+        self.coordination = coordination_hub
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         
@@ -144,6 +147,13 @@ class PhaseExecutor:
         print(f"{'='*50}")
         
         # Enter phase
+        if self.coordination:
+            self.coordination.broadcast(SystemEvent(
+                EventType.PHASE_CHANGE,
+                "phase_executor",
+                {"phase": phase.name, "status": "started"}
+            ))
+        
         handler.on_enter(self.client, self.resources, self.state)
         
         retries = 0
@@ -161,6 +171,14 @@ class PhaseExecutor:
                     self._report_progress(phase, 1.0, f"Completed {handler.get_name()}")
                     handler.on_exit(self.client, self.resources, self.state)
                     self.state.record_phase_payload(phase, result.data)
+                    
+                    if self.coordination:
+                        self.coordination.broadcast(SystemEvent(
+                            EventType.TASK_COMPLETED,
+                            "phase_executor",
+                            {"phase": phase.name, "data": result.data}
+                        ))
+                    
                     return True
                 else:
                     print(f"Phase {phase.name} reported failure: {result.reason}")
