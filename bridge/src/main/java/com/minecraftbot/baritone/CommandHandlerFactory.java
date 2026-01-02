@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Factory for creating command handler instances based on command names.
@@ -13,8 +14,8 @@ import java.util.Map;
 public class CommandHandlerFactory {
     private static final Logger logger = LoggerFactory.getLogger(CommandHandlerFactory.class);
 
-    private static final Map<String, Class<? extends CommandHandler>> handlerRegistry = new HashMap<>();
-    private static final Map<String, CommandHandler> handlerInstances = new HashMap<>();
+    private static final Map<String, Class<? extends CommandHandler>> handlerRegistry = new ConcurrentHashMap<>();
+    private static final Map<String, CommandHandler> handlerInstances = new ConcurrentHashMap<>();
 
     static {
         // Register command handlers here as they are implemented
@@ -49,6 +50,17 @@ public class CommandHandlerFactory {
         registerHandler("get_block", GetBlockCommandHandler.class);
         registerHandler("chat", ChatCommandHandler.class);
         registerHandler("select_slot", SelectSlotCommandHandler.class);
+        registerHandler("respawn", RespawnCommandHandler.class);
+        registerHandler("get_recipes", RecipeCommandHandler.class);
+        registerHandler("craft", CraftCommandHandler.class);
+        registerHandler("find_blocks", FindBlocksCommandHandler.class);
+        registerHandler("interact_block", InteractBlockCommandHandler.class);
+        registerHandler("look_at", LookAtCommandHandler.class);
+        registerHandler("cancel", CancelCommandHandler.class);
+        registerHandler("use_item", UseItemCommandHandler.class);
+        registerHandler("attack_entity", AttackEntityCommandHandler.class);
+        registerHandler("get_view", GetViewCommandHandler.class);
+        registerHandler("close_screen", CloseScreenCommandHandler.class);
     }
 
     /**

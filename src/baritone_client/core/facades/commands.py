@@ -278,3 +278,26 @@ class CommandFacade:
             command: Selection subcommand (e.g. "clear", "expand 1", "set 1")
         """
         return self.run(f"#sel {command}")
+
+    def screenshot(self, filename: Optional[str] = None, reason: str = "manual") -> Dict[str, Any]:
+        """
+        Capture a screenshot of the current game view.
+        
+        Screenshots are saved to Minecraft's screenshots/ folder.
+        
+        Args:
+            filename: Optional custom filename (auto-generated timestamp if omitted)
+            reason: Reason for screenshot (e.g., "phase_transition", "error", "manual")
+            
+        Returns:
+            Dictionary with 'path' (file location), 'filename', 'reason', 'queued' (bool)
+        """
+        payload = {"reason": reason}
+        if filename:
+            payload["filename"] = filename
+        result = self.dispatcher.dispatch("screenshot", payload)
+        if result.is_success():
+            return result.get_data()
+        else:
+            raise CommandError(result.get_error_message() or "Screenshot command failed")
+

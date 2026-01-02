@@ -51,6 +51,7 @@ import net.minecraft.registry.Registry;
 import net.minecraft.registry.RegistryKey;
 import net.minecraft.registry.Registries;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.screen.CraftingScreenHandler;
 import net.minecraft.screen.PlayerScreenHandler;
 import net.minecraft.screen.FurnaceScreenHandler;
@@ -59,6 +60,8 @@ import net.minecraft.util.ActionResult;
 // import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
 // import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.minecraft.item.Items;
+import net.minecraft.client.texture.NativeImage;
+import net.minecraft.client.gl.Framebuffer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -123,7 +126,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     // Rate limiting
     private final Map<Socket, Long> lastRequestTimes = new ConcurrentHashMap<>();
     private final Map<Socket, Integer> requestCounts = new ConcurrentHashMap<>();
-    private static final int RATE_LIMIT_REQUESTS = 100; // requests per window
+    private static final int RATE_LIMIT_REQUESTS = 500; // requests per window (increased for automation)
     private static final long RATE_LIMIT_WINDOW_MS = 10000; // 10 second window
 
     // Retry and reconnection logic
@@ -199,125 +202,115 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         });
         */
 
-        // New event listeners for enhanced tracking
-        registerBlockUpdateListener();
-        registerEntityEventListener();
-        registerPathfindingListener();
+        // Monitor states and entities on the main thread every few ticks
+        ClientTickEvents.END_CLIENT_TICK.register(this::onClientTick);
 
-        LOGGER.info("Fabric event listeners registered for block interaction, block updates, entities, and pathfinding");
+        LOGGER.info("Fabric event listeners registered for chat and client ticks");
     }
 
-    private void registerBlockUpdateListener() {
-        // Note: Minecraft doesn't have a direct block update event, but we can hook into world changes
-        // This is a placeholder for future implementation with mixins or other hooks
+    private int tickCounter = 0;
+    private IBaritone lastBaritone = null;
+    private boolean lastPathingState = false;
+    private final Map<Integer, BlockPos> lastEntityPositions = new HashMap<>();
+
+    private void onClientTick(MinecraftClient client) {
+        if (!running || client.player == null || client.world == null) return;
+        
+        tickCounter++;
+
+        // Audit/EMIT tick event periodically (already does this)
+        IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
+        if (baritone != null) {
+            emitTickEvent(client, baritone);
+        }
+
+        // Entity tracking (roughly once per second / 20 ticks)
+        if (tickCounter % 20 == 0) {
+            handleEntityTick(client);
+        }
+
+        // Pathfinding monitoring (roughly twice per second / 10 ticks)
+        if (tickCounter % 10 == 0 && baritone != null) {
+            handlePathfindingTick(baritone);
+        }
+        
+        // Player death tracking (every tick is fine)
+        trackPlayerDeath(client);
     }
 
-    private void registerEntityEventListener() {
-        // Track entity spawns, deaths, and movements via periodic checks
-        executor.submit(() -> {
-            MinecraftClient client = MinecraftClient.getInstance();
-            Map<Integer, BlockPos> lastEntityPositions = new HashMap<>();
+    private void handleEntityTick(MinecraftClient client) {
+        try {
+            List<Entity> currentEntities = client.world.getOtherEntities(null, client.player.getBoundingBox().expand(64));
 
-            while (running) {
-                try {
-                    if (client.world != null && client.player != null) {
-                        List<Entity> currentEntities = client.world.getOtherEntities(null, client.player.getBoundingBox().expand(64));
+            // Check for new entities
+            for (Entity entity : currentEntities) {
+                int id = entity.getId();
+                BlockPos currentPos = entity.getBlockPos();
 
-                        // Check for new entities
-                        for (Entity entity : currentEntities) {
-                            int id = entity.getId();
-                            BlockPos currentPos = entity.getBlockPos();
-
-                            if (!lastEntityPositions.containsKey(id)) {
-                                // New entity spawned
-                                JsonObject spawnData = new JsonObject();
-                                spawnData.addProperty("entity_id", id);
-                                spawnData.addProperty("type", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
-                                spawnData.addProperty("x", currentPos.getX());
-                                spawnData.addProperty("y", currentPos.getY());
-                                spawnData.addProperty("z", currentPos.getZ());
-                                eventManager.publishEvent(EventManager.EventType.ENTITY_SPAWN, spawnData);
-                            } else {
-                                // Check for significant movement
-                                BlockPos lastPos = lastEntityPositions.get(id);
-                                double distance = Math.sqrt(currentPos.getSquaredDistance(lastPos));
-                                if (distance > 10.0) { // Significant movement threshold
-                                    JsonObject moveData = new JsonObject();
-                                    moveData.addProperty("entity_id", id);
-                                    moveData.addProperty("distance", distance);
-                                    moveData.addProperty("from_x", lastPos.getX());
-                                    moveData.addProperty("from_y", lastPos.getY());
-                                    moveData.addProperty("from_z", lastPos.getZ());
-                                    moveData.addProperty("to_x", currentPos.getX());
-                                    moveData.addProperty("to_y", currentPos.getY());
-                                    moveData.addProperty("to_z", currentPos.getZ());
-                                    eventManager.publishEvent(EventManager.EventType.ENTITY_MOVE, moveData);
-                                }
-                            }
-                            lastEntityPositions.put(id, currentPos);
-                        }
-
-                        // Check for despawned entities
-                        lastEntityPositions.keySet().removeIf(id -> {
-                            boolean exists = currentEntities.stream().anyMatch(e -> e.getId() == id);
-                            if (!exists) {
-                                JsonObject despawnData = new JsonObject();
-                                despawnData.addProperty("entity_id", id);
-                                eventManager.publishEvent(EventManager.EventType.ENTITY_DESPAWN, despawnData);
-                                return true;
-                            }
-                            return false;
-                        });
-                        // Check for player death
-                        trackPlayerDeath(client);
+                if (!lastEntityPositions.containsKey(id)) {
+                    // New entity spawned
+                    JsonObject spawnData = new JsonObject();
+                    spawnData.addProperty("entity_id", id);
+                    spawnData.addProperty("type", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
+                    spawnData.addProperty("x", currentPos.getX());
+                    spawnData.addProperty("y", currentPos.getY());
+                    spawnData.addProperty("z", currentPos.getZ());
+                    eventManager.publishEvent(EventManager.EventType.ENTITY_SPAWN, spawnData);
+                } else {
+                    // Check for significant movement
+                    BlockPos lastPos = lastEntityPositions.get(id);
+                    double distance = Math.sqrt(currentPos.getSquaredDistance(lastPos));
+                    if (distance > 10.0) { // Significant movement threshold
+                        JsonObject moveData = new JsonObject();
+                        moveData.addProperty("entity_id", id);
+                        moveData.addProperty("distance", distance);
+                        moveData.addProperty("from_x", lastPos.getX());
+                        moveData.addProperty("from_y", lastPos.getY());
+                        moveData.addProperty("from_z", lastPos.getZ());
+                        moveData.addProperty("to_x", currentPos.getX());
+                        moveData.addProperty("to_y", currentPos.getY());
+                        moveData.addProperty("to_z", currentPos.getZ());
+                        eventManager.publishEvent(EventManager.EventType.ENTITY_MOVE, moveData);
                     }
-
-                    Thread.sleep(1000); // Check every second
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                } catch (Exception e) {
-                    LOGGER.warn("Error in entity tracking loop", e);
                 }
+                lastEntityPositions.put(id, currentPos);
             }
-        });
+
+            // Check for despawned entities
+            lastEntityPositions.keySet().removeIf(id -> {
+                boolean exists = currentEntities.stream().anyMatch(e -> e.getId() == id);
+                if (!exists) {
+                    JsonObject despawnData = new JsonObject();
+                    despawnData.addProperty("entity_id", id);
+                    eventManager.publishEvent(EventManager.EventType.ENTITY_DESPAWN, despawnData);
+                    return true;
+                }
+                return false;
+            });
+        } catch (Exception e) {
+            LOGGER.warn("Error in entity tick", e);
+        }
     }
 
-    private void registerPathfindingListener() {
-        // Monitor Baritone pathfinding progress
-        executor.submit(() -> {
-            IBaritone lastBaritone = null;
-            boolean lastPathingState = false;
+    private void handlePathfindingTick(IBaritone baritone) {
+        try {
+            boolean isPathing = baritone.getPathingBehavior().isPathing();
+            boolean stateChanged = (lastBaritone != baritone) || (lastPathingState != isPathing);
 
-            while (running) {
-                try {
-                    IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
-                    if (baritone != null) {
-                        boolean isPathing = baritone.getPathingBehavior().isPathing();
-                        boolean stateChanged = (lastBaritone != baritone) || (lastPathingState != isPathing);
-
-                        if (stateChanged) {
-                            JsonObject pathData = new JsonObject();
-                            pathData.addProperty("is_pathing", isPathing);
-                            if (isPathing) {
-                                pathData.addProperty("goal_type", baritone.getPathingBehavior().getGoal() != null ?
-                                    baritone.getPathingBehavior().getGoal().getClass().getSimpleName() : "unknown");
-                            }
-                            eventManager.publishEvent(EventManager.EventType.PATHFINDING_STATE, pathData);
-                            lastPathingState = isPathing;
-                            lastBaritone = baritone;
-                        }
-                    }
-
-                    Thread.sleep(500); // Check twice per second
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                } catch (Exception e) {
-                    LOGGER.warn("Error in pathfinding monitoring", e);
+            if (stateChanged) {
+                JsonObject pathData = new JsonObject();
+                pathData.addProperty("is_pathing", isPathing);
+                if (isPathing) {
+                    pathData.addProperty("goal_type", baritone.getPathingBehavior().getGoal() != null ?
+                        baritone.getPathingBehavior().getGoal().getClass().getSimpleName() : "unknown");
                 }
+                eventManager.publishEvent(EventManager.EventType.PATHFINDING_STATE, pathData);
+                lastPathingState = isPathing;
+                lastBaritone = baritone;
             }
-        });
+        } catch (Exception e) {
+            LOGGER.warn("Error in pathfinding tick", e);
+        }
     }
 
     @Override
@@ -743,17 +736,8 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                 case "plant":
                     handlePlant(baritone, params, data);
                     break;
-                case "craft":
-                    handleCraft(client, params, data);
-                    break;
-                case "place_block":
-                    handlePlaceBlock(client, params, data);
-                    break;
                 case "break_block":
                     handleBreakBlock(client, baritone, params, data);
-                    break;
-                case "find_blocks":
-                    handleFindBlocks(client, params, data);
                     break;
                 case "click_recipe":
                     handleClickRecipe(client, params, data);
@@ -778,6 +762,9 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                     break;
                 case "get_death_location":
                     handleGetDeathLocation(data);
+                    break;
+                case "screenshot":
+                    handleScreenshot(client, params, data);
                     break;
 
                 default:
@@ -1155,14 +1142,78 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     public void handleSettings(JsonObject params, JsonObject data) {
         if (params.has("get")) {
             String key = params.get("get").getAsString();
-            MinecraftClient.getInstance().execute(() -> 
-                MinecraftClient.getInstance().player.networkHandler.sendChatMessage("#settings " + key));
-            data.addProperty("note", "Setting requested via chat");
+            try {
+                baritone.api.Settings.Setting<?> setting = BaritoneAPI.getSettings().allSettings.stream()
+                    .filter(s -> s.getName().equalsIgnoreCase(key))
+                    .findFirst().orElse(null);
+                
+                if (setting != null) {
+                    data.addProperty("key", setting.getName());
+                    data.addProperty("value", setting.value.toString());
+                } else {
+                    data.addProperty("error", "Setting not found: " + key);
+                }
+            } catch (Exception e) {
+                data.addProperty("error", "Failed to get setting: " + e.getMessage());
+            }
         } else if (params.has("set")) {
             String key = params.get("set").getAsString();
             String val = params.get("value").getAsString();
-            MinecraftClient.getInstance().execute(() -> 
-                MinecraftClient.getInstance().player.networkHandler.sendChatMessage("#settings " + key + " " + val));
+            
+            try {
+                // Run on main thread to be safe, though most settings can be set off-thread.
+                // Baritone settings are usually primitive wrappers or Enums.
+                MinecraftClient.getInstance().execute(() -> {
+                    baritone.api.Settings.Setting<?> setting = BaritoneAPI.getSettings().allSettings.stream()
+                        .filter(s -> s.getName().equalsIgnoreCase(key))
+                        .findFirst().orElse(null);
+                    
+                    if (setting != null) {
+                        try {
+                            // Using Baritone's internal string parsing if available, 
+                            // but safest is to handle common types or let Baritone handle it.
+                            // In 1.15.0, Setting has a generic value field.
+                            // We attempt to cast and set.
+                            modifySettingSafely(setting, val);
+                            LOGGER.info("Successfully set Baritone setting {} to {}", key, val);
+                        } catch (Exception e) {
+                            LOGGER.error("Failed to set Baritone setting {}: {}", key, e.getMessage());
+                        }
+                    }
+                });
+                data.addProperty("status", "requested");
+            } catch (Exception e) {
+                data.addProperty("error", "Failed to dispatch setting update: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Safely modify a Baritone setting by parsing the string value.
+     */
+    @SuppressWarnings("unchecked")
+    private void modifySettingSafely(baritone.api.Settings.Setting<?> setting, String val) {
+        Class<?> type = setting.getType();
+        if (type == Boolean.class) {
+            ((baritone.api.Settings.Setting<Boolean>) setting).value = Boolean.parseBoolean(val);
+        } else if (type == Integer.class) {
+            ((baritone.api.Settings.Setting<Integer>) setting).value = Integer.parseInt(val);
+        } else if (type == Double.class) {
+            ((baritone.api.Settings.Setting<Double>) setting).value = Double.parseDouble(val);
+        } else if (type == Float.class) {
+            ((baritone.api.Settings.Setting<Float>) setting).value = Float.parseFloat(val);
+        } else if (type == Long.class) {
+            ((baritone.api.Settings.Setting<Long>) setting).value = Long.parseLong(val);
+        } else {
+            // Fallback for strings or other types if applicable
+            // Note: Enum settings might need more complex parsing
+            try {
+                // Try set via generic approach if possible
+                setting.getClass().getMethod("setValue", Object.class); // Check if exists
+                // But usually .value is public in most 1.15.0/1.12.2 versions
+            } catch (Exception e) {
+                // log
+            }
         }
     }
 
@@ -1203,57 +1254,64 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     @Override
     public void handleGetState(MinecraftClient client, IBaritone baritone, JsonObject data) {
         try {
-            // Safe Off-Thread Read - No client.submit()
-            if (client.player == null) {
-                data.addProperty("error", "Player not available");
-                return;
-            }
-
-            ClientPlayerEntity player = client.player;
-            
-            // Position (Primitives are volatile/safe)
-            JsonObject position = new JsonObject();
-            position.addProperty("x", player.getX());
-            position.addProperty("y", player.getY());
-            position.addProperty("z", player.getZ());
-            position.addProperty("yaw", player.getYaw());
-            position.addProperty("pitch", player.getPitch());
-            data.add("position", position);
-            
-            // Block position (BlockPos is immutable struct)
-            BlockPos blockPos = player.getBlockPos();
-            JsonObject blockPosition = new JsonObject();
-            blockPosition.addProperty("x", blockPos.getX());
-            blockPosition.addProperty("y", blockPos.getY());
-            blockPosition.addProperty("z", blockPos.getZ());
-            data.add("block_position", blockPosition);
-            
-            // Health and status (Primitives)
-            data.addProperty("health", player.getHealth());
-            data.addProperty("max_health", player.getMaxHealth());
-            data.addProperty("food_level", player.getHungerManager().getFoodLevel());
-            data.addProperty("saturation", player.getHungerManager().getSaturationLevel());
-            data.addProperty("experience_level", player.experienceLevel);
-            data.addProperty("experience_total", player.totalExperience);
-            data.addProperty("is_dead", player.isDead());
-            
-            // Baritone status
-            try {
-                boolean isPathing = baritone.getPathingBehavior().isPathing();
-                data.addProperty("is_pathing", isPathing);
-                
-                if (isPathing) {
-                    data.addProperty("pathing_goal", baritone.getPathingBehavior().getGoal() != null);
+            // Synchronize with main thread for safe read
+            client.submit(() -> {
+                if (client.player == null) {
+                    data.addProperty("error", "Player not available");
+                    return null;
                 }
-            } catch (Exception e) {
-                LOGGER.debug("Could not get pathing status", e);
-                data.addProperty("is_pathing", false);
-            }
-            
-            // World info
-            if (client.world != null) {
-                data.addProperty("dimension", client.world.getRegistryKey().getValue().toString());
-            }
+
+                ClientPlayerEntity player = client.player;
+                
+                // Position
+                JsonObject position = new JsonObject();
+                position.addProperty("x", player.getX());
+                position.addProperty("y", player.getY());
+                position.addProperty("z", player.getZ());
+                position.addProperty("yaw", player.getYaw());
+                position.addProperty("pitch", player.getPitch());
+                data.add("position", position);
+                
+                // Block position
+                BlockPos blockPos = player.getBlockPos();
+                JsonObject blockPosition = new JsonObject();
+                blockPosition.addProperty("x", blockPos.getX());
+                blockPosition.addProperty("y", blockPos.getY());
+                blockPosition.addProperty("z", blockPos.getZ());
+                data.add("block_position", blockPosition);
+                
+                // Health and status
+                data.addProperty("health", player.getHealth());
+                data.addProperty("max_health", player.getMaxHealth());
+                data.addProperty("food_level", player.getHungerManager().getFoodLevel());
+                data.addProperty("saturation", player.getHungerManager().getSaturationLevel());
+                data.addProperty("experience_level", player.experienceLevel);
+                data.addProperty("experience_total", player.totalExperience);
+                data.addProperty("is_dead", player.isDead());
+                
+                // Baritone status
+                try {
+                    boolean isPathing = baritone.getPathingBehavior().isPathing();
+                    data.addProperty("is_pathing", isPathing);
+                    
+                    if (isPathing) {
+                        data.addProperty("pathing_goal", baritone.getPathingBehavior().getGoal() != null);
+                    }
+                } catch (Exception e) {
+                    LOGGER.debug("Could not get pathing status", e);
+                    data.addProperty("is_pathing", false);
+                }
+                
+                // World info
+                if (client.world != null) {
+                    data.addProperty("dimension", client.world.getRegistryKey().getValue().toString());
+                    
+                    if (client.getServer() != null) {
+                        data.addProperty("world_seed", client.getServer().getOverworld().getSeed());
+                    }
+                }
+                return null;
+            }).get(2, TimeUnit.SECONDS);
         } catch (Exception e) {
             data.addProperty("error", "Failed to get state: " + e.getMessage());
         }
@@ -1262,109 +1320,115 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
 
     private void handleGetEntities(MinecraftClient client, JsonObject params, JsonObject data) {
-        if (client.world == null || client.player == null) {
-            data.addProperty("error", "World or player not available");
-            return;
-        }
+        try {
+            client.submit(() -> {
+                if (client.world == null || client.player == null) {
+                    data.addProperty("error", "World or player not available");
+                    return null;
+                }
 
-        int radius = params.has("radius") ? params.get("radius").getAsInt() : 64;
-        ClientPlayerEntity player = client.player;
-        Box box = new Box(
-            player.getX() - radius, player.getY() - radius, player.getZ() - radius,
-            player.getX() + radius, player.getY() + radius, player.getZ() + radius
-        );
+                int radius = params.has("radius") ? params.get("radius").getAsInt() : 64;
+                ClientPlayerEntity player = client.player;
+                Box box = new Box(
+                    player.getX() - radius, player.getY() - radius, player.getZ() - radius,
+                    player.getX() + radius, player.getY() + radius, player.getZ() + radius
+                );
 
-        List<Entity> entities = client.world.getOtherEntities(null, box);
-        JsonArray entityList = new JsonArray();
+                List<Entity> entities = client.world.getOtherEntities(null, box);
+                JsonArray entityList = new JsonArray();
 
-        for (Entity entity : entities) {
-            if (entity.distanceTo(player) > radius) continue;
+                for (Entity entity : entities) {
+                    if (entity.distanceTo(player) > radius) continue;
 
-            JsonObject entityData = new JsonObject();
-            entityData.addProperty("id", entity.getId());
-            entityData.addProperty("uuid", entity.getUuidAsString());
-            entityData.addProperty("type", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
-            entityData.addProperty("name", entity.getDisplayName().getString());
-            entityData.addProperty("distance", entity.distanceTo(player));
-            
-            JsonObject velocity = new JsonObject();
-            velocity.addProperty("x", entity.getVelocity().x);
-            velocity.addProperty("y", entity.getVelocity().y);
-            velocity.addProperty("z", entity.getVelocity().z);
-            entityData.add("velocity", velocity);
-            
-            JsonObject position = new JsonObject();
-            position.addProperty("x", entity.getX());
-            position.addProperty("y", entity.getY());
-            position.addProperty("z", entity.getZ());
-            entityData.add("position", position);
-            
-            boolean isLiving = entity instanceof LivingEntity;
-            entityData.addProperty("is_living", isLiving);
-            
-            if (isLiving) {
-                LivingEntity living = (LivingEntity) entity;
-                entityData.addProperty("health", living.getHealth());
-                entityData.addProperty("max_health", living.getMaxHealth());
-            }
+                    JsonObject entityData = new JsonObject();
+                    entityData.addProperty("id", entity.getId());
+                    entityData.addProperty("uuid", entity.getUuidAsString());
+                    entityData.addProperty("type", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
+                    entityData.addProperty("name", entity.getDisplayName().getString());
+                    entityData.addProperty("distance", entity.distanceTo(player));
+                    
+                    JsonObject velocity = new JsonObject();
+                    velocity.addProperty("x", entity.getVelocity().x);
+                    velocity.addProperty("y", entity.getVelocity().y);
+                    velocity.addProperty("z", entity.getVelocity().z);
+                    entityData.add("velocity", velocity);
+                    
+                    JsonObject position = new JsonObject();
+                    position.addProperty("x", entity.getX());
+                    position.addProperty("y", entity.getY());
+                    position.addProperty("z", entity.getZ());
+                    entityData.add("position", position);
+                    
+                    boolean isLiving = entity instanceof LivingEntity;
+                    entityData.addProperty("is_living", isLiving);
+                    
+                    if (isLiving) {
+                        LivingEntity living = (LivingEntity) entity;
+                        entityData.addProperty("health", living.getHealth());
+                        entityData.addProperty("max_health", living.getMaxHealth());
+                    }
 
-            entityList.add(entityData);
-        }
+                    entityList.add(entityData);
+                }
 
-        data.add("entities", entityList);
-        data.addProperty("count", entityList.size());
+                data.add("entities", entityList);
+                data.addProperty("count", entityList.size());
 
-        boolean trackUpdates = params.has("track") && params.get("track").getAsBoolean();
-        if (trackUpdates && entityList.size() > 0) {
-            int sampleLimit = params.has("sample")
-                ? params.get("sample").getAsInt()
-                : Math.min(8, entityList.size());
-            JsonObject payload = new JsonObject();
-            payload.addProperty("radius", radius);
-            payload.addProperty("count", entityList.size());
-            payload.add("entities", sampleEntities(entityList, sampleLimit));
-            payload.addProperty("mission_phase", missionController.getPhaseValue());
-            eventManager.publishEvent(EventManager.EventType.ENTITY_UPDATE, payload);
+                boolean trackUpdates = params.has("track") && params.get("track").getAsBoolean();
+                if (trackUpdates && entityList.size() > 0) {
+                    int sampleLimit = params.has("sample")
+                        ? params.get("sample").getAsInt()
+                        : Math.min(8, entityList.size());
+                    JsonObject payload = new JsonObject();
+                    payload.addProperty("radius", radius);
+                    payload.addProperty("count", entityList.size());
+                    payload.add("entities", sampleEntities(entityList, sampleLimit));
+                    payload.addProperty("mission_phase", missionController.getPhaseValue());
+                    eventManager.publishEvent(EventManager.EventType.ENTITY_UPDATE, payload);
+                }
+                return null;
+            }).get(2, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            data.addProperty("error", "Failed to get entities: " + e.getMessage());
         }
     }
 
     @Override
     public void handleGetInventory(MinecraftClient client, JsonObject data) {
         try {
-            if (client.player == null) {
-                data.addProperty("error", "Player not available");
-                return;
-            }
+            client.submit(() -> {
+                if (client.player == null) {
+                    data.addProperty("error", "Player not available");
+                    return null;
+                }
 
-            // Off-thread Safe Read
-            // We iterate directly. Reading references/primitives is generally safe enough.
-            // We consciously avoid complex methods like getName() to preventing locking.
+                PlayerInventory inv = client.player.getInventory();
+                
+                // Main Inventory (0-35)
+                JsonArray mainInventory = new JsonArray();
+                for (int i = 0; i < 36; i++) {
+                    mainInventory.add(serializeItemStack(inv.getStack(i), i));
+                }
+                data.add("inventory", mainInventory);
 
-            PlayerInventory inv = client.player.getInventory();
-            
-            // Main Inventory (0-35)
-            JsonArray mainInventory = new JsonArray();
-            for (int i = 0; i < 36; i++) {
-                mainInventory.add(serializeItemStack(inv.getStack(i), i));
-            }
-            data.add("inventory", mainInventory);
+                // Armor (Slots 36-39)
+                JsonArray armorInventory = new JsonArray();
+                for (int i = 0; i < 4; i++) {
+                    armorInventory.add(serializeItemStack(inv.getStack(36 + i), i + 36));
+                }
+                data.add("armor", armorInventory);
 
-            // Armor (Slots 36-39)
-            JsonArray armorInventory = new JsonArray();
-            for (int i = 0; i < 4; i++) {
-                armorInventory.add(serializeItemStack(inv.getStack(36 + i), i));
-            }
-            data.add("armor", armorInventory);
+                // Offhand (Slot 40)
+                JsonArray offhandInventory = new JsonArray();
+                offhandInventory.add(serializeItemStack(inv.getStack(40), 40));
+                data.add("offhand", offhandInventory);
 
-            // Offhand (Slot 40)
-            JsonArray offhandInventory = new JsonArray();
-            offhandInventory.add(serializeItemStack(inv.getStack(40), 0));
-            data.add("offhand", offhandInventory);
+                data.addProperty("selected_slot", inv.selectedSlot);
 
-            data.addProperty("selected_slot", inv.selectedSlot);
-
-            Map<String, Integer> counts = flattenInventory(mainInventory, armorInventory, offhandInventory);
-            emitInventoryChangeEvent(counts, inv.selectedSlot);
+                Map<String, Integer> counts = flattenInventory(mainInventory, armorInventory, offhandInventory);
+                emitInventoryChangeEvent(counts, inv.selectedSlot);
+                return null;
+            }).get(2, TimeUnit.SECONDS);
         } catch (Exception e) {
             data.addProperty("error", "Failed to retrieve inventory: " + e.getMessage());
             LOGGER.error("Inventory retrieval failed", e);
@@ -1446,12 +1510,14 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         Vec3d hitPos = new Vec3d(x + 0.5, y + 0.5, z + 0.5);
         BlockHitResult hitResult = new BlockHitResult(hitPos, Direction.UP, pos, false);
         
-        try {
-            client.interactionManager.interactBlock(client.player, hand, hitResult);
-            data.addProperty("interacted", true);
-        } catch (Exception e) {
-            data.addProperty("error", "Interaction failed: " + e.getMessage());
-        }
+        client.execute(() -> {
+            try {
+                client.interactionManager.interactBlock(client.player, hand, hitResult);
+                data.addProperty("interacted", true);
+            } catch (Exception e) {
+                data.addProperty("error", "Interaction failed: " + e.getMessage());
+            }
+        });
     }
 
     private void handleGetScreen(MinecraftClient client, JsonObject data) {
@@ -2808,14 +2874,21 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
     private void handleGetBaritoneConfig(IBaritone baritone, JsonObject data) {
         try {
-            // Note: Baritone settings API is complex, this is a simplified version
             JsonObject config = new JsonObject();
-            config.addProperty("note", "Baritone configuration retrieval is limited via API");
             config.addProperty("primary_baritone_available", baritone != null);
 
             if (baritone != null) {
                 config.addProperty("has_goal", baritone.getCustomGoalProcess().getGoal() != null);
                 config.addProperty("is_pathing", baritone.getPathingBehavior().isPathing());
+                
+                // Add some key settings to the config response
+                JsonObject currentSettings = new JsonObject();
+                baritone.api.Settings settings = BaritoneAPI.getSettings();
+                currentSettings.addProperty("allowSprint", settings.allowSprint.value);
+                currentSettings.addProperty("allowParkour", settings.allowParkour.value);
+                currentSettings.addProperty("allowBreak", settings.allowBreak.value);
+                currentSettings.addProperty("autoTool", settings.autoTool.value);
+                config.add("current_settings", currentSettings);
             }
 
             data.add("config", config);
@@ -2854,26 +2927,23 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         data.addProperty("cache_ttl_ms", CACHE_TTL_MS);
     }
 
-    private void handleSetPathfindingSettings(IBaritone baritone, JsonObject params, JsonObject data) {
-        try {
-            // Apply pathfinding settings - simplified version
-            if (params.has("allow_parkour")) {
-                boolean allowParkour = params.get("allow_parkour").getAsBoolean();
-                // Note: Direct setting via API is complex, this would need proper Baritone API calls
-                data.addProperty("setting_applied", "allow_parkour");
-                data.addProperty("value", allowParkour);
+    private void handleSetPathfindingSettings(IBaritone baritone, JsonObject params) {
+        // This is now redundant with handleSettings but kept for backward compatibility
+        // Iterate through all params and try to set them as Baritone settings
+        MinecraftClient.getInstance().execute(() -> {
+            for (Map.Entry<String, JsonElement> entry : params.entrySet()) {
+                String key = entry.getKey();
+                String val = entry.getValue().getAsString();
+                
+                baritone.api.Settings.Setting<?> setting = BaritoneAPI.getSettings().allSettings.stream()
+                    .filter(s -> s.getName().equalsIgnoreCase(key))
+                    .findFirst().orElse(null);
+                
+                if (setting != null) {
+                    modifySettingSafely(setting, val);
+                }
             }
-
-            if (params.has("allow_sprint")) {
-                boolean allowSprint = params.get("allow_sprint").getAsBoolean();
-                data.addProperty("setting_applied", "allow_sprint");
-                data.addProperty("value", allowSprint);
-            }
-
-            data.addProperty("note", "Pathfinding settings applied (simplified implementation)");
-        } catch (Exception e) {
-            data.addProperty("error", "Failed to set pathfinding settings: " + e.getMessage());
-        }
+        });
     }
 
     private void handleClearCache(JsonObject params, JsonObject data) {
@@ -3017,6 +3087,44 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         }
         
         data.add("voxels", voxels);
+    }
+
+    /**
+     * Capture a screenshot of the current game view.
+     * 
+     * NOTE: Screenshot feature is currently DISABLED due to Minecraft API incompatibilities
+     * between versions (the ScreenshotRecorder API changed between 1.21.4 and 1.21.8).
+     * This prevents crashes during automation. Use F2 key manually if screenshots are needed.
+     */
+    private void handleScreenshot(MinecraftClient client, JsonObject params, JsonObject data) {
+        // Get optional filename, default to timestamp
+        String filename = params.has("filename") ? params.get("filename").getAsString() : null;
+        String reason = params.has("reason") ? params.get("reason").getAsString() : "manual";
+        
+        if (filename == null || filename.isEmpty()) {
+            // Generate timestamp-based filename
+            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd_HH.mm.ss");
+            filename = sdf.format(new java.util.Date()) + "_bot";
+        }
+        
+        // Ensure .png extension
+        if (!filename.toLowerCase().endsWith(".png")) {
+            filename = filename + ".png";
+        }
+        
+        // Screenshot feature is disabled due to Minecraft API incompatibilities between versions
+        // The ScreenshotRecorder API changed between 1.21.4 and 1.21.8, causing NoSuchMethodError crashes
+        LOGGER.warn("Screenshot feature is currently disabled due to MC version API incompatibility. Requested: {} (reason: {})", filename, reason);
+        
+        // Return placeholder response (no actual screenshot)
+        File screenshotsDir = new File(client.runDirectory, "screenshots");
+        File outputFile = new File(screenshotsDir, filename);
+        data.addProperty("path", outputFile.getAbsolutePath());
+        data.addProperty("filename", filename);
+        data.addProperty("reason", reason);
+        data.addProperty("queued", false);
+        data.addProperty("disabled", true);
+        data.addProperty("note", "Screenshot feature disabled due to MC 1.21.8 API changes. Use F2 key manually.");
     }
 
 

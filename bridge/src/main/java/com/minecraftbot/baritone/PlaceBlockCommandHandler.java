@@ -30,18 +30,29 @@ public class PlaceBlockCommandHandler implements CommandHandler {
             BlockPos targetPos = new BlockPos(x, y, z);
             
             return client.submit(() -> {
+                BlockState currentTargetState = client.world.getBlockState(targetPos);
+                if (!currentTargetState.isReplaceable()) {
+                    return CommandResult.error("Target position is already occupied: " + targetPos);
+                }
+
                 // Logic to find neighbor
                 Direction placeFace = Direction.UP;
                 BlockPos placeAgainst = targetPos.down();
+                boolean foundNeighbor = false;
                 
                 for (Direction dir : Direction.values()) {
                     BlockPos adjacent = targetPos.offset(dir);
                     BlockState adjacentState = client.world.getBlockState(adjacent);
-                    if (!adjacentState.isAir()) {
-                        placeAgainst = adjacent;
-                        placeFace = dir.getOpposite();
-                        break;
-                    }
+                    if (adjacentState.isReplaceable()) continue;
+
+                    placeAgainst = adjacent;
+                    placeFace = dir.getOpposite();
+                    foundNeighbor = true;
+                    break;
+                }
+                
+                if (!foundNeighbor && client.world.getBlockState(targetPos.down()).isReplaceable()) {
+                    return CommandResult.error("No solid block found to place against at " + targetPos);
                 }
                 
                 Vec3d hitPos = Vec3d.ofCenter(placeAgainst).add(Vec3d.of(placeFace.getVector()).multiply(0.5d));
@@ -64,11 +75,16 @@ public class PlaceBlockCommandHandler implements CommandHandler {
                 
                 JsonObject data = new JsonObject();
                 data.addProperty("placed", result.isAccepted());
+                data.addProperty("status", result.toString());
                 data.addProperty("x", x);
                 data.addProperty("y", y);
                 data.addProperty("z", z);
                 
-                return CommandResult.success(data);
+                if (result.isAccepted()) {
+                    return CommandResult.success(data);
+                } else {
+                    return CommandResult.error("Placement interaction failed: " + result.toString());
+                }
             }).get();
 
         } catch (InterruptedException | ExecutionException e) {

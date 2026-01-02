@@ -93,15 +93,8 @@ class StateManager:
         # Phase Readiness Scores
         self.phase_readiness: Dict[Phase, float] = {}
         
-        # Default Transition Conditions (Example setup)
-        # Ideally this is loaded from config, but code definition works for now.
-        self.phase_conditions: Dict[Phase, Any] = {
-            Phase.INITIAL_GATHERING: [
-                PhaseCondition("wood_gathered", "Have 16 logs", weight=0.5, check_fn=lambda c: (False, 0)),
-                PhaseCondition("stone_gathered", "Have 16 cobble", weight=0.5),
-            ],
-            # ... others ...
-        }
+        # Phase conditions placeholder (to be implemented later)
+        self.phase_conditions: Dict[Phase, Any] = {}
 
     def check_transition(self, phase: Phase, context: Any = None) -> bool:
         """
@@ -213,12 +206,13 @@ class StateManager:
         """Retrieve stored payload for a phase."""
         return self.phase_payloads.get(phase.name, {})
     
-    def save_checkpoint(self, inventory_summary: Dict[str, int]) -> str:
+    def save_checkpoint(self, inventory_summary: Dict[str, int], world_seed: Optional[int] = None) -> str:
         """
         Save current state to checkpoint file.
         
         Args:
             inventory_summary: Dict of item_id -> count
+            world_seed: Optional world seed to store
             
         Returns:
             Path to saved checkpoint file
@@ -233,6 +227,7 @@ class StateManager:
             "phase_progress": {p.name: v for p, v in self.phase_progress.items()},
             "custom_data": self.custom_data,
             "phase_payloads": self.phase_payloads,
+            "world_seed": world_seed
         }
         
         filepath = self.checkpoint_dir / self.CHECKPOINT_FILE
@@ -241,12 +236,15 @@ class StateManager:
         
         return str(filepath)
     
-    def load_checkpoint(self) -> bool:
+    def load_checkpoint(self, current_seed: Optional[int] = None) -> bool:
         """
         Load state from checkpoint file.
         
+        Args:
+            current_seed: Optional current world seed to verify against
+            
         Returns:
-            True if checkpoint loaded, False if not found
+            True if checkpoint loaded, False if not found or seed mismatch
         """
         filepath = self.checkpoint_dir / self.CHECKPOINT_FILE
         
@@ -256,6 +254,13 @@ class StateManager:
         try:
             with open(filepath) as f:
                 data = json.load(f)
+            
+            # Check seed if provided
+            saved_seed = data.get("world_seed")
+            if current_seed is not None and saved_seed is not None:
+                if current_seed != saved_seed:
+                    print(f"  Seed mismatch (current={current_seed}, saved={saved_seed}). Resetting state.")
+                    return False
             
             self.current_phase = Phase[data["phase"]]
             self._last_position = tuple(data["position"])

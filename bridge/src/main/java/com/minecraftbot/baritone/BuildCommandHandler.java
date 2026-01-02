@@ -42,6 +42,8 @@ public class BuildCommandHandler extends AbstractCommandHandler {
             case "select":
             case "selection":
                 return handleSelection(params, baritone);
+            case "status":
+                return handleStatus(baritone);
             default:
                 return CommandResult.error("Unknown build action: " + action);
         }
@@ -149,5 +151,26 @@ public class BuildCommandHandler extends AbstractCommandHandler {
         } else if ("shift".equals(action)) {
             baritone.getSelectionManager().shift(sel, direction, blocks);
         }
+    }
+
+    private CommandResult handleStatus(IBaritone baritone) {
+        JsonObject data = new JsonObject();
+        data.addProperty("is_building", baritone.getBuilderProcess().isActive());
+        data.addProperty("selection_count", baritone.getSelectionManager().getSelections().length);
+        
+        ISelection[] selections = baritone.getSelectionManager().getSelections();
+        if (selections.length > 0) {
+            ISelection sel = selections[0];
+            JsonObject selection = new JsonObject();
+            selection.addProperty("minX", sel.min().getX());
+            selection.addProperty("minY", sel.min().getY());
+            selection.addProperty("minZ", sel.min().getZ());
+            selection.addProperty("maxX", sel.max().getX());
+            selection.addProperty("maxY", sel.max().getY());
+            selection.addProperty("maxZ", sel.max().getZ());
+            data.add("current_selection", selection);
+        }
+        
+        return CommandResult.success(data);
     }
 }

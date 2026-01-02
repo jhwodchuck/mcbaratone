@@ -9,6 +9,7 @@ from .resource_manager import ResourceManager
 from .phase_executor import PhaseExecutor, PhaseHandler
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
 from .systems import SafetySystem, HungerSystem, MappingSystem
+from .telemetry import TelemetrySystem
 
 
 class EndGameAutomator:
@@ -60,6 +61,7 @@ class EndGameAutomator:
             MappingSystem(client, self.coordination, resources=self.resources)
         ]
         self.executor = PhaseExecutor(client, self.resources, self.state, self.coordination)
+        self.telemetry = TelemetrySystem(checkpoint_dir)
         
         self.auto_checkpoint = auto_checkpoint
         self.checkpoint_interval = checkpoint_interval
@@ -107,6 +109,14 @@ class EndGameAutomator:
         self.register_handler(Phase.END_PORTAL, EndPortalHandler())
         self.register_handler(Phase.DRAGON_FIGHT, DragonFightHandler())
         self.register_handler(Phase.BRIDGE_CHECK, BridgeCheckHandler())
+        
+    def _get_current_seed(self) -> Optional[int]:
+        """Fetch current world seed from bridge."""
+        try:
+            state = self.client.transport.dispatch("get_state", {})
+            return state.get("world_seed")
+        except Exception:
+            return None
     
     def load_or_start(self) -> Phase:
         """
@@ -115,8 +125,11 @@ class EndGameAutomator:
         Returns:
             Starting phase
         """
-        if self.state.load_checkpoint():
+        seed = self._get_current_seed()
+        if self.state.load_checkpoint(current_seed=seed):
             print(f"Resumed from checkpoint: {self.state.get_current_phase().name}")
+            if seed:
+                print(f"  World seed: {seed}")
         else:
             print("Starting fresh automation")
         
@@ -152,13 +165,23 @@ class EndGameAutomator:
         
         while self._running and self.state.get_current_phase() != Phase.COMPLETE:
             phase = self.state.get_current_phase()
-            
+
+            # Check for death and handle recovery
+            if self._handle_death_recovery():
+                continue  # Skip to next phase after recovery
+
             # Notify phase start
             if self.on_phase_start:
                 self.on_phase_start(phase)
             
+            # Start timing
+            self.telemetry.start_timer(f"phase_{phase.name}")
+            
             # Execute phase
             success = self.executor.execute_phase(phase)
+            
+            # Stop timing
+            self.telemetry.stop_timer(f"phase_{phase.name}", success=success)
             
             if success:
                 if self.on_phase_complete:
@@ -201,6 +224,8 @@ class EndGameAutomator:
         for system in self.systems:
             system.stop()
         self._save_checkpoint()
+        self.telemetry.write_report()
+        self.telemetry.write_log()
     
     def _maybe_checkpoint(self) -> None:
         """Save checkpoint if interval elapsed."""
@@ -216,9 +241,51 @@ class EndGameAutomator:
         """Save current state to checkpoint."""
         self.resources.refresh_inventory()
         inventory = self.resources.cached_inventory
-        path = self.state.save_checkpoint(inventory)
+        seed = self._get_current_seed()
+        path = self.state.save_checkpoint(inventory, world_seed=seed)
         print(f"Checkpoint saved: {path}")
     
+    def _handle_death_recovery(self) -> bool:
+        """Handle player death and recovery. Returns True if recovery was needed."""
+        try:
+            state = self.client.transport.dispatch("get_state", {})
+            if not state.get("is_dead", False) and state.get("health", 20) > 0:
+                return False  # No death to handle
+
+            print("\n!!! PLAYER DIED !!!")
+            print("Starting recovery sequence...")
+
+            # Respawn
+            self.client.transport.dispatch("respawn", {})
+            time.sleep(2.0)
+
+            # Get death location and recover items
+            response = self.client.transport.dispatch("get_death_location", {})
+            if response.get("status") == "ok":
+                data = response.get("data", {})
+                x, y, z = data.get("x"), data.get("y"), data.get("z")
+                dim = data.get("dimension")
+
+                if x is not None:
+                    print(f"Death location: ({x}, {y}, {z}) in {dim}")
+                    # Navigate to death location to recover items
+                    from ..common import goto
+                    success = goto(self.client, int(x), int(y), int(z), timeout=600)
+                    if success:
+                        print("Recovered items from death location")
+                        time.sleep(2.0)  # Wait for item pickup
+                    else:
+                        print("Failed to reach death location")
+
+            # Reset to bootstrap phase for fresh start
+            self.state.set_phase(Phase.SPAWN_BOOTSTRAP)
+            print("Reset to SPAWN_BOOTSTRAP phase")
+            return True
+
+        except Exception as e:
+            print(f"Warning: Failed to handle death recovery: {e}")
+            return False
+
     def get_status(self) -> dict:
         """Get current automation status."""
         return {

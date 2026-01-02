@@ -107,7 +107,6 @@ class SpawnBootstrapHandler(PhaseHandler):
             "allowParkour": "true",
             "allowBreak": "true",
             "allowPlace": "true",
-            "allowTool": "true",
             "autoTool": "true",
         }
         try:

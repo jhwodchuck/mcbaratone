@@ -130,8 +130,19 @@ def safe_combat(
         if target.get("distance", 999) < 5:
             client.transport.dispatch("look_at", {"entity_id": target_id})
             client.transport.dispatch("attack_entity", {"entity_id": target_id})
+            idle_checks = 0
         else:
             # Move closer
+            # Check if Baritone gave up
+            is_pathing = state.get("is_pathing", True)
+            if not is_pathing:
+                idle_checks = locals().get('idle_checks', 0) + 1
+                if idle_checks >= 5: # ~2.5s of idle during combat
+                    print("DEBUG: Baritone stopped pathing during combat (Fail Fast)")
+                    return False
+            else:
+                idle_checks = 0
+
             client.transport.dispatch("goto", {
                 "x": int(target.get("x", 0)),
                 "y": int(target.get("y", 0)),
@@ -321,3 +332,87 @@ def hunt_mobs(
         gained=gained,
         duration=time.time() - start,
     )
+
+
+def scan_for_threats(client, radius: int = 16) -> List[Dict]:
+    """Return list of nearby hostile mobs sorted by distance."""
+    hostiles = ["zombie", "skeleton", "creeper", "spider", "witch", "pillager", "enderman", "slime"]
+    
+    nearby = get_nearby_entities(client, radius)
+    threats = []
+    
+    for entity in nearby:
+        etype = entity.get("type", "").lower()
+        if any(h in etype for h in hostiles):
+            threats.append(entity)
+            
+    return sorted(threats, key=lambda e: e.get("distance", 999))
+
+
+def run_away(client, threat: Dict):
+    """Run away from a specific threat."""
+    try:
+        t_pos = (threat.get("x", 0), threat.get("z", 0))
+        
+        # Get our pos
+        state = client.transport.dispatch("get_state", {})
+        pos = state.get("block_position", {})
+        o_x, o_z = int(pos.get("x", 0)), int(pos.get("z", 0))
+        
+        # Vector away
+        dx = o_x - t_pos[0]
+        dz = o_z - t_pos[1]
+        
+        # Normalize roughly
+        dist = (dx*dx + dz*dz)**0.5
+        if dist < 0.1: dist = 1 # Avoid div by zero
+        
+        # Target 25 blocks away
+        target_dist = 25
+        tx = int(o_x + (dx/dist) * target_dist)
+        tz = int(o_z + (dz/dist) * target_dist)
+        
+        print(f"FLEE: Running to {tx}, {o_z} (Away from {t_pos})")
+        client.transport.dispatch("goal", {"x": tx, "y": int(pos.get("y", 64)), "z": tz})
+        client.transport.dispatch("path", {})
+        time.sleep(1) # Let it start
+        
+    except Exception as e:
+        print(f"Run away failed: {e}")
+
+
+def defend_or_flee(client) -> bool:
+    """
+    Check surroundings. If threat:
+    - If weapon: Attack
+    - If no weapon: Flee
+    
+    Returns: True if action taken (was interrupted)
+    """
+    threats = scan_for_threats(client)
+    if not threats:
+        return False
+        
+    closest = threats[0]
+    dist = closest.get("distance", 999)
+    if dist > 10:
+        return False # Too far to worry yet
+        
+    print(f"DEFENSE: Threat detected! {closest.get('type')} at {dist:.1f}m")
+    
+    # Are we equipped?
+    # Simple check: do we have a sword or axe in hotbar/inventory?
+    # equip_best_weapon does the checking and equipping.
+    has_weapon = equip_best_weapon(client)
+    
+    if has_weapon:
+        print("DEFENSE: Engels mode engaged. Attacking.")
+        client.transport.dispatch("chat", {"message": "#stop"}) # Stop mining
+        safe_combat(client, closest.get("id"), retreat_health=6.0)
+        return True
+    else:
+        print("DEFENSE: No weapon! FLEE!")
+        client.transport.dispatch("chat", {"message": "#stop"})
+        run_away(client, closest)
+        time.sleep(5) # Run for a bit
+        return True

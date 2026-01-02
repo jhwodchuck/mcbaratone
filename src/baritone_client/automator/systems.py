@@ -74,38 +74,35 @@ class SafetySystem(BackgroundSystem):
 
     def tick(self):
         try:
-            # We use "get_state" or "get_player_info" if available.
-            # Assuming get_state contains health or we can fetch it.
-            # Since get_state might be heavy, we should check if there is a lighter "get_vitals"
-            # or rely on the State returned by the bridge.
+            # Poll player state - transport is thread-safe via RLock
+            state = self.client.transport.dispatch("get_state", {}, timeout=1.0)
             
-            # Currently bridge 'get_state' returns a lot. Let's try to use it or rely on events?
-            # Ideally we subscribe to TICK_UPDATE events from the bridge if we were purely event driven.
-            # But the bridge *does* emit events. Maybe we should just subscribe to them?
-            # But BackgroundSystem implies active polling or processing.
+            health = state.get("health", 20.0)
             
-            # For this implementation, let's poll get_state quickly.
-            # CAUTION: calling client.transport.dispatch inside a thread while main thread 
-            # might be doing the same could cause race conditions on the socket if not thread-safe.
-            # The TcpTransport needs to be thread-safe or we need a lock.
+            # Check for death
+            if health <= 0:
+                logger.warning("Player is dead. Triggering respawn!")
+                self.client.transport.dispatch("respawn", {})
+                self.coordination.broadcast(SystemEvent(
+                    event_type=EventType.PLAYER_DEATH,
+                    source=self.name,
+                    data={"death": True}
+                ))
             
-            # Checking TcpTransport safety... standard socket send/recv is not thread safe if interleaved.
-            # We might need a lock on the transport.
+            # Broadcast critical event if health is low
+            elif health < self.low_health_threshold and self._last_health >= self.low_health_threshold:
+                logger.warning(f"Health critical: {health}")
+                self.coordination.broadcast(SystemEvent(
+                    event_type=EventType.HEALTH_CRITICAL,
+                    source=self.name,
+                    data={"health": health, "threshold": self.low_health_threshold}
+                ))
             
-            # For now, let's assume we read from a cached state in the client if available, 
-            # or we accept the risk/responsibility. 
-            pass
-            
-            # TODO: Implement safe polling or subscribe to CoordinationHub events bridged from the game?
-            # Actually, the Bridge emits events. The CoordinationHub could receive them.
-            # But we are connecting Client -> Bridge via TCP.
+            self._last_health = health
             
         except Exception as e:
             logger.error(f"Safety Check Failed: {e}")
 
-    # Re-thinking: SafetySystem as a listener + periodic logic.
-    # If using threads, we MUST insure transport is thread safe.
-    # Let's verify TcpTransport implementation.
 
 class HungerSystem(BackgroundSystem):
     """
@@ -113,11 +110,130 @@ class HungerSystem(BackgroundSystem):
     """
     def __init__(self, client, coordination_hub: CoordinationHub, resources=None):
         super().__init__(client, coordination_hub, "HungerSystem", interval=2.0, resources=resources)
-        self.min_food_level = 6
+        self.min_food_level = 18  # Threshold to start eating
+        self._last_food = 20
+        self.food_priority = [
+            "minecraft:golden_apple",
+            "minecraft:enchanted_golden_apple",
+            "minecraft:cooked_beef",
+            "minecraft:cooked_porkchop",
+            "minecraft:steak",
+            "minecraft:cooked_mutton",
+            "minecraft:cooked_chicken",
+            "minecraft:cooked_rabbit",
+            "minecraft:cooked_salmon",
+            "minecraft:cooked_cod",
+            "minecraft:bread",
+            "minecraft:baked_potato",
+            "minecraft:pumpkin_pie",
+            "minecraft:mushroom_stew",
+            "minecraft:beetroot_soup",
+            "minecraft:rabbit_stew",
+            "minecraft:apple",
+            "minecraft:carrot",
+            "minecraft:potato",  # Raw potato - low hunger restore
+            "minecraft:melon_slice",
+            "minecraft:sweet_berries",
+            "minecraft:glow_berries",
+            "minecraft:dried_kelp",
+            # Raw meats - not ideal but better than starving
+            "minecraft:beef",
+            "minecraft:porkchop", 
+            "minecraft:mutton",
+            "minecraft:chicken",  # 30% chance of hunger effect
+            "minecraft:rabbit",
+            "minecraft:salmon",
+            "minecraft:cod",
+            # Absolute last resort - has negative effects
+            "minecraft:rotten_flesh",  # 80% chance of hunger effect
+            "minecraft:spider_eye",    # Poison - avoid if possible
+        ]
+        # Foods to avoid eating unless starving (food_level <= 2)
+        self.desperate_only_foods = {
+            "minecraft:rotten_flesh",
+            "minecraft:spider_eye",
+            "minecraft:poisonous_potato",
+            "minecraft:pufferfish",
+            "minecraft:chicken",  # Raw chicken has hunger chance
+        }
 
     def tick(self):
-        # Stub implementation
-        pass
+        try:
+            state = self.client.transport.dispatch("get_state", {}, timeout=1.0)
+            
+            food_level = state.get("food_level", state.get("food", 20))
+            
+            # Check if we need to eat
+            if food_level < self.min_food_level:
+                self.try_eat(food_level)
+
+            # Broadcast critical event if food is VERY low
+            crit_threshold = 6
+            if food_level < crit_threshold and self._last_food >= crit_threshold:
+                logger.warning(f"Hunger critical: {food_level}")
+                self.coordination.broadcast(SystemEvent(
+                    event_type=EventType.HUNGER_CRITICAL,
+                    source=self.name,
+                    data={"food_level": food_level, "threshold": crit_threshold}
+                ))
+            
+            self._last_food = food_level
+            
+        except Exception as e:
+            logger.error(f"Hunger Check Failed: {e}")
+
+    def try_eat(self, current_food: int):
+        """Attempt to find food and eat it."""
+        from .actions import EatAction
+        
+        # We need to find the best food available
+        # Refresh inventory cache if possible or just fetch it
+        # Since we're in a background thread, strict cache sync with main thread isn't guaranteed
+        # But we can query the bridge directly.
+        
+        try:
+            inventory_data = self.client.transport.dispatch("get_inventory", {})
+            all_items = inventory_data.get("inventory", []) + inventory_data.get("offhand", [])
+            
+            best_food = None
+            
+            # Create a localized map of available items
+            available_items = set()
+            for item in all_items:
+                if item.get("count", 0) > 0:
+                    available_items.add(item.get("id"))
+            
+            # Determine if we're desperate (very low food)
+            is_desperate = current_food <= 2
+            
+            # Find highest priority food present
+            for food_id in self.food_priority:
+                if food_id in available_items:
+                    # Skip desperate-only foods unless we're starving
+                    if food_id in self.desperate_only_foods and not is_desperate:
+                        continue
+                    best_food = food_id
+                    break
+            
+            if best_food:
+                if best_food in self.desperate_only_foods:
+                    logger.warning(f"HungerSystem: Desperately eating {best_food} (Food: {current_food})")
+                else:
+                    logger.info(f"HungerSystem: Eating {best_food} (Food: {current_food})")
+                action = EatAction(best_food)
+                result = action.execute(self.client)
+                
+                if result.success:
+                    logger.info(f"HungerSystem: Finished eating {best_food}")
+                else:
+                    logger.warning(f"HungerSystem: Failed to eat {best_food}: {result.message}")
+            else:
+                # No food found in priority list
+                logger.debug("HungerSystem: No suitable food found in inventory")
+                pass
+
+        except Exception as e:
+            logger.error(f"Error in try_eat: {e}")
 
 class MappingSystem(BackgroundSystem):
     """

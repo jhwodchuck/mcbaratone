@@ -28,18 +28,13 @@ class EnderPearlHandler(PhaseHandler):
             return ready
 
         # 1. Return to Overworld if not already there
+        from ...common import enter_nether_portal
         snapshot = client.transport.dispatch("get_state", {})
         dimension = snapshot.get("dimension", snapshot.get("world", {}).get("dimension", ""))
         if "overworld" not in dimension.lower():
             print("Returning to Overworld...")
-            start = time.time()
-            while time.time() - start < 60:
-                snapshot = client.transport.dispatch("get_state", {})
-                dimension = snapshot.get("dimension", snapshot.get("world", {}).get("dimension", ""))
-                if "overworld" in dimension.lower():
-                    break
-                time.sleep(2)
-            else:
+            success = enter_nether_portal(client, timeout=60)
+            if not success:
                 missing = resources.check_phase_requirements(Phase.ENDER_PEARL_FARM)
                 return TaskResult.fail("Failed to return to Overworld", missing=missing)
 

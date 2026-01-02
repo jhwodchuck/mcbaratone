@@ -141,36 +141,53 @@ class ResourceManager:
     }
 
     def initialize_recipes(self) -> None:
-        """Fetch recipes from the game if available."""
+        """Fetch recipes from the game and merge with defaults."""
         try:
             print("Fetching recipes from bridge...")
-            data = self.client.transport.dispatch("get_recipes", {})
+            data = self.client.transport.dispatch("get_recipes", {"limit": 2000}, timeout=5.0)
             
             fetched_count = 0
-            if "recipes" in data:
-                raw_recipes = data["recipes"]
-                for r in raw_recipes:
-                    recipe_id = r.get("id")
-                    output = r.get("output", {})
+            if "recipes" in data and isinstance(data["recipes"], list):
+                for r in data["recipes"]:
+                    recipe_id = r.get("id", "")
+                    recipe_type = r.get("type", "")
                     
-                    # Some responses might be simplified
-                    output_item = output.get("item")
-                    output_count = output.get("count", 1)
+                    # Only process crafting recipes (shaped/shapeless)
+                    if "crafting" not in recipe_type:
+                        continue
                     
-                    if not output_item: 
-                        # Try to infer from ID if output not explicit (depends on bridge version)
-                        # The simple bridge might just return raw data
-                         continue
-
-                    ingredients = []
-                    # Parse ingredients... (Bridge format varies, assuming simplified here)
-                    # For now, we trust the defaults more but this is the hook to expand.
-                    # Implementation depends on bridge 'get_recipes' structure.
+                    ingredients_raw = r.get("ingredients", [])
+                    if not ingredients_raw:
+                        continue
                     
-                    # self.recipes[output_item] = ... 
-                    fetched_count += 1
+                    # Parse ingredients: each element is array of possible items
+                    # We take the first item from each slot for simplicity
+                    parsed_ingredients = []
+                    for slot in ingredients_raw:
+                        if isinstance(slot, list) and len(slot) > 0:
+                            # Take the first valid item
+                            item_id = slot[0] if isinstance(slot[0], str) else str(slot[0])
+                            # Increment by 1 for each slot appearing
+                            found = False
+                            for i, (existing_id, count) in enumerate(parsed_ingredients):
+                                if existing_id == item_id:
+                                    parsed_ingredients[i] = (existing_id, count + 1)
+                                    found = True
+                                    break
+                            if not found:
+                                parsed_ingredients.append((item_id, 1))
+                    
+                    if parsed_ingredients:
+                        # The output is derived from the recipe ID (e.g., "minecraft:oak_planks")
+                        output_item = recipe_id
+                        if output_item not in self.recipes:
+                            self.recipes[output_item] = {
+                                "ingredients": parsed_ingredients,
+                                "yield": 1  # Bridge doesn't provide yield, use default
+                            }
+                            fetched_count += 1
             
-            print(f"Fetched {fetched_count} recipes (Support limited in this version). Using fallback defaults.")
+            print(f"Fetched {fetched_count} crafting recipes from bridge. Total recipes: {len(self.recipes)}")
             
         except Exception as e:
             print(f"Failed to fetch recipes: {e}. Using defaults.")
@@ -280,39 +297,86 @@ class ResourceManager:
             
         return self.cached_inventory.get(item_id, 0)
     
+    def get_inventory_snapshot(self) -> Dict[str, int]:
+        """
+        Get a snapshot of current inventory for CoordinationHub integration.
+        
+        Returns:
+            Copy of cached_inventory dict.
+        """
+        return dict(self.cached_inventory)
+
+    def can_satisfy_requirement(self, item_id: str, required_quantity: int) -> bool:
+        """
+        Check if a requirement can be satisfied either directly from inventory
+        or through crafting from available materials.
+
+        Args:
+            item_id: Item required
+            required_quantity: Minimum quantity needed
+
+        Returns:
+            True if requirement can be satisfied
+        """
+        # Check direct inventory first
+        current = self.get_item_count(item_id)
+        if current >= required_quantity:
+            return True
+
+        # Check if we can craft this item
+        recipe = self.recipes.get(item_id)
+        if recipe:
+            ingredients = recipe.get("ingredients", [])
+            yield_count = recipe.get("yield", 1)
+
+            # Calculate how many crafts we need
+            crafts_needed = (required_quantity + yield_count - 1) // yield_count  # Ceiling division
+
+            # Check if we have all ingredients for crafting
+            for ingredient_id, ingredient_count in ingredients:
+                total_needed = ingredient_count * crafts_needed
+                if not self.can_satisfy_requirement(ingredient_id, total_needed):
+                    return False
+
+            return True
+
+        return False
+
     def has_items(self, requirements: Dict[str, int]) -> bool:
         """
         Check if inventory has all required items.
-        
+
         Args:
             requirements: Dict of item_id -> minimum count
-            
+
         Returns:
             True if all requirements met
         """
         for item_id, required in requirements.items():
-            if self.get_item_count(item_id) < required:
+            if not self.can_satisfy_requirement(item_id, required):
                 return False
         return True
     
     def check_phase_requirements(self, phase: Phase) -> Dict[str, int]:
         """
         Check what's missing for a phase.
-        
+
         Args:
             phase: Phase to check requirements for
-            
+
         Returns:
             Dict of missing item_id -> shortfall count
         """
         requirements = self.PHASE_REQUIREMENTS.get(phase, {})
         missing = {}
-        
+
         for item_id, required in requirements.items():
-            current = self.get_item_count(item_id)
-            if current < required:
-                missing[item_id] = required - current
-        
+            if not self.can_satisfy_requirement(item_id, required):
+                # Calculate how many are truly missing (can't be crafted)
+                current = self.get_item_count(item_id)
+                if current < required:
+                    missing[item_id] = required - current
+
         return missing
     
     def get_phase_requirements(self, phase: Phase) -> Dict[str, int]:

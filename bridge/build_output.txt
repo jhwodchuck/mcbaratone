@@ -1,0 +1,221 @@
+﻿
+> Configure project :
+Fabric Loom: 1.9.2
+
+> Task :compileJava
+> Task :processResources UP-TO-DATE
+> Task :classes
+> Task :jar
+> Task :compileTestJava UP-TO-DATE
+> Task :processIncludeJars UP-TO-DATE
+> Task :sourcesJar
+> Task :processTestResources NO-SOURCE
+> Task :testClasses UP-TO-DATE
+
+> Task :test
+
+BaritoneAPIBridgeTest > testConcurrentClientHandling() FAILED
+    org.mockito.exceptions.base.MockitoException at BaritoneAPIBridgeTest.java:64
+        Caused by: org.mockito.exceptions.base.MockitoException at BaritoneAPIBridgeTest.java:64
+            Caused by: java.lang.IllegalArgumentException at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testClientTimeoutHandling() FAILED
+    org.mockito.exceptions.base.MockitoException at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.IllegalArgumentException at BaritoneAPIBridgeTest.java:64
+            Caused by: java.lang.InternalError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testMissionEventPublishing() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testTCPServerStartsOnCorrectPort() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testConnectionLimitEnforcement() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testUploadManagerIntegration() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testSocketTimeoutConfiguration() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testTickEventEmission() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testEventManagerIntegration() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testMissionControllerIntegration() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testExceptionDuringCommandHandling() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testFullIntegrationScenario() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testShutdownClosesConnections() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testUploadTimeoutHandling() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testBaritoneNotAvailableHandling() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testCommandDispatcherIntegration() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testRateLimitingInfrastructure() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testMalformedRequestHandling() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testResourceCleanupOnClientDisconnect() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testDeathTrackingAndEvents() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testCompleteRequestResponseCycle() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testModInitializerImplementation() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testFabricModInitialization() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testLegacyCommandHandling() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testPlayerNotAvailableHandling() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+BaritoneAPIBridgeTest > testMissionBridgeAdapterImplementation() FAILED
+    java.lang.NoClassDefFoundError at BaritoneAPIBridgeTest.java:64
+        Caused by: java.lang.ExceptionInInitializerError at BaritoneAPIBridgeTest.java:64
+
+CommandDispatcherTest > initializationError FAILED
+    java.lang.NoClassDefFoundError at Class.java:-2
+        Caused by: java.lang.ClassNotFoundException at BuiltinClassLoader.java:641
+
+CommandHandlerFactoryTest > initializationError FAILED
+    java.lang.NoClassDefFoundError at Class.java:-2
+        Caused by: java.lang.ClassNotFoundException at BuiltinClassLoader.java:641
+
+MissionControllerTest > initializationError FAILED
+    java.lang.NoClassDefFoundError at Class.java:-2
+        Caused by: java.lang.ClassNotFoundException at BuiltinClassLoader.java:641
+
+UploadManagerTest > testCleanupExpiredUploads() FAILED
+    org.opentest4j.AssertionFailedError at UploadManagerTest.java:292
+
+UploadManagerTest > testChunkProcessingWithIOException() FAILED
+    java.io.IOException at TempDirectory.java:414
+
+UploadManagerTest > testProcessChunkSuccessful() FAILED
+    org.opentest4j.AssertionFailedError at UploadManagerTest.java:109
+
+UploadManagerTest > testStartUploadWithNegativeSize() FAILED
+    java.io.IOException at TempDirectory.java:414
+
+UploadManagerTest > testCompleteUploadWithoutSha256Validation() FAILED
+    org.opentest4j.AssertionFailedError at UploadManagerTest.java:208
+
+UploadManagerTest > testGetActiveUploadsList() FAILED
+    java.lang.NullPointerException at UploadManagerTest.java:330
+
+UploadManagerTest > testStartUploadWithExistingName() FAILED
+    java.io.IOException at TempDirectory.java:414
+
+UploadManagerTest > testConcurrentAccessThreadSafety() FAILED
+    java.io.IOException at TempDirectory.java:414
+
+UploadManagerTest > testQueueProcessingWhenSlotsBecomeAvailable() FAILED
+    java.io.IOException at TempDirectory.java:414
+
+UploadManagerTest > testSha256HashComputation() FAILED
+    org.opentest4j.AssertionFailedError at UploadManagerTest.java:223
+
+UploadManagerTest > testCancelActiveUpload() FAILED
+    org.opentest4j.AssertionFailedError at UploadManagerTest.java:401
+
+UploadManagerTest > testProgressPercentageWithZeroExpectedSize() FAILED
+    java.io.IOException at TempDirectory.java:414
+
+UploadManagerTest > testCleanupClientUploads() FAILED
+    java.io.IOException at TempDirectory.java:414
+
+UploadManagerTest > testCompleteUploadTwice() FAILED
+    org.opentest4j.AssertionFailedError at UploadManagerTest.java:465
+
+UploadManagerTest > testCompleteUploadWithInvalidSha256() FAILED
+    org.opentest4j.AssertionFailedError at UploadManagerTest.java:193
+
+UploadManagerTest > testProgressTracking() FAILED
+    org.opentest4j.AssertionFailedError at UploadManagerTest.java:305
+
+UploadManagerTest > testAutoCompleteOnExpectedSizeReached() FAILED
+    org.opentest4j.AssertionFailedError at UploadManagerTest.java:140
+
+UploadManagerTest > testUploadPrioritySetting() FAILED
+    java.io.IOException at TempDirectory.java:414
+
+UploadManagerTest > testStartUploadExceedsConcurrentLimit() FAILED
+    java.io.IOException at TempDirectory.java:414
+
+UploadManagerTest > testStartUploadWithinConcurrentLimit() FAILED
+    java.io.IOException at TempDirectory.java:414
+
+UploadManagerTest > testCompleteUploadWithValidSha256() FAILED
+    org.opentest4j.AssertionFailedError at UploadManagerTest.java:178
+
+UploadManagerTest > testPriorityQueueOrdering() FAILED
+    org.opentest4j.AssertionFailedError at UploadManagerTest.java:259
+
+UploadManagerTest > testShutdownCleansUpResources() FAILED
+    org.opentest4j.AssertionFailedError at UploadManagerTest.java:515
+
+UploadManagerTest > testCancelQueuedUpload() FAILED
+    java.io.IOException at TempDirectory.java:414
+
+UploadManagerTest > testQueueSizeLimit() FAILED
+    java.io.IOException at TempDirectory.java:414
+
+> Task :test FAILED
+> Task :remapJar
+> Task :remapSourcesJar
+
+[Incubating] Problems report is available at: file:///C:/gh/mcbaratone/bridge/build/reports/problems/problems-report.html
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.12/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+9 actionable tasks: 6 executed, 3 up-to-date

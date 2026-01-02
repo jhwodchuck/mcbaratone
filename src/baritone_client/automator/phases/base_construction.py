@@ -120,10 +120,17 @@ class BaseConstructionHandler(PhaseHandler):
         success, _ = setup_base(client, location)
         if not success:
             return TaskResult.fail("Failed to set up base infrastructure")
+            
+        # Save base location for future phases (e.g. Iron Age smelting)
+        state.custom_data["base_location"] = location
+        state.save_checkpoint(Phase.BASE_CONSTRUCTION, get_player_pos(client), resources.get_summary()["inventory"])
 
-        # Plant wheat farm
+        # Plant wheat farm (Optional)
         if not plant_wheat_farm(client, x, y, z):
-            return TaskResult.fail("Failed to plant wheat farm")
+            print("  Warning: Failed to plant wheat farm (Skipping)")
+            # Do not fail phase, just proceed
+        else:
+            print("  Wheat farm planted successfully")
 
         # Success
         resources.refresh_inventory()

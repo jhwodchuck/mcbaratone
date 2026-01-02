@@ -10,6 +10,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
 import net.minecraft.block.Block;
+import net.minecraft.util.math.BlockPos;
 
 import java.net.Socket;
 import java.util.ArrayList;
@@ -30,13 +31,33 @@ public class MineCommandHandler extends AbstractCommandHandler {
         int count = params.has("count") ? params.get("count").getAsInt() :
                    (params.has("quantity") ? params.get("quantity").getAsInt() : 0);
 
-        if (params.has("block_type")) {
+        if (params.has("x") && params.has("y") && params.has("z")) {
+            return handleMiningAtPos(params, baritone);
+        } else if (params.has("block_type")) {
             return handleSingleBlock(params, baritone, count);
         } else if (params.has("blocks")) {
             return handleMultipleBlocks(params, baritone, count);
         } else {
-            return CommandResult.error("Missing block_type or blocks parameter");
+            return CommandResult.error("Missing block_type, blocks, or x,y,z parameters");
         }
+    }
+
+    private CommandResult handleMiningAtPos(JsonObject params, IBaritone baritone) {
+        int x = params.get("x").getAsInt();
+        int y = params.get("y").getAsInt();
+        int z = params.get("z").getAsInt();
+        net.minecraft.util.math.BlockPos pos = new net.minecraft.util.math.BlockPos(x, y, z);
+        
+        executeOnMainThread(MinecraftClient.getInstance(), () -> {
+            baritone.getBuilderProcess().clearArea(pos, pos);
+        });
+
+        JsonObject data = new JsonObject();
+        data.addProperty("started", true);
+        data.addProperty("x", x);
+        data.addProperty("y", y);
+        data.addProperty("z", z);
+        return CommandResult.success(data);
     }
 
     private CommandResult handleSingleBlock(JsonObject params, IBaritone baritone, int count) {

@@ -11,6 +11,9 @@ from .state_manager import Phase, StateManager
 from ..common.tasks import TaskResult
 from .resource_manager import ResourceManager
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class PhaseHandler(ABC):
@@ -64,6 +67,7 @@ class PhaseExecutor:
         coordination_hub: Optional["CoordinationHub"] = None,
         max_retries: int = 3,
         retry_delay: float = 5.0,
+        screenshot_enabled: bool = True,
     ):
         """
         Initialize phase executor.
@@ -74,6 +78,7 @@ class PhaseExecutor:
             state: State manager
             max_retries: Maximum retry attempts per phase
             retry_delay: Seconds to wait between retries
+            screenshot_enabled: Whether to capture screenshots on phase transitions/errors
         """
         self.client = client
         self.resources = resources
@@ -85,6 +90,7 @@ class PhaseExecutor:
         self.handlers: Dict[Phase, PhaseHandler] = {}
         self.progress_callback: Optional[Callable[[Phase, float, str], None]] = None
         self.error_callback: Optional[Callable[[Phase, Exception], bool]] = None
+        self.screenshot_enabled = screenshot_enabled
     
     def register_handler(self, phase: Phase, handler: PhaseHandler) -> None:
         """
@@ -118,6 +124,24 @@ class PhaseExecutor:
         if self.progress_callback:
             self.progress_callback(phase, progress, message)
         self.state.update_progress(progress)
+    
+    def _take_screenshot(self, reason: str, phase: Optional[Phase] = None) -> None:
+        """Take a screenshot if enabled.
+        
+        Args:
+            reason: Reason for screenshot (e.g., 'phase_start', 'phase_complete', 'error')
+            phase: Optional phase for filename context
+        """
+        if not self.screenshot_enabled:
+            return
+        
+        try:
+            phase_str = phase.name if phase else "unknown"
+            filename = f"{phase_str}_{reason}"
+            result = self.client.command.screenshot(filename=filename, reason=reason)
+            logger.info(f"Screenshot captured: {result.get('path', 'unknown')}")
+        except Exception as e:
+            logger.warning(f"Failed to capture screenshot: {e}")
     
     def _coerce_result(self, result: Any) -> TaskResult:
         """Normalize handler return values to TaskResult."""
@@ -156,6 +180,9 @@ class PhaseExecutor:
         
         handler.on_enter(self.client, self.resources, self.state)
         
+        # Screenshot on phase start
+        self._take_screenshot("phase_start", phase)
+        
         retries = 0
         while retries <= self.max_retries:
             try:
@@ -179,6 +206,9 @@ class PhaseExecutor:
                             {"phase": phase.name, "data": result.data}
                         ))
                     
+                    # Screenshot on phase success
+                    self._take_screenshot("phase_complete", phase)
+                    
                     return True
                 else:
                     print(f"Phase {phase.name} reported failure: {result.reason}")
@@ -186,6 +216,9 @@ class PhaseExecutor:
                     
             except Exception as e:
                 print(f"Error in phase {phase.name}: {e}")
+                
+                # Screenshot on error
+                self._take_screenshot("error", phase)
                 
                 # Check error callback
                 if self.error_callback:
@@ -200,6 +233,10 @@ class PhaseExecutor:
                 time.sleep(self.retry_delay)
         
         print(f"Phase {phase.name} failed after {self.max_retries} retries")
+        
+        # Screenshot on final failure
+        self._take_screenshot("phase_failed", phase)
+        
         handler.on_exit(self.client, self.resources, self.state)
         return False
 

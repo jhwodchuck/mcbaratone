@@ -19,7 +19,11 @@ public class InventoryClickCommandHandler implements CommandHandler {
                  int slot = params.has("slot") ? params.get("slot").getAsInt() : -1;
                  int button = params.has("button") ? params.get("button").getAsInt() : 0;
                  String typeStr = params.has("type") ? params.get("type").getAsString().toUpperCase() : "PICKUP";
-                 int syncId = params.has("sync_id") ? params.get("sync_id").getAsInt() : 0;
+                 
+                 // Use current screen's sync_id if not provided
+                 int syncId = params.has("sync_id") && params.get("sync_id").getAsInt() != 0 
+                     ? params.get("sync_id").getAsInt() 
+                     : client.player.currentScreenHandler.syncId;
                  
                  SlotActionType type;
                  try {

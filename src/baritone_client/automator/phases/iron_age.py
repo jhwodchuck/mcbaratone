@@ -15,7 +15,7 @@ from ...common.inventory import find_item_slot, count_item, equip_offhand
 import time
 
 
-def smelt_iron(client, required_ingots: int = 24) -> bool:
+def smelt_iron(client, base_location: tuple = None, required_ingots: int = 24) -> bool:
     """Smelt raw iron into ingots using furnace."""
     # Check current iron ingots
     current_ingots = count_item(client, "minecraft:iron_ingot")
@@ -31,6 +31,14 @@ def smelt_iron(client, required_ingots: int = 24) -> bool:
         return False  # Not enough raw iron to smelt
 
     # Open furnace
+    if base_location:
+         # Go to base location first to find furnace
+         print(f"  Returning to base at {base_location} for smelting...")
+         from ...common.navigation import goto
+         if not goto(client, base_location[0], base_location[1], base_location[2], timeout=60, tolerance=2):
+             print("  Could not reach base location")
+             return False
+
     if not open_furnace(client):
         return False
         
@@ -138,7 +146,7 @@ class IronAgeHandler(PhaseHandler):
         tasks = [
             ActionTask("Restock Food", self._restock_food),
             ActionTask("Gather iron ore", lambda client: gather_iron_with_depth(client, count=24, timeout=900)),
-            ActionTask("Smelt iron ingots", smelt_iron, required_ingots=24),
+            ActionTask("Smelt iron ingots", smelt_iron, required_ingots=24, base_location=state.custom_data.get("base_location")),
             ActionTask("Craft iron tools", craft_iron_tools),
             ActionTask("Craft iron armor", craft_iron_armor),
             ActionTask("Craft Shield", self._craft_shield),
@@ -288,7 +296,7 @@ class IronAgeHandler(PhaseHandler):
     def _build_good_base(self, client) -> bool:
         """Build an upgraded 'Good' base."""
         # Use current position or find new spot
-        from ...common.navigation import get_player_pos
+        from ...common import get_player_pos
         pos = get_player_pos(client)
         if not pos:
             return False

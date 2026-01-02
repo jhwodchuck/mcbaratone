@@ -9,6 +9,28 @@ from .automation_utils import get_player_pos
 from .inventory import count_item, select_item, craft
 
 
+def is_position_safe(client, x: int, y: int, z: int) -> bool:
+    """Check if a position is safe for placement (not liquid)."""
+    try:
+        # Scan area around player to check for liquids
+        # Radius 8 covers typical reach distance
+        res = client.transport.dispatch("get_view", {"radius": 8})
+        voxels = res.get("voxels", [])
+        
+        for v in voxels:
+            if v["x"] == x and v["y"] == y and v["z"] == z:
+                # Found the block at target position
+                block_id = v.get("id", "")
+                if "water" in block_id or "lava" in block_id:
+                    print(f"  Target ({x}, {y}, {z}) is liquid: {block_id}")
+                    return False
+        return True
+    except Exception as e:
+        print(f"  Safety check error: {e}")
+        return True
+
+
+
 def find_flat_ground(client, radius: int = 20) -> Optional[Tuple[int, int, int]]:
     """
     Find a flat area suitable for building a base.
@@ -25,10 +47,10 @@ def find_flat_ground(client, radius: int = 20) -> Optional[Tuple[int, int, int]]
         if state.get("status") != "ok":
             return None
         
-        data = state.get("data", {})
-        px = int(data.get("x", 0))
-        py = int(data.get("y", 64))
-        pz = int(data.get("z", 0))
+        pos = state.get("position", {})
+        px = int(pos.get("x", 0))
+        py = int(pos.get("y", 64))
+        pz = int(pos.get("z", 0))
         
         # Start from current position - simple approach
         # Could be enhanced to scan for flatness
@@ -118,9 +140,17 @@ def place_crafting_table(client, x: int, y: int, z: int) -> bool:
     if not select_item(client, "minecraft:crafting_table"):
         return False
     
-    client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
+    if not is_position_safe(client, x, y, z):
+        print(f"  Skipping placement at ({x}, {y}, {z}) - Target is liquid")
+        return False
+
+    try:
+        client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
+    except Exception as e:
+        print(f"  Placement failed: {e}")
+        return False
+        
     time.sleep(0.5)
-    
     return True
 
 
@@ -143,6 +173,10 @@ def place_furnace(client, x: int, y: int, z: int) -> bool:
     if not select_item(client, "minecraft:furnace"):
         return False
     
+    if not is_position_safe(client, x, y, z):
+        print(f"  Skipping placement at ({x}, {y}, {z}) - Target is liquid")
+        return False
+
     client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
     time.sleep(0.5)
     
@@ -168,6 +202,10 @@ def place_chest(client, x: int, y: int, z: int) -> bool:
     if not select_item(client, "minecraft:chest"):
         return False
     
+    if not is_position_safe(client, x, y, z):
+        print(f"  Skipping placement at ({x}, {y}, {z}) - Target is liquid")
+        return False
+
     client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
     time.sleep(0.5)
     
@@ -199,6 +237,10 @@ def place_bed(client, x: int, y: int, z: int) -> bool:
         print("  Need a bed (craft from wool + planks)")
         return False
     
+    if not is_position_safe(client, x, y, z):
+        print(f"  Skipping placement at ({x}, {y}, {z}) - Target is liquid")
+        return False
+
     client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
     time.sleep(0.5)
     
@@ -244,30 +286,45 @@ def setup_base(
         return (False, location)
 
 
-def open_crafting_table(client) -> bool:
+def open_crafting_table(client, x: Optional[int] = None, y: Optional[int] = None, z: Optional[int] = None) -> bool:
     """
     Find and open a nearby crafting table.
+    If coordinates are provided, it will use those.
     
     Returns:
         True if crafting table opened
     """
-    # Find nearby crafting table
-    table_pos = find_nearby_block(client, ["crafting_table"], radius=10)
+    if x is not None and y is not None and z is not None:
+        table_pos = (x, y, z)
+    else:
+        # Find nearby crafting table
+        table_pos = find_nearby_block(client, ["minecraft:crafting_table"], radius=20)
     
     if table_pos is None:
         print("  No crafting table nearby")
         return False
     
-    x, y, z = table_pos
+    tx, ty, tz = table_pos
     
     # Walk to it
-    goto(client, x, y, z, timeout=30, tolerance=2)
+    goto(client, tx, ty, tz, timeout=30, tolerance=2)
     
     # Interact
-    client.transport.dispatch("interact_block", {"x": x, "y": y, "z": z})
-    time.sleep(0.5)
+    client.transport.dispatch("interact_block", {"x": tx, "y": ty, "z": tz})
     
-    return True
+    # Wait for screen (CraftingScreen in Fabric)
+    print(f"  Waiting for crafting table screen to open...")
+    for _ in range(15):
+        state = client.transport.dispatch("get_state", {})
+        screen = state.get("screen", "none")
+        if "Crafting" in screen:
+            print(f"  Detected screen: {screen}")
+            time.sleep(0.3) # Extra buffer
+            return True
+        time.sleep(0.2)
+    
+    print(f"  Timed out waiting for crafting table screen (current: {state.get('screen')})")
+    return False
 
 
 def open_furnace(client) -> bool:
@@ -277,7 +334,7 @@ def open_furnace(client) -> bool:
     Returns:
         True if furnace opened
     """
-    furnace_pos = find_nearby_block(client, ["furnace", "blast_furnace"], radius=10)
+    furnace_pos = find_nearby_block(client, ["minecraft:furnace", "minecraft:blast_furnace"], radius=20)
     
     if furnace_pos is None:
         print("  No furnace nearby")
@@ -529,4 +586,72 @@ def build_good_house(client, x: int, y: int, z: int) -> bool:
     except Exception as e:
         print(f"Good house build failed: {e}")
         return False
+
+
+def open_chest(client, x: int, y: int, z: int) -> bool:
+    """Open a chest at specific coordinates."""
+    # Look at it first
+    client.transport.dispatch("look_at", {"x": x, "y": y, "z": z})
+    time.sleep(0.3)
+    
+    client.transport.dispatch("interact_block", {"x": x, "y": y, "z": z})
+    
+    # Wait for screen to open
+    print(f"  Waiting for chest screen to open...")
+    for i in range(15):
+        state = client.transport.dispatch("get_state", {})
+        screen = state.get("screen", "none")
+        # Accept any screen that's not 'none' as it likely means a container opened
+        # Fabric obfuscates screen names, so we can't rely on specific names
+        if screen != "none":
+            print(f"  Detected screen: {screen}")
+            time.sleep(0.5)  # Wait a bit for screen to be fully ready
+            return True
+        time.sleep(0.2)
+    
+    print(f"  Timed out waiting for chest screen")
+    return False
+
+
+def loot_nearby_chests(client, radius: int = 16) -> bool:
+    """Search for and loot all nearby chests."""
+    print(f"Searching for nearby chests (radius {radius})...")
+    res = client.transport.dispatch("find_blocks", {
+        "blocks": ["minecraft:chest", "minecraft:trapped_chest", "minecraft:barrel"],
+        "radius": radius,
+        "limit": 5
+    })
+    
+    found = res.get("found", [])
+    if not found:
+        print("  No chests found nearby.")
+        return False
+        
+    print(f"  Found {len(found)} chests. Looting...")
+    
+    for c in found:
+        tx, ty, tz = c['x'], c['y'], c['z']
+        print(f"  Walking to chest at ({tx}, {ty}, {tz})...")
+        goto(client, tx, ty, tz, tolerance=2)
+        
+        if open_chest(client, tx, ty, tz):
+            print(f"  Looting chest...")
+            # Chests usually have 27 slots (0-26) or 54 for double (0-53)
+            # We'll try to loot up to 54 slots
+            for slot in range(54):
+                # Shift-click all slots to move items to inventory
+                client.transport.dispatch("inventory_click", {
+                    "slot": slot,
+                    "button": 0,
+                    "type": "QUICK_MOVE"
+                })
+                # Micro-delay to avoid overwhelming server/bridge
+                # but fast enough to loot quickly
+                if slot % 9 == 0: time.sleep(0.1) 
+            
+            # Close screen
+            client.transport.dispatch("close_screen", {})
+            time.sleep(0.3)
+            
+    return True
 

@@ -250,8 +250,15 @@ def craft(client, item_id: str, count: int = 1) -> bool:
             "item": item_id,
             "count": count,
         })
-        return response.get("status") == "ok"
-    except Exception:
+        if response.get("status") == "ok":
+            return True
+        
+        # Verbose error logging
+        err = response.get("error", "Unknown error")
+        print(f"  [Craft Debug] Crafting failed: {err}")
+        return False
+    except Exception as e:
+        print(f"  [Craft Debug] Exception: {e}")
         return False
 
 
@@ -289,14 +296,85 @@ def dump_to_chest(client, keep_items: List[str]) -> int:
     Returns:
         Number of items deposited
     """
-    # This would require:
-    # 1. Find nearby chest
-    # 2. Open chest (interact_block)
-    # 3. For each inventory slot not in keep_items, quick-move to chest
-    # 4. Close chest
+    from .state import WorldState
     
-    # For now, return 0 as a stub
-    return 0
+    # 1. Get Storage Location
+    ws = WorldState(client)
+    storage_data = ws.load_checkpoint("storage")
+    
+    if not storage_data:
+        print("  No storage location saved.")
+        return 0
+        
+    chest_pos = storage_data.get("data", {})
+    cx = chest_pos.get("x")
+    cy = chest_pos.get("y")
+    cz = chest_pos.get("z")
+    
+    if cx is None:
+        print("  Invalid storage checkpoint data.")
+        return 0
+        
+    print(f"STORAGE: Going to chest at {cx}, {cy}, {cz}...")
+    client.transport.dispatch("goto", {"x": cx, "y": cy, "z": cz})
+    
+    # Wait for arrival (simple heuristic or loop)
+    time.sleep(1)
+    # Check distance?
+    for _ in range(20):
+        pos = client.transport.dispatch("get_player_pos", {})
+        dx = pos[0] - cx
+        dz = pos[2] - cz
+        if (dx*dx + dz*dz)**0.5 < 4:
+            break
+        time.sleep(1)
+        
+    print("STORAGE: Opening chest...")
+    client.transport.dispatch("interact_block", {"x": cx, "y": cy, "z": cz})
+    time.sleep(2.0) # Wait for UI
+    
+    # 2. Dump Items
+    # We need to know what slots to click.
+    # We can get inventory, identify non-keep items, and shift-click them.
+    # Note: Shift-clicking moves to open container.
+    
+    inv = get_inventory(client)
+    deposited = 0
+    
+    # Get raw inventory logic to see slots
+    try:
+        raw_inv = client.transport.dispatch("get_inventory", {})
+        items = raw_inv.get("inventory", [])
+        
+        # Sort by slot to avoid messing up order while clicking?
+        # Actually random access for shift-click is fine.
+        
+        for item in items:
+            item_id = item.get("id")
+            slot = item.get("slot")
+            
+            # Skip hotbar? Or allow dumping hotbar?
+            # Typically we keep tools in hotbar.
+            # keep_items should handle this.
+            
+            if item_id and item_id not in keep_items:
+                # Dump it
+                # Protocol 9-35 is main inv, 0-8 is hotbar.
+                # Shift-click sends it to chest.
+                client.transport.dispatch("inventory_click", {
+                    "slot": slot,
+                    "type": "QUICK_MOVE", # Shift-click
+                    "button": 0
+                })
+                deposited += 1
+                time.sleep(0.1)
+                
+    except Exception as e:
+        print(f"Storage dump error: {e}")
+        
+    client.transport.dispatch("close_screen", {})
+    print(f"STORAGE: Deposited {deposited} stacks.")
+    return deposited
 
 
 def check_craft(client, output_item: str, count: int = 1) -> Dict:

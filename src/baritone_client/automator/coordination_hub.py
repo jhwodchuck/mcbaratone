@@ -26,6 +26,7 @@ class EventType(Enum):
     # Vital Events
     HEALTH_CRITICAL = "health_critical"
     HUNGER_CRITICAL = "hunger_critical"
+    PLAYER_DEATH = "player_death"
     
     # System Events
     ERROR = "error"
@@ -182,108 +183,3 @@ class CoordinationHub:
             if self._resource_locks[allocation.resource_type] <= 0:
                 del self._resource_locks[allocation.resource_type]
             self.logger.info(f"Released {allocation.quantity} {allocation.resource_type} from {allocation.owner}")
-logger = logging.getLogger(__name__)
-
-class EventType(Enum):
-    """Types of events that can be broadcast within the system."""
-    # Resource Events
-    RESOURCE_ACQUIRED = "resource_acquired"
-    RESOURCE_LOW = "resource_low"
-    INVENTORY_FULL = "inventory_full"
-    
-    # Task/Phase Events
-    TASK_COMPLETED = "task_completed"
-    TASK_FAILED = "task_failed"
-    PHASE_CHANGE = "phase_change"
-    
-    # Vital Events
-    HEALTH_CRITICAL = "health_critical"
-    HUNGER_CRITICAL = "hunger_critical"
-    
-    # System Events
-    ERROR = "error"
-    SYSTEM_SHUTDOWN = "system_shutdown"
-
-@dataclass
-class SystemEvent:
-    """Data class representing a single event in the system."""
-    event_type: EventType
-    source: str
-    data: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.now)
-
-class CoordinationHub:
-    """
-    Central hub for managing events and coordination between different systems.
-    Allows decoupling of components via a publish-subscribe pattern.
-    """
-    
-    def __init__(self):
-        # List of tuples (priority, callback)
-        self._subscribers: Dict[EventType, List[tuple]] = {}
-        self.logger = logging.getLogger(__name__)
-
-    def subscribe(self, event_type: EventType, callback: Callable[[SystemEvent], Any], priority: int = 0) -> None:
-        """
-        Subscribe a callback function to a specific event type.
-        
-        Args:
-            event_type: The EventType to listen for.
-            callback: The function to call when the event occurs.
-            priority: Higher numbers run first. Default 0.
-        """
-        if event_type not in self._subscribers:
-            self._subscribers[event_type] = []
-            
-        # Check if already subscribed to avoid duplicates
-        # Tuple format: (priority, callback)
-        # But for simplicity in removing, we might need a wrapper or just check callback equality in the list of tuples.
-        
-        # Remove existing if present to update priority
-        self.unsubscribe(event_type, callback)
-        
-        self._subscribers[event_type].append((priority, callback))
-        # Sort by priority desc
-        self._subscribers[event_type].sort(key=lambda x: x[0], reverse=True)
-        
-        self.logger.debug(f"Subscribed to {event_type.value} with priority {priority}")
-
-    def unsubscribe(self, event_type: EventType, callback: Callable[[SystemEvent], Any]) -> None:
-        """
-        Unsubscribe a callback from a specific event type.
-        """
-        if event_type in self._subscribers:
-            # Filter out tuples where the second element is the callback
-            self._subscribers[event_type] = [
-                sub for sub in self._subscribers[event_type] 
-                if sub[1] != callback
-            ]
-            self.logger.debug(f"Unsubscribed from {event_type.value}")
-
-    def broadcast(self, event: SystemEvent) -> None:
-        """
-        Broadcast an event to all subscribers.
-        
-        Args:
-            event: The SystemEvent to broadcast.
-        """
-        self.logger.info(f"Broadcasting event: {event.event_type.value} from {event.source}")
-        
-        if event.event_type not in self._subscribers:
-            return
-
-        for priority, callback in self._subscribers[event.event_type]:
-            try:
-                if asyncio.iscoroutinefunction(callback):
-                    # In a sync environment without a running loop, we can't easily await.
-                    # If there is a loop, we could create a task.
-                    try:
-                        loop = asyncio.get_running_loop()
-                        loop.create_task(callback(event))
-                    except RuntimeError:
-                        self.logger.warning(f"Async callback for {event.event_type.value} skipped (no event loop)")
-                else:
-                    # Run sync callbacks immediately
-                    callback(event)
-            except Exception as e:
-                self.logger.error(f"Error in event handler for {event.event_type.value}: {e}")

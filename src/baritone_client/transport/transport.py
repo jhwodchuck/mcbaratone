@@ -181,9 +181,9 @@ class TcpTransport(Transport):
                     # Prefer a very short timeout for inventory checks (200ms).
                     effective_timeout = min(self.timeout, 0.2)
                 elif route == "get_state":
-                    # Use a shorter default for get_state when caller didn't
-                    # provide one (keeps phase startup snappy).
-                    effective_timeout = min(self.timeout, 0.5)
+                    # Use a moderate default for get_state when caller didn't
+                    # provide one (keeps phase startup snappy but avoids timeouts).
+                    effective_timeout = min(self.timeout, 2.0)
 
             resp = q.get(timeout=effective_timeout)
 

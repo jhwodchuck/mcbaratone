@@ -69,7 +69,7 @@ class CommandDispatcher:
     def __init__(
         self,
         transport: Transport,
-        rate_limit_requests: int = 100,
+        rate_limit_requests: int = 500,
         rate_limit_window_ms: int = 10000,
         default_timeout: Optional[float] = None,
     ):

@@ -24,7 +24,7 @@ public class CommandDispatcher {
     // Rate limiting
     private final Map<Socket, Long> lastRequestTimes = new ConcurrentHashMap<>();
     private final Map<Socket, Integer> requestCounts = new ConcurrentHashMap<>();
-    private static final int RATE_LIMIT_REQUESTS = 100;
+    private static final int RATE_LIMIT_REQUESTS = 500; // increased for automation
     private static final long RATE_LIMIT_WINDOW_MS = 10000; // 10 second window
 
     // Timeout management
