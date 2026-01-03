@@ -19,9 +19,12 @@ class EnderPearlHandler(PhaseHandler):
     
     def execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
         """
-        1. Return to Overworld
-        2. Hunt endermen (12+ pearls)
-        3. Craft eyes of ender
+        Enhanced Enderman farming with optimized spawn location detection and mob luring.
+
+        Process:
+        1. Return to Overworld if not already there
+        2. Hunt endermen using enhanced tactics (optimal spawn locations + luring)
+        3. Craft eyes of ender from collected pearls
         """
         ready = resources.phase_ready_result(Phase.ENDER_PEARL_FARM, "Pearls already gathered")
         if ready:
@@ -32,38 +35,43 @@ class EnderPearlHandler(PhaseHandler):
         snapshot = client.transport.dispatch("get_state", {})
         dimension = snapshot.get("dimension", snapshot.get("world", {}).get("dimension", ""))
         if "overworld" not in dimension.lower():
-            print("Returning to Overworld...")
+            print("Returning to Overworld for Enderman farming...")
             success = enter_nether_portal(client, timeout=60)
             if not success:
                 missing = resources.check_phase_requirements(Phase.ENDER_PEARL_FARM)
                 return TaskResult.fail("Failed to return to Overworld", missing=missing)
 
-        # 2. Hunt Endermen
-        print("Gathering ender pearls...")
-        pearls = hunt_endermen(client, target_count=12)
+        # 2. Enhanced Enderman hunting with spawn location optimization and mob luring
+        print("Starting enhanced Enderman farming (finding optimal spawn locations and using luring tactics)...")
+        pearls = hunt_endermen(client, target_count=12, timeout=1200)  # Extended timeout for systematic hunting
 
-        # 3. Craft Eyes of Ender
+        print(f"Enderman hunt complete. Collected {pearls} pearls.")
+
+        # 3. Craft Eyes of Ender with collected pearls
+        eyes_crafted = 0
         if pearls >= 12:
-            print("Crafting eyes of ender...")
+            print("Crafting eyes of ender from collected pearls...")
             if craft_eyes_of_ender(client, required=12):
                 eyes_crafted = 12
+                print("Successfully crafted 12 eyes of ender.")
             else:
-                eyes_crafted = 0
+                print("Failed to craft eyes of ender despite having sufficient pearls.")
         else:
-            eyes_crafted = 0
+            print(f"Insufficient pearls for crafting eyes (need 12, have {pearls})")
 
         resources.refresh_inventory()
         missing = resources.check_phase_requirements(Phase.ENDER_PEARL_FARM)
         if pearls < 12 or eyes_crafted < 12 or missing:
             return TaskResult.fail(
-                "Pearl phase incomplete",
+                f"Pearl phase incomplete - collected {pearls} pearls, crafted {eyes_crafted} eyes",
                 pearls=pearls,
                 eyes=eyes_crafted,
                 missing=missing,
             )
 
+        print(f"Enderman farming phase completed successfully: {pearls} pearls collected, {eyes_crafted} eyes crafted.")
         return TaskResult.ok(
-            "Pearls and eyes ready",
+            "Pearls and eyes ready for stronghold/end portal activation",
             pearls=pearls,
             eyes=eyes_crafted,
         )

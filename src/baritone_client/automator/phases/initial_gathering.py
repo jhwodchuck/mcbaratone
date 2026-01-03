@@ -610,11 +610,20 @@ class InitialGatheringHandler(PhaseHandler):
             
         print(f"  Placed crafting table at {placed_pos}")
         if hasattr(self, "state"):
-             self.state.add_location("crafting_table", placed_pos[0], placed_pos[1], placed_pos[2], tags=["setup"])
+             self.state.add_location("crafting_table", placed_pos[0], placed_pos[1], placed_pos[2], tags=["setup"], client=client)
         time.sleep(0.3)
         
-        # Open
+        # FIX: Blacklist to prevent breaking
+        print("  Safeguard: Blacklisting crafting tables from mining...")
+        client.transport.dispatch("chat", {"message": "#blacklist minecraft:crafting_table"})
+        
+        # Step back
         px, py, pz = placed_pos
+        print("  Stepping back from table...")
+        client.transport.dispatch("goto", {"x": px+1, "y": py, "z": pz}) 
+        time.sleep(1.0)
+        
+        # Open
         client.transport.dispatch('interact_block', {'x': px, 'y': py, 'z': pz})
         time.sleep(2.0)
         return True
@@ -881,7 +890,23 @@ class InitialGatheringHandler(PhaseHandler):
         
         if chest_pos:
             print(f"  Storage initialized at {chest_pos}")
-            ws.save_checkpoint("storage", {"x": chest_pos[0], "y": chest_pos[1], "z": chest_pos[2]})
+            if hasattr(self, "state"):
+                self.state.add_location("chest", chest_pos[0], chest_pos[1], chest_pos[2], tags=["storage"], client=client)
+            # Legacy checkpoint (optional, keeping for safety if ws used elsewhere)
+            # ws.save_checkpoint("storage", {"x": chest_pos[0], "y": chest_pos[1], "z": chest_pos[2]})
+            
+            # CRITICAL SAFETY: Blacklist chest so Baritone NEVER breaks it
+            print("  Safeguard: Blacklisting chests from mining...")
+            client.transport.dispatch("chat", {"message": "#blacklist minecraft:chest"})
+            time.sleep(0.5)
+            
+            # Step away to ensure we aren't standing inside/on it
+            print("  Stepping back from chest...")
+            px, py, pz = chest_pos
+            # Try to go to x-1 or x+1
+            client.transport.dispatch("goto", {"x": px+1, "y": py, "z": pz})
+            time.sleep(1.0)
+            
             return True
             
         print("  Warning: Failed to place storage chest (Skipping - Non-fatal)")

@@ -60,6 +60,34 @@ def find_flat_ground(client, radius: int = 20) -> Optional[Tuple[int, int, int]]
         return None
 
 
+def safe_place_block(client, x, y, z, max_depth=2) -> bool:
+    """
+    Attempt to place a block, adding support if needed.
+    """
+    try:
+        client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
+        return True
+    except Exception as e:
+        msg = str(e)
+        if "No solid block found to place against" in msg and max_depth > 0:
+            print(f"  Placing support block at ({x}, {y-1}, {z})...")
+            # Recursive call with depth limit
+            if safe_place_block(client, x, y-1, z, max_depth-1):
+                time.sleep(0.2)
+                try:
+                    client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
+                    return True
+                except Exception:
+                    pass
+        elif "Target position is already occupied" in msg:
+             return True
+        
+        # Only print non-routine errors to avoid spam
+        if "No solid block" not in msg:
+            print(f"  Place block failed at ({x}, {y}, {z}): {msg}")
+        return False
+
+
 def build_dirt_shelter(
     client,
     x: int,
@@ -97,25 +125,25 @@ def build_dirt_shelter(
     for wall_y in range(3):
         # North wall
         for dx in range(size + 2):
-            client.transport.dispatch("place_block", {"x": x + dx, "y": y + wall_y, "z": z})
+            safe_place_block(client, x + dx, y + wall_y, z)
             time.sleep(0.2)
         # South wall
         for dx in range(size + 2):
-            client.transport.dispatch("place_block", {"x": x + dx, "y": y + wall_y, "z": z + size + 1})
+            safe_place_block(client, x + dx, y + wall_y, z + size + 1)
             time.sleep(0.2)
         # West wall
         for dz in range(1, size + 1):
-            client.transport.dispatch("place_block", {"x": x, "y": y + wall_y, "z": z + dz})
+            safe_place_block(client, x, y + wall_y, z + dz)
             time.sleep(0.2)
         # East wall
         for dz in range(1, size + 1):
-            client.transport.dispatch("place_block", {"x": x + size + 1, "y": y + wall_y, "z": z + dz})
+            safe_place_block(client, x + size + 1, y + wall_y, z + dz)
             time.sleep(0.2)
     
     # Build roof
     for dx in range(size + 2):
         for dz in range(size + 2):
-            client.transport.dispatch("place_block", {"x": x + dx, "y": y + 3, "z": z + dz})
+            safe_place_block(client, x + dx, y + 3, z + dz)
             time.sleep(0.2)
     
     return True
@@ -137,7 +165,7 @@ def place_crafting_table(client, x: int, y: int, z: int) -> bool:
             print("  Need crafting table or 4 planks")
             return False
     
-    if not select_item(client, "minecraft:crafting_table"):
+    if not select_item(client, "minecraft:crafting_table", allow_swap=True):
         return False
     
     if not is_position_safe(client, x, y, z):
@@ -308,22 +336,40 @@ def open_crafting_table(client, x: Optional[int] = None, y: Optional[int] = None
     
     # Walk to it
     goto(client, tx, ty, tz, timeout=30, tolerance=2)
+    time.sleep(0.3)  # Small delay before interaction
+    
+    # Look at the block first
+    try:
+        client.transport.dispatch("look_at", {"x": tx, "y": ty, "z": tz})
+        time.sleep(0.2)
+    except Exception:
+        pass  # look_at might not be implemented
     
     # Interact
     client.transport.dispatch("interact_block", {"x": tx, "y": ty, "z": tz})
     
-    # Wait for screen (CraftingScreen in Fabric)
+    # Wait for screen - Fabric uses obfuscated class names, so check for any non-'none' screen
+    # since we just interacted with a crafting table, any screen opening is likely it
     print(f"  Waiting for crafting table screen to open...")
-    for _ in range(15):
-        state = client.transport.dispatch("get_state", {})
-        screen = state.get("screen", "none")
-        if "Crafting" in screen:
-            print(f"  Detected screen: {screen}")
-            time.sleep(0.3) # Extra buffer
-            return True
+    for attempt in range(20):  # Increased attempts
         time.sleep(0.2)
+        try:
+            state = client.transport.dispatch("get_state", {}, timeout=0.5)
+            screen = state.get("screen", "none")
+            
+            # Check for crafting-related screen names (works with both mapped and obfuscated)
+            if screen != "none" and screen != "":
+                # In Fabric, crafting screen might be CraftingScreen, class_XXX, or similar
+                # Any non-empty screen after clicking a crafting table is likely correct
+                if "craft" in screen.lower() or screen.startswith("class_"):
+                    print(f"  Detected crafting screen: {screen}")
+                    time.sleep(0.3)  # Extra buffer for screen to be ready
+                    return True
+        except Exception as e:
+            print(f"  State check error: {e}")
+            continue
     
-    print(f"  Timed out waiting for crafting table screen (current: {state.get('screen')})")
+    print(f"  Timed out waiting for crafting table screen")
     return False
 
 

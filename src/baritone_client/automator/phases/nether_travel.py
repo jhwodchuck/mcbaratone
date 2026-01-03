@@ -5,7 +5,7 @@ Nether Travel Phase - Blaze rods and gold.
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
-from ...common import enter_nether_portal, find_nether_fortress, hunt_blazes, mine_nether_gold, barter_with_piglins, craft
+from ...common import enter_nether_portal, find_nether_fortress, hunt_blazes, mine_nether_gold, barter_with_piglins, craft, find_nearest_portal
 from ...common.inventory import count_item
 from ...common.tasks import TaskResult
 
@@ -34,6 +34,14 @@ class NetherTravelHandler(PhaseHandler):
             if not enter_nether_portal(client):
                 missing = resources.check_phase_requirements(Phase.NETHER_TRAVEL)
                 return TaskResult.fail("Failed to enter Nether", missing=missing)
+
+            # Record Nether portal location for death recovery
+            nether_portal = find_nearest_portal(client, "nether")
+            if nether_portal:
+                state.add_location("portal", nether_portal[0], nether_portal[1], nether_portal[2], "nether", ["nether_portal", "entered"])
+                print(f"Recorded Nether portal at {nether_portal}")
+            else:
+                print("Warning: Could not locate Nether portal after entering")
         
         # 1.5. Mine Gold and Barter (if needed)
         pearls = count_item(client, "minecraft:ender_pearl")

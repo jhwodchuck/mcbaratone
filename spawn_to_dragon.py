@@ -16,7 +16,10 @@ from baritone_client.automator import EndGameAutomator
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Minecraft Spawn to Dragon Automation")
+    parser = argparse.ArgumentParser(
+        description="Minecraft Industrialization Agent - Survival Automation (Hour 0-10)",
+        epilog="Mission: Convert a fresh world into a fully industrialized platform. No decorative building allowed."
+    )
     parser.add_argument("--host", default="localhost", help="Bridge host")
     parser.add_argument("--port", type=int, default=5555, help="Bridge port")
     parser.add_argument("--timeout", type=float, default=15.0, help="Transport timeout in seconds (for bridge responses)")

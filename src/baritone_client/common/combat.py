@@ -109,6 +109,8 @@ def safe_combat(
     
     start = time.time()
     
+    last_goto_time = 0
+    
     while time.time() - start < max_duration:
         # Check health
         state = client.transport.dispatch("get_state", {})
@@ -126,30 +128,33 @@ def safe_combat(
             # Target dead or escaped
             return True
         
+        dist = target.get("distance", 999)
+        
         # Attack if in range
-        if target.get("distance", 999) < 5:
+        if dist < 4.5:
             client.transport.dispatch("look_at", {"entity_id": target_id})
             client.transport.dispatch("attack_entity", {"entity_id": target_id})
-            idle_checks = 0
+            # Reset pathing if we are close enough to just whack it
+            if state.get("is_pathing", False):
+                 client.transport.dispatch("chat", {"message": "#stop"})
         else:
             # Move closer
-            # Check if Baritone gave up
-            is_pathing = state.get("is_pathing", True)
-            if not is_pathing:
-                idle_checks = locals().get('idle_checks', 0) + 1
-                if idle_checks >= 5: # ~2.5s of idle during combat
-                    print("DEBUG: Baritone stopped pathing during combat (Fail Fast)")
-                    return False
-            else:
-                idle_checks = 0
+            # Only sending goto if we aren't pathing OR if it's been a while (update target pos)
+            is_pathing = state.get("is_pathing", False)
+            
+            if not is_pathing or (time.time() - last_goto_time > 1.0):
+                tx, ty, tz = int(target.get("x", 0)), int(target.get("y", 0)), int(target.get("z", 0))
+                client.transport.dispatch("goto", {"x": tx, "y": ty, "z": tz})
+                last_goto_time = time.time()
+                
+            # Fail fast if stuck not pathing for too long
+            if not is_pathing and time.time() - last_goto_time > 3.0:
+                 # We tried to go to it 3 seconds ago and still aren't pathing?
+                 print("DEBUG: Baritone failed to path to target (Stuck?)")
+                 client.transport.dispatch("cancel", {})
+                 return False
 
-            client.transport.dispatch("goto", {
-                "x": int(target.get("x", 0)),
-                "y": int(target.get("y", 0)),
-                "z": int(target.get("z", 0)),
-            })
-        
-        time.sleep(0.5)
+        time.sleep(0.2)
     
     return False
 
@@ -374,7 +379,7 @@ def run_away(client, threat: Dict):
         
         print(f"FLEE: Running to {tx}, {o_z} (Away from {t_pos})")
         client.transport.dispatch("goal", {"x": tx, "y": int(pos.get("y", 64)), "z": tz})
-        client.transport.dispatch("path", {})
+        client.transport.dispatch("chat", {"message": "#path"})
         time.sleep(1) # Let it start
         
     except Exception as e:

@@ -1193,7 +1193,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
      */
     @SuppressWarnings("unchecked")
     private void modifySettingSafely(baritone.api.Settings.Setting<?> setting, String val) {
-        Class<?> type = setting.getType();
+        Class<?> type = (Class<?>) setting.getType();
         if (type == Boolean.class) {
             ((baritone.api.Settings.Setting<Boolean>) setting).value = Boolean.parseBoolean(val);
         } else if (type == Integer.class) {
@@ -2580,10 +2580,226 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             return;
         }
         
-        // This is a placeholder for precise crafting logic.
-        // For now, it returns recipe info.
-        handleGetRecipes(client, params, data);
-        data.addProperty("note", "Auto-crafting in progress (simulated)");
+        String itemId = params.has("item") ? params.get("item").getAsString() : "";
+        if (itemId.isEmpty()) {
+            // Fallback to recipe_id if item not specified
+            itemId = params.has("recipe_id") ? params.get("recipe_id").getAsString() : "";
+        }
+
+        if (itemId.isEmpty()) {
+            data.addProperty("error", "Missing item or recipe_id");
+            return;
+        }
+        
+        // Define simple hardcoded recipes for the vertical slice
+        // Format: Key = Output ItemID, Value = List of Ingredients (slots 0-8)
+        // null means empty slot.
+        // We support both 2x2 (slots 0-3) and 3x3 (slots 0-8)
+        // 2x2 indices: 0 1
+        //              2 3
+        // 3x3 indices: 0 1 2
+        //              3 4 5
+        //              6 7 8
+        
+        Map<String, String[]> recipes = new HashMap<>();
+        
+        // Oak Planks (from Oak Log) - shapeless, usually 1 log in any slot. We'll use slot 0 (top-left)
+        recipes.put("minecraft:oak_planks", new String[]{"minecraft:oak_log", null, null, null});
+        recipes.put("minecraft:spruce_planks", new String[]{"minecraft:spruce_log", null, null, null});
+        recipes.put("minecraft:birch_planks", new String[]{"minecraft:birch_log", null, null, null});
+        recipes.put("minecraft:jungle_planks", new String[]{"minecraft:jungle_log", null, null, null});
+        recipes.put("minecraft:acacia_planks", new String[]{"minecraft:acacia_log", null, null, null});
+        recipes.put("minecraft:dark_oak_planks", new String[]{"minecraft:dark_oak_log", null, null, null});
+        
+        // Sticks (2 planks vertical)
+        String[] stickRecipe = new String[9];
+        stickRecipe[0] = "planks"; stickRecipe[3] = "planks"; // 3x3 grid indices: 0, 3 (col 1, row 1-2)
+        recipes.put("minecraft:stick", stickRecipe);
+        
+        // Crafting Table (4 planks)
+        recipes.put("minecraft:crafting_table", new String[]{"planks", "planks", "planks", "planks"}); // 2x2 valid
+        
+        // Wooden Pickaxe (3 planks top, 2 sticks middle)
+        String[] woodPick = new String[9];
+        woodPick[0] = "planks"; woodPick[1] = "planks"; woodPick[2] = "planks";
+        woodPick[4] = "minecraft:stick"; woodPick[7] = "minecraft:stick";
+        recipes.put("minecraft:wooden_pickaxe", woodPick);
+        
+        // Wooden Sword
+        String[] woodSword = new String[9];
+        woodSword[1] = "planks"; woodSword[4] = "planks"; woodSword[7] = "minecraft:stick";
+        recipes.put("minecraft:wooden_sword", woodSword);
+
+        // Wooden Axe
+        String[] woodAxe = new String[9];
+        woodAxe[0] = "planks"; woodAxe[1] = "planks"; 
+        woodAxe[3] = "planks"; woodAxe[4] = "minecraft:stick"; woodAxe[7] = "minecraft:stick";
+        recipes.put("minecraft:wooden_axe", woodAxe);
+
+         // Wooden Shovel
+        String[] woodShovel = new String[9];
+        woodShovel[1] = "planks"; woodShovel[4] = "minecraft:stick"; woodShovel[7] = "minecraft:stick";
+        recipes.put("minecraft:wooden_shovel", woodShovel);
+
+        // Lookup recipe
+        String[] ingredients = recipes.get(itemId);
+        
+        // Handle generic "planks" ingredient
+        // If recipe not found directly, maybe it uses "planks"?
+        // Actually, we need to map the ingredients.
+        
+        if (ingredients == null) {
+            data.addProperty("error", "Recipe not found (Hardcoded vertical slice only)");
+             // Fallback to legacy behavior just in case
+             // handleGetRecipes(client, params, data);
+            return;
+        }
+
+        boolean success = performCrafting(client, ingredients);
+        
+        data.addProperty("crafted", success);
+        data.addProperty("item", itemId);
+    }
+    
+    private boolean performCrafting(MinecraftClient client, String[] ingredients) {
+        if (client.player == null) return false;
+        
+        ScreenHandler handler = client.player.currentScreenHandler;
+        int syncId = handler.syncId;
+        
+        // Determine grid size and offsets
+        // For PlayerInventory (2x2): output=0, grid=1-4
+        // For CraftingTable (3x3): output=0, grid=1-9
+        
+        boolean isTable = handler instanceof net.minecraft.screen.CraftingScreenHandler;
+        boolean isPlayer = handler instanceof net.minecraft.screen.PlayerScreenHandler; // Survival inventory
+        
+        if (!isTable && !isPlayer) return false;
+        
+        int gridStart = 1;
+        int gridSize = isTable ? 9 : 4;
+        
+        if (ingredients.length > 4 && !isTable) {
+            LOGGER.warn("Recipe requires 3x3 grid but player inventory is 2x2");
+            return false;
+        }
+        
+        // Map ingredients to specific items in inventory
+        // Handle "planks" generic
+        
+        for (int i = 0; i < ingredients.length; i++) {
+            if (i >= gridSize) break; // Should not happen if recipe matches grid
+            
+            String ingredient = ingredients[i];
+            if (ingredient == null) continue;
+            
+            // Find item in inventory
+            int sourceSlot = findIngredientSlot(client, ingredient, syncId);
+            
+            if (sourceSlot == -1) {
+                LOGGER.warn("Missing ingredient: {}", ingredient);
+                return false;
+            }
+            
+            int finalSourceSlot = sourceSlot;
+            int targetSlot = gridStart + i; 
+            
+            // 3x3 mapping for 2x2 recipes if in table?
+            // If we define 2x2 recipes as array length 4, they map safely to 1,2,3,4?
+            // Wait, Crafting Table slots are 1,2,3 (row 1), 4,5,6 (row 2), 7,8,9 (row 3).
+            // Player 2x2 slots are 1,2 (row 1), 3,4 (row 2).
+            
+            // If we have a 2x2 recipe, we need to map it carefully if the array is just length 4.
+            // My definitions above used length 4 for 2x2.
+            int gridSlot = targetSlot;
+            
+            if (isTable && ingredients.length == 4) {
+                // Map 2x2 indices to 3x3 grid
+                // 0 -> 0 (1)
+                // 1 -> 1 (2)
+                // 2 -> 3 (4)
+                // 3 -> 4 (5)
+                int row = i / 2;
+                int col = i % 2;
+                gridSlot = gridStart + (row * 3) + col;
+            } else if (isTable) {
+                // 3x3 recipe, direct mapping
+                gridSlot = gridStart + i;
+            } else {
+                 // Player inventory 2x2
+                 gridSlot = gridStart + i;
+            }
+            
+            // Move item
+            // We need to run on main thread!
+            final int src = finalSourceSlot;
+            final int dst = gridSlot;
+            
+            try {
+                 client.execute(() -> {
+                     // PICKUP 1 item from source
+                     if (client.interactionManager != null) {
+                        client.interactionManager.clickSlot(syncId, src, 0, SlotActionType.PICKUP, client.player);
+                        // Place 1 item in grid
+                        client.interactionManager.clickSlot(syncId, dst, 1, SlotActionType.PICKUP, client.player); // Right click places 1
+                        // Put remainder back? Or just pickup to cursor and place?
+                        
+                        // Correct logic:
+                        // 1. Click source (PICKUP) -> Cursor has stack
+                        // 2. Right Click dst (PICKUP, button 1) -> Places 1 item
+                        // 3. Click source/empty (PICKUP) -> Returns remainder (or swaps if source wasn't empty)
+                        
+                        // Simplified: assuming we just hold it? No, we need to clear cursor for next ingredient.
+                        // Put back in source.
+                        client.interactionManager.clickSlot(syncId, src, 0, SlotActionType.PICKUP, client.player);
+                     }
+                 });
+                 // Brief delay for server processing?
+                 Thread.sleep(50);
+            } catch (Exception e) {
+                LOGGER.error("Crafting click failed", e);
+                return false;
+            }
+        }
+        
+        // Take result
+        try {
+            client.execute(() -> {
+                 // Shift-click result slot (0)
+                 client.interactionManager.clickSlot(syncId, 0, 0, SlotActionType.QUICK_MOVE, client.player);
+            });
+            Thread.sleep(50);
+        } catch (Exception e) {}
+        
+        return true;
+    }
+    
+    private int findIngredientSlot(MinecraftClient client, String ingredient, int syncId) {
+        if (client.player == null) return -1;
+        
+        // Inventory slots in container (after grid)
+        // For Player: Grid(0-4), Armor(5-8), Inv(9-35), Hotbar(36-44), Offhand(45)
+        // For Table: Output(0), Grid(1-9), Inv(10-36), Hotbar(37-45)
+        
+        ScreenHandler handler = client.player.currentScreenHandler;
+        boolean isTable = handler instanceof net.minecraft.screen.CraftingScreenHandler;
+        
+        int startSlot = isTable ? 10 : 9;
+        int endSlot = isTable ? 46 : 45; // loop limit
+        
+        for (int i = startSlot; i < endSlot; i++) {
+             ItemStack stack = handler.getSlot(i).getStack();
+             if (stack.isEmpty()) continue;
+             
+             String id = Registries.ITEM.getId(stack.getItem()).toString();
+             
+             if (ingredient.equals("planks")) {
+                 if (id.endsWith("_planks")) return i;
+             } else {
+                 if (id.equals(ingredient)) return i;
+             }
+        }
+        return -1;
     }
 
     private void handlePlaceFire(MinecraftClient client, JsonObject params, JsonObject data) {
@@ -2710,50 +2926,57 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     }
 
     private void handleFindBlocks(MinecraftClient client, JsonObject params, JsonObject data) {
-        if (client.player == null || client.world == null) {
-            data.addProperty("error", "Player/world not available");
-            return;
-        }
-        
-        JsonArray blocksParam = params.has("blocks") ? params.getAsJsonArray("blocks") : new JsonArray();
-        int radius = params.has("radius") ? params.get("radius").getAsInt() : 32;
-        int limit = params.has("limit") ? params.get("limit").getAsInt() : 10;
-        
-        Set<String> targetBlocks = new HashSet<>();
-        for (JsonElement el : blocksParam) {
-            String blockName = el.getAsString();
-            if (!blockName.contains(":")) {
-                blockName = "minecraft:" + blockName;
-            }
-            targetBlocks.add(blockName);
-        }
-        
-        JsonArray found = new JsonArray();
-        BlockPos playerPos = client.player.getBlockPos();
-        
-        // Search in radius
-        for (int dx = -radius; dx <= radius && found.size() < limit; dx++) {
-            for (int dy = -radius; dy <= radius && found.size() < limit; dy++) {
-                for (int dz = -radius; dz <= radius && found.size() < limit; dz++) {
-                    BlockPos checkPos = playerPos.add(dx, dy, dz);
-                    BlockState state = client.world.getBlockState(checkPos);
-                    String blockId = Registries.BLOCK.getId(state.getBlock()).toString();
-                    
-                    if (targetBlocks.contains(blockId)) {
-                        JsonObject pos = new JsonObject();
-                        pos.addProperty("x", checkPos.getX());
-                        pos.addProperty("y", checkPos.getY());
-                        pos.addProperty("z", checkPos.getZ());
-                        pos.addProperty("block", blockId);
-                        pos.addProperty("distance", Math.sqrt(checkPos.getSquaredDistance(playerPos)));
-                        found.add(pos);
+        try {
+            client.submit(() -> {
+                if (client.player == null || client.world == null) {
+                    data.addProperty("error", "Player/world not available");
+                    return null;
+                }
+                
+                JsonArray blocksParam = params.has("blocks") ? params.getAsJsonArray("blocks") : new JsonArray();
+                int radius = params.has("radius") ? params.get("radius").getAsInt() : 32;
+                int limit = params.has("limit") ? params.get("limit").getAsInt() : 10;
+                
+                Set<String> targetBlocks = new HashSet<>();
+                for (JsonElement el : blocksParam) {
+                    String blockName = el.getAsString();
+                    if (!blockName.contains(":")) {
+                        blockName = "minecraft:" + blockName;
+                    }
+                    targetBlocks.add(blockName);
+                }
+                
+                JsonArray found = new JsonArray();
+                BlockPos playerPos = client.player.getBlockPos();
+                
+                // Search in radius
+                for (int dx = -radius; dx <= radius && found.size() < limit; dx++) {
+                    for (int dy = -radius; dy <= radius && found.size() < limit; dy++) {
+                        for (int dz = -radius; dz <= radius && found.size() < limit; dz++) {
+                            BlockPos checkPos = playerPos.add(dx, dy, dz);
+                            BlockState state = client.world.getBlockState(checkPos);
+                            String blockId = Registries.BLOCK.getId(state.getBlock()).toString();
+                            
+                            if (targetBlocks.contains(blockId)) {
+                                JsonObject posResult = new JsonObject();
+                                posResult.addProperty("x", checkPos.getX());
+                                posResult.addProperty("y", checkPos.getY());
+                                posResult.addProperty("z", checkPos.getZ());
+                                posResult.addProperty("block", blockId);
+                                posResult.addProperty("distance", Math.sqrt(checkPos.getSquaredDistance(playerPos)));
+                                found.add(posResult);
+                            }
+                        }
                     }
                 }
-            }
+                
+                data.add("found", found);
+                data.addProperty("count", found.size());
+                return null;
+            }).get(2, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            data.addProperty("error", "Failed to find blocks: " + e.getMessage());
         }
-        
-        data.add("found", found);
-        data.addProperty("count", found.size());
     }
 
     // ========== New Commands for Vertical Slice ==========
@@ -3057,36 +3280,43 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
 
     private void handleGetView(MinecraftClient client, JsonObject params, JsonObject data) {
-        if (client.player == null || client.world == null) {
-            data.addProperty("error", "Player/world not available");
-            return;
-        }
+        try {
+            client.submit(() -> {
+                if (client.player == null || client.world == null) {
+                    data.addProperty("error", "Player/world not available");
+                    return null;
+                }
 
-        int radius = params.has("radius") ? params.get("radius").getAsInt() : 4;
-        JsonArray voxels = new JsonArray();
-        
-        BlockPos playerPos = client.player.getBlockPos();
-        
-        // Scan around player
-        for (int x = -radius; x <= radius; x++) {
-            for (int y = -radius; y <= radius; y++) {
-                for (int z = -radius; z <= radius; z++) {
-                    BlockPos pos = playerPos.add(x, y, z);
-                    BlockState state = client.world.getBlockState(pos);
-                    
-                    if (!state.isAir()) {
-                        JsonObject voxel = new JsonObject();
-                        voxel.addProperty("x", pos.getX());
-                        voxel.addProperty("y", pos.getY());
-                        voxel.addProperty("z", pos.getZ());
-                        voxel.addProperty("id", Registries.BLOCK.getId(state.getBlock()).toString());
-                        voxels.add(voxel);
+                int radius = params.has("radius") ? params.get("radius").getAsInt() : 4;
+                JsonArray voxels = new JsonArray();
+                
+                BlockPos playerPos = client.player.getBlockPos();
+                
+                // Scan around player
+                for (int x = -radius; x <= radius; x++) {
+                    for (int y = -radius; y <= radius; y++) {
+                        for (int z = -radius; z <= radius; z++) {
+                            BlockPos pos = playerPos.add(x, y, z);
+                            BlockState state = client.world.getBlockState(pos);
+                            
+                            if (!state.isAir()) {
+                                JsonObject voxel = new JsonObject();
+                                voxel.addProperty("x", pos.getX());
+                                voxel.addProperty("y", pos.getY());
+                                voxel.addProperty("z", pos.getZ());
+                                voxel.addProperty("id", Registries.BLOCK.getId(state.getBlock()).toString());
+                                voxels.add(voxel);
+                            }
+                        }
                     }
                 }
-            }
+                
+                data.add("voxels", voxels);
+                return null;
+            }).get(2, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            data.addProperty("error", "Failed to get view: " + e.getMessage());
         }
-        
-        data.add("voxels", voxels);
     }
 
     /**

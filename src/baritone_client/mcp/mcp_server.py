@@ -386,7 +386,7 @@ def create_mcp_server(config: BridgeConfig) -> FastMCP:
     @mcp.tool()
     def path(ctx: RequestContext) -> Dict[str, Any]:
         """Start pathing to the current goal."""
-        return _call_bridge(ctx, "command/run", lambda client: client.command.run("path"))
+        return _call_bridge(ctx, "command/chat", lambda client: client.transport.dispatch("chat", {"message": "#path"}))
 
     @mcp.tool()
     def goal_coordinates(x: Optional[int], y: Optional[int], z: Optional[int], ctx: RequestContext) -> Dict[str, Any]:

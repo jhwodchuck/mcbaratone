@@ -100,8 +100,49 @@ class SafetySystem(BackgroundSystem):
             
             self._last_health = health
             
+            # Check for physical entanglements (vines, webs)
+            self._clear_entanglements(state)
+            
         except Exception as e:
             logger.error(f"Safety Check Failed: {e}")
+
+    def _clear_entanglements(self, state: dict):
+        """Check if stuck in vines/webs and clear them."""
+        try:
+            # Only run if not pathing (or pathing very slowly)
+            # Actually, if we are in vines, we WANT to break them even if moving.
+            
+            pos = state.get("block_position", {})
+            px, py, pz = int(pos.get("x", 0)), int(pos.get("y", 0)), int(pos.get("z", 0))
+            
+            # Check feet and head
+            # We need to use 'get_block' command from bridge
+            # Note: This increases bridge traffic. Maybe throttle?
+            # Interval is 1.0s, acceptable.
+            
+            # We can't synchronously get_block here easily without blocking tick?
+            # BackgroundSystem handles blocking fine (threaded).
+            
+            # Check 2 blocks
+            to_check = [(px, py, pz), (px, py+1, pz)]
+            
+            vine_types = {"minecraft:vine", "minecraft:cave_vines", "minecraft:twisting_vines", "minecraft:weeping_vines", "minecraft:cobweb"}
+            
+            for bx, by, bz in to_check:
+                # Dispatch get_block
+                # We can batch or just do one by one.
+                # Since we are in threading, we can use client.transport
+                resp = self.client.transport.dispatch("get_block", {"x": bx, "y": by, "z": bz})
+                if resp and resp.get("id") in vine_types:
+                    logger.warning(f"Entangled in {resp.get('id')} at {bx},{by},{bz}. Cutting free!")
+                    # Attack block
+                    self.client.transport.dispatch("attack_block", {"x": bx, "y": by, "z": bz})
+                    # Also swing hand for visual
+                    self.client.transport.dispatch("swing_hand", {})
+                    # Break only one per tick to avoid spam?
+                    # No, break both if needed.
+        except Exception as e:
+            logger.warning(f"Entanglement check error: {e}")
 
 
 class HungerSystem(BackgroundSystem):
@@ -237,11 +278,86 @@ class HungerSystem(BackgroundSystem):
 
 class MappingSystem(BackgroundSystem):
     """
-    Passively scans environment for POIs.
+    Passively scans environment for POIs and generates a world map report.
     """
-    def __init__(self, client, coordination_hub: CoordinationHub, resources=None):
+    def __init__(self, client, coordination_hub: CoordinationHub, resources=None, state_manager=None):
         super().__init__(client, coordination_hub, "MappingSystem", interval=5.0, resources=resources)
+        self.state_manager = state_manager
+        if self.state_manager:
+            # Load visited
+            data = self.state_manager.custom_data.get("mapping", {})
+            self.visited_chunks = {tuple(x) for x in data.get("visited", [])}
+        else:
+            self.visited_chunks = set()
+            
+        self.path_history = []  # List of (x, z)
+        self.last_update = 0
+        self.map_file = "world_map.md"
 
     def tick(self):
-        # Stub implementation
-        pass
+        try:
+            state = self.client.transport.dispatch("get_state", {})
+            
+            # 1. Update Position
+            pos = state.get("block_position", state.get("position", {}))
+            px = int(pos.get("x", state.get("x", 0)))
+            py = int(pos.get("y", state.get("y", 64)))
+            pz = int(pos.get("z", state.get("z", 0)))
+            
+            chunk_x, chunk_z = px // 16, pz // 16
+            
+            # Record visitation
+            if (chunk_x, chunk_z) not in self.visited_chunks:
+                self.visited_chunks.add((chunk_x, chunk_z))
+                if self.state_manager:
+                     # Persist periodically (or on prompt, but here lazy save)
+                     self.state_manager.custom_data.setdefault("mapping", {})["visited"] = list(self.visited_chunks)
+            
+            # Record path (sparse: only if moved > 5 blocks)
+            if not self.path_history:
+                self.path_history.append((px, pz))
+            else:
+                lx, lz = self.path_history[-1]
+                dist = ((px - lx)**2 + (pz - lz)**2)**0.5
+                if dist > 5:
+                    self.path_history.append((px, pz))
+                    
+            # Update Map File every 10s
+            if time.time() - self.last_update > 10.0:
+                 self._write_map_file(px, py, pz, state.get("dimension", "Overworld"))
+                 self.last_update = time.time()
+                 
+        except Exception as e:
+            logger.error(f"Mapping Failed: {e}")
+
+    def _write_map_file(self, px, py, pz, dimension):
+        """Generate formatted Markdown map report."""
+        try:
+            with open(self.map_file, "w", encoding='utf-8') as f:
+                f.write(f"# 🗺️ World Map Report\n")
+                f.write(f"**Timestamp:** {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"**Current Position:** X={px}, Y={py}, Z={pz} ({dimension})\n\n")
+                
+                # Known Locations
+                f.write("## 📍 Points of Interest\n")
+                locations = self.state_manager.get_locations() if self.state_manager else {}
+                
+                if not locations:
+                    f.write("*No confirmed POIs yet.*\n")
+                else:
+                    for category, locs in locations.items():
+                        f.write(f"### {category.title()}\n")
+                        for loc in locs:
+                            f.write(f"- ({loc['x']}, {loc['y']}, {loc['z']}) in {loc['dimension']} - {time.strftime('%H:%M', time.localtime(loc['timestamp']))}\n")
+                
+                f.write("\n## 🧭 Exploration Log\n")
+                f.write(f"- **Visited Chunks:** {len(self.visited_chunks)}\n")
+                f.write(f"- **Path Length:** {len(self.path_history)} points\n\n")
+                
+                # Recent Path
+                f.write("### Recent Path (Last 10 points)\n")
+                for x, z in self.path_history[-10:]:
+                    f.write(f"- ({x}, {z})\n")
+                    
+        except Exception as e:
+            logger.error(f"Failed to write map file: {e}")

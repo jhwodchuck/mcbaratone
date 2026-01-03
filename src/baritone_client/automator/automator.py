@@ -10,6 +10,7 @@ from .phase_executor import PhaseExecutor, PhaseHandler
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
 from .systems import SafetySystem, HungerSystem, MappingSystem
 from .telemetry import TelemetrySystem
+from ..common.nether import find_nearest_portal
 
 
 class EndGameAutomator:
@@ -58,7 +59,7 @@ class EndGameAutomator:
         self.systems = [
             SafetySystem(client, self.coordination, resources=self.resources),
             HungerSystem(client, self.coordination, resources=self.resources),
-            MappingSystem(client, self.coordination, resources=self.resources)
+            MappingSystem(client, self.coordination, resources=self.resources, state_manager=self.state)
         ]
         self.executor = PhaseExecutor(client, self.resources, self.state, self.coordination)
         self.telemetry = TelemetrySystem(checkpoint_dir)
@@ -81,34 +82,30 @@ class EndGameAutomator:
     def register_default_handlers(self) -> None:
         """Register all default phase handlers."""
         from .phases import (
-            SpawnBootstrapHandler,
-            InitialGatheringHandler,
-            BaseConstructionHandler,
-            IronAgeHandler,
-            DiamondMiningHandler,
-            EnchantingHandler,
-            NetherPrepHandler,
-            NetherTravelHandler,
-            EnderPearlHandler,
-            StrongholdHandler,
-            EndPortalHandler,
-            DragonFightHandler,
             BridgeCheckHandler,
+            BootSequenceHandler,
+            FoodAndIronHandler,
+            EnchantingPipelineHandler,
+            NetherAndBlazeHandler,
+            VillagerInfraHandler,
+            XpEngineHandler,
+            IronFarmHandler,
+            ToolPerfectionHandler,
+            WorldUnlockHandler,
+            MegabaseInitHandler,
         )
         
-        self.register_handler(Phase.SPAWN_BOOTSTRAP, SpawnBootstrapHandler())
-        self.register_handler(Phase.INITIAL_GATHERING, InitialGatheringHandler())
-        self.register_handler(Phase.BASE_CONSTRUCTION, BaseConstructionHandler())
-        self.register_handler(Phase.IRON_AGE, IronAgeHandler())
-        self.register_handler(Phase.DIAMOND_MINING, DiamondMiningHandler())
-        self.register_handler(Phase.ENCHANTING, EnchantingHandler())
-        self.register_handler(Phase.NETHER_PREP, NetherPrepHandler())
-        self.register_handler(Phase.NETHER_TRAVEL, NetherTravelHandler())
-        self.register_handler(Phase.ENDER_PEARL_FARM, EnderPearlHandler())
-        self.register_handler(Phase.STRONGHOLD_LOCATE, StrongholdHandler())
-        self.register_handler(Phase.END_PORTAL, EndPortalHandler())
-        self.register_handler(Phase.DRAGON_FIGHT, DragonFightHandler())
         self.register_handler(Phase.BRIDGE_CHECK, BridgeCheckHandler())
+        self.register_handler(Phase.BOOT_SEQUENCE, BootSequenceHandler())
+        self.register_handler(Phase.FOOD_AND_IRON, FoodAndIronHandler())
+        self.register_handler(Phase.ENCHANTING_PIPELINE, EnchantingPipelineHandler())
+        self.register_handler(Phase.NETHER_AND_BLAZE, NetherAndBlazeHandler())
+        self.register_handler(Phase.VILLAGER_INFRA, VillagerInfraHandler())
+        self.register_handler(Phase.XP_ENGINE, XpEngineHandler())
+        self.register_handler(Phase.IRON_FARM, IronFarmHandler())
+        self.register_handler(Phase.TOOL_PERFECTION, ToolPerfectionHandler())
+        self.register_handler(Phase.WORLD_UNLOCK, WorldUnlockHandler())
+        self.register_handler(Phase.MEGABASE_INIT, MegabaseInitHandler())
         
     def _get_current_seed(self) -> Optional[int]:
         """Fetch current world seed from bridge."""
@@ -118,6 +115,29 @@ class EndGameAutomator:
         except Exception:
             return None
     
+    
+    def configure_baritone(self):
+        """Configure Baritone settings for safety and performance."""
+        print("Configuring Baritone settings...")
+        settings = [
+            "assumeWalkOnLava false",
+            "assumeWalkOnWater false",
+            "costLava 200", # Extremely high cost to avoid lava
+            "allowParkour true",
+            "allowSprint true",
+            "maxFallHeightNoWater 3",
+            "chatDebug false", # Reduce spam
+            "freeLook true", # Allow looking around while pathing
+            "allowVines false" # Prevent getting stuck in vines
+        ]
+        for setting in settings:
+            self.client.transport.dispatch("chat", {"message": f"#set {setting}"})
+            time.sleep(0.1)
+            
+        # Explicit avoidance lists
+        self.client.transport.dispatch("chat", {"message": "#avoid lava"})
+        self.client.transport.dispatch("chat", {"message": "#avoid flowing_lava"})
+
     def load_or_start(self) -> Phase:
         """
         Load checkpoint or start fresh.
@@ -150,8 +170,20 @@ class EndGameAutomator:
         if resume:
             self.load_or_start()
             
+        # Configure Baritone settings
+        self.configure_baritone()
+            
         # Initialize dynamic resources
         self.resources.initialize_recipes()
+        
+        # Record Spawn Location
+        try:
+             state = self.client.transport.dispatch("get_state", {})
+             pos = state.get("block_position", {})
+             if pos:
+                 self.state.add_location("spawn", int(pos.get("x")), int(pos.get("y")), int(pos.get("z")), tags=["start"], client=self.client)
+        except:
+             pass
         
         # Start background systems
         for system in self.systems:
@@ -263,23 +295,80 @@ class EndGameAutomator:
             response = self.client.transport.dispatch("get_death_location", {})
             if response.get("status") == "ok":
                 data = response.get("data", {})
-                x, y, z = data.get("x"), data.get("y"), data.get("z")
-                dim = data.get("dimension")
+                death_x, death_y, death_z = data.get("x"), data.get("y"), data.get("z")
+                death_dim = data.get("dimension", "").lower()
 
-                if x is not None:
-                    print(f"Death location: ({x}, {y}, {z}) in {dim}")
-                    # Navigate to death location to recover items
-                    from ..common import goto
-                    success = goto(self.client, int(x), int(y), int(z), timeout=600)
-                    if success:
-                        print("Recovered items from death location")
-                        time.sleep(2.0)  # Wait for item pickup
+                if death_x is not None:
+                    print(f"Death location: ({death_x}, {death_y}, {death_z}) in {death_dim}")
+
+                    # Dimension-aware recovery logic
+                    current_phase = self.state.get_current_phase()
+
+                    if "nether" in death_dim:
+                        # Died in Nether - decide whether to recover in Nether or return to Overworld
+                        nether_phases = [Phase.NETHER_TRAVEL, Phase.ENDER_PEARL_FARM]
+
+                        if current_phase in nether_phases:
+                            # Can continue in Nether - recover items here
+                            print("Recovering items in Nether...")
+                            from ..common import goto
+                            success = goto(self.client, int(death_x), int(death_y), int(death_z), timeout=600)
+                            if success:
+                                print("Recovered items from Nether death location")
+                                time.sleep(2.0)
+                            else:
+                                print("Failed to reach Nether death location")
+                            # Continue with current phase
+                            return True
+                        else:
+                            # Need to return to Overworld - recover items in Nether first, then traverse
+                            print("Recovering items in Nether before returning to Overworld...")
+                            from ..common import goto
+                            success = goto(self.client, int(death_x), int(death_y), int(death_z), timeout=600)
+                            if success:
+                                print("Recovered items from Nether death location")
+                                time.sleep(2.0)
+
+                            # Now find portal and return to Overworld
+                            portal_coords = find_nearest_portal(self.client, "nether")
+                            if portal_coords:
+                                print(f"Found Nether portal at {portal_coords}")
+                                success = goto(self.client, portal_coords[0], portal_coords[1], portal_coords[2], timeout=300)
+                                if success:
+                                    # Enter portal to return to Overworld
+                                    from ..common import enter_nether_portal
+                                    if enter_nether_portal(self.client, timeout=60):
+                                        print("Returned to Overworld via portal")
+                                    else:
+                                        print("Failed to enter portal back to Overworld")
+                                else:
+                                    print("Failed to reach Nether portal")
+                            else:
+                                print("Could not find Nether portal for return trip")
+
+                            # Reset to bootstrap since we're back at spawn area
+                            self.state.set_phase(Phase.SPAWN_BOOTSTRAP)
+                            print("Reset to SPAWN_BOOTSTRAP phase")
+                            return True
+
                     else:
-                        print("Failed to reach death location")
+                        # Died in Overworld - standard recovery
+                        from ..common import goto
+                        success = goto(self.client, int(death_x), int(death_y), int(death_z), timeout=600)
+                        if success:
+                            print("Recovered items from death location")
+                            time.sleep(2.0)
+                        else:
+                            print("Failed to reach death location")
 
-            # Reset to bootstrap phase for fresh start
+                        # Reset to bootstrap phase for fresh start
+                        self.state.set_phase(Phase.SPAWN_BOOTSTRAP)
+                        print("Reset to SPAWN_BOOTSTRAP phase")
+                        return True
+
+            # Fallback: always reset to bootstrap if death location unknown
             self.state.set_phase(Phase.SPAWN_BOOTSTRAP)
-            print("Reset to SPAWN_BOOTSTRAP phase")
+            print("Reset to SPAWN_BOOTSTRAP phase (death location unknown)")
             return True
 
         except Exception as e:

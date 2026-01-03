@@ -213,14 +213,236 @@ public class CraftCommandHandler implements CommandHandler {
                     "minecraft:cobblestone", "minecraft:cobblestone", "minecraft:cobblestone"
                 });
             
-            // Chest (3x3)
             case "minecraft:chest":
                 return new CraftRecipe(recipeId, 1, true, new String[]{
                     "any_planks", "any_planks", "any_planks",
                     "any_planks", null, "any_planks",
                     "any_planks", "any_planks", "any_planks"
                 });
+
+            // --- Stone Tools (Remaining) ---
+            case "minecraft:stone_shovel":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    null, "minecraft:cobblestone", null,
+                    null, "minecraft:stick", null,
+                    null, "minecraft:stick", null
+                });
+            case "minecraft:stone_hoe":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:cobblestone", "minecraft:cobblestone", null,
+                    null, "minecraft:stick", null,
+                    null, "minecraft:stick", null
+                });
+
+            // --- Iron Tools ---
+            case "minecraft:iron_pickaxe":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:iron_ingot", "minecraft:iron_ingot", "minecraft:iron_ingot",
+                    null, "minecraft:stick", null,
+                    null, "minecraft:stick", null
+                });
+            case "minecraft:iron_axe":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:iron_ingot", "minecraft:iron_ingot", null,
+                    "minecraft:iron_ingot", "minecraft:stick", null,
+                    null, "minecraft:stick", null
+                });
+            case "minecraft:iron_sword":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    null, "minecraft:iron_ingot", null,
+                    null, "minecraft:iron_ingot", null,
+                    null, "minecraft:stick", null
+                });
+            case "minecraft:iron_shovel":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    null, "minecraft:iron_ingot", null,
+                    null, "minecraft:stick", null,
+                    null, "minecraft:stick", null
+                });
+            case "minecraft:iron_hoe":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:iron_ingot", "minecraft:iron_ingot", null,
+                    null, "minecraft:stick", null,
+                    null, "minecraft:stick", null
+                });
+
+            // --- Iron Armor ---
+            case "minecraft:iron_helmet":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:iron_ingot", "minecraft:iron_ingot", "minecraft:iron_ingot",
+                    "minecraft:iron_ingot", null, "minecraft:iron_ingot",
+                    null, null, null
+                });
+            case "minecraft:iron_chestplate":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:iron_ingot", null, "minecraft:iron_ingot",
+                    "minecraft:iron_ingot", "minecraft:iron_ingot", "minecraft:iron_ingot",
+                    "minecraft:iron_ingot", "minecraft:iron_ingot", "minecraft:iron_ingot"
+                });
+            case "minecraft:iron_leggings":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:iron_ingot", "minecraft:iron_ingot", "minecraft:iron_ingot",
+                    "minecraft:iron_ingot", null, "minecraft:iron_ingot",
+                    "minecraft:iron_ingot", null, "minecraft:iron_ingot"
+                });
+            case "minecraft:iron_boots":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    null, null, null,
+                    "minecraft:iron_ingot", null, "minecraft:iron_ingot",
+                    "minecraft:iron_ingot", null, "minecraft:iron_ingot"
+                });
+
+            // --- Diamond Tools ---
+            case "minecraft:diamond_pickaxe":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:diamond", "minecraft:diamond", "minecraft:diamond",
+                    null, "minecraft:stick", null,
+                    null, "minecraft:stick", null
+                });
+            case "minecraft:diamond_axe":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:diamond", "minecraft:diamond", null,
+                    "minecraft:diamond", "minecraft:stick", null,
+                    null, "minecraft:stick", null
+                });
+            case "minecraft:diamond_sword":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    null, "minecraft:diamond", null,
+                    null, "minecraft:diamond", null,
+                    null, "minecraft:stick", null
+                });
+            case "minecraft:diamond_shovel":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    null, "minecraft:diamond", null,
+                    null, "minecraft:stick", null,
+                    null, "minecraft:stick", null
+                });
+            case "minecraft:diamond_hoe":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:diamond", "minecraft:diamond", null,
+                    null, "minecraft:stick", null,
+                    null, "minecraft:stick", null
+                });
+
+            // --- Diamond Armor ---
+            case "minecraft:diamond_helmet":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:diamond", "minecraft:diamond", "minecraft:diamond",
+                    "minecraft:diamond", null, "minecraft:diamond",
+                    null, null, null
+                });
+            case "minecraft:diamond_chestplate":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:diamond", null, "minecraft:diamond",
+                    "minecraft:diamond", "minecraft:diamond", "minecraft:diamond",
+                    "minecraft:diamond", "minecraft:diamond", "minecraft:diamond"
+                });
+            case "minecraft:diamond_leggings":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:diamond", "minecraft:diamond", "minecraft:diamond",
+                    "minecraft:diamond", null, "minecraft:diamond",
+                    "minecraft:diamond", null, "minecraft:diamond"
+                });
+            case "minecraft:diamond_boots":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    null, null, null,
+                    "minecraft:diamond", null, "minecraft:diamond",
+                    "minecraft:diamond", null, "minecraft:diamond"
+                });
+
+            // --- Essentials ---
+            case "minecraft:torch":
+                return new CraftRecipe(recipeId, 4, false, new String[]{
+                    "minecraft:coal", null,
+                    "minecraft:stick", null
+                });
+            case "minecraft:bucket":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:iron_ingot", null, "minecraft:iron_ingot",
+                    null, "minecraft:iron_ingot", null,
+                    null, null, null
+                });
+            case "minecraft:flint_and_steel":
+                return new CraftRecipe(recipeId, 1, false, new String[]{
+                    "minecraft:iron_ingot", "minecraft:flint",
+                    null, null
+                });
+            case "minecraft:shield":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "any_planks", "minecraft:iron_ingot", "any_planks",
+                    "any_planks", "any_planks", "any_planks",
+                    null, "any_planks", null
+                });
+            case "minecraft:bow":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    null, "minecraft:stick", "minecraft:string",
+                    "minecraft:stick", null, "minecraft:string",
+                    null, "minecraft:stick", "minecraft:string"
+                });
+            case "minecraft:arrow":
+                return new CraftRecipe(recipeId, 4, true, new String[]{
+                    null, "minecraft:flint", null,
+                    null, "minecraft:stick", null,
+                    null, "minecraft:feather", null
+                });
+
+            // --- Food & Other ---
+            case "minecraft:bread":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:wheat", "minecraft:wheat", "minecraft:wheat",
+                    null, null, null,
+                    null, null, null
+                });
+            case "minecraft:sugar":
+                return new CraftRecipe(recipeId, 1, false, new String[]{
+                    "minecraft:sugar_cane", null,
+                    null, null
+                });
+            case "minecraft:golden_apple":
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    "minecraft:gold_ingot", "minecraft:gold_ingot", "minecraft:gold_ingot",
+                    "minecraft:gold_ingot", "minecraft:apple", "minecraft:gold_ingot",
+                    "minecraft:gold_ingot", "minecraft:gold_ingot", "minecraft:gold_ingot"
+                });
+            case "minecraft:paper":
+                return new CraftRecipe(recipeId, 3, true, new String[]{
+                    "minecraft:sugar_cane", "minecraft:sugar_cane", "minecraft:sugar_cane",
+                    null, null, null,
+                    null, null, null
+                });
             
+             // --- Dyes ---
+            case "minecraft:white_dye":
+            case "minecraft:bone_meal":
+                 return new CraftRecipe(recipeId, 3, false, new String[]{ "minecraft:bone", null, null, null });
+            case "minecraft:red_dye":
+                 return new CraftRecipe(recipeId, 1, false, new String[]{ "minecraft:poppy", null, null, null });
+            case "minecraft:yellow_dye":
+                 return new CraftRecipe(recipeId, 1, false, new String[]{ "minecraft:dandelion", null, null, null });
+            case "minecraft:blue_dye":
+                 return new CraftRecipe(recipeId, 1, false, new String[]{ "minecraft:cornflower", null, null, null });
+            case "minecraft:black_dye":
+                 return new CraftRecipe(recipeId, 1, false, new String[]{ "minecraft:ink_sac", null, null, null });
+
+            // --- Beds ---
+            case "minecraft:white_bed":
+            case "minecraft:red_bed":
+            case "minecraft:yellow_bed":
+            case "minecraft:blue_bed":
+            case "minecraft:black_bed":
+            case "minecraft:bed": // Generic fallback
+                return new CraftRecipe(recipeId, 1, true, new String[]{
+                    null, null, null,
+                    "any_wool", "any_wool", "any_wool",
+                    "any_planks", "any_planks", "any_planks"
+                });
+            
+            // --- Ender ---
+            case "minecraft:blaze_powder":
+                return new CraftRecipe(recipeId, 2, false, new String[]{ "minecraft:blaze_rod", null, null, null });
+            case "minecraft:ender_eye":
+                return new CraftRecipe(recipeId, 1, false, new String[]{ "minecraft:ender_pearl", "minecraft:blaze_powder", null, null });
+
             default:
                 return null;
         }
@@ -371,11 +593,11 @@ public class CraftCommandHandler implements CommandHandler {
             if (item == null || item.isEmpty()) continue;
             
             int gridSlot = gridStart + i;
+            
+            // Re-find slot every time to handle moving items (inefficient but safe)
             int sourceSlot = findItemSlot(client, item, syncId, isTable);
             
             if (sourceSlot == -1) {
-                // Return items from cursor to inventory before failing if it's cluttered?
-                // For now just error.
                 LOGGER.warn("Could not find {} for crafting", item);
                 return "Slot not found for " + item + " (Inv count: " + countItemInInventory(client, item) + ")";
             }
@@ -390,34 +612,34 @@ public class CraftCommandHandler implements CommandHandler {
                 try { Thread.sleep(80); } catch (InterruptedException e) {}
             } else {
                 final int src = sourceSlot;
-                // If cursor is NOT empty and not our item, clear it?
-                // Assuming it's clean for now.
                 
-                // Pick up from source (Right click to pick up 1)
-                client.execute(() -> {
-                    client.interactionManager.clickSlot(syncId, src, 1, SlotActionType.PICKUP, client.player);
-                });
-                try { Thread.sleep(80); } catch (InterruptedException e) {}
+                // Robust Strategy:
+                // 1. Pickup ENTIRE stack (Left Click)
+                // 2. Place ONE item in grid (Right Click)
+                // 3. Return REMAINDER to source (Left Click)
                 
-                // Place in grid
+                // 1. Pickup All
                 client.execute(() -> {
-                    client.interactionManager.clickSlot(syncId, dst, 0, SlotActionType.PICKUP, client.player);
+                    client.interactionManager.clickSlot(syncId, src, 0, SlotActionType.PICKUP, client.player); // Left click = pickup all
                 });
-                try { Thread.sleep(80); } catch (InterruptedException e) {}
+                try { Thread.sleep(60); } catch (InterruptedException e) {}
+                
+                // 2. Place One
+                client.execute(() -> {
+                    client.interactionManager.clickSlot(syncId, dst, 1, SlotActionType.PICKUP, client.player); // Right click = place 1
+                });
+                try { Thread.sleep(60); } catch (InterruptedException e) {}
+                
+                // 3. Return Remainder (if any)
+                client.execute(() -> {
+                    ItemStack cursor = client.player.currentScreenHandler.getCursorStack();
+                    if (!cursor.isEmpty()) {
+                        client.interactionManager.clickSlot(syncId, src, 0, SlotActionType.PICKUP, client.player); // Left click = drop all
+                    }
+                });
+                try { Thread.sleep(60); } catch (InterruptedException e) {}
             }
         }
-        
-        // Final safety: if something's left in cursor, put it back in first empty slot
-        client.execute(() -> {
-            ItemStack cursor = client.player.currentScreenHandler.getCursorStack();
-            if (!cursor.isEmpty()) {
-                // Attempt to dump back to inventory (slots 9-45 in Player screen, but depends on screen)
-                // We'll just click a slot in the main inventory area.
-                // For Crafting table, main starts at 10.
-                int dumpSlot = isTable ? 10 : 9; 
-                client.interactionManager.clickSlot(syncId, dumpSlot, 0, SlotActionType.QUICK_MOVE, client.player);
-            }
-        });
         
         return null; // success
     }

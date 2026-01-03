@@ -17,6 +17,7 @@ def goto(
     timeout: int = 120,
     check_interval: float = 2.0,
     tolerance: float = 3.0,
+    on_tick: Optional[Callable[[], None]] = None,
 ) -> bool:
     """
     Navigate to specific coordinates.
@@ -27,6 +28,7 @@ def goto(
         timeout: Maximum seconds to wait
         check_interval: Seconds between status checks
         tolerance: Distance considered "arrived"
+        on_tick: Optional callback for each iteration
         
     Returns:
         True if reached destination
@@ -36,6 +38,9 @@ def goto(
         
         start = time.time()
         while time.time() - start < timeout:
+            if on_tick:
+                on_tick()
+                
             state = client.transport.dispatch("get_state", {})
             position = state.get("block_position", state.get("position", {}))
             px = position.get("x", state.get("x", 0))
@@ -62,6 +67,7 @@ def explore_until(
     condition: Callable[[], bool],
     max_distance: int = 1000,
     timeout: int = 300,
+    on_tick: Optional[Callable[[], None]] = None,
 ) -> bool:
     """
     Explore until a condition is met.
@@ -71,6 +77,7 @@ def explore_until(
         condition: Callable that returns True when exploration should stop
         max_distance: Maximum exploration distance
         timeout: Maximum seconds to explore
+        on_tick: Optional callable to run every loop iteration
         
     Returns:
         True if condition was met
@@ -91,6 +98,9 @@ def explore_until(
                 client.transport.dispatch("cancel", {})
                 return True
             
+            if on_tick:
+                on_tick()
+            
             # Check distance from origin
             state = client.transport.dispatch("get_state", {})
             position = state.get("block_position", state.get("position", {}))
@@ -102,8 +112,20 @@ def explore_until(
                 client.transport.dispatch("cancel", {})
                 return False
             
+            # Fail fast if Baritone stops exploring (e.g. finished the area)
+            state = client.transport.dispatch("get_state", {})
+            is_pathing = state.get("is_pathing", True)
+            if not is_pathing:
+                 # Check again to be sure (brief pause?)
+                 idle_checks = locals().get('idle_checks', 0) + 1
+                 if idle_checks >= 3: # 6 seconds of idle
+                     print("Exploration finished early (pathing stopped). Moving to next layer.")
+                     return False
+            else:
+                 idle_checks = 0
+            
             print(f"Exploring... d={distance:.1f}/{max_distance} t={time.time()-start:.1f}/{timeout}")
-            time.sleep(2)
+            time.sleep(0.5)
         
         client.transport.dispatch("cancel", {})
         return False
@@ -119,6 +141,7 @@ def spiral_explore(
     max_layers: int = 4,
     step: int = 48,
     dwell: float = 5.0,
+    on_tick: Optional[Callable[[], None]] = None,
 ) -> TaskResult:
     """
     Fan out from the current position using concentric square rings.
@@ -129,6 +152,7 @@ def spiral_explore(
         max_layers: Number of rings to traverse
         step: How far apart each ring is in blocks
         dwell: Seconds to linger between each ring expansion
+        on_tick: Optional callback for each tick
     """
     try:
         state = client.transport.dispatch("get_state", {})
@@ -147,6 +171,7 @@ def spiral_explore(
             condition or (lambda: False),
             max_distance=radius,
             timeout=timeout,
+            on_tick=on_tick,
         )
         visited += 1
         if reached:

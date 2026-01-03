@@ -315,8 +315,50 @@ def dump_to_chest(client, keep_items: List[str]) -> int:
         print("  Invalid storage checkpoint data.")
         return 0
         
-    print(f"STORAGE: Going to chest at {cx}, {cy}, {cz}...")
-    client.transport.dispatch("goto", {"x": cx, "y": cy, "z": cz})
+    print(f"STORAGE: Going UP TO chest at {cx}, {cy}, {cz}...")
+    
+    # Do NOT go to the exact chest block (Baritone might mine it to stand there)
+    # Be smarter: find an adjacent spot that is air
+    target_pos = None
+    best_dist = 999
+    
+    # Check 4 cardinal neighbors + diagonals
+    candidates = [
+        (cx+1, cy, cz), (cx-1, cy, cz), 
+        (cx, cy, cz+1), (cx, cy, cz-1),
+        (cx+1, cy, cz+1), (cx-1, cy, cz-1),
+        (cx+1, cy, cz-1), (cx-1, cy, cz+1)
+    ]
+    
+    current_pos = client.transport.dispatch("get_player_pos", {})
+    px, py, pz = current_pos[0], current_pos[1], current_pos[2]
+    
+    for tx, ty, tz in candidates:
+        # Check if safe (air/replaceable)
+        check = client.transport.dispatch('get_block', {'x': tx, 'y': ty, 'z': tz})
+        bid = check.get('id', '')
+        
+        # We prefer air, but will accept standing on something solid if the space ITSELF is air is confusing.
+        # "get_block" returns the block AT that coordinate. We want to stand IN air ON TOP of solid.
+        # Baritone "goto" expects the coordinate of the floor or the target?
+        # Baritone "goto x y z" usually means "stand at x y z" (so x,y,z should be navigable space, i.e. air above solid).
+        
+        # Let's check if the block AT target is passable (air, grass, carpet)
+        is_passable = 'air' in bid or 'grass' in bid or 'carpet' in bid or 'fern' in bid
+        
+        if is_passable:
+            # Check distance to player
+            dist = ((tx-px)**2 + (ty-py)**2 + (tz-pz)**2)**0.5
+            if dist < best_dist:
+                best_dist = dist
+                target_pos = (tx, ty, tz)
+    
+    if target_pos:
+        print(f"  Navigating to adjacent spot {target_pos}...")
+        client.transport.dispatch("goto", {"x": target_pos[0], "y": target_pos[1], "z": target_pos[2]})
+    else:
+        print("  No adjacent clear spot found! Trying generic approach (may break chest)...")
+        client.transport.dispatch("goto", {"x": cx, "y": cy+1, "z": cz}) # Try standing on top?
     
     # Wait for arrival (simple heuristic or loop)
     time.sleep(1)

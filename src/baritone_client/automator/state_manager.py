@@ -13,18 +13,16 @@ from pathlib import Path
 class Phase(Enum):
     """Phases of end-game progression."""
     BRIDGE_CHECK = auto()       # Verify bridge connectivity and APIs
-    SPAWN_BOOTSTRAP = auto()    # Explore spawn, bootstrap mission macros
-    INITIAL_GATHERING = auto()  # Wood, stone, food, basic tools
-    BASE_CONSTRUCTION = auto()  # Shelter, furnace, crafting table
-    IRON_AGE = auto()           # Iron tools and armor
-    DIAMOND_MINING = auto()     # Diamond tools and armor
-    ENCHANTING = auto()         # Enchanted equipment
-    NETHER_PREP = auto()        # Obsidian, flint and steel
-    NETHER_TRAVEL = auto()      # Blaze rods, gold
-    ENDER_PEARL_FARM = auto()   # Kill endermen for pearls
-    STRONGHOLD_LOCATE = auto()  # Use eyes to find stronghold
-    END_PORTAL = auto()         # Activate and enter portal
-    DRAGON_FIGHT = auto()       # Fight the dragon
+    BOOT_SEQUENCE = auto()      # Phase 1: Shelter, Food, Tools
+    FOOD_AND_IRON = auto()      # Phase 2: Food independence, Iron gear
+    ENCHANTING_PIPELINE = auto()# Phase 3: Level 30 enchanting
+    NETHER_AND_BLAZE = auto()   # Phase 4: Blaze rods
+    VILLAGER_INFRA = auto()     # Phase 5: Villager breeder operational
+    XP_ENGINE = auto()          # Phase 6: Infinite XP
+    IRON_FARM = auto()          # Phase 7: Infinite iron
+    TOOL_PERFECTION = auto()    # Phase 8: Mending economy
+    WORLD_UNLOCK = auto()       # Phase 9: End access and shulker boxes
+    MEGABASE_INIT = auto()      # Phase 10: Megabase initialization
     COMPLETE = auto()           # Victory!
 
 
@@ -170,15 +168,16 @@ class StateManager:
         self.phase_payloads[phase.name] = payload
         self.custom_data.setdefault("phase_payloads", {}).update({phase.name: payload})
     
-    def add_location(self, category: str, x: int, y: int, z: int, dimension: str = "overworld", tags: Optional[list] = None) -> None:
+    def add_location(self, category: str, x: int, y: int, z: int, dimension: str = "overworld", tags: Optional[list] = None, client=None) -> None:
         """
-        Record a location of interest.
+        Record a location of interest and optionally create a Baritone waypoint.
         
         Args:
             category: Type of location (e.g. 'chest', 'bed', 'portal')
             x, y, z: Coordinates
             dimension: Dimension name
             tags: Optional tags
+            client: Optional client instance to sync waypoint to Baritone
         """
         locations = self.custom_data.setdefault("locations", {})
         category_list = locations.setdefault(category, [])
@@ -194,6 +193,15 @@ class StateManager:
             "tags": tags or [],
             "timestamp": __import__("time").time()
         })
+        
+        if client:
+            try:
+                # Sync to Baritone Waypoints
+                # Usage: #waypoint save <tag> <x> <y> <z>
+                tag = f"{category}_{len(category_list)}"
+                client.transport.dispatch("chat", {"message": f"#waypoint save {tag} {x} {y} {z}"})
+            except Exception as e:
+                print(f"Failed to sync waypoint: {e}")
         
     def get_locations(self, category: str = None) -> Dict[str, list]:
         """Get recorded locations (filtered by category if provided)."""

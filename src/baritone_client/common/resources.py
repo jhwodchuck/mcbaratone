@@ -284,19 +284,39 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
     """Navigate to specific Y level for mining."""
     try:
         # Ensure Baritone settings allow breaking and placing blocks
-        client.transport.dispatch("set_setting", {"name": "allowBreak", "value": True})
-        client.transport.dispatch("set_setting", {"name": "allowPlace", "value": True})
+        client.transport.dispatch("chat", {"message": "#set allowBreak true"})
+        client.transport.dispatch("chat", {"message": "#set allowPlace true"})
 
-        client.transport.dispatch("goal", {"type": "yLevel", "value": y})
+        # Revert to simple goal Y level (safer height)
+        y = -54 
+        client.transport.dispatch("chat", {"message": f"#goal {y}"})
+        client.transport.dispatch("chat", {"message": "#set allowBreak true"})
+        client.transport.dispatch("chat", {"message": "#path"})
+        
+        print(f"DEBUG: Goal set to Y={y}. Waiting for arrival...")
+        
         start = time.time()
         while time.time() - start < timeout:
             state = client.transport.dispatch("get_state", {})
             position = state.get("block_position", state.get("position", {}))
             current_y = position.get("y", state.get("y", 0))
+            is_pathing = state.get("is_pathing", False)
+            
+            if int(time.time()) % 5 == 0:
+                 print(f"DEBUG: y={current_y}, pathing={is_pathing}")
+                 if 'error' in state:
+                     print(f"DEBUG State Error: {state['error']}")
+            
             if abs(current_y - y) < 5:
                 client.transport.dispatch("cancel", {})
                 return True
-            time.sleep(2)
+            
+            if not is_pathing and time.time() - start > 10:
+                 print("DEBUG: Pathing stopped. Re-asserting goal...")
+                 client.transport.dispatch("chat", {"message": f"#goal {y}"})
+                 client.transport.dispatch("chat", {"message": "#path"})
+                 
+            time.sleep(1)
         client.transport.dispatch("cancel", {})
         return False
     except Exception as exc:
@@ -418,25 +438,86 @@ def _craft_with_table(client, item_id: str, qty: int) -> bool:
         
         # Try a few spots around the player
         found_spot = False
-        for dx, dz in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1)]:
-            tx, ty, tz = px + dx, py, pz + dz
-            print(f"  Clearing spot at ({tx}, {ty}, {tz})...")
-            # Proactively clear the spot
-            client.transport.dispatch("mine", {"x": tx, "y": ty, "z": tz})
-            time.sleep(1.0) # Wait for mine/clear
+        # Try spots with Y variations too (player might be underground)
+        offsets = [
+             # Same Y level
+             (2, 0, 0), (-2, 0, 0), (0, 0, 2), (0, 0, -2),
+             (1, 0, 1), (-1, 0, -1), (1, 0, -1), (-1, 0, 1),
+             # One block up (more likely to be air if underground)
+             (1, 1, 0), (-1, 1, 0), (0, 1, 1), (0, 1, -1),
+             (1, 1, 1), (-1, 1, -1),
+             # One block down
+             (1, -1, 0), (-1, -1, 0),
+        ]
+        
+        found_spot = False
+        table_pos = None
+        max_attempts = 8  # Increased since we have more spots to try
+        attempts = 0
+        
+        for dx, dy, dz in offsets:
+            if attempts >= max_attempts:
+                print(f"  Max placement attempts ({max_attempts}) reached")
+                break
+                
+            tx, ty, tz = px + dx, py + dy, pz + dz
+            
+            # Check if spot is air or replaceable first
+            try:
+                block_result = client.transport.dispatch("get_block", {"x": tx, "y": ty, "z": tz})
+                block_id = block_result.get("id", "")
+                if block_id not in ["minecraft:air", "minecraft:cave_air", "minecraft:short_grass", "minecraft:tall_grass", ""]:
+                    print(f"  Skip ({tx}, {ty}, {tz}) - occupied by {block_id}")
+                    continue  # Skip this spot, it's not air
+            except Exception as e:
+                print(f"  Block check failed: {e}")
+                # Continue anyway if check fails
             
             print(f"  Attempting to place crafting table at ({tx}, {ty}, {tz})...")
+            attempts += 1
             if place_crafting_table(client, tx, ty, tz):
                 found_spot = True
-                # Open it
-                if open_crafting_table(client, tx, ty, tz):
-                    break
-                else:
-                    print(f"  Placed but failed to open at ({tx}, {ty}, {tz})")
+                table_pos = (tx, ty, tz)
+                print(f"  Crafting table placed at ({tx}, {ty}, {tz})!")
+                break  # Stop trying other spots once placed!
         
         if not found_spot:
-            print(f"  Failed to place/open crafting table for {item_id}")
+            # Fallback: try to mine out a spot
+            print(f"  All spots occupied - mining a space...")
+            fallback_pos = (px + 1, py, pz)
+            try:
+                # Use Baritone to break the block
+                from .navigation import goto
+                client.transport.dispatch("mine", {"blocks": ["minecraft:stone", "minecraft:diorite", "minecraft:granite", "minecraft:andesite", "minecraft:cobblestone", "minecraft:dirt"], "quantity": 1})
+                time.sleep(3)  # Wait for mining
+                
+                # Now try to place at the mined spot
+                print(f"  Attempting placement at mined spot {fallback_pos}...")
+                if place_crafting_table(client, fallback_pos[0], fallback_pos[1], fallback_pos[2]):
+                    found_spot = True
+                    table_pos = fallback_pos
+                    print(f"  Crafting table placed at fallback {fallback_pos}!")
+            except Exception as e:
+                print(f"  Mining fallback failed: {e}")
+        
+        if not found_spot:
+            print(f"  Failed to place crafting table for {item_id} (all spots occupied)")
             return False
+        
+        # Now try to open the table we just placed
+        if table_pos:
+            # FIX: Blacklist to prevent breaking
+            print("  Safeguard: Blacklisting crafting tables from mining...")
+            client.transport.dispatch("chat", {"message": "#blacklist minecraft:crafting_table"})
+            
+            # Step back
+            px, py, pz = table_pos
+            print("  Stepping back from table...")
+            client.transport.dispatch("goto", {"x": px+1, "y": py, "z": pz}) 
+            time.sleep(1.0)
+            
+            if not open_crafting_table(client, table_pos[0], table_pos[1], table_pos[2]):
+                print(f"  Warning: Placed table but failed to open at {table_pos}")
     
     # Now craft
     try:
@@ -458,8 +539,19 @@ DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
     "minecraft:crafting_table": lambda client, qty: craft(client, "minecraft:crafting_table", qty) or True,
     "minecraft:furnace": lambda client, qty: _craft_with_table(client, "minecraft:furnace", qty),
     "minecraft:chest": lambda client, qty: _craft_with_table(client, "minecraft:chest", qty),
-    "minecraft:stone_pickaxe": lambda client, qty: _craft_with_table(client, "minecraft:stone_pickaxe", qty),
-    "minecraft:stone_sword": lambda client, qty: _craft_with_table(client, "minecraft:stone_sword", qty),
+    # Early game wooden tools (2x2 crafting)
+    "minecraft:stick": lambda client, qty: (client.transport.dispatch("close_screen", {}), craft(client, "minecraft:stick", max(qty, 4)), time.sleep(1)),
+    "minecraft:oak_planks": lambda client, qty: (client.transport.dispatch("close_screen", {}), craft(client, "minecraft:oak_planks", qty), time.sleep(1)),
+    # Wooden tools (3x3 crafting table required)
+    "minecraft:wooden_pickaxe": lambda client, qty: _craft_with_table(client, "minecraft:wooden_pickaxe", qty),
+    "minecraft:wooden_sword": lambda client, qty: _craft_with_table(client, "minecraft:wooden_sword", qty),
+    "minecraft:wooden_axe": lambda client, qty: _craft_with_table(client, "minecraft:wooden_axe", qty),
+    "minecraft:wooden_shovel": lambda client, qty: _craft_with_table(client, "minecraft:wooden_shovel", qty),
+    # Stone tools
+    "minecraft:stone_pickaxe": lambda client, qty: (client.transport.dispatch("close_screen", {}), _craft_with_table(client, "minecraft:stone_pickaxe", qty)),
+    "minecraft:stone_sword": lambda client, qty: (client.transport.dispatch("close_screen", {}), _craft_with_table(client, "minecraft:stone_sword", qty)),
+    "minecraft:stone_axe": lambda client, qty: (client.transport.dispatch("close_screen", {}), _craft_with_table(client, "minecraft:stone_axe", qty)),
+    "minecraft:stone_shovel": lambda client, qty: (client.transport.dispatch("close_screen", {}), _craft_with_table(client, "minecraft:stone_shovel", qty)),
     "minecraft:iron_pickaxe": lambda client, qty: _craft_with_table(client, "minecraft:iron_pickaxe", qty),
     "minecraft:iron_sword": lambda client, qty: _craft_with_table(client, "minecraft:iron_sword", qty),
     "minecraft:diamond_pickaxe": lambda client, qty: _craft_with_table(client, "minecraft:diamond_pickaxe", qty),

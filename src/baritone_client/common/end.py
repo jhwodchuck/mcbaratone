@@ -34,57 +34,185 @@ def triangulate_stronghold(client) -> Optional[Tuple[int, int]]:
     import math
     from .inventory import select_item
     from .navigation import goto
-    
+
     # 1. First throw
     if not select_item(client, "minecraft:ender_eye"):
         logger.error("No Eyes of Ender for triangulation")
         return None
-        
+
     state1 = client.transport.dispatch("get_state", {})
     p1 = state1.get("position", {})
     x1, z1 = p1.get("x", 0), p1.get("z", 0)
-    
+
     print("Throwing first eye...")
     client.transport.dispatch("use_item", {"hand": "MAIN_HAND"})
     theta1 = _get_eye_direction(client)
     if theta1 is None:
         logger.error("Failed to track first eye")
         return None
-        
+
     # 2. Travel a bit for a baseline
     # Move perpendicular to the eye direction (approx 100 blocks)
     dx = -math.sin(theta1) * 100
     dz = math.cos(theta1) * 100
     print(f"Moving to baseline location ({x1+dx}, {z1+dz})...")
     goto(client, int(x1 + dx), int(p1.get("y", 64)), int(z1 + dz))
-    
+
     # 3. Second throw
     state2 = client.transport.dispatch("get_state", {})
     p2 = state2.get("position", {})
     x2, z2 = p2.get("x", 0), p2.get("z", 0)
-    
+
     print("Throwing second eye...")
     client.transport.dispatch("use_item", {"hand": "MAIN_HAND"})
     theta2 = _get_eye_direction(client)
     if theta2 is None:
         logger.error("Failed to track second eye")
         return None
-        
+
     # 4. Math: Intersection of two lines
     # z - z1 = m1(x - x1)
     # z - z2 = m2(x - x2)
     m1 = math.tan(theta1)
     m2 = math.tan(theta2)
-    
+
     if abs(m1 - m2) < 0.001:
         logger.error("Triangulation lines are parallel!")
         return None
-        
+
     ix = (z2 - z1 + m1*x1 - m2*x2) / (m1 - m2)
     iz = z1 + m1 * (ix - x1)
-    
+
     print(f"Estimated stronghold at: ({int(ix)}, {int(iz)})")
     return int(ix), int(iz)
+
+
+def spiral_stronghold_search(client, max_radius: int = 2000, step_size: int = 200) -> Optional[Tuple[int, int]]:
+    """
+    Perform spiral search for stronghold when triangulation fails.
+    Moves in expanding spiral pattern, throwing eyes to detect proximity.
+
+    Args:
+        client: Baritone client instance
+        max_radius: Maximum search radius from start position
+        step_size: Distance between spiral points
+
+    Returns:
+        (x, z) coordinates of potential stronghold or None if not found
+    """
+    import math
+    from .inventory import select_item
+    from .navigation import goto
+
+    if not select_item(client, "minecraft:ender_eye"):
+        logger.error("No Eyes of Ender for spiral search")
+        return None
+
+    # Get starting position
+    start_state = client.transport.dispatch("get_state", {})
+    start_pos = start_state.get("position", {})
+    start_x, start_z = start_pos.get("x", 0), start_pos.get("z", 0)
+    start_y = start_pos.get("y", 64)
+
+    print(f"Starting spiral search from ({start_x}, {start_z})")
+
+    # Track best candidate
+    best_coords = None
+    best_distance = float('inf')
+
+    # Spiral parameters
+    angle = 0
+    radius = step_size
+
+    while radius <= max_radius:
+        # Calculate next position in spiral
+        x = start_x + radius * math.cos(angle)
+        z = start_z + radius * math.sin(angle)
+
+        print(f"Moving to spiral point ({int(x)}, {int(z)}) at radius {radius}")
+
+        # Navigate to position
+        if not goto(client, int(x), int(start_y), int(z), timeout=120):
+            print(f"Failed to reach spiral point ({int(x)}, {int(z)}), skipping")
+            # Try next angle
+            angle += math.pi / 4  # 45 degrees
+            if angle >= 2 * math.pi:
+                angle -= 2 * math.pi
+                radius += step_size
+            continue
+
+        # Throw eye at this position
+        print("Throwing eye for proximity check...")
+        client.transport.dispatch("use_item", {"hand": "MAIN_HAND"})
+
+        # Monitor eye flight distance
+        eye_distance = _monitor_eye_flight(client)
+        if eye_distance is None:
+            print("Failed to track eye flight")
+        else:
+            print(f"Eye flew {eye_distance:.1f} blocks")
+
+            # Eyes fly shorter distances when near strongholds
+            # Typical range: 1000-2000 blocks when far, much less when close
+            if eye_distance < 300:  # Close to stronghold
+                print("Eye flew short distance - potential stronghold nearby!")
+                return int(x), int(z)
+            elif eye_distance < best_distance:
+                best_distance = eye_distance
+                best_coords = (int(x), int(z))
+
+        # Advance spiral
+        angle += math.pi / 4  # 45 degrees
+        if angle >= 2 * math.pi:
+            angle -= 2 * math.pi
+            radius += step_size
+
+    print(f"Spiral search complete. Best candidate at {best_coords} with eye distance {best_distance:.1f}")
+    return best_coords
+
+
+def _monitor_eye_flight(client) -> Optional[float]:
+    """
+    Monitor an eye of ender flight to estimate distance to stronghold.
+    Returns approximate flight distance or None if tracking failed.
+    """
+    import time
+    import math
+
+    start_time = time.time()
+    max_flight_time = 30  # Eyes despawn after ~30 seconds
+
+    initial_pos = None
+    max_distance = 0
+
+    while time.time() - start_time < max_flight_time:
+        entities = client.transport.dispatch("get_entities", {"radius": 128})
+        eye = None
+
+        for ent in entities.get("entities", []):
+            if ent.get("type") == "minecraft:eye_of_ender":
+                eye = ent
+                break
+
+        if eye is None:
+            # Eye despawned or hit portal
+            break
+
+        pos = eye.get("position", {})
+        x, z = pos.get("x", 0), pos.get("z", 0)
+
+        if initial_pos is None:
+            initial_pos = (x, z)
+        else:
+            # Calculate distance from initial position
+            dx = x - initial_pos[0]
+            dz = z - initial_pos[1]
+            distance = math.sqrt(dx*dx + dz*dz)
+            max_distance = max(max_distance, distance)
+
+        time.sleep(0.2)
+
+    return max_distance if max_distance > 0 else None
 
 
 def find_end_portal(client, timeout: int = 600) -> bool:

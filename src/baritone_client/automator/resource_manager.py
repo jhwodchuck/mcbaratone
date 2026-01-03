@@ -5,7 +5,6 @@ Resource Manager - Inventory monitoring and requirement tracking.
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from ..common.resources import ensure_supplies
 from ..common.tasks import TaskResult
 from .state_manager import Phase
 
@@ -34,69 +33,141 @@ class ResourceManager:
     # This is a simplified model.
     # Default fallback recipes
     DEFAULT_RECIPES: Dict[str, Dict[str, Any]] = {
-        "minecraft:oak_planks": {"ingredients": [("minecraft:oak_log", 1)], "yield": 4},
-        "minecraft:birch_planks": {"ingredients": [("minecraft:birch_log", 1)], "yield": 4},
-        "minecraft:spruce_planks": {"ingredients": [("minecraft:spruce_log", 1)], "yield": 4},
-        "minecraft:dark_oak_planks": {"ingredients": [("minecraft:dark_oak_log", 1)], "yield": 4},
-        "minecraft:acacia_planks": {"ingredients": [("minecraft:acacia_log", 1)], "yield": 4},
-        "minecraft:jungle_planks": {"ingredients": [("minecraft:jungle_log", 1)], "yield": 4},
-        "minecraft:stick": {"ingredients": [("minecraft:oak_planks", 2)], "yield": 4}, # Generic fallback
-        "minecraft:crafting_table": {"ingredients": [("minecraft:oak_planks", 4)], "yield": 1},
-        "minecraft:wooden_pickaxe": {"ingredients": [("minecraft:oak_planks", 3), ("minecraft:stick", 2)], "yield": 1},
+        # Planks from logs (use equivalency groups)
+        "minecraft:oak_planks": {"ingredients": [("#logs", 1)], "yield": 4},
+        "minecraft:birch_planks": {"ingredients": [("#logs", 1)], "yield": 4},
+        "minecraft:spruce_planks": {"ingredients": [("#logs", 1)], "yield": 4},
+        "minecraft:dark_oak_planks": {"ingredients": [("#logs", 1)], "yield": 4},
+        "minecraft:acacia_planks": {"ingredients": [("#logs", 1)], "yield": 4},
+        "minecraft:jungle_planks": {"ingredients": [("#logs", 1)], "yield": 4},
+        # Sticks and basic items
+        "minecraft:stick": {"ingredients": [("#planks", 2)], "yield": 4},
+        "minecraft:crafting_table": {"ingredients": [("#planks", 4)], "yield": 1},
+        "minecraft:furnace": {"ingredients": [("minecraft:cobblestone", 8)], "yield": 1},
+        "minecraft:chest": {"ingredients": [("#planks", 8)], "yield": 1},
+        "minecraft:torch": {"ingredients": [("minecraft:coal", 1), ("minecraft:stick", 1)], "yield": 4},
+        # Wooden tools
+        "minecraft:wooden_pickaxe": {"ingredients": [("#planks", 3), ("minecraft:stick", 2)], "yield": 1},
+        "minecraft:wooden_sword": {"ingredients": [("#planks", 2), ("minecraft:stick", 1)], "yield": 1},
+        "minecraft:wooden_axe": {"ingredients": [("#planks", 3), ("minecraft:stick", 2)], "yield": 1},
+        "minecraft:wooden_shovel": {"ingredients": [("#planks", 1), ("minecraft:stick", 2)], "yield": 1},
+        "minecraft:wooden_hoe": {"ingredients": [("#planks", 2), ("minecraft:stick", 2)], "yield": 1},
+        # Stone tools
         "minecraft:stone_pickaxe": {"ingredients": [("minecraft:cobblestone", 3), ("minecraft:stick", 2)], "yield": 1},
         "minecraft:stone_sword": {"ingredients": [("minecraft:cobblestone", 2), ("minecraft:stick", 1)], "yield": 1},
         "minecraft:stone_axe": {"ingredients": [("minecraft:cobblestone", 3), ("minecraft:stick", 2)], "yield": 1},
-        "minecraft:furnace": {"ingredients": [("minecraft:cobblestone", 8)], "yield": 1},
+        "minecraft:stone_shovel": {"ingredients": [("minecraft:cobblestone", 1), ("minecraft:stick", 2)], "yield": 1},
+        "minecraft:stone_hoe": {"ingredients": [("minecraft:cobblestone", 2), ("minecraft:stick", 2)], "yield": 1},
+        # Iron tools
+        "minecraft:iron_pickaxe": {"ingredients": [("minecraft:iron_ingot", 3), ("minecraft:stick", 2)], "yield": 1},
+        "minecraft:iron_sword": {"ingredients": [("minecraft:iron_ingot", 2), ("minecraft:stick", 1)], "yield": 1},
+        "minecraft:iron_axe": {"ingredients": [("minecraft:iron_ingot", 3), ("minecraft:stick", 2)], "yield": 1},
+        "minecraft:iron_shovel": {"ingredients": [("minecraft:iron_ingot", 1), ("minecraft:stick", 2)], "yield": 1},
+        "minecraft:iron_hoe": {"ingredients": [("minecraft:iron_ingot", 2), ("minecraft:stick", 2)], "yield": 1},
+        # Iron armor
+        "minecraft:iron_helmet": {"ingredients": [("minecraft:iron_ingot", 5)], "yield": 1},
+        "minecraft:iron_chestplate": {"ingredients": [("minecraft:iron_ingot", 8)], "yield": 1},
+        "minecraft:iron_leggings": {"ingredients": [("minecraft:iron_ingot", 7)], "yield": 1},
+        "minecraft:iron_boots": {"ingredients": [("minecraft:iron_ingot", 4)], "yield": 1},
+        # Diamond tools
+        "minecraft:diamond_pickaxe": {"ingredients": [("minecraft:diamond", 3), ("minecraft:stick", 2)], "yield": 1},
+        "minecraft:diamond_sword": {"ingredients": [("minecraft:diamond", 2), ("minecraft:stick", 1)], "yield": 1},
+        "minecraft:diamond_axe": {"ingredients": [("minecraft:diamond", 3), ("minecraft:stick", 2)], "yield": 1},
+        "minecraft:diamond_shovel": {"ingredients": [("minecraft:diamond", 1), ("minecraft:stick", 2)], "yield": 1},
+        "minecraft:diamond_hoe": {"ingredients": [("minecraft:diamond", 2), ("minecraft:stick", 2)], "yield": 1},
+        # Diamond armor
+        "minecraft:diamond_helmet": {"ingredients": [("minecraft:diamond", 5)], "yield": 1},
+        "minecraft:diamond_chestplate": {"ingredients": [("minecraft:diamond", 8)], "yield": 1},
+        "minecraft:diamond_leggings": {"ingredients": [("minecraft:diamond", 7)], "yield": 1},
+        "minecraft:diamond_boots": {"ingredients": [("minecraft:diamond", 4)], "yield": 1},
+        # Essential items
+        "minecraft:bucket": {"ingredients": [("minecraft:iron_ingot", 3)], "yield": 1},
+        "minecraft:flint_and_steel": {"ingredients": [("minecraft:iron_ingot", 1), ("minecraft:flint", 1)], "yield": 1},
+        "minecraft:shield": {"ingredients": [("minecraft:iron_ingot", 1), ("#planks", 6)], "yield": 1},
+        "minecraft:bow": {"ingredients": [("minecraft:stick", 3), ("minecraft:string", 3)], "yield": 1},
+        "minecraft:arrow": {"ingredients": [("minecraft:flint", 1), ("minecraft:stick", 1), ("minecraft:feather", 1)], "yield": 4},
+        "minecraft:bed": {"ingredients": [("#planks", 3), ("#wool", 3)], "yield": 1},
+        # Ender items
+        "minecraft:ender_eye": {"ingredients": [("minecraft:ender_pearl", 1), ("minecraft:blaze_powder", 1)], "yield": 1},
+        "minecraft:blaze_powder": {"ingredients": [("minecraft:blaze_rod", 1)], "yield": 2},
+        
+        # Food
+        "minecraft:bread": {"ingredients": [("minecraft:wheat", 3)], "yield": 1},
+        "minecraft:sugar": {"ingredients": [("minecraft:sugar_cane", 1)], "yield": 1},
+        "minecraft:golden_apple": {"ingredients": [("minecraft:gold_ingot", 8), ("minecraft:apple", 1)], "yield": 1},
+        
+        # Dyes
+        "minecraft:bone_meal": {"ingredients": [("minecraft:bone", 1)], "yield": 3},
+        "minecraft:white_dye": {"ingredients": [("minecraft:bone_meal", 1)], "yield": 1},
+        "minecraft:red_dye": {"ingredients": [("minecraft:poppy", 1)], "yield": 1},
+        "minecraft:yellow_dye": {"ingredients": [("minecraft:dandelion", 1)], "yield": 1},
+        "minecraft:blue_dye": {"ingredients": [("minecraft:cornflower", 1)], "yield": 1},
+        "minecraft:black_dye": {"ingredients": [("minecraft:ink_sac", 1)], "yield": 1},
+        
+        # Wool Dyeing
+        "minecraft:red_wool": {"ingredients": [("minecraft:white_wool", 1), ("minecraft:red_dye", 1)], "yield": 1},
+        "minecraft:yellow_wool": {"ingredients": [("minecraft:white_wool", 1), ("minecraft:yellow_dye", 1)], "yield": 1},
+        "minecraft:blue_wool": {"ingredients": [("minecraft:white_wool", 1), ("minecraft:blue_dye", 1)], "yield": 1},
+        "minecraft:black_wool": {"ingredients": [("minecraft:white_wool", 1), ("minecraft:black_dye", 1)], "yield": 1},
+        
+        # Specific Beds (since generic bed doesn't exist)
+        "minecraft:white_bed": {"ingredients": [("#planks", 3), ("minecraft:white_wool", 3)], "yield": 1},
+        "minecraft:red_bed": {"ingredients": [("#planks", 3), ("minecraft:red_wool", 3)], "yield": 1},
+        "minecraft:yellow_bed": {"ingredients": [("#planks", 3), ("minecraft:yellow_wool", 3)], "yield": 1},
+        "minecraft:blue_bed": {"ingredients": [("#planks", 3), ("minecraft:blue_wool", 3)], "yield": 1},
+        "minecraft:black_bed": {"ingredients": [("#planks", 3), ("minecraft:black_wool", 3)], "yield": 1},
     }
 
     # Phase requirements (item_id -> minimum count)
     PHASE_REQUIREMENTS: Dict[Phase, Dict[str, int]] = {
-        Phase.SPAWN_BOOTSTRAP: {
-            "minecraft:oak_log": 8,
-            "minecraft:cooked_beef": 4,
-        },
-        Phase.INITIAL_GATHERING: {
-            "minecraft:oak_log": 16,
-            "minecraft:cobblestone": 16,
-        },
-        Phase.BASE_CONSTRUCTION: {
-            "minecraft:crafting_table": 1,
+        Phase.BRIDGE_CHECK: {},
+        Phase.BOOT_SEQUENCE: {
+            "minecraft:oak_log": 20,
+            "minecraft:stone_pickaxe": 1,
+            "minecraft:white_bed": 1,
             "minecraft:furnace": 1,
+            "minecraft:crafting_table": 1,
             "minecraft:chest": 2,
         },
-        Phase.IRON_AGE: {
-            "minecraft:iron_ingot": 24,
+        Phase.FOOD_AND_IRON: {
+            "minecraft:iron_ingot": 64,
             "minecraft:iron_pickaxe": 1,
             "minecraft:iron_sword": 1,
+            "minecraft:iron_helmet": 1,
+            "minecraft:iron_chestplate": 1,
+            "minecraft:iron_leggings": 1,
+            "minecraft:iron_boots": 1,
         },
-        Phase.DIAMOND_MINING: {
-            "minecraft:diamond": 20,
-            "minecraft:diamond_pickaxe": 1,
-            "minecraft:diamond_sword": 1,
-        },
-        Phase.ENCHANTING: {
+        Phase.ENCHANTING_PIPELINE: {
+            "minecraft:diamond": 5,
+            "minecraft:leather": 45,
+            "minecraft:sugar_cane": 45,
             "minecraft:enchanting_table": 1,
             "minecraft:bookshelf": 15,
-            "minecraft:experience_bottle": 0,  # Experience tracked separately
         },
-        Phase.NETHER_PREP: {
+        Phase.NETHER_AND_BLAZE: {
+            "minecraft:blaze_rod": 6,
             "minecraft:obsidian": 14,
             "minecraft:flint_and_steel": 1,
         },
-        Phase.NETHER_TRAVEL: {
-            "minecraft:blaze_rod": 10,
-            "minecraft:gold_ingot": 20,
+        Phase.VILLAGER_INFRA: {
+            "minecraft:villager_spawn_egg": 0, # Representing villagers captured
         },
-        Phase.ENDER_PEARL_FARM: {
-            "minecraft:ender_pearl": 20,
+        Phase.XP_ENGINE: {
+            "minecraft:experience_bottle": 0, # Representing level 30 capacity
         },
-        Phase.STRONGHOLD_LOCATE: {
+        Phase.IRON_FARM: {
+            "minecraft:iron_ingot": 0, # Representing starting iron farm
+        },
+        Phase.TOOL_PERFECTION: {
+            "minecraft:enchanted_book": 1, # Representing Mending
+        },
+        Phase.WORLD_UNLOCK: {
+            "minecraft:shulker_box": 5,
             "minecraft:ender_eye": 12,
         },
-        Phase.END_PORTAL: {},  # No specific items needed
-        Phase.DRAGON_FIGHT: {
-            "minecraft:arrow": 64,
-            "minecraft:bow": 1,
+        Phase.MEGABASE_INIT: {
+            "minecraft:beacon": 1,
         },
         Phase.COMPLETE: {},
     }
@@ -280,10 +351,10 @@ class ResourceManager:
     def get_item_count(self, item_id: str, include_reserved: bool = True) -> int:
         """
         Get count of specific item or item group (starting with #).
-        
+
         Args:
             item_id: Minecraft item ID or Group ID (e.g., "#logs")
-            
+
         Returns:
             Count of item in inventory
         """
@@ -292,9 +363,10 @@ class ResourceManager:
             group = self.EQUIVALENCIES.get(item_id, [])
             total = 0
             for specific_item in group:
-                total += self.cached_inventory.get(specific_item, 0)
+                count = self.cached_inventory.get(specific_item, 0)
+                total += count
             return total
-            
+
         return self.cached_inventory.get(item_id, 0)
     
     def get_inventory_snapshot(self) -> Dict[str, int]:
@@ -458,6 +530,7 @@ class ResourceManager:
 
     def ensure_phase_supplies(self, client, phase: Phase) -> TaskResult:
         """Validate phase requirements and trigger mission macros if needed."""
+        from ..common.resources import ensure_supplies  # Import here to avoid circular dependency
         requirements = self.PHASE_REQUIREMENTS.get(phase, {})
         if not requirements:
             return TaskResult.ok("No requirements for this phase")

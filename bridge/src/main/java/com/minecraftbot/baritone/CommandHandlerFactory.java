@@ -59,6 +59,7 @@ public class CommandHandlerFactory {
         registerHandler("cancel", CancelCommandHandler.class);
         registerHandler("use_item", UseItemCommandHandler.class);
         registerHandler("attack_entity", AttackEntityCommandHandler.class);
+        registerHandler("attack_block", AttackBlockCommandHandler.class);
         registerHandler("get_view", GetViewCommandHandler.class);
         registerHandler("close_screen", CloseScreenCommandHandler.class);
     }

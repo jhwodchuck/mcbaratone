@@ -40,6 +40,7 @@ from .nether import (
 )
 from .end import (
     triangulate_stronghold,
+    spiral_stronghold_search,
     find_end_portal,
     activate_end_portal,
     enter_end_portal,
@@ -58,6 +59,25 @@ from .base import (
     sleep_through_night,
 )
 from .automation_utils import get_player_pos, place_block, safe_goto
+from .villager import (
+    capture_villager,
+    build_villager_breeder,
+    lock_librarian,
+    start_villager_multiplication,
+    find_villager_workstation,
+)
+from .mob_farm import (
+    find_spawner,
+    build_simple_mob_farm,
+    grind_xp_at_location,
+    enchant_tool_perfectly,
+)
+from .iron_farm import (
+    build_iron_farm,
+    move_villagers_to_farm,
+    add_zombie_to_farm,
+    start_iron_production,
+)
 
 LambdaTask = ActionTask
 
@@ -118,8 +138,25 @@ __all__ = [
 
     # End
     "triangulate_stronghold",
+    "spiral_stronghold_search",
     "find_end_portal",
     "activate_end_portal",
     "enter_end_portal",
     "fight_ender_dragon",
+    # Villager
+    "capture_villager",
+    "build_villager_breeder",
+    "lock_librarian",
+    "start_villager_multiplication",
+    "find_villager_workstation",
+    # Mob Farm
+    "find_spawner",
+    "build_simple_mob_farm",
+    "grind_xp_at_location",
+    "enchant_tool_perfectly",
+    # Iron Farm
+    "build_iron_farm",
+    "move_villagers_to_farm",
+    "add_zombie_to_farm",
+    "start_iron_production",
 ]

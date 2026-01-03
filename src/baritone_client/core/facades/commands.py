@@ -269,7 +269,7 @@ class CommandFacade:
 
     def path(self) -> Dict[str, Any]:
         """Force path calculation to current goal."""
-        return self.run("#path")
+        return self._dispatch("chat", {"message": "#path"})
 
     def sel(self, command: str) -> Dict[str, Any]:
         """

@@ -5,7 +5,7 @@ Stronghold Location Phase - Use eyes of ender to find stronghold.
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
-from ...common import triangulate_stronghold, goto, find_end_portal
+from ...common import triangulate_stronghold, spiral_stronghold_search, goto, find_end_portal
 from ...common.tasks import TaskResult
 
 
@@ -62,5 +62,47 @@ class StrongholdHandler(PhaseHandler):
                         coords=coords,
                         target_y=target_y,
                     )
+        else:
+            # Triangulation failed, attempt spiral search
+            print("Triangulation failed. Starting spiral search for stronghold...")
+            spiral_coords = spiral_stronghold_search(client, max_radius=2000, step_size=200)
+
+            if spiral_coords:
+                print(f"Spiral search found potential stronghold at: {spiral_coords}")
+                print("Navigating to spiral-found stronghold area...")
+                if goto(client, spiral_coords[0], target_y, spiral_coords[1], timeout=600):
+                    print("Reached spiral-found stronghold area. Starting stronghold exploration...")
+                    # Start the stronghold exploration macro
+                    client.mission.macro("locate_stronghold", {})
+
+                    # Wait for the end portal to be found
+                    print("Exploring stronghold to find End Portal...")
+                    found = find_end_portal(client, timeout=900)
+
+                    if found:
+                        resources.refresh_inventory()
+                        missing = resources.check_phase_requirements(Phase.STRONGHOLD_LOCATE)
+                        if missing:
+                            return TaskResult.fail("End portal found but requirements unmet", coords=spiral_coords, missing=missing)
+                        return TaskResult.ok(
+                            "End portal located via spiral search",
+                            coords=spiral_coords,
+                            target_y=target_y,
+                            portal_found=True,
+                            inventory=resources.get_summary()["inventory"],
+                        )
+                    else:
+                        return TaskResult.fail(
+                            "Reached spiral-found stronghold but failed to locate end portal",
+                            coords=spiral_coords,
+                            target_y=target_y,
+                        )
+                else:
+                    return TaskResult.fail(
+                        "Failed to navigate to spiral-found stronghold location",
+                        coords=spiral_coords,
+                    )
+            else:
+                return TaskResult.fail("Spiral search also failed to locate stronghold")
 
         return TaskResult.fail("Failed to locate stronghold")

@@ -35,7 +35,7 @@ def craft_flint_steel(client) -> bool:
     return craft(client, "minecraft:flint_and_steel", 1)
 
 
-def build_portal(client) -> bool:
+def build_portal(client, state: StateManager) -> bool:
     """Build nether portal."""
     snapshot = client.transport.dispatch("get_state", {})
     pos = snapshot.get("block_position", snapshot.get("position", {}))
@@ -44,8 +44,9 @@ def build_portal(client) -> bool:
     z = int(pos.get("z", snapshot.get("z", 0)))
     success = build_nether_portal(client, x, y, z)
     if success:
-        # Store portal position in client or state if needed, but for now just return success
-        pass
+        # Record portal location for death recovery
+        state.add_location("portal", x, y, z, "overworld", ["nether_portal", "built"])
+        print(f"Recorded Nether portal at ({x}, {y}, {z})")
     return success
 
 
@@ -69,7 +70,7 @@ class NetherPrepHandler(PhaseHandler):
         tasks = [
             ActionTask("Mine obsidian", mine_obsidian, count=14),
             ActionTask("Craft flint and steel", craft_flint_steel),
-            ActionTask("Build nether portal", build_portal),
+            ActionTask("Build nether portal", lambda: build_portal(client, state)),
         ]
 
         # Execute tasks sequentially

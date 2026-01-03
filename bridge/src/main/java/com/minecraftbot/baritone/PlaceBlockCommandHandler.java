@@ -14,6 +14,10 @@ import net.minecraft.util.math.Vec3d;
 import java.net.Socket;
 import java.util.concurrent.ExecutionException;
 
+/**
+ * Simple block placement handler that avoids any packet-level manipulation.
+ * This is a minimal implementation that just uses the client's interactBlock API.
+ */
 public class PlaceBlockCommandHandler implements CommandHandler {
 
     @Override
@@ -35,7 +39,7 @@ public class PlaceBlockCommandHandler implements CommandHandler {
                     return CommandResult.error("Target position is already occupied: " + targetPos);
                 }
 
-                // Logic to find neighbor
+                // Find a solid neighbor to place against
                 Direction placeFace = Direction.UP;
                 BlockPos placeAgainst = targetPos.down();
                 boolean foundNeighbor = false;
@@ -55,19 +59,24 @@ public class PlaceBlockCommandHandler implements CommandHandler {
                     return CommandResult.error("No solid block found to place against at " + targetPos);
                 }
                 
-                Vec3d hitPos = Vec3d.ofCenter(placeAgainst).add(Vec3d.of(placeFace.getVector()).multiply(0.5d));
+                // Calculate hit position (center of the face we're clicking)
+                double centerX = placeAgainst.getX() + 0.5;
+                double centerY = placeAgainst.getY() + 0.5;
+                double centerZ = placeAgainst.getZ() + 0.5;
                 
-                // Look at hitPos
-                double dx = hitPos.x - client.player.getX();
-                double dy = hitPos.y - client.player.getEyeY();
-                double dz = hitPos.z - client.player.getZ();
-                double horizontalDist = Math.sqrt(dx * dx + dz * dz);
-                float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
-                float pitch = (float) Math.toDegrees(-Math.atan2(dy, horizontalDist));
+                double dirX = placeFace.getOffsetX();
+                double dirY = placeFace.getOffsetY();
+                double dirZ = placeFace.getOffsetZ();
                 
-                client.player.setYaw(yaw);
-                client.player.setPitch(pitch);
+                Vec3d hitPos = new Vec3d(centerX + dirX * 0.5, centerY + dirY * 0.5, centerZ + dirZ * 0.5);
                 
+                // Verify item is in hand
+                if (client.player.getMainHandStack().isEmpty()) {
+                     return CommandResult.error("Main hand is empty!");
+                }
+                
+                // Create hit result and interact - NO rotation, NO sneaking packets
+                // Just let the game handle it naturally
                 BlockHitResult hitResult = new BlockHitResult(hitPos, placeFace, placeAgainst, false);
                 
                 ActionResult result = client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hitResult);
@@ -79,11 +88,12 @@ public class PlaceBlockCommandHandler implements CommandHandler {
                 data.addProperty("x", x);
                 data.addProperty("y", y);
                 data.addProperty("z", z);
+                data.addProperty("item", client.player.getMainHandStack().getName().getString());
                 
                 if (result.isAccepted()) {
                     return CommandResult.success(data);
                 } else {
-                    return CommandResult.error("Placement interaction failed: " + result.toString());
+                    return CommandResult.error("Placement failed: " + result.toString() + " Item: " + client.player.getMainHandStack().getName().getString() + " Pos: " + targetPos);
                 }
             }).get();
 

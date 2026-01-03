@@ -132,6 +132,7 @@ class CommandDispatcher:
             if params:
                 payload["params"] = params
 
+            logger.info(f"Dispatching command '{command}' with params {params}")
             # Use transport dispatch with command route
             response = self.transport.dispatch("command", payload, timeout=effective_timeout)
 
