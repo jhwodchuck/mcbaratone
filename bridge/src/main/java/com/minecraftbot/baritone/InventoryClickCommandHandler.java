@@ -4,43 +4,46 @@ import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.screen.slot.SlotActionType;
+
 import java.net.Socket;
+import java.util.concurrent.CompletableFuture;
 
 public class InventoryClickCommandHandler implements CommandHandler {
 
     @Override
-    public CommandResult handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
-         try {
-             return client.submit(() -> {
-                 if (client.player == null || client.interactionManager == null) {
-                     return CommandResult.error("Player not available");
-                 }
+    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+        try {
+            CommandResult result = client.submit(() -> {
+                if (client.player == null || client.interactionManager == null) {
+                    return CommandResult.error("Player not available");
+                }
                  
-                 int slot = params.has("slot") ? params.get("slot").getAsInt() : -1;
-                 int button = params.has("button") ? params.get("button").getAsInt() : 0;
-                 String typeStr = params.has("type") ? params.get("type").getAsString().toUpperCase() : "PICKUP";
+                int slot = params.has("slot") ? params.get("slot").getAsInt() : -1;
+                int button = params.has("button") ? params.get("button").getAsInt() : 0;
+                String typeStr = params.has("type") ? params.get("type").getAsString().toUpperCase() : "PICKUP";
                  
-                 // Use current screen's sync_id if not provided
-                 int syncId = params.has("sync_id") && params.get("sync_id").getAsInt() != 0 
-                     ? params.get("sync_id").getAsInt() 
-                     : client.player.currentScreenHandler.syncId;
+                // Use current screen's sync_id if not provided
+                int syncId = params.has("sync_id") && params.get("sync_id").getAsInt() != 0 
+                    ? params.get("sync_id").getAsInt() 
+                    : client.player.currentScreenHandler.syncId;
                  
-                 SlotActionType type;
-                 try {
-                     type = SlotActionType.valueOf(typeStr);
-                 } catch (Exception e) {
-                     return CommandResult.error("Invalid type: " + typeStr);
-                 }
+                SlotActionType type;
+                try {
+                    type = SlotActionType.valueOf(typeStr);
+                } catch (Exception e) {
+                    return CommandResult.error("Invalid type: " + typeStr);
+                }
                  
-                 client.interactionManager.clickSlot(syncId, slot, button, type, client.player);
+                client.interactionManager.clickSlot(syncId, slot, button, type, client.player);
                  
-                 JsonObject data = new JsonObject();
-                 data.addProperty("clicked", true);
-                 return CommandResult.success(data);
-             }).get();
-         } catch (Exception e) {
-             return CommandResult.error("Click failed: " + e.getMessage());
-         }
+                JsonObject data = new JsonObject();
+                data.addProperty("clicked", true);
+                return CommandResult.success(data);
+            }).get();
+            return CompletableFuture.completedFuture(result);
+        } catch (Exception e) {
+            return CompletableFuture.completedFuture(CommandResult.error("Click failed: " + e.getMessage()));
+        }
     }
     
     @Override

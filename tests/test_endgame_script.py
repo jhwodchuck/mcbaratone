@@ -1,6 +1,6 @@
 import unittest
 
-from baritone_client.enums import TransportEvent
+from baritone_client import TransportEvent
 from baritone_client.scripts.endgame import EndGameMission, MissionPhase, MissionState
 
 

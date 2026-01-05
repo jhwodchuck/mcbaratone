@@ -6,11 +6,9 @@ import pytest
 from contextlib import asynccontextmanager
 from unittest.mock import Mock, MagicMock, patch
 
-from baritone_client.exceptions import TransportError
-from baritone_client.mcp_server import BridgeConfig, BridgeSession, BridgeLifespanContext, create_mcp_server, _call_bridge, _format_json, _session_from_context
-from baritone_client.cache_manager import CacheStats
-from baritone_client.upload_manager import UploadProgress
-from baritone_client.command_dispatcher import CommandResult
+from baritone_client import TransportError, CommandResult, CacheStats
+from baritone_client.mcp.mcp_server import BridgeConfig, BridgeSession, BridgeLifespanContext, create_mcp_server, _call_bridge, _format_json, _session_from_context
+from baritone_client.utils.upload_manager import UploadProgress
 from typing import List
 
 

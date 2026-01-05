@@ -55,13 +55,18 @@ dependencies {
 
     // Local Baritone API
     // We expect the user to put baritone-api-fabric-*.jar in the 'libs' folder
-    modCompileOnly files('libs/baritone-api-fabric-1.15.0.jar')
+    modImplementation files('libs/baritone-api-fabric-1.15.0.jar')
+
+    // WebSocket and networking
+    implementation 'org.java-websocket:Java-WebSocket:1.5.3'
+    implementation 'org.lz4:lz4-java:1.8.0'
 
     // Testing dependencies
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.0'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.0'
     testImplementation 'org.mockito:mockito-core:5.5.0'
     testImplementation 'org.mockito:mockito-junit-jupiter:5.5.0'
+    testImplementation files('libs/baritone-api-fabric-1.15.0.jar')
 }
 
 test {

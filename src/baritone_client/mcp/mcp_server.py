@@ -36,7 +36,7 @@ from ..core.client import Client
 from ..transport.command_dispatcher import CommandResult
 from ..core.exceptions import TransportError
 from ..core.facades.goals import GoalFactory
-from ..transport.transport import TcpTransport
+from ..transport.transport import TcpTransport, WebSocketTransport
 from ..utils.upload_manager import UploadProgress
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,7 @@ class BridgeConfig:
     host: str = "localhost"
     port: int = 5555
     timeout: float = 15.0
+    transport_type: str = "websocket"  # "tcp" or "websocket"
 
 
 class BridgeSession:
@@ -73,13 +74,22 @@ class BridgeSession:
         self._lock = threading.RLock()
 
     def _default_factory(self) -> Client:
-        logger.info(
-            "Connecting to Baritone bridge at %s:%s (timeout %.1fs)",
-            self.config.host,
-            self.config.port,
-            self.config.timeout,
-        )
-        transport = TcpTransport(host=self.config.host, port=self.config.port, timeout=self.config.timeout)
+        if self.config.transport_type == "websocket":
+            url = f"ws://{self.config.host}:{self.config.port}"
+            logger.info(
+                "Connecting to Baritone bridge via WebSocket at %s (timeout %.1fs)",
+                url,
+                self.config.timeout,
+            )
+            transport = WebSocketTransport(url=url, timeout=self.config.timeout, enable_event_storage=False)
+        else:
+            logger.info(
+                "Connecting to Baritone bridge via TCP at %s:%s (timeout %.1fs)",
+                self.config.host,
+                self.config.port,
+                self.config.timeout,
+            )
+            transport = TcpTransport(host=self.config.host, port=self.config.port, timeout=self.config.timeout)
         return Client(transport)
 
     def _ensure_client(self) -> Client:
@@ -230,6 +240,24 @@ def create_mcp_server(config: BridgeConfig) -> FastMCP:
         })
         return _format_json(status)
 
+    @mcp.resource("baritone://analytics/health")
+    def system_health(ctx: RequestContext) -> str:
+        """Return comprehensive system health metrics."""
+        health = _call_bridge(ctx, "system/health", lambda client: client.get_bridge_health())
+        return _format_json(health.model_dump() if hasattr(health, 'model_dump') else health.__dict__)
+
+    @mcp.resource("baritone://analytics/performance")
+    def performance_metrics(ctx: RequestContext) -> str:
+        """Return performance metrics and system throughput."""
+        metrics = _call_bridge(ctx, "system/metrics", lambda client: client.get_bridge_metrics())
+        return _format_json(metrics)
+
+    @mcp.resource("baritone://analytics/report")
+    def analytics_report(ctx: RequestContext) -> str:
+        """Return comprehensive analytics report."""
+        report = _call_bridge(ctx, "analytics/report", lambda client: client.get_performance_report())
+        return _format_json(report.model_dump() if hasattr(report, 'model_dump') else report.__dict__)
+
     #
     # Tools
     #
@@ -238,6 +266,21 @@ def create_mcp_server(config: BridgeConfig) -> FastMCP:
     def run_command(command: str, ctx: RequestContext) -> Dict[str, Any]:
         """Execute a raw Baritone/mission command string."""
         return _call_bridge(ctx, "command/run", lambda client: client.command.run(command))
+
+    @mcp.tool()
+    def batch_command(commands: List[str], ctx: RequestContext, stop_on_error: bool = True) -> Dict[str, Any]:
+        """Execute multiple Baritone commands sequentially with proper error handling."""
+        results = []
+        for i, command in enumerate(commands):
+            try:
+                result = _call_bridge(ctx, f"batch/command/{i}", lambda client: client.command.run(command))
+                results.append({"command": command, "result": result, "success": True})
+            except Exception as e:
+                error_result = {"command": command, "error": str(e), "success": False}
+                results.append(error_result)
+                if stop_on_error:
+                    break
+        return {"batch_results": results, "total_commands": len(commands), "executed_commands": len(results)}
 
     @mcp.tool()
     def cancel_command(ctx: RequestContext) -> Dict[str, Any]:
@@ -369,10 +412,98 @@ def create_mcp_server(config: BridgeConfig) -> FastMCP:
         return {"events": [event.to_dict() for event in events]}
 
     @mcp.tool()
+    def subscribe_events(
+        ctx: RequestContext,
+        event_types: List[str],
+        priority_threshold: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Subscribe to real-time event streaming for specified event types."""
+        from ..transport.enums import TransportEvent
+        try:
+            event_enums = {TransportEvent(et) for et in event_types}
+            success = _call_bridge(ctx, "events/subscribe", lambda client: client.transport.subscribe_events(
+                event_types=event_enums,
+                priority_threshold=priority_threshold or 0
+            ))
+            return {"success": True, "subscribed_events": event_types}
+        except ValueError as e:
+            return {"success": False, "error": f"Invalid event type: {e}"}
+
+    @mcp.tool()
+    def unsubscribe_events(
+        ctx: RequestContext,
+        event_types: List[str]
+    ) -> Dict[str, Any]:
+        """Unsubscribe from real-time event streaming for specified event types."""
+        from ..transport.enums import TransportEvent
+        try:
+            event_enums = {TransportEvent(et) for et in event_types}
+            success = _call_bridge(ctx, "events/unsubscribe", lambda client: client.transport.unsubscribe_events(event_types=event_enums))
+            return {"success": True, "unsubscribed_events": event_types}
+        except ValueError as e:
+            return {"success": False, "error": f"Invalid event type: {e}"}
+
+    @mcp.tool()
+    def subscribe_mission_updates(ctx: RequestContext, priority_threshold: Optional[int] = None) -> Dict[str, Any]:
+        """Subscribe to real-time mission state updates and collaborative mission events."""
+        return _call_bridge(ctx, "mission/subscribe", lambda client: client.transport.subscribe_events(
+            event_types={"mission"}, priority_threshold=priority_threshold or 0
+        ))
+
+    @mcp.tool()
+    def unsubscribe_mission_updates(ctx: RequestContext) -> Dict[str, Any]:
+        """Unsubscribe from real-time mission state updates."""
+        return _call_bridge(ctx, "mission/unsubscribe", lambda client: client.transport.unsubscribe_events(event_types={"mission"}))
+
+    @mcp.tool()
+    def broadcast_mission_state(ctx: RequestContext, mission_data: Dict[str, Any], priority: int = 0) -> Dict[str, Any]:
+        """Broadcast mission state update to all subscribed MCP clients."""
+        return _call_bridge(ctx, "mission/broadcast", lambda client: client.transport.emit(
+            "mission", mission_data, priority=priority
+        ))
+
+    @mcp.tool()
     def get_rate_limit_info(ctx: RequestContext) -> Dict[str, Any]:
         """Get current rate limiting information."""
         info = _call_bridge(ctx, "rate_limit/info", lambda client: client.command_dispatcher.get_rate_limit_info())
         return info
+
+    @mcp.tool()
+    def get_command_analytics(command_name: str, ctx: RequestContext) -> Dict[str, Any]:
+        """Get performance analytics for a specific command."""
+        analytics = _call_bridge(ctx, "analytics/command", lambda client: client.get_command_analytics(command_name))
+        if analytics is None:
+            return {"error": f"No analytics available for command: {command_name}"}
+        return analytics.model_dump() if hasattr(analytics, 'model_dump') else analytics.__dict__
+
+    @mcp.tool()
+    def get_system_health_alerts(ctx: RequestContext) -> Dict[str, Any]:
+        """Get current system health alerts and warnings."""
+        status = _call_bridge(ctx, "health/alerts", lambda client: client.get_circuit_breaker_status())
+        health = _call_bridge(ctx, "health/status", lambda client: client.get_bridge_health())
+
+        alerts = []
+        if hasattr(health, 'thread_pool_utilization') and health.thread_pool_utilization > 0.9:
+            alerts.append({"level": "warning", "message": "Thread pool utilization is high", "metric": "thread_pool_utilization", "value": health.thread_pool_utilization})
+
+        if hasattr(health, 'memory_usage_mb') and health.memory_usage_mb > 1000:
+            alerts.append({"level": "warning", "message": "High memory usage detected", "metric": "memory_usage_mb", "value": health.memory_usage_mb})
+
+        return {
+            "circuit_breaker_status": status,
+            "health_alerts": alerts,
+            "overall_status": "healthy" if not alerts else "warning"
+        }
+
+    @mcp.tool()
+    def get_performance_trends(ctx: RequestContext, hours: int = 24) -> Dict[str, Any]:
+        """Get performance trend analysis over the specified time period."""
+        report = _call_bridge(ctx, "analytics/trends", lambda client: client.get_performance_report())
+        return {
+            "performance_report": report.model_dump() if hasattr(report, 'model_dump') else report.__dict__,
+            "analysis_period_hours": hours,
+            "trend_analysis": "Performance data collected for trend analysis"
+        }
 
     #
     # Movement & Goals

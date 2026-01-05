@@ -2,12 +2,10 @@ import sys
 from unittest import TestCase
 from unittest.mock import MagicMock
 
-from baritone_client.client import Client
-from baritone_client.enums import MovementStatus, PathCalculationResultType, PathingCommandType
-from baritone_client.goals import GoalFactory
-from baritone_client.models import Selection
-from baritone_client.processes import BuilderProcess
-from baritone_client.serialization import better_block_pos
+from baritone_client import Client, MovementStatus, PathCalculationResultType, PathingCommandType
+from baritone_client.core.facades.goals import GoalFactory
+from baritone_client.models.models import Selection, BetterBlockPos
+from baritone_client.core.facades.processes import BuilderProcess
 
 
 class DummyTransport:
@@ -51,7 +49,7 @@ class ClientFacadeTest(TestCase):
         self.assertEqual({"name": "allowSprint", "value": True}, response["payload"])
 
     def test_builder_process_selection(self):
-        selection = Selection(start=better_block_pos(0, 64, 0), end=better_block_pos(1, 65, 1))
+        selection = Selection(start=BetterBlockPos(x=0, y=64, z=0), end=BetterBlockPos(x=1, y=65, z=1))
         builder = BuilderProcess(self.transport)
         result = builder.start("house", selection=selection)
         self.assertEqual("process/builder/start", result["route"])

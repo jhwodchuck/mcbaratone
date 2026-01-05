@@ -7,22 +7,19 @@ import com.google.gson.JsonObject;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.registry.Registries;
-import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 
 import java.net.Socket;
-import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CompletableFuture;
 
 public class FindBlocksCommandHandler implements CommandHandler {
 
     @Override
-    public CommandResult handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
         if (client.player == null || client.world == null) {
-            return CommandResult.error("Player/World not available");
+            return CompletableFuture.completedFuture(CommandResult.error("Player/World not available"));
         }
 
         JsonArray blocksJson = params.getAsJsonArray("blocks");
@@ -40,20 +37,14 @@ public class FindBlocksCommandHandler implements CommandHandler {
         final int finalRadius = radius;
         final int finalLimit = limit;
 
-        AtomicReference<JsonArray> resultRef = new AtomicReference<>(new JsonArray());
-
-        // Run on main thread to access world safely
         try {
-            return client.submit(() -> {
+            CommandResult result = client.submit(() -> {
                 JsonArray foundList = new JsonArray();
                 BlockPos center = client.player.getBlockPos();
                 
                 int r = finalRadius;
-                int l = finalLimit;
                 int count = 0;
                 
-                // Spiral search or simple iteration? Simple iteration is fine for small radii.
-                // For performance, we might want to optimize, but this is for bridge queries mostly.
                 for (int x = -r; x <= r; x++) {
                     for (int y = -r; y <= r; y++) {
                         for (int z = -r; z <= r; z++) {
@@ -83,8 +74,9 @@ public class FindBlocksCommandHandler implements CommandHandler {
                 data.addProperty("count", count);
                 return CommandResult.success(data);
             }).get();
+            return CompletableFuture.completedFuture(result);
         } catch (Exception e) {
-            return CommandResult.error("Find blocks failed: " + e.getMessage());
+            return CompletableFuture.completedFuture(CommandResult.error("Find blocks failed: " + e.getMessage()));
         }
     }
 

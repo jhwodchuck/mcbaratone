@@ -7,14 +7,16 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
+
 import java.net.Socket;
+import java.util.concurrent.CompletableFuture;
 
 public class GetInventoryCommandHandler implements CommandHandler {
 
     @Override
-    public CommandResult handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
         try {
-            return client.submit(() -> {
+            CommandResult result = client.submit(() -> {
                 if (client.player == null) return CommandResult.error("Player not available");
                 PlayerInventory inv = client.player.getInventory();
 
@@ -39,8 +41,9 @@ public class GetInventoryCommandHandler implements CommandHandler {
 
                 return CommandResult.success(data);
             }).get();
+            return CompletableFuture.completedFuture(result);
         } catch (Exception e) {
-             return CommandResult.error("GetInventory failed: " + e.getMessage());
+            return CompletableFuture.completedFuture(CommandResult.error("GetInventory failed: " + e.getMessage()));
         }
     }
 

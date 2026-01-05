@@ -4,6 +4,7 @@ import com.google.gson.JsonObject;
 import baritone.api.IBaritone;
 import net.minecraft.client.MinecraftClient;
 import java.net.Socket;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * CommandHandler interface for implementing the command pattern in the Baritone API Bridge.
@@ -13,15 +14,15 @@ import java.net.Socket;
 public interface CommandHandler {
 
     /**
-     * Handle a command execution.
+     * Handle a command execution asynchronously.
      *
      * @param params The command parameters from the request
      * @param client The Minecraft client instance
      * @param baritone The Baritone API instance
      * @param clientSocket The client socket (may be null for testing)
-     * @return CommandResult containing the execution outcome
+     * @return CompletableFuture containing the CommandResult with the execution outcome
      */
-    CommandResult handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket);
+    CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket);
 
     /**
      * Get the command name this handler handles.

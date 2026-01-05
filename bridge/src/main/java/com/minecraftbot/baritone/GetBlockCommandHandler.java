@@ -8,14 +8,14 @@ import net.minecraft.registry.Registries;
 import net.minecraft.util.math.BlockPos;
 
 import java.net.Socket;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.CompletableFuture;
 
 public class GetBlockCommandHandler implements CommandHandler {
 
     @Override
-    public CommandResult handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
         if (client.world == null) {
-            return CommandResult.error("World not available");
+            return CompletableFuture.completedFuture(CommandResult.error("World not available"));
         }
 
         try {
@@ -24,7 +24,7 @@ public class GetBlockCommandHandler implements CommandHandler {
             int z = params.get("z").getAsInt();
             BlockPos pos = new BlockPos(x, y, z);
             
-            return client.submit(() -> {
+            CommandResult result = client.submit(() -> {
                 BlockState state = client.world.getBlockState(pos);
                 JsonObject data = new JsonObject();
                 String id = "";
@@ -35,8 +35,9 @@ public class GetBlockCommandHandler implements CommandHandler {
                 return CommandResult.success(data);
             }).get();
             
+            return CompletableFuture.completedFuture(result);
         } catch (Exception e) {
-            return CommandResult.error("GetBlock failed: " + e.getMessage());
+            return CompletableFuture.completedFuture(CommandResult.error("GetBlock failed: " + e.getMessage()));
         }
     }
 

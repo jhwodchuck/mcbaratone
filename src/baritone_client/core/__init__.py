@@ -7,6 +7,13 @@ from .facades import (
     MissionFacade,
     SchematicManager,
 )
+from .dependency_injection import (
+    ComponentRegistry,
+    ConfigurationBuilder,
+    create_basic_automation_config,
+    create_advanced_automation_config,
+    inject_dependencies,
+)
 
 __all__ = [
     "Client",
@@ -16,4 +23,9 @@ __all__ = [
     "SettingsFacade",
     "MissionFacade",
     "SchematicManager",
+    "ComponentRegistry",
+    "ConfigurationBuilder",
+    "create_basic_automation_config",
+    "create_advanced_automation_config",
+    "inject_dependencies",
 ]

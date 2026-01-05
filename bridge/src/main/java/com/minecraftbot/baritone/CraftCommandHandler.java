@@ -13,15 +13,16 @@ import org.slf4j.LoggerFactory;
 
 import java.net.Socket;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 public class CraftCommandHandler implements CommandHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(CraftCommandHandler.class);
 
     @Override
-    public CommandResult handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
         if (client.player == null || client.interactionManager == null) {
-            return CommandResult.error("Player not available");
+            return CompletableFuture.completedFuture(CommandResult.error("Player not available"));
         }
         
         // Accept both 'recipe', 'item', and 'recipe_id' parameters
@@ -35,7 +36,7 @@ public class CraftCommandHandler implements CommandHandler {
         }
         
         if (recipeId == null || recipeId.isEmpty()) {
-            return CommandResult.error("Missing recipe/item argument");
+            return CompletableFuture.completedFuture(CommandResult.error("Missing recipe/item argument"));
         }
         
         int count = params.has("count") ? params.get("count").getAsInt() : 1;
@@ -51,7 +52,7 @@ public class CraftCommandHandler implements CommandHandler {
             JsonObject err = new JsonObject();
             err.addProperty("error", "Unknown recipe: " + recipeId);
             err.addProperty("note", "Recipe not in hardcoded list. Add to getRecipeDefinition().");
-            return CommandResult.success(err); // Return as success with error field to match old behavior or change to error? 
+            return CompletableFuture.completedFuture(CommandResult.success(err)); // Return as success with error field to match old behavior or change to error? 
             // Old behavior: data.addProperty("error", ...) then return success(data) sometimes? 
             // Actually old behavior returns data with error. CommandHandler usually returns CommandResult.error for hard errors.
             // Let's return CommandResult.error but maybe with data?
@@ -62,7 +63,7 @@ public class CraftCommandHandler implements CommandHandler {
         // Check if we need a crafting table
         boolean hasCraftingTable = client.player.currentScreenHandler instanceof net.minecraft.screen.CraftingScreenHandler;
         if (recipe.requiresTable && !hasCraftingTable) {
-            return CommandResult.error("Recipe requires crafting table but none is open");
+            return CompletableFuture.completedFuture(CommandResult.error("Recipe requires crafting table but none is open"));
         }
         
         int crafted = 0;
@@ -75,7 +76,7 @@ public class CraftCommandHandler implements CommandHandler {
                 // Check ingredients
                 if (!hasIngredients(client, recipe)) {
                     if (crafted == 0) {
-                        return CommandResult.error("Missing ingredients for " + recipeId + " (Have " + dumpIngredients(client, recipe) + ")");
+                        return CompletableFuture.completedFuture(CommandResult.error("Missing ingredients for " + recipeId + " (Have " + dumpIngredients(client, recipe) + ")"));
                     }
                     break;
                 }
@@ -87,7 +88,7 @@ public class CraftCommandHandler implements CommandHandler {
                 // Place ingredients in grid
                 String result = placeIngredients(client, syncId, recipe);
                 if (result != null) {
-                    return CommandResult.error("Failed to place ingredients: " + result);
+                    return CompletableFuture.completedFuture(CommandResult.error("Failed to place ingredients: " + result));
                 }
                 Thread.sleep(150); // Increased delay
                 
@@ -101,7 +102,7 @@ public class CraftCommandHandler implements CommandHandler {
             } catch (Exception e) {
                 LOGGER.error("Crafting error", e);
                 if (crafted == 0) {
-                    return CommandResult.error("Crafting failed: " + e.getMessage());
+                    return CompletableFuture.completedFuture(CommandResult.error("Crafting failed: " + e.getMessage()));
                 }
                 break;
             }
@@ -114,7 +115,7 @@ public class CraftCommandHandler implements CommandHandler {
             data.addProperty("status", "ok");
         }
         
-        return CommandResult.success(data);
+        return CompletableFuture.completedFuture(CommandResult.success(data));
     }
 
     @Override

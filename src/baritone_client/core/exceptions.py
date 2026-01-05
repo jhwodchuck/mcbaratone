@@ -25,7 +25,7 @@ class CommandError(RuntimeError):
 
 class RouteError(TransportError):
     """Raised when a route is not supported by the transport."""
-    
+
     def __init__(self, route: str, transport_type: str = None):
         message = f"Route '{route}' is not supported"
         if transport_type:
@@ -33,3 +33,19 @@ class RouteError(TransportError):
         super().__init__(message)
         self.route = route
         self.transport_type = transport_type
+
+
+class CircuitBreakerOpenError(CommandError):
+    """Raised when the circuit breaker is open and requests are being rejected."""
+
+    def __init__(self, message: str = "System temporarily unavailable, please retry later", circuit_breaker_state: dict = None):
+        super().__init__(message, error_code="CIRCUIT_BREAKER_OPEN")
+        self.circuit_breaker_state = circuit_breaker_state or {}
+
+
+class RetryExhaustedError(CommandError):
+    """Raised when all retry attempts have been exhausted."""
+
+    def __init__(self, message: str = "Operation failed after maximum retry attempts", retry_status: dict = None):
+        super().__init__(message, error_code="RETRY_EXHAUSTED")
+        self.retry_status = retry_status or {}

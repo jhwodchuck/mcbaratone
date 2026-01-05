@@ -10,6 +10,7 @@ import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
 import java.net.Socket;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Command handler for interact_block: Simulates a right-click on a block.
@@ -17,9 +18,9 @@ import java.net.Socket;
 public class InteractBlockCommandHandler implements CommandHandler {
 
     @Override
-    public CommandResult handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
         try {
-            return client.submit(() -> {
+            CommandResult result = client.submit(() -> {
                 if (client.player == null || client.interactionManager == null) {
                     return CommandResult.error("Player not available");
                 }
@@ -45,8 +46,9 @@ public class InteractBlockCommandHandler implements CommandHandler {
                 data.addProperty("z", z);
                 return CommandResult.success(data);
             }).get();
+            return CompletableFuture.completedFuture(result);
         } catch (Exception e) {
-            return CommandResult.error("Interact failed: " + e.getMessage());
+            return CompletableFuture.completedFuture(CommandResult.error("Interact failed: " + e.getMessage()));
         }
     }
 
@@ -55,3 +57,4 @@ public class InteractBlockCommandHandler implements CommandHandler {
         return "interact_block";
     }
 }
+

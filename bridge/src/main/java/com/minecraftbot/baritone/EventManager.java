@@ -40,6 +40,9 @@ public class EventManager {
     public enum EventType {
         CHAT,
         BLOCK_INTERACT,
+        BLOCK_BREAK,
+        BLOCK_PLACE,
+        BLOCK_UPDATE,
         ENTITY_SPAWN,
         ENTITY_MOVE,
         ENTITY_DESPAWN,
@@ -51,7 +54,13 @@ public class EventManager {
         DEATH,
         RESPAWN,
         ENTITY_UPDATE,
-        DAMAGE
+        DAMAGE,
+        ENTITY_ATTACK,
+        ENTITY_TAME,
+        ENTITY_SHEAR,
+        ENTITY_MILK,
+        WEATHER_CHANGE,
+        TIME_CHANGE
     }
 
     /**

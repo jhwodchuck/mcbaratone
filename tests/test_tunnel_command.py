@@ -1,7 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, patch
-from baritone_client.client import Client
-from baritone_client.enums import TransportEvent
+from baritone_client import Client, TransportEvent
 
 
 class MockTransport:

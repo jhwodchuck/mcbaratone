@@ -11,6 +11,8 @@ from .coordination_hub import CoordinationHub, SystemEvent, EventType
 from .systems import SafetySystem, HungerSystem, MappingSystem
 from .telemetry import TelemetrySystem
 from ..common.nether import find_nearest_portal
+from ..actions.death_recovery_action import DeathRecoveryAction
+from ..core.interfaces import ActionContext
 
 
 class EndGameAutomator:
@@ -134,9 +136,7 @@ class EndGameAutomator:
             self.client.transport.dispatch("chat", {"message": f"#set {setting}"})
             time.sleep(0.1)
             
-        # Explicit avoidance lists
-        self.client.transport.dispatch("chat", {"message": "#avoid lava"})
-        self.client.transport.dispatch("chat", {"message": "#avoid flowing_lava"})
+        # Note: Lava avoidance handled by costLava setting above
 
     def load_or_start(self) -> Phase:
         """
@@ -279,101 +279,18 @@ class EndGameAutomator:
     
     def _handle_death_recovery(self) -> bool:
         """Handle player death and recovery. Returns True if recovery was needed."""
-        try:
-            state = self.client.transport.dispatch("get_state", {})
-            if not state.get("is_dead", False) and state.get("health", 20) > 0:
-                return False  # No death to handle
+        # Use modular death recovery action
+        context = ActionContext(
+            client=self.client,
+            state=self.state,  # StateManager instance
+            resources=self.resources
+        )
 
-            print("\n!!! PLAYER DIED !!!")
-            print("Starting recovery sequence...")
+        action = DeathRecoveryAction()
+        result = action.execute(context)
 
-            # Respawn
-            self.client.transport.dispatch("respawn", {})
-            time.sleep(2.0)
-
-            # Get death location and recover items
-            response = self.client.transport.dispatch("get_death_location", {})
-            if response.get("status") == "ok":
-                data = response.get("data", {})
-                death_x, death_y, death_z = data.get("x"), data.get("y"), data.get("z")
-                death_dim = data.get("dimension", "").lower()
-
-                if death_x is not None:
-                    print(f"Death location: ({death_x}, {death_y}, {death_z}) in {death_dim}")
-
-                    # Dimension-aware recovery logic
-                    current_phase = self.state.get_current_phase()
-
-                    if "nether" in death_dim:
-                        # Died in Nether - decide whether to recover in Nether or return to Overworld
-                        nether_phases = [Phase.NETHER_TRAVEL, Phase.ENDER_PEARL_FARM]
-
-                        if current_phase in nether_phases:
-                            # Can continue in Nether - recover items here
-                            print("Recovering items in Nether...")
-                            from ..common import goto
-                            success = goto(self.client, int(death_x), int(death_y), int(death_z), timeout=600)
-                            if success:
-                                print("Recovered items from Nether death location")
-                                time.sleep(2.0)
-                            else:
-                                print("Failed to reach Nether death location")
-                            # Continue with current phase
-                            return True
-                        else:
-                            # Need to return to Overworld - recover items in Nether first, then traverse
-                            print("Recovering items in Nether before returning to Overworld...")
-                            from ..common import goto
-                            success = goto(self.client, int(death_x), int(death_y), int(death_z), timeout=600)
-                            if success:
-                                print("Recovered items from Nether death location")
-                                time.sleep(2.0)
-
-                            # Now find portal and return to Overworld
-                            portal_coords = find_nearest_portal(self.client, "nether")
-                            if portal_coords:
-                                print(f"Found Nether portal at {portal_coords}")
-                                success = goto(self.client, portal_coords[0], portal_coords[1], portal_coords[2], timeout=300)
-                                if success:
-                                    # Enter portal to return to Overworld
-                                    from ..common import enter_nether_portal
-                                    if enter_nether_portal(self.client, timeout=60):
-                                        print("Returned to Overworld via portal")
-                                    else:
-                                        print("Failed to enter portal back to Overworld")
-                                else:
-                                    print("Failed to reach Nether portal")
-                            else:
-                                print("Could not find Nether portal for return trip")
-
-                            # Reset to bootstrap since we're back at spawn area
-                            self.state.set_phase(Phase.SPAWN_BOOTSTRAP)
-                            print("Reset to SPAWN_BOOTSTRAP phase")
-                            return True
-
-                    else:
-                        # Died in Overworld - standard recovery
-                        from ..common import goto
-                        success = goto(self.client, int(death_x), int(death_y), int(death_z), timeout=600)
-                        if success:
-                            print("Recovered items from death location")
-                            time.sleep(2.0)
-                        else:
-                            print("Failed to reach death location")
-
-                        # Reset to bootstrap phase for fresh start
-                        self.state.set_phase(Phase.SPAWN_BOOTSTRAP)
-                        print("Reset to SPAWN_BOOTSTRAP phase")
-                        return True
-
-            # Fallback: always reset to bootstrap if death location unknown
-            self.state.set_phase(Phase.SPAWN_BOOTSTRAP)
-            print("Reset to SPAWN_BOOTSTRAP phase (death location unknown)")
-            return True
-
-        except Exception as e:
-            print(f"Warning: Failed to handle death recovery: {e}")
-            return False
+        # Return True if recovery was needed (success or failure, as long as it was attempted)
+        return not result.success or result.data.get("reset_phase", False)
 
     def get_status(self) -> dict:
         """Get current automation status."""

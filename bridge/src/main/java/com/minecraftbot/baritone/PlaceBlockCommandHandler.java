@@ -12,6 +12,7 @@ import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
 import java.net.Socket;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 
 /**
@@ -21,9 +22,9 @@ import java.util.concurrent.ExecutionException;
 public class PlaceBlockCommandHandler implements CommandHandler {
 
     @Override
-    public CommandResult handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
         if (client.player == null || client.world == null) {
-            return CommandResult.error("Player/World not available");
+            return CompletableFuture.completedFuture(CommandResult.error("Player/World not available"));
         }
 
         try {
@@ -33,7 +34,7 @@ public class PlaceBlockCommandHandler implements CommandHandler {
             
             BlockPos targetPos = new BlockPos(x, y, z);
             
-            return client.submit(() -> {
+            CommandResult result = client.submit(() -> {
                 BlockState currentTargetState = client.world.getBlockState(targetPos);
                 if (!currentTargetState.isReplaceable()) {
                     return CommandResult.error("Target position is already occupied: " + targetPos);
@@ -79,28 +80,29 @@ public class PlaceBlockCommandHandler implements CommandHandler {
                 // Just let the game handle it naturally
                 BlockHitResult hitResult = new BlockHitResult(hitPos, placeFace, placeAgainst, false);
                 
-                ActionResult result = client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hitResult);
+                ActionResult actionResult = client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hitResult);
                 client.player.swingHand(Hand.MAIN_HAND);
                 
                 JsonObject data = new JsonObject();
-                data.addProperty("placed", result.isAccepted());
-                data.addProperty("status", result.toString());
+                data.addProperty("placed", actionResult.isAccepted());
+                data.addProperty("status", actionResult.toString());
                 data.addProperty("x", x);
                 data.addProperty("y", y);
                 data.addProperty("z", z);
                 data.addProperty("item", client.player.getMainHandStack().getName().getString());
                 
-                if (result.isAccepted()) {
+                if (actionResult.isAccepted()) {
                     return CommandResult.success(data);
                 } else {
-                    return CommandResult.error("Placement failed: " + result.toString() + " Item: " + client.player.getMainHandStack().getName().getString() + " Pos: " + targetPos);
+                    return CommandResult.error("Placement failed: " + actionResult.toString() + " Item: " + client.player.getMainHandStack().getName().getString() + " Pos: " + targetPos);
                 }
             }).get();
-
+            
+            return CompletableFuture.completedFuture(result);
         } catch (InterruptedException | ExecutionException e) {
-            return CommandResult.error("Place execution error: " + e.getMessage());
+            return CompletableFuture.completedFuture(CommandResult.error("Place execution error: " + e.getMessage()));
         } catch (Exception e) {
-            return CommandResult.error("Place failed: " + e.getMessage());
+            return CompletableFuture.completedFuture(CommandResult.error("Place failed: " + e.getMessage()));
         }
     }
 
@@ -109,3 +111,4 @@ public class PlaceBlockCommandHandler implements CommandHandler {
         return "place_block";
     }
 }
+

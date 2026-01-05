@@ -41,3 +41,24 @@ class TransportEvent(Enum):
     RESPAWN = "respawn"
     ENTITY_UPDATE = "entity_update"
     DAMAGE = "damage"
+    # Phase 3: Additional event types
+    # Block modification events
+    BLOCK_BREAK = "block_break"
+    BLOCK_PLACE = "block_place"
+    BLOCK_UPDATE = "block_update"
+    # Entity interaction events
+    ENTITY_DAMAGE = "entity_damage"
+    ENTITY_ATTACK = "entity_attack"
+    ENTITY_TRADE = "entity_trade"
+    ENTITY_TAME = "entity_tame"
+    ENTITY_SHEAR = "entity_shear"
+    ENTITY_MILK = "entity_milk"
+    # Environment events
+    WEATHER_CHANGE = "weather_change"
+    TIME_CHANGE = "time_change"
+    TIME_UPDATE = "time_update"
+    REDSTONE_UPDATE = "redstone_update"
+    # Multiplayer events
+    PLAYER_JOIN = "player_join"
+    PLAYER_LEAVE = "player_leave"
+    CHAT_MESSAGE = "chat_message"

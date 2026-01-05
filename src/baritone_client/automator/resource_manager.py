@@ -3,7 +3,7 @@ Resource Manager - Inventory monitoring and requirement tracking.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..common.tasks import TaskResult
 from .state_manager import Phase
@@ -15,6 +15,110 @@ class CraftingTask:
     item_id: str
     quantity: int
     priority: int = 0
+
+
+class ResourceRequirementValidator:
+    """
+    Validates resource requirements against inventory with proper alternative checking.
+
+    Provides correct implementation for requirement validation that handles:
+    - Inventory filtering for missing items
+    - Proper alternative resource checking (group totals, not individual items)
+    - Crafting requirement validation
+    """
+
+    def __init__(self, recipes: Dict[str, Dict], equivalencies: Dict[str, List[str]]):
+        """
+        Initialize validator with recipes and equivalency groups.
+
+        Args:
+            recipes: Dict of item_id -> recipe data
+            equivalencies: Dict of group_id -> list of equivalent item_ids
+        """
+        self.recipes = recipes
+        self.equivalencies = equivalencies
+
+    def get_item_count(self, item_id: str, inventory: Dict[str, int]) -> int:
+        """
+        Get count of item, handling equivalency groups.
+
+        Args:
+            item_id: Item ID or group ID (starting with #)
+            inventory: Current inventory counts
+
+        Returns:
+            Total count available
+        """
+        if item_id.startswith("#"):
+            group_items = self.equivalencies.get(item_id, [])
+            return sum(inventory.get(specific_item, 0) for specific_item in group_items)
+        return inventory.get(item_id, 0)
+
+    def has_requirement(self, item_id: str, required_quantity: int, inventory: Dict[str, int]) -> bool:
+        """
+        Check if a requirement can be satisfied from inventory, crafting, or alternatives.
+
+        Properly checks alternative resources by validating group totals rather than
+        individual items, preventing false positives when alternatives exist but
+        aren't fully validated.
+
+        Args:
+            item_id: Required item ID
+            required_quantity: Minimum quantity needed
+            inventory: Current inventory counts
+
+        Returns:
+            True if requirement can be satisfied
+        """
+        # Check direct inventory (including group totals for equivalency groups)
+        current = self.get_item_count(item_id, inventory)
+        if current >= required_quantity:
+            return True
+
+        # Check if we can craft this item
+        recipe = self.recipes.get(item_id)
+        if recipe:
+            ingredients = recipe.get("ingredients", [])
+            yield_count = recipe.get("yield", 1)
+
+            # Calculate how many crafts we need
+            crafts_needed = (required_quantity + yield_count - 1) // yield_count  # Ceiling division
+
+            # Check if we have all ingredients (recursive check)
+            if all(self.has_requirement(ing_id, ing_count * crafts_needed, inventory) for ing_id, ing_count in ingredients):
+                return True
+
+        # Check if equivalency group has enough total (proper alternative checking)
+        for group, items in self.equivalencies.items():
+            if item_id in items:
+                group_total = sum(inventory.get(alt_item, 0) for alt_item in items)
+                if group_total >= required_quantity:
+                    return True
+
+        return False
+
+    def get_missing_requirements(self, requirements: Dict[str, int], inventory: Dict[str, int]) -> Dict[str, int]:
+        """
+        Get requirements that cannot be satisfied, properly filtering against inventory.
+
+        Unlike buggy implementations that only append items without checking inventory,
+        this correctly verifies actual inventory quantities before assuming requirements are missing.
+
+        Args:
+            requirements: Dict of item_id -> required_quantity
+            inventory: Current inventory counts
+
+        Returns:
+            Dict of item_id -> shortfall_quantity for unsatisfied requirements
+        """
+        missing = {}
+        for item_id, required in requirements.items():
+            if not self.has_requirement(item_id, required, inventory):
+                # Calculate actual shortfall (can't be satisfied by crafting or alternatives)
+                current = self.get_item_count(item_id, inventory)
+                if current < required:
+                    missing[item_id] = required - current
+        return missing
 
 
 class ResourceManager:
@@ -175,7 +279,7 @@ class ResourceManager:
     def __init__(self, client):
         """
         Initialize resource manager.
-        
+
         Args:
             client: Baritone client instance
         """
@@ -183,17 +287,24 @@ class ResourceManager:
         self.cached_inventory: Dict[str, int] = {}
         self.crafting_queue: List[CraftingTask] = []
         self.recipes = self.DEFAULT_RECIPES.copy()
-        
+
+        # Create validator for requirement checking
+        self.validator = ResourceRequirementValidator(self.recipes, self.EQUIVALENCIES)
+
         # Resource locking
         self.reserved_resources: Dict[str, int] = {}
         self.active_requests: List[Dict] = []  # List of {item: str, amount: int, priority: int}
-        
+
         # Efficiency Tracking
         self.stats = {
             "gathered": {},
             "start_time": {},
             "rates": {}
         }
+
+        # Advanced Resource Allocation - Phase 3 Extensions
+        self.advanced_allocator = None
+        self._enable_advanced_allocation = False
 
     # Material Equivalencies
     EQUIVALENCIES = {
@@ -209,6 +320,10 @@ class ResourceManager:
         ],
         "#stone_tool_material": ["minecraft:cobblestone", "minecraft:blackstone"],
         "#coals": ["minecraft:coal", "minecraft:charcoal"],
+        "#wool": [
+            "minecraft:white_wool", "minecraft:red_wool", "minecraft:yellow_wool",
+            "minecraft:blue_wool", "minecraft:black_wool"
+        ],
     }
 
     def initialize_recipes(self) -> None:
@@ -390,29 +505,9 @@ class ResourceManager:
         Returns:
             True if requirement can be satisfied
         """
-        # Check direct inventory first
-        current = self.get_item_count(item_id)
-        if current >= required_quantity:
-            return True
-
-        # Check if we can craft this item
-        recipe = self.recipes.get(item_id)
-        if recipe:
-            ingredients = recipe.get("ingredients", [])
-            yield_count = recipe.get("yield", 1)
-
-            # Calculate how many crafts we need
-            crafts_needed = (required_quantity + yield_count - 1) // yield_count  # Ceiling division
-
-            # Check if we have all ingredients for crafting
-            for ingredient_id, ingredient_count in ingredients:
-                total_needed = ingredient_count * crafts_needed
-                if not self.can_satisfy_requirement(ingredient_id, total_needed):
-                    return False
-
-            return True
-
-        return False
+        # Ensure inventory is fresh before checking
+        self.refresh_inventory()
+        return self.validator.has_requirement(item_id, required_quantity, self.cached_inventory)
 
     def has_items(self, requirements: Dict[str, int]) -> bool:
         """
@@ -439,17 +534,9 @@ class ResourceManager:
         Returns:
             Dict of missing item_id -> shortfall count
         """
+        self.refresh_inventory()  # Always verify inventory before assuming requirements are met
         requirements = self.PHASE_REQUIREMENTS.get(phase, {})
-        missing = {}
-
-        for item_id, required in requirements.items():
-            if not self.can_satisfy_requirement(item_id, required):
-                # Calculate how many are truly missing (can't be crafted)
-                current = self.get_item_count(item_id)
-                if current < required:
-                    missing[item_id] = required - current
-
-        return missing
+        return self.validator.get_missing_requirements(requirements, self.cached_inventory)
     
     def get_phase_requirements(self, phase: Phase) -> Dict[str, int]:
         """Return a copy of the requirements for a phase."""
@@ -535,3 +622,267 @@ class ResourceManager:
         if not requirements:
             return TaskResult.ok("No requirements for this phase")
         return ensure_supplies(client, requirements)
+
+    # Advanced Resource Allocation - Phase 3 Extensions
+
+    def enable_advanced_allocation(self, enable: bool = True):
+        """
+        Enable or disable advanced resource allocation features.
+
+        Args:
+            enable: Whether to enable advanced allocation
+        """
+        if enable and self.advanced_allocator is None:
+            from .resource_allocator import ResourceAllocator
+            self.advanced_allocator = ResourceAllocator(self)
+        self._enable_advanced_allocation = enable
+
+    def request_advanced_allocation(
+        self,
+        resource_id: str,
+        quantity: int,
+        mission_id: str,
+        priority: int = 0,
+        duration_estimate: Optional[int] = None,
+        flexible_quantity: bool = False,
+        alternatives: Optional[List[str]] = None
+    ) -> Tuple[bool, Optional[dict], List[dict]]:
+        """
+        Request resource allocation using advanced allocation system.
+
+        Args:
+            resource_id: Resource to allocate
+            quantity: Quantity needed
+            mission_id: Requesting mission ID
+            priority: Allocation priority
+            duration_estimate: Estimated usage duration in seconds
+            flexible_quantity: Can allocate less than requested
+            alternatives: Alternative resources if primary unavailable
+
+        Returns:
+            Tuple of (success, grant_info, conflicts)
+        """
+        if not self._enable_advanced_allocation or self.advanced_allocator is None:
+            # Fallback to basic allocation
+            return self._basic_allocation_fallback(resource_id, quantity, mission_id)
+
+        from ..models.models import AllocationRequest, AllocationMode
+
+        request = AllocationRequest(
+            mission_id=mission_id,
+            resource_id=resource_id,
+            quantity=quantity,
+            priority=priority,
+            duration_estimate=duration_estimate,
+            flexible_quantity=flexible_quantity,
+            alternatives=alternatives or []
+        )
+
+        success, grant, conflicts = self.advanced_allocator.request_allocation(request)
+
+        # Convert to dict format for backward compatibility
+        grant_info = None
+        if grant:
+            grant_info = {
+                'allocation_id': grant.allocation_id,
+                'granted_quantity': grant.granted_quantity,
+                'expires_at': grant.expires_at.isoformat() if grant.expires_at else None
+            }
+
+        conflict_info = []
+        for conflict in conflicts:
+            conflict_info.append({
+                'conflict_id': conflict.conflict_id,
+                'resource_id': conflict.resource_id,
+                'required_quantity': conflict.requested_quantity,
+                'available_quantity': conflict.available_quantity,
+                'blocking_missions': conflict.blocking_missions,
+                'resolution_candidates': [c.value for c in conflict.resolution_candidates]
+            })
+
+        return success, grant_info, conflict_info
+
+    def create_resource_reservation(
+        self,
+        resource_id: str,
+        quantity: int,
+        mission_id: str,
+        priority: int = 0
+    ) -> Optional[dict]:
+        """
+        Create a resource reservation for future use.
+
+        Args:
+            resource_id: Resource to reserve
+            quantity: Quantity to reserve
+            mission_id: Reserving mission ID
+            priority: Reservation priority
+
+        Returns:
+            Reservation info dict if successful, None otherwise
+        """
+        if not self._enable_advanced_allocation or self.advanced_allocator is None:
+            return None
+
+        from ..models.models import AllocationRequest
+
+        request = AllocationRequest(
+            mission_id=mission_id,
+            resource_id=resource_id,
+            quantity=quantity,
+            priority=priority
+        )
+
+        reservation = self.advanced_allocator.create_reservation(request)
+        if reservation:
+            return {
+                'reservation_id': reservation.reservation_id,
+                'expires_at': reservation.expires_at.isoformat(),
+                'quantity': reservation.quantity
+            }
+        return None
+
+    def release_advanced_allocation(self, allocation_id: str) -> bool:
+        """
+        Release an advanced allocation.
+
+        Args:
+            allocation_id: Allocation to release
+
+        Returns:
+            True if allocation was released
+        """
+        if self._enable_advanced_allocation and self.advanced_allocator:
+            return self.advanced_allocator.release_allocation(allocation_id)
+        return False
+
+    def get_resource_forecast(
+        self,
+        resource_id: str,
+        horizon_minutes: int = 60
+    ) -> Optional[dict]:
+        """
+        Get resource usage forecast.
+
+        Args:
+            resource_id: Resource to forecast
+            horizon_minutes: Forecast horizon
+
+        Returns:
+            Forecast info dict if available
+        """
+        if not self._enable_advanced_allocation or self.advanced_allocator is None:
+            return None
+
+        forecast = self.advanced_allocator.get_resource_forecast(resource_id, horizon_minutes)
+        if forecast:
+            return {
+                'predicted_demand': forecast.predicted_demand,
+                'predicted_supply': forecast.predicted_supply,
+                'confidence_level': forecast.confidence_level,
+                'influencing_factors': forecast.influencing_factors,
+                'timestamp': forecast.timestamp.isoformat()
+            }
+        return None
+
+    def update_allocation_usage(self, allocation_id: str, usage_delta: int):
+        """
+        Update usage tracking for an allocation.
+
+        Args:
+            allocation_id: Allocation to update
+            usage_delta: Change in usage (positive for consumption)
+        """
+        if self._enable_advanced_allocation and self.advanced_allocator:
+            self.advanced_allocator.update_allocation_usage(allocation_id, usage_delta)
+
+    def get_allocation_analytics(self) -> Dict[str, Any]:
+        """
+        Get comprehensive allocation analytics.
+
+        Returns:
+            Analytics data including usage patterns and forecasts
+        """
+        analytics = {
+            'advanced_allocation_enabled': self._enable_advanced_allocation,
+            'forecasts': {},
+            'usage_patterns': {},
+            'active_allocations': 0,
+            'reservations': 0
+        }
+
+        if self._enable_advanced_allocation and self.advanced_allocator:
+            state = self.advanced_allocator.get_allocation_state()
+            analytics.update({
+                'active_allocations': len(state.active_allocations),
+                'reservations': len(state.reservations),
+                'usage_patterns': {
+                    res_id: {
+                        'peak_usage': anal.peak_usage,
+                        'average_usage': anal.average_usage,
+                        'access_frequency': anal.access_frequency
+                    }
+                    for res_id, anal in state.analytics.items()
+                },
+                'forecasts': {
+                    res_id: [
+                        {
+                            'predicted_demand': f.predicted_demand,
+                            'confidence': f.confidence_level,
+                            'factors': f.influencing_factors
+                        }
+                        for f in forecasts[-1:]  # Most recent forecast
+                    ]
+                    for res_id, forecasts in state.forecasts.items()
+                    if forecasts
+                }
+            })
+
+        return analytics
+
+    def _basic_allocation_fallback(
+        self,
+        resource_id: str,
+        quantity: int,
+        mission_id: str
+    ) -> Tuple[bool, Optional[dict], List[dict]]:
+        """
+        Fallback allocation using basic resource manager methods.
+
+        Args:
+            resource_id: Resource to allocate
+            quantity: Quantity needed
+            mission_id: Requesting mission
+
+        Returns:
+            Basic allocation result
+        """
+        available = self.get_item_count(resource_id)
+        if available >= quantity:
+            # Reserve the resource using existing methods
+            success = self.reserve_resource(resource_id, quantity)
+            if success:
+                grant_info = {
+                    'allocation_id': f"basic_{mission_id}_{resource_id}",
+                    'granted_quantity': quantity,
+                    'expires_at': None
+                }
+                return True, grant_info, []
+            else:
+                return False, None, [{
+                    'conflict_id': 'basic_conflict',
+                    'resource_id': resource_id,
+                    'required_quantity': quantity,
+                    'available_quantity': available,
+                    'blocking_missions': ['unknown'],
+                    'resolution_candidates': ['mission_delay']
+                }]
+        else:
+            return False, None, [{
+                'conflict_id': 'insufficient_resources',
+                'resource_id': resource_id,
+                'required_quantity': quantity,
+                'available_quantity': available,
+                'blocking_missions': [],
+                'resolution_candidates': ['mission_delay', 'resource_gathering']
+            }]

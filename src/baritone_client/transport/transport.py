@@ -1,4 +1,5 @@
 import abc
+import asyncio
 import json
 import logging
 import queue
@@ -6,10 +7,13 @@ import socket
 import threading
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set, Union
+
+import websockets
 
 from .enums import TransportEvent
-from ..events.event_manager import EventManager
+from ..events.event_manager import EventManager, EventFilter
+from ..events.event_storage import EventStorage
 from ..core.exceptions import CommandError, RouteError, TransportError
 
 logger = logging.getLogger(__name__)
@@ -265,79 +269,493 @@ class TcpTransport(Transport):
 
 
 class WebSocketTransport(Transport):
-    """Lightweight WebSocket-like transport for unit tests.
+    """Enhanced WebSocket transport with real-time event streaming and durable event handling.
 
-    This is not a full WebSocket implementation. For the unit tests we only need a
-    transport that sends JSON-RPC messages over a socket-like object (the tests
-    patch `connect` to return a MagicMock socket). The transport maps routes like
-    "commands/run" -> RPC method "commands.run" and returns the parsed
-    `result` field from the JSON-RPC response.
+    This transport provides:
+    - Real-time bidirectional event streaming over WebSocket
+    - Priority-based event processing and delivery
+    - Durable event storage for missed events during disconnections
+    - Client-side event filtering and subscription management
+    - Event buffering for connection recovery
+    - Performance optimizations for high-frequency events
     """
 
-    def __init__(self, url: str, event_manager: Optional[EventManager] = None):
+    def __init__(
+        self,
+        url: str,
+        event_manager: Optional[EventManager] = None,
+        timeout: float = 15.0,
+        storage_path: str = "websocket_event_storage.json",
+        max_buffered_events: int = 1000,
+        enable_event_storage: bool = True,
+        reconnect_interval: float = 5.0,
+        max_reconnect_attempts: int = 10
+    ):
         super().__init__(event_manager)
         self.url = url
-        # Parse host and port from URL like ws://host:port
-        try:
-            from urllib.parse import urlparse
+        self.timeout = timeout
+        self.storage_path = storage_path
+        self.max_buffered_events = max_buffered_events
+        self.enable_event_storage = enable_event_storage
+        self.reconnect_interval = reconnect_interval
+        self.max_reconnect_attempts = max_reconnect_attempts
 
-            parsed = urlparse(url)
-            host = parsed.hostname or "localhost"
-            port = parsed.port or 80
-        except Exception:
-            host, port = "localhost", 80
-
-        try:
-            self._socket = connect(host, port, timeout=2.0)
-        except Exception:
-            # Tests patch connect to return a mock socket; if connect fails, create a dummy socket
-            self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
+        self._websocket: Optional[websockets.WebSocketServerProtocol] = None
         self._lock = threading.RLock()
         self._seq = 0
         self._shutdown_event = threading.Event()
 
+        # Response queues for request-response correlation
+        self._response_queues: Dict[int, queue.Queue] = {}
+        self._response_lock = threading.RLock()
+
+        # Advanced subscription management with filtering
+        self._subscriptions: Dict[str, EventFilter] = {}
+        self._subscription_lock = threading.RLock()
+
+        # Event buffering and priority queues
+        self._event_buffer: List[Dict[str, Any]] = []
+        self._buffer_lock = threading.RLock()
+        self._last_connection_time = 0.0
+        self._connection_state = "disconnected"  # disconnected, connecting, connected
+
+        # Durable event storage
+        self._event_storage: Optional[EventStorage] = None
+        if enable_event_storage:
+            self._event_storage = EventStorage(
+                storage_path=storage_path,
+                max_entries=max_buffered_events
+            )
+
+        # Event loop for async operations
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._event_thread: Optional[threading.Thread] = None
+
+        # Performance optimization: batch processing
+        self._batch_size = 50
+        self._batch_interval = 0.1  # seconds
+
+        # Connect immediately
+        self._connect()
+
+    def _connect(self) -> None:
+        """Establish WebSocket connection with automatic reconnection."""
+        self._connection_state = "connecting"
+        reconnect_attempts = 0
+
+        while not self._shutdown_event.is_set() and reconnect_attempts < self.max_reconnect_attempts:
+            try:
+                # Create event loop in separate thread if not exists
+                if self._loop is None:
+                    self._loop = asyncio.new_event_loop()
+                    self._event_thread = threading.Thread(target=self._run_event_loop, daemon=True)
+                    self._event_thread.start()
+
+                # Wait for connection to be established
+                future = asyncio.run_coroutine_threadsafe(self._async_connect(), self._loop)
+                future.result(timeout=10.0)
+
+                self._connection_state = "connected"
+                self._last_connection_time = time.time()
+                logger.info(f"WebSocket connected to {self.url}")
+
+                # Process buffered events after reconnection
+                self._process_buffered_events()
+                break
+
+            except Exception as e:
+                reconnect_attempts += 1
+                logger.warning(f"WebSocket connection attempt {reconnect_attempts} failed: {e}")
+                if reconnect_attempts < self.max_reconnect_attempts:
+                    time.sleep(self.reconnect_interval)
+                else:
+                    self._connection_state = "disconnected"
+                    raise TransportError(f"WebSocket connection failed after {reconnect_attempts} attempts: {e}")
+
+    def _run_event_loop(self) -> None:
+        """Run the asyncio event loop in a separate thread."""
+        asyncio.set_event_loop(self._loop)
+        try:
+            self._loop.run_forever()
+        except Exception as e:
+            logger.error(f"Event loop error: {e}")
+
+    async def _async_connect(self) -> None:
+        """Asynchronously establish WebSocket connection."""
+        try:
+            self._websocket = await websockets.connect(self.url)
+            # Start message handling task
+            asyncio.create_task(self._handle_messages())
+            # Start batch processing task
+            asyncio.create_task(self._batch_event_processor())
+        except Exception as e:
+            logger.error(f"Async WebSocket connection failed: {e}")
+            raise
+
+    async def _handle_messages(self) -> None:
+        """Handle incoming WebSocket messages with priority-based processing."""
+        try:
+            async for message in self._websocket:
+                try:
+                    data = json.loads(message)
+
+                    # Check if it's a response to a request
+                    if "id" in data and isinstance(data["id"], int):
+                        with self._response_lock:
+                            if data["id"] in self._response_queues:
+                                self._response_queues[data["id"]].put(data)
+                    # Check if it's an event
+                    elif "event" in data:
+                        await self._process_incoming_event(data)
+                except json.JSONDecodeError:
+                    logger.error(f"Invalid JSON from WebSocket: {message}")
+                except Exception as e:
+                    logger.error(f"Error handling WebSocket message: {e}")
+        except websockets.exceptions.ConnectionClosed:
+            logger.warning("WebSocket connection closed")
+            self._connection_state = "disconnected"
+            # Attempt reconnection
+            if not self._shutdown_event.is_set():
+                asyncio.create_task(self._reconnect())
+        except Exception as e:
+            logger.error(f"WebSocket message handling error: {e}")
+
+    async def _process_incoming_event(self, data: Dict[str, Any]) -> None:
+        """Process incoming event with filtering and priority handling."""
+        event_data = data.get("payload", {})
+        event_type = data["event"]
+        priority = data.get("priority", 0)
+
+        # Check if event passes filters
+        if self._should_process_event(event_type, event_data, priority):
+            try:
+                event_enum = TransportEvent(event_type)
+                self.emit(event_enum, event_data)
+            except ValueError:
+                # Unknown event type, emit anyway with string
+                self.emit(event_type, event_data)
+        else:
+            # Buffer filtered events for later processing if storage is enabled
+            if self._event_storage:
+                from ..events.event_manager import Event
+                event = Event(
+                    type=event_type,
+                    data=event_data,
+                    timestamp=time.time(),
+                    priority=priority
+                )
+                self._event_storage.store_event(event)
+
+    def _should_process_event(self, event_type: str, event_data: Dict[str, Any], priority: int) -> bool:
+        """Check if event should be processed based on subscriptions and filters."""
+        with self._subscription_lock:
+            if event_type not in self._subscriptions:
+                return False
+
+            filter_ = self._subscriptions[event_type]
+            if filter_ is None:
+                return True
+
+            # Create a temporary event for filtering
+            from ..events.event_manager import Event
+            temp_event = Event(
+                type=event_type,
+                data=event_data,
+                timestamp=time.time(),
+                priority=priority
+            )
+
+            return filter_.matches(temp_event)
+
+    async def _batch_event_processor(self) -> None:
+        """Process events in batches for better performance."""
+        while not self._shutdown_event.is_set():
+            await asyncio.sleep(self._batch_interval)
+
+            # Get batch of events to process
+            events_to_process = []
+            with self._buffer_lock:
+                if len(self._event_buffer) >= self._batch_size:
+                    events_to_process = self._event_buffer[:self._batch_size]
+                    self._event_buffer = self._event_buffer[self._batch_size:]
+
+            # Process batch
+            for event_data in events_to_process:
+                try:
+                    await self._process_incoming_event(event_data)
+                except Exception as e:
+                    logger.error(f"Error processing batched event: {e}")
+
+    async def _reconnect(self) -> None:
+        """Attempt to reconnect WebSocket connection."""
+        if self._shutdown_event.is_set():
+            return
+
+        logger.info("Attempting WebSocket reconnection...")
+        try:
+            await self._async_connect()
+            self._connection_state = "connected"
+            logger.info("WebSocket reconnected successfully")
+        except Exception as e:
+            logger.error(f"WebSocket reconnection failed: {e}")
+            # Schedule another reconnection attempt
+            if not self._shutdown_event.is_set():
+                asyncio.get_event_loop().call_later(self.reconnect_interval, lambda: asyncio.create_task(self._reconnect()))
+
+    def subscribe_events(
+        self,
+        event_types: Set[Union[str, TransportEvent]],
+        filter_: Optional[EventFilter] = None,
+        priority_threshold: int = 0
+    ) -> None:
+        """Subscribe to specific event types with advanced filtering."""
+        event_type_strings = {t.value if isinstance(t, TransportEvent) else t for t in event_types}
+
+        # Create or update filter
+        if filter_ is None:
+            filter_ = EventFilter(event_types=event_type_strings)
+
+        # Add priority filtering if threshold specified
+        if priority_threshold > 0:
+            def priority_predicate(event) -> bool:
+                return event.priority >= priority_threshold
+            if filter_.predicate:
+                original_predicate = filter_.predicate
+                filter_.predicate = lambda e: original_predicate(e) and priority_predicate(e)
+            else:
+                filter_.predicate = priority_predicate
+
+        with self._subscription_lock:
+            for event_type in event_type_strings:
+                self._subscriptions[event_type] = filter_
+
+        # Send subscription request over WebSocket
+        subscription_request = {
+            "jsonrpc": "2.0",
+            "method": "subscribe",
+            "params": {
+                "events": list(event_type_strings),
+                "priority_threshold": priority_threshold
+            }
+        }
+        if self._loop and self._connection_state == "connected":
+            asyncio.run_coroutine_threadsafe(self._send_message(subscription_request), self._loop)
+        logger.info(f"Subscribed to events with filtering: {event_type_strings}")
+
+    def unsubscribe_events(self, event_types: Set[Union[str, TransportEvent]]) -> None:
+        """Unsubscribe from specific event types."""
+        event_type_strings = {t.value if isinstance(t, TransportEvent) else t for t in event_types}
+
+        with self._subscription_lock:
+            for event_type in event_type_strings:
+                self._subscriptions.pop(event_type, None)
+
+        # Send unsubscription request over WebSocket
+        unsubscription_request = {
+            "jsonrpc": "2.0",
+            "method": "unsubscribe",
+            "params": {"events": list(event_type_strings)}
+        }
+        if self._loop and self._connection_state == "connected":
+            asyncio.run_coroutine_threadsafe(self._send_message(unsubscription_request), self._loop)
+        logger.info(f"Unsubscribed from events: {event_type_strings}")
+
+    def get_active_subscriptions(self) -> Dict[str, EventFilter]:
+        """Get currently active event subscriptions with filters."""
+        with self._subscription_lock:
+            return self._subscriptions.copy()
+
+    def is_subscribed(self, event_type: Union[str, TransportEvent]) -> bool:
+        """Check if subscribed to a specific event type."""
+        event_type_str = event_type.value if isinstance(event_type, TransportEvent) else event_type
+        with self._subscription_lock:
+            return event_type_str in self._subscriptions
+
+    def get_missed_events(
+        self,
+        event_types: Optional[Set[Union[str, TransportEvent]]] = None,
+        since_timestamp: Optional[float] = None,
+        min_priority: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Retrieve missed events from durable storage."""
+        if not self._event_storage:
+            return []
+
+        events = self._event_storage.get_events(
+            event_types=event_types,
+            since_timestamp=since_timestamp,
+            min_priority=min_priority
+        )
+
+        # Convert to dictionary format for compatibility
+        return [{
+            'type': event.type,
+            'data': event.data,
+            'timestamp': event.timestamp,
+            'priority': event.priority
+        } for event in events]
+
+    def clear_missed_events(self, event_types: Optional[Set[Union[str, TransportEvent]]] = None) -> int:
+        """Clear missed events from storage."""
+        if not self._event_storage:
+            return 0
+
+        return self._event_storage.remove_events(event_types)
+
+    def _process_buffered_events(self) -> None:
+        """Process buffered events after reconnection."""
+        if not self._event_storage:
+            return
+
+        # Get recent events from storage
+        recent_events = self._event_storage.get_events(
+            since_timestamp=self._last_connection_time
+        )
+
+        # Sort by priority and timestamp
+        recent_events.sort(key=lambda e: (-e.priority, e.timestamp))
+
+        # Emit events
+        for event in recent_events:
+            try:
+                event_enum = TransportEvent(event.type)
+                self.emit(event_enum, event.data)
+            except ValueError:
+                self.emit(event.type, event.data)
+
+        logger.info(f"Processed {len(recent_events)} buffered events after reconnection")
+
+    async def _send_message(self, message: Dict[str, Any]) -> None:
+        """Send a message over WebSocket asynchronously."""
+        if self._websocket and self._websocket.open:
+            try:
+                await self._websocket.send(json.dumps(message))
+            except Exception as e:
+                logger.error(f"Failed to send WebSocket message: {e}")
+
     def dispatch(self, route: str, payload: Dict[str, Any], timeout: Optional[float] = None) -> Dict[str, Any]:
-        # Build JSON-RPC request
+        """Dispatch request over WebSocket with sequence tracking."""
         with self._lock:
             self._seq += 1
             req_id = self._seq
 
+        # Translate route to JSON-RPC method
         rpc_method = route.replace("/", ".")
-        req = {"jsonrpc": "2.0", "id": req_id, "method": rpc_method, "params": payload}
+        req = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "method": rpc_method,
+            "params": payload
+        }
 
-        # Send request
-        body = json.dumps(req)
-        # Send the request payload. Tests patch the socket and assert .send was called
+        # Create response queue
+        response_queue = queue.Queue()
+        with self._response_lock:
+            self._response_queues[req_id] = response_queue
+
         try:
-            self._socket.send(body)
-        except Exception:
+            # Send request asynchronously
+            future = asyncio.run_coroutine_threadsafe(self._send_message(req), self._loop)
+            future.result(timeout=1.0)  # Wait for send to complete
+
+            # Wait for response
+            effective_timeout = self.timeout if timeout is None else timeout
+            response = response_queue.get(timeout=effective_timeout)
+
+            if response.get("error"):
+                raise CommandError(response["error"].get("message", "RPC error"))
+
+            return response.get("result", {})
+
+        except queue.Empty:
+            raise TransportError(f"Timeout waiting for WebSocket response (route: {route})")
+        except Exception as e:
+            raise TransportError(f"WebSocket dispatch error: {e}")
+        finally:
+            with self._response_lock:
+                self._response_queues.pop(req_id, None)
+
+    def emit(self, event: Union[TransportEvent, str], payload: Dict[str, Any], priority: int = 0) -> None:
+        """Emit event with priority-based processing and bidirectional streaming."""
+        event_type_str = event.value if isinstance(event, TransportEvent) else str(event)
+
+        # Store event in durable storage if enabled
+        if self._event_storage and self._connection_state != "connected":
+            from ..events.event_manager import Event
+            event_obj = Event(
+                type=event_type_str,
+                data=payload,
+                timestamp=time.time(),
+                priority=priority
+            )
+            self._event_storage.store_event(event_obj)
+
+        # Check if we should stream this event based on subscriptions
+        if self.is_subscribed(event_type_str):
+            # Send event over WebSocket if connection is active
+            event_message = {
+                "jsonrpc": "2.0",
+                "method": "emit",
+                "params": {
+                    "event": event_type_str,
+                    "payload": payload,
+                    "priority": priority,
+                    "timestamp": time.time()
+                }
+            }
+            if self._loop and self._websocket and self._websocket.open and self._connection_state == "connected":
+                try:
+                    asyncio.run_coroutine_threadsafe(self._send_message(event_message), self._loop)
+                except Exception as e:
+                    logger.error(f"Failed to emit event over WebSocket: {e}")
+                    # Buffer event for retry
+                    with self._buffer_lock:
+                        if len(self._event_buffer) < self.max_buffered_events:
+                            self._event_buffer.append(event_message)
+
+        # Also call parent emit for EventManager integration
+        super().emit(event, payload)
+
+    def shutdown(self) -> None:
+        """Stop event loop and close WebSocket connection gracefully."""
+        self._shutdown_event.set()
+        self._connection_state = "disconnected"
+
+        # Clear subscriptions
+        with self._subscription_lock:
+            self._subscriptions.clear()
+
+        # Clear event buffer
+        with self._buffer_lock:
+            self._event_buffer.clear()
+
+        # Cleanup event storage
+        if self._event_storage:
             try:
-                # Fallback to sendall with bytes for real sockets
-                self._socket.sendall(body.encode("utf-8"))
+                self._event_storage.cleanup()
+            except Exception as e:
+                logger.error(f"Error cleaning up event storage: {e}")
+
+        # Close WebSocket connection
+        if self._loop and self._websocket:
+            try:
+                future = asyncio.run_coroutine_threadsafe(self._websocket.close(), self._loop)
+                future.result(timeout=5.0)
+            except Exception as e:
+                logger.error(f"Error closing WebSocket: {e}")
+
+        # Stop event loop
+        if self._loop:
+            try:
+                self._loop.call_soon_threadsafe(self._loop.stop)
             except Exception:
                 pass
 
-        # Read single response
-        try:
-            raw = self._socket.recv(65536)
-            if isinstance(raw, bytes):
-                raw = raw.decode("utf-8")
-            data = json.loads(raw)
-            return data.get("result") or data.get("data") or {}
-        except Exception as e:
-            raise TransportError(f"WebSocketTransport read error: {e}")
+        # Wait for event thread
+        if self._event_thread and self._event_thread.is_alive():
+            self._event_thread.join(timeout=5.0)
 
-    def shutdown(self) -> None:
-        """Stop any background work and close the underlying socket."""
-        try:
-            self._shutdown_event.set()
-        except Exception:
-            pass
-        try:
-            self._socket.close()
-        except Exception:
-            pass
+        logger.info("WebSocketTransport shutdown complete")
 
 
 class Py4JTransport(Transport):

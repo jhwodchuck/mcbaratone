@@ -2,6 +2,7 @@ py4j>=0.10.9.9
 websockets>=12.0
 pydantic>=2.7
 mcp>=1.25.0
+lz4>=4.3.0
 
 [dev]
 pytest>=7.0

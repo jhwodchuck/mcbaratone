@@ -1,303 +1,107 @@
 """
-Iron Age Phase - Mine iron ore, smelt ingots, craft iron tools and armor, mining loop.
+Phase 2: Iron & Diamond Phase
 """
 
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
-from ..state_manager import Phase, StateManager
-from ...common import craft
-from ...common.resources import gather_ores, ensure_supplies, gather_wood, go_to_y_level
-from ...common.combat import hunt_passive_mobs
-from ...common.tasks import TaskResult, SequentialTask, ActionTask
-from ...common.base import open_furnace, sleep_through_night, build_good_house
-from ...common.automation_utils import get_player_pos
-from ...common.inventory import find_item_slot, count_item, equip_offhand
-import time
+from ..state_manager import StateManager
+from ...common import TaskResult, SequentialTask, ActionTask
+from ...common.resources import gather_ores, ensure_supplies, go_to_y_level, gather_stone
+from ...common.inventory import count_item
 
-
-def smelt_iron(client, base_location: tuple = None, required_ingots: int = 24) -> bool:
-    """Smelt raw iron into ingots using furnace."""
-    # Check current iron ingots
-    current_ingots = count_item(client, "minecraft:iron_ingot")
-    if current_ingots >= required_ingots:
-        return True
-
-    needed_ingots = required_ingots - current_ingots
-    raw_iron_needed = needed_ingots  # 1 raw iron = 1 ingot
-
-    # Check if we have enough raw iron
-    raw_iron_count = count_item(client, "minecraft:raw_iron")
-    if raw_iron_count < raw_iron_needed:
-        return False  # Not enough raw iron to smelt
-
-    # Open furnace
-    if base_location:
-         # Go to base location first to find furnace
-         print(f"  Returning to base at {base_location} for smelting...")
-         from ...common.navigation import goto
-         if not goto(client, base_location[0], base_location[1], base_location[2], timeout=60, tolerance=2):
-             print("  Could not reach base location")
-             return False
-
-    if not open_furnace(client):
-        return False
-        
-    # Find slots
-    iron_slot = find_item_slot(client, "minecraft:raw_iron")
-    fuel_slot = find_item_slot(client, "minecraft:coal") or find_item_slot(client, "minecraft:charcoal")
+class FoodAndIronHandler(PhaseHandler):
+    """Phase 2: Iron & Diamond mining - Hour 1-2."""
     
-    if iron_slot is None:
-        return False
-    if fuel_slot is None:
-        # Try finding wood if no coal
-        fuel_slot = find_item_slot(client, "minecraft:oak_log") or find_item_slot(client, "minecraft:oak_planks")
-        if fuel_slot is None:
-            return False
-
-    try:
-        params = {
-            "input_slot": iron_slot,
-            "fuel_slot": fuel_slot,
-        }
-        result = client.transport.dispatch("smelt_items", params)
-        success = result.get("status") == "ok" if result else False
-        
-        if success:
-            print(f"  Smelting {raw_iron_count} raw iron... (waiting 30s)")
-            time.sleep(30) # Wait some time for smelting
-            client.transport.dispatch("close_screen", {})
-            return True
-        return False
-    except Exception as e:
-        print(f"Smelting error: {e}")
-        return False
-
-
-def craft_iron_tools(client) -> bool:
-    """Craft iron pickaxe, sword, and axe."""
-    tools = [
-        "minecraft:iron_pickaxe",
-        "minecraft:iron_sword",
-        "minecraft:iron_axe"
-    ]
-    for tool in tools:
-        if not craft(client, tool, 1):
-            return False
-    return True
-
-
-def craft_iron_armor(client) -> bool:
-    """Craft full iron armor set."""
-    armor_pieces = [
-        "minecraft:iron_helmet",
-        "minecraft:iron_chestplate",
-        "minecraft:iron_leggings",
-        "minecraft:iron_boots"
-    ]
-    for piece in armor_pieces:
-        if not craft(client, piece, 1):
-            return False
-    return True
-
-
-def gather_iron_with_depth(client, count: int = 24, timeout: int = 900) -> bool:
-    """Gather iron ore after navigating to optimal depth and ensuring pickaxe."""
-    # Navigate to optimal iron ore depth
-    if not go_to_y_level(client, -16):
-        print("Failed to navigate to iron ore depth")
-        return False
-
-    # Ensure player has a pickaxe (stone or better)
-    pickaxes = ["minecraft:iron_pickaxe", "minecraft:stone_pickaxe", "minecraft:wooden_pickaxe"]
-    has_pickaxe = any(count_item(client, pickaxe) > 0 for pickaxe in pickaxes)
-    if not has_pickaxe:
-        # Try to craft stone pickaxe if materials available
-        if count_item(client, "minecraft:stick") >= 2 and count_item(client, "minecraft:cobblestone") >= 3:
-            if not craft(client, "minecraft:stone_pickaxe", 1):
-                print("Failed to craft stone pickaxe")
-                return False
-        else:
-            print("No pickaxe and insufficient materials to craft one")
-            return False
-
-    # Gather iron ore with extended timeout
-    return gather_ores(client, "iron", count=count, timeout=timeout)
-
-
-class IronAgeHandler(PhaseHandler):
-    """Handler for iron age phase using common library functions."""
-
     def get_name(self) -> str:
-        return "Iron Age"
-
+        return "Iron & Diamond (Hour 1-2)"
+    
     def execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
-        """
-        Execute iron age following progression:
-        1. Mine 24+ iron ore at appropriate depths
-        2. Smelt raw iron to ingots
-        3. Craft full iron tool set and armor
-        4. Establish mining loop: mine -> smelt -> upgrade gear -> repeat
-        """
-        ready = resources.phase_ready_result(Phase.IRON_AGE, "Iron age already satisfied")
-        if ready:
-            return ready
-
-        # Define initial subtasks (skip mining due to threading issues)
         tasks = [
-            ActionTask("Restock Food", self._restock_food),
-            ActionTask("Gather iron ore", lambda client: gather_iron_with_depth(client, count=24, timeout=900)),
-            ActionTask("Smelt iron ingots", smelt_iron, required_ingots=24, base_location=state.custom_data.get("base_location")),
-            ActionTask("Craft iron tools", craft_iron_tools),
-            ActionTask("Craft iron armor", craft_iron_armor),
-            ActionTask("Craft Shield", self._craft_shield),
-            ActionTask("Build Good Base", self._build_good_base),
-            ActionTask("Acquire Water Bucket", self._acquire_water_bucket),
-            ActionTask("Acquire Ranged Weapon", self._acquire_bow_and_arrows),
+            # Phase 2a: Get initial iron (Baritone will dig to reach it)
+            ActionTask("Ensure stone pickaxe", lambda c: ensure_supplies(c, {"minecraft:stone_pickaxe": 1}).success),
+            ActionTask("Mine initial iron (15)", self._mine_initial_iron),  # Creates tunnels naturally!
+            ActionTask("Smelt iron ingots", self._smelt_iron),
+            ActionTask("Craft iron pickaxe + bucket", self._craft_essential_iron),
+            
+            # Phase 2b: Now mine deep diamonds with iron tools
+            ActionTask("Dig to diamond level Y-58", self._dig_staircase),
+            ActionTask("Mine diamonds & remaining iron", self._bulk_mine),
+            ActionTask("Craft full iron armor", self._craft_iron_armor),
+            ActionTask("Craft iron tools", self._craft_iron_tools),
         ]
-
-        # Execute initial setup sequentially
-        sequential_task = SequentialTask("Iron Age Setup", tasks)
-        result = sequential_task.run(client)
         
-        if not result.success:
-            missing = resources.check_phase_requirements(Phase.IRON_AGE)
-            return TaskResult.fail(f"Iron age setup failed: {result.reason}", missing=missing)
+        executor = SequentialTask("Iron & Diamond", tasks)
+        return executor.run(client)
 
-        # Establish iterative mining progression
-        mining_result = self._mining_loop(client, resources, state)
-        if not mining_result.success:
-            missing = resources.check_phase_requirements(Phase.IRON_AGE)
-            return TaskResult.fail(f"Mining loop failed: {mining_result.reason}", missing=missing)
+    def _dig_staircase(self, client) -> bool:
+        """Dig a proper staircase down to Y-58."""
+        print("Digging staircase to Y-58...")
+        return go_to_y_level(client, -58)
 
-        resources.refresh_inventory()
-        summary = resources.get_summary()
-        return TaskResult.ok("Iron age complete with mining loop", inventory=summary["inventory"])
+    def _mine_initial_iron(self, client) -> bool:
+        """Mine just enough iron for basic tools (15 = pickaxe + bucket + spare)."""
+        print("  Mining initial iron (15 ore)...")
+        return gather_ores(client, "iron", count=15, timeout=300)
 
-    def _mining_loop(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
-        """Establish mining loop: mine more iron -> smelt -> upgrade gear -> repeat."""
-        iterations = 0
-        max_iterations = 5  # Limit iterations to prevent infinite loop
-        failures = 0
-
-        while iterations < max_iterations:
-            # Check for sleep
-            sleep_through_night(client)
-
-            # Mine additional iron ore
-            if not gather_iron_with_depth(client, count=10, timeout=900):
-                failures += 1
-                break  # No more iron to mine
-
-            # Smelt the additional iron
-            if not smelt_iron(client, required_ingots=count_item(client, "minecraft:iron_ingot") + 10):
-                failures += 1
-                break
-
-            iterations += 1
-            resources.refresh_inventory()
-            if resources.is_phase_ready(Phase.IRON_AGE):
-                break
-
-        iron_ingots = resources.get_item_count("minecraft:iron_ingot")
-        if failures:
-            return TaskResult.fail(
-                "Mining loop stalled",
-                iterations=iterations,
-                failures=failures,
-                iron_ingots=iron_ingots,
-            )
-        return TaskResult.ok(
-            f"Mining loop completed {iterations} iterations",
-            iterations=iterations,
-            iron_ingots=iron_ingots,
-        )
-
-    def _acquire_bow_and_arrows(self, client) -> bool:
-        """Gather materials and craft bow + arrows."""
-        # 1. Gather raw materials (Strings, Feathers, Flint) and Wood
-        print("Gathering combat gear materials...")
+    def _smelt_iron(self, client) -> bool:
+        """Smelt raw iron into ingots using furnace."""
+        # Uses imports from file header: ensure_supplies, gather_stone, count_item
         
-        # Ensure wood for sticks
-        if count_item(client, "minecraft:oak_log") < 4:
-            gather_wood(client, count=8)
+        # First ensure we have a furnace (requires 8 cobblestone)
+        if count_item(client, "minecraft:furnace") == 0:
+            print("  Need furnace - getting cobblestone...")
+            gather_stone(client, count=16, timeout=120)
+            ensure_supplies(client, {"minecraft:furnace": 1})
         
-        # Craft sticks if needed
-        if count_item(client, "minecraft:stick") < 8:
-            craft(client, "minecraft:oak_planks", 4)
-            craft(client, "minecraft:stick", 8)
-
-        # Gather main ingredients
-        # Bow: 3 string, 3 sticks
-        # Arrow: 1 flint, 1 stick, 1 feather -> 4 arrows.
-        # Target 32 arrows = 8 crafts = 8 flint, 8 feathers, 8 sticks.
-        result = ensure_supplies(client, {
-            "minecraft:string": 3,
-            "minecraft:feather": 8, 
-            "minecraft:flint": 8,
-        })
-        if not result.success:
-            print(f"Failed to gather materials: {result.missing}")
-            # Try to craft anyway with what we have
+        # Check how much raw iron we have
+        raw_iron = count_item(client, "minecraft:raw_iron")
+        if raw_iron == 0:
+            print("  No raw iron to smelt!")
+            return False
         
-        # 2. Craft Bow
-        print("Crafting Bow...")
-        if not ensure_supplies(client, {"minecraft:bow": 1}).success:
-            print("Failed to craft bow")
-            
-        # 3. Craft Arrows
-        print("Crafting Arrows...")
-        if not ensure_supplies(client, {"minecraft:arrow": 32}).success:
-            print("Failed to craft arrows")
-            
-        return count_item(client, "minecraft:bow") > 0
+        # Need coal for smelting
+        coal = count_item(client, "minecraft:coal")
+        if coal < raw_iron // 8 + 1:
+            print("  Need more coal for smelting...")
+            gather_ores(client, "coal", count=max(8, raw_iron // 8 + 2), timeout=120)
+        
+        # Use ensure_supplies which handles smelting
+        print(f"  Smelting {raw_iron} raw iron...")
+        return ensure_supplies(client, {"minecraft:iron_ingot": raw_iron}).success
 
-    def _restock_food(self, client) -> bool:
-        """Hunt for food if low."""
-        food_items = ["minecraft:cooked_beef", "minecraft:cooked_porkchop", 
-                      "minecraft:cooked_chicken", "minecraft:cooked_mutton",
-                      "minecraft:bread"]
-        current_food = sum(count_item(client, item) for item in food_items)
-        if current_food < 16:
-            print(f"Food low ({current_food}), hunting...")
-            hunt_passive_mobs(client, target_count=10)
+    def _craft_essential_iron(self, client) -> bool:
+        """Craft iron pickaxe and bucket first."""
+        return ensure_supplies(client, {
+            "minecraft:iron_pickaxe": 1,
+            "minecraft:bucket": 1,
+        }).success
+
+    def _bulk_mine(self, client) -> bool:
+        """Mine remaining resources with iron pickaxe."""
+        targets = [
+            ("iron", 40),  # Reduced from 64 (we already have 15)
+            ("coal", 32),
+            ("diamond", 5),
+        ]
+        for ore_type, count in targets:
+            print(f"  Mining {ore_type} (target: {count})...")
+            gather_ores(client, ore_type, count=count, timeout=600)
         return True
 
-    def _craft_shield(self, client) -> bool:
-        """Craft and equip shield."""
-        print("Crafting and equipping Shield...")
-        # Needs 1 iron, 6 planks
-        if count_item(client, "minecraft:iron_ingot") < 1:
-            smelt_iron(client, required_ingots=count_item(client, "minecraft:iron_ingot") + 1)
-        
-        if count_item(client, "minecraft:oak_planks") < 6:
-            gather_wood(client, count=2) # 2 logs = 8 planks
-            craft(client, "minecraft:oak_planks", 2)
-            
-        if craft(client, "minecraft:shield"):
-            time.sleep(1)
-            equip_offhand(client, "minecraft:shield")
-            return True
-        return False
+    def _craft_iron_armor(self, client) -> bool:
+        """Craft full iron armor set."""
+        return ensure_supplies(client, {
+            "minecraft:iron_helmet": 1,
+            "minecraft:iron_chestplate": 1,
+            "minecraft:iron_leggings": 1,
+            "minecraft:iron_boots": 1,
+        }).success
 
-    def _acquire_water_bucket(self, client) -> bool:
-        """Acquire a water bucket."""
-        print("Acquiring Water Bucket...")
-        # Needs 3 iron for bucket
-        if count_item(client, "minecraft:iron_ingot") < 3:
-             smelt_iron(client, required_ingots=count_item(client, "minecraft:iron_ingot") + 3)
-             
-        if count_item(client, "minecraft:iron_ingot") < 3:
-             smelt_iron(client, required_ingots=count_item(client, "minecraft:iron_ingot") + 3)
-             
-        # Strategy for water_bucket handles bucket crafting and water gathering
-        result = ensure_supplies(client, {"minecraft:water_bucket": 1})
-        return result.success
-
-    def _build_good_base(self, client) -> bool:
-        """Build an upgraded 'Good' base."""
-        # Use current position or find new spot
-        from ...common import get_player_pos
-        pos = get_player_pos(client)
-        if not pos:
-            return False
-        return build_good_house(client, int(pos[0]), int(pos[1]), int(pos[2]))
+    def _craft_iron_tools(self, client) -> bool:
+        """Craft iron tools."""
+        return ensure_supplies(client, {
+            "minecraft:iron_pickaxe": 1,
+            "minecraft:iron_sword": 1,
+            "minecraft:iron_axe": 1,
+            "minecraft:iron_shovel": 1,
+        }).success

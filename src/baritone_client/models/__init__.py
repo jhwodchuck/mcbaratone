@@ -1,4 +1,7 @@
-from .models import BlockPos, BetterBlockPos, Selection, Goal
+from .models import (
+    BlockPos, BetterBlockPos, Selection, Goal,
+    PriorityLevel, BatchCommand, BatchRequest, BatchCommandResult, BatchResult
+)
 from .schemas import (
     JsonRpcRequest,
     JsonRpcErrorData,
@@ -16,6 +19,11 @@ __all__ = [
     "BetterBlockPos",
     "Selection",
     "Goal",
+    "PriorityLevel",
+    "BatchCommand",
+    "BatchRequest",
+    "BatchCommandResult",
+    "BatchResult",
     "JsonRpcRequest",
     "JsonRpcErrorData",
     "JsonRpcResponse",

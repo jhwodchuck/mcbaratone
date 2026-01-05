@@ -5,7 +5,9 @@ import com.google.gson.JsonObject;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.Entity;
 import net.minecraft.registry.Registries;
+
 import java.net.Socket;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Handler for the attack_entity command.
@@ -14,21 +16,21 @@ import java.net.Socket;
 public class AttackEntityCommandHandler implements CommandHandler {
 
     @Override
-    public CommandResult handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
         if (client.player == null || client.interactionManager == null || client.world == null) {
-            return CommandResult.error("Player/World not available");
+            return CompletableFuture.completedFuture(CommandResult.error("Player/World not available"));
         }
         
         try {
             if (!params.has("entity_id")) {
-                return CommandResult.error("Missing required parameter: entity_id");
+                return CompletableFuture.completedFuture(CommandResult.error("Missing required parameter: entity_id"));
             }
             
             int entityId = params.get("entity_id").getAsInt();
             
             Entity target = client.world.getEntityById(entityId);
             if (target == null) {
-                return CommandResult.error("Entity not found: " + entityId);
+                return CompletableFuture.completedFuture(CommandResult.error("Entity not found: " + entityId));
             }
             
             // Execute attack on main thread
@@ -39,9 +41,9 @@ public class AttackEntityCommandHandler implements CommandHandler {
             data.addProperty("entity_id", entityId);
             data.addProperty("entity_type", Registries.ENTITY_TYPE.getId(target.getType()).toString());
             
-            return CommandResult.success(data);
+            return CompletableFuture.completedFuture(CommandResult.success(data));
         } catch (Exception e) {
-            return CommandResult.error("Attack entity failed: " + e.getMessage());
+            return CompletableFuture.completedFuture(CommandResult.error("Attack entity failed: " + e.getMessage()));
         }
     }
 

@@ -1,0 +1,324 @@
+Entered handleCommand
+Entered handleCommand
+Entered handleCommand
+Got client
+Got client
+Got client
+Got baritone
+Got baritone
+Got baritone
+Emitting tick event
+Emitting tick event
+Emitting tick event
+Dispatching command
+Dispatching command
+Dispatching command
+Command dispatched
+Command dispatched
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Entered handleCommand
+Entered handleCommand
+Got client
+Got client
+Got client
+Got baritone
+Got baritone
+Emitting tick event
+Got baritone
+Emitting tick event
+Emitting tick event
+Dispatching command
+Dispatching command
+Dispatching command
+Command dispatched
+Command dispatched
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched
+Entered handleCommand
+Got client
+Got baritone
+Emitting tick event
+Dispatching command
+Command dispatched

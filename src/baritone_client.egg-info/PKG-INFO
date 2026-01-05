@@ -13,129 +13,243 @@ Requires-Dist: py4j>=0.10.9.9
 Requires-Dist: websockets>=12.0
 Requires-Dist: pydantic>=2.7
 Requires-Dist: mcp>=1.25.0
+Requires-Dist: lz4>=4.3.0
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
 Requires-Dist: requests>=2.31; extra == "dev"
 
 # mcbaratone
 
-A Python-friendly control surface for the Baritone mod. This repository documents the Java API surface and introduces a transport-agnostic Python facade that can be backed by a lightweight HTTP/socket bridge into Baritone's `IBaritone` entrypoints.
+A comprehensive Python library for Minecraft automation through the Baritone pathfinding mod. This project provides a transport-agnostic client with a Java bridge, enabling complex automation tasks like resource gathering, base building, and mission completion.
 
-## Quickstart
+## Table of Contents
 
-1. Install dependencies (optional extras provide HTTP helpers and pytest):
+- [Project Overview](#project-overview)
+- [Architecture Summary](#architecture-summary)
+- [Major Components](#major-components)
+- [Getting Started](#getting-started)
+- [Examples](#examples)
+- [Contribution Guidelines](#contribution-guidelines)
 
-```bash
-python -m pip install -e .[dev]
-```
+## Project Overview
 
-2. Create a client with your chosen transport (HTTP in this example):
+The mcbaratone project bridges Python scripting with Minecraft's Baritone pathfinding mod, offering a clean, high-level API for automation. Key features include:
+
+- **Transport Agnostic**: Support for TCP, HTTP, WebSocket, and Py4J transports
+- **Facade Pattern**: Intuitive API organization through dedicated facades (commands, processes, goals, etc.)
+- **Advanced Automation**: Multi-phase automation system with resource management and state persistence
+- **Mission System**: Pre-built mission templates for complex game progression
+- **MCP Integration**: Model Context Protocol support for AI agent interaction
+- **Extensive Documentation**: Comprehensive API docs and architecture guides
+
+This repository includes both the Python client library and a Java bridge (Fabric mod) that exposes Baritone's API over network protocols.
+
+## Architecture Summary
+
+The system follows a layered architecture designed for reliability and extensibility:
+
+### Transport Layer
+Abstract transport implementations handle communication with the Java bridge, supporting multiple protocols with a common dispatch interface. Transports include TCP (basic dispatch), WebSocket (full event support), HTTP, and Py4J.
+
+### Facade Layer
+High-level facades provide organized access to Baritone functionality:
+- CommandFacade: Chat commands and direct execution
+- ProcessFacade: Mining, building, and exploration processes
+- GoalsFacade: Navigation targets and waypoints
+- SettingsFacade: Configuration management
+- MissionFacade: High-level mission orchestration
+
+### Automation Layer
+Advanced automation capabilities with:
+- ResourceManager: Inventory tracking and requirement analysis
+- PhaseExecutor: Sequential phase management with checkpointing
+- StateManager: Persistent state across sessions
+- Common utilities: Pre-built automation recipes
+
+### Java Bridge
+A Fabric mod that exposes Baritone's `IBaritone` interface over TCP (port 5555), serving as the communication bridge between Python and Minecraft.
+
+For detailed architecture information, see [`docs/architecture.md`](docs/architecture.md).
+
+## Major Components
+
+### Core Client Library
+- **[`client.py`](src/baritone_client/core/client.py)**: Main Client class providing facade access
+- **[`transport.py`](src/baritone_client/transport/transport.py)**: Transport abstractions and implementations
+- **[`serialization.py`](src/baritone_client/transport/serialization.py)**: Data validation and enum handling
+- **[`models.py`](src/baritone_client/core/models.py)**: Pydantic data models
+
+### Facades
+- **[Command Facade](docs/command_facade.md)**: Execute Baritone commands and chat interactions
+- **[Process Facade](docs/process_facade.md)**: Control mining, building, and exploration processes
+- **[Goals Facade](docs/goals_facade.md)**: Set navigation targets and waypoints
+- **[Settings Facade](docs/settings_facade.md)**: Configure Baritone behavior and preferences
+- **[Mission Facade](docs/automation_system.md)**: High-level mission orchestration and automation
+
+### Automation System
+- **[Automator](src/baritone_client/automator/automator.py)**: Multi-phase automation engine
+- **[Resource Manager](src/baritone_client/automator/resource_manager.py)**: Inventory and resource tracking
+- **[Phase Executor](src/baritone_client/automator/phase_executor.py)**: Sequential phase management
+- **[State Manager](src/baritone_client/automator/state_manager.py)**: Checkpoint and state persistence
+- **[Common Utilities](docs/common_utilities.md)**: Pre-built automation recipes and helpers
+
+### MCP Server
+- **[MCP Server](docs/mcp_server.md)**: Model Context Protocol integration for AI agents
+
+### Java Bridge
+- **[Bridge](bridge/)**: Fabric mod providing network access to Baritone's API
+
+### Documentation
+- **[API Surface](docs/api_surface.md)**: Complete Baritone API mapping
+- **[Package Summary](docs/package-summary.md)**: Javadoc-extracted reference
+- **[Event System](docs/event_system.md)**: Event handling and telemetry
+- **[Architecture Map](docs/architecture_map.md)**: System architecture visualization
+
+## Getting Started
+
+### Prerequisites
+- Python 3.9+
+- Java 21 (for building the Java bridge)
+- Minecraft 1.15+ with Fabric loader
+- Baritone mod installed
+
+### Installation
+
+1. **Install Python Dependencies**:
+   ```bash
+   python -m pip install -e .[dev]
+   ```
+
+2. **Build the Java Bridge**:
+   ```bash
+   cd bridge
+   # Copy baritone-api-fabric-1.15.0.jar to bridge/libs/ (required for build)
+   ./gradlew build
+   # Install the resulting JAR file to your Minecraft mods folder
+   ```
+
+3. **Setup Minecraft**:
+   - Install Fabric loader for Minecraft 1.15+
+   - Install Baritone mod
+   - Place the built bridge JAR in the mods folder
+
+### Basic Usage
 
 ```python
-from baritone_client.client import Client
+from baritone_client.core.client import Client
 from baritone_client.transport import HttpTransport
-from baritone_client.goals import GoalFactory
+from baritone_client.core.facades.goals import GoalFactory
 
+# Create transport (adjust URL/port as needed)
 transport = HttpTransport("http://localhost:25600/api")
 client = Client(transport)
 
-# navigate to a coordinate
+# Navigate to coordinates
 goal = GoalFactory.goal_block(10, 65, -20)
 client.goals.apply(goal)
 
-# run a chat-level command
+# Execute commands
 client.command.run("goto 10 65 -20")
 
-# start a mine process
+# Start mining process
 client.process.mine.start(target_block="diamond_ore")
 ```
 
-3. Run the unit tests:
-
+### Testing
+Run the unit tests to verify your setup:
 ```bash
 python -m pytest
 ```
 
-## What is included
+For detailed setup instructions, see [`docs/architecture.md`](docs/architecture.md).
 
-- API surface map for Baritone commands, processes, goals, selections, schematics, and settings (see `docs/api_surface.md`).
-- Architecture notes covering transport choice, control flows, lifecycle, validation, and error handling (see `docs/architecture.md`).
-- A detailed package summary scraped from Baritone's Javadocs for quick lookup of settings, processes, and utilities (see `docs/package-summary.md`).
-- Python facade mirroring Baritone concepts (client/process/goal/setting/event helpers).
-- Unit tests that mock the transport layer to verify serialization and dispatch behavior.
+## Examples
 
-## Notes
-
-This project assumes a Baritone-side bridge that exposes Baritone's `IBaritone` entrypoints over HTTP or sockets. The Python facade is transport-agnostic and can be adapted to other bridges (e.g., Py4J) if desired.
-
-## Mission Toolkit
-
-`baritone_client.scripts.endgame` provides an opinionated helper that sequences every milestone required to reach and defeat the Ender Dragon. The helpers talk directly to the Java bridge's mission controller so state survives reconnects:
+### Mission Automation
+Automate complex game progression with pre-built mission templates:
 
 ```python
-from baritone_client import Client, TcpTransport, EndGameMission
+from baritone_client.core.client import Client
+from baritone_client.transport import TcpTransport
+from baritone_client.scripts.endgame import EndGameMission
 
 client = Client(TcpTransport())
 mission = EndGameMission(client)
 
-# Run each stage explicitly...
-mission.bootstrap_world()
-mission.establish_base()
-# ...or delegate the entire run:
+# Run complete endgame mission
 mission.run_full_mission()
 
-# Mission telemetry (phase, health, queue) is available at any time
+# Or execute individual phases
+mission.bootstrap_world()
+mission.establish_base()
+mission.resource_pipeline()
+
+# Check progress
 status = mission.synchronize()
-print(status.phase, status.telemetry)
+print(f"Phase: {status.phase}, Health: {status.telemetry.health}")
 ```
 
-Under the hood the bridge exposes `mission_status`, `mission_macro`, `mission_queue`, and `mission_checkpoint` commands so external orchestrators can push/pull the active plan or request built-in macros such as `resource_pipeline`, `enter_nether`, and `fight_dragon`.
+### Base Building
+Use common utilities for automated infrastructure:
 
-Mission macros now include:
-- `scout_spawn` – gather spawn telemetry and proposed exploration waypoints before any mining begins.
-- `establish_base` – clear and level an area so defensive walls, storage, and a portal fit.
-- `resource_pipeline` – queue multi-stage mining jobs (iron → diamond → obsidian/blaze) that the bridge executes sequentially.
-- `enter_nether`, `craft_eyes`, `dragon_prep`, `locate_stronghold`, and `fight_dragon` – each macro reports structured telemetry and can be queued atomically via `mission_queue`.
+```python
+from baritone_client.common.base import setup_base, build_good_house
+from baritone_client.common.inventory import loot_nearby_chests
 
-Every mission command emits mission events via the existing `get_events` API (`type: mission`) so clients that reconnect can rebuild queue/phase context.
+# Establish base infrastructure
+success, coords = setup_base(client)
+if success:
+    # Build a house around the base
+    build_good_house(client, coords[0], coords[1], coords[2])
+    # Loot nearby resources
+    loot_nearby_chests(client, radius=32)
+```
 
-## MCP Server
-
-`baritone_client.mcp_server` (also exposed via the `baritone-mcp-server` console script) publishes the bridge over the [Model Context Protocol](https://modelcontextprotocol.io) so MCP-aware agents can inspect telemetry and invoke Baritone actions.
-
-Example usage:
+### MCP Server
+Enable AI agent integration:
 
 ```bash
-# Stdio transport for Claude Desktop / Claude Code
+# Stdio mode for Claude Desktop
 python -m baritone_client.mcp_server --host localhost --port 5555
 
-# Streamable HTTP transport for the MCP Inspector
+# HTTP mode for MCP Inspector
 python -m baritone_client.mcp_server --transport streamable-http --http-host 127.0.0.1 --http-port 8000
 ```
 
-The server exposes resources at `baritone://state`, `baritone://inventory`, and `baritone://mission/status` plus tools for running commands, applying/clearing goals, queueing and checkpointing mission macros, driving the mining process, and retrieving combined telemetry snapshots. Refer to `src/baritone_client/mcp_server.py` for the complete list.
+See [`examples/`](examples/) for more sample scripts and [`docs/mcp_server.md`](docs/mcp_server.md) for MCP integration details.
 
-## Common Helper Recipes
+## Contribution Guidelines
 
-The `baritone_client.common` package now exposes higher-level helpers that keep orchestration scripts declarative:
+We welcome contributions to improve mcbaratone! Please follow these guidelines:
 
-- `spiral_explore`, `column_clear`, and `safe_return` (in `common.navigation`) compose the lower-level `goto`/`explore_until` primitives so spawn-safe exploration and base cleanup require one call.
-- `ensure_supplies` (in `common.resources`) compares live inventory counts against a requirement dictionary (such as `ResourceManager.PHASE_REQUIREMENTS`) and automatically issues craft/mine requests for shortfalls, responding with a structured `TaskResult`.
-- `hunt_mobs` (in `common.combat`) consolidates the blaze/ender/food hunting logic so callers only provide mob types and required drops.
-- `phase_task`/`PhaseContext` (in `common.playbook`) wrap `Task` execution with `StateManager` + `ResourceManager` awareness, allowing scripts to skip idempotent phases and persist checkpoint payloads without reimplementing boilerplate.
+### Development Setup
+1. Fork the repository and create a feature branch
+2. Set up your development environment:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # Windows: .venv\Scripts\activate
+   pip install -e .[dev]
+   ```
+3. Run tests: `python -m pytest`
+4. Format code: `black src/ tests/ && isort src/ tests/`
 
-Example:
+### Code Standards
+- **Python Style**: Follow PEP8 with type hints
+- **Documentation**: Add docstrings to all public functions/classes
+- **Testing**: Write unit tests for new features using mocked transports
+- **Bridge Rules**: Never modify `bridge/` directory directly (see [`AGENTS.md`](AGENTS.md))
 
-```python
-from baritone_client.common import phase_task, spiral_explore
+### Pull Request Process
+1. Update relevant documentation for any API changes
+2. Ensure all tests pass
+3. Provide clear PR description with rationale
+4. Reference any related issues
 
-phase = phase_task(
-    "Scout spawn ring",
-    lambda client, ctx: spiral_explore(client, condition=lambda: ctx.metadata.get("found_ruin")),
-    state=state_manager,
-    resources=resource_manager,
-    phase=Phase.INITIAL_GATHERING,
-)
-result = phase.run(client)
-print(result.reason, result.data)
-```
+### Areas for Contribution
+- New automation phases or mission templates
+- Additional transport implementations
+- Performance optimizations
+- Bug fixes and documentation improvements
+- Common utility recipes
+
+For detailed development information, see [`AGENTS.md`](AGENTS.md) and [`docs/architecture.md`](docs/architecture.md).

@@ -150,6 +150,8 @@ public class UploadManager {
     private final AtomicLong totalUploadsFailed = new AtomicLong(0);
     private final AtomicLong totalBytesUploaded = new AtomicLong(0);
 
+    private volatile boolean isShutdown = false;
+
     public UploadManager(File schematicDir) {
         this.schematicDir = schematicDir;
         startCleanupTask();
@@ -160,6 +162,10 @@ public class UploadManager {
      * Initialize a new upload
      */
     public boolean startUpload(String name, long expectedSize, Socket owner, UploadPriority priority) {
+        if (isShutdown) {
+            LOGGER.warn("UploadManager is shut down, rejecting upload: {}", name);
+            return false;
+        }
         if (activeUploads.size() >= MAX_CONCURRENT_UPLOADS) {
             if (uploadQueue.size() >= MAX_UPLOAD_QUEUE_SIZE) {
                 LOGGER.warn("Upload queue is full, rejecting upload: {}", name);
@@ -199,6 +205,7 @@ public class UploadManager {
      * Process an upload chunk
      */
     public boolean processChunk(String name, byte[] data) {
+        if (isShutdown) return false;
         UploadTask task = activeUploads.get(name);
         if (task == null) {
             LOGGER.warn("Upload task not found: {}", name);
@@ -233,6 +240,7 @@ public class UploadManager {
      * Complete an upload
      */
     public boolean completeUpload(String name, String expectedSha256) {
+        if (isShutdown) return false;
         UploadTask task = activeUploads.get(name);
         if (task == null) {
             LOGGER.warn("Upload task not found for completion: {}", name);
@@ -510,6 +518,8 @@ public class UploadManager {
      * Shutdown the upload manager
      */
     public void shutdown() {
+        if (isShutdown) return;
+        isShutdown = true;
         cleanupExecutor.shutdown();
         try {
             if (!cleanupExecutor.awaitTermination(5, TimeUnit.SECONDS)) {

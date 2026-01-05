@@ -10,6 +10,7 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.net.Socket;
+import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -25,10 +26,11 @@ public class CommandHandlerFactoryTest {
     @Mock
     private Socket mockSocket;
 
-    private static class TestCommandHandler implements CommandHandler {
+    public static class TestCommandHandler implements CommandHandler {
+        public TestCommandHandler() {} // Explicit public constructor
         @Override
-        public CommandResult handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
-            return CommandResult.success(new JsonObject());
+        public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+            return CompletableFuture.completedFuture(CommandResult.success(new JsonObject()));
         }
 
         @Override
@@ -161,8 +163,8 @@ public class CommandHandlerFactoryTest {
         }
 
         @Override
-        public CommandResult handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
-            return null;
+        public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+            return CompletableFuture.completedFuture(null);
         }
 
         @Override
@@ -214,5 +216,70 @@ public class CommandHandlerFactoryTest {
         assertNotSame(handler1, handler2);
         assertEquals("test", handler1.getCommandName());
         assertEquals("test", handler2.getCommandName());
+    }
+
+    @Test
+    void testAdvancedCraftCommandHandlerRegistration() {
+        // Test registration of AdvancedCraftCommandHandler
+        CommandHandlerFactory.registerHandler("advanced_craft", AdvancedCraftCommandHandler.class);
+        assertTrue(CommandHandlerFactory.hasHandler("advanced_craft"));
+
+        CommandHandler handler = CommandHandlerFactory.getHandler("advanced_craft");
+        assertNotNull(handler);
+        assertEquals("advanced_craft", handler.getCommandName());
+        assertInstanceOf(AdvancedCraftCommandHandler.class, handler);
+    }
+
+    @Test
+    void testEntityInteractionCommandHandlerRegistration() {
+        // Test registration of EntityInteractionCommandHandler
+        CommandHandlerFactory.registerHandler("entity_interact", EntityInteractionCommandHandler.class);
+        assertTrue(CommandHandlerFactory.hasHandler("entity_interact"));
+
+        CommandHandler handler = CommandHandlerFactory.getHandler("entity_interact");
+        assertNotNull(handler);
+        assertEquals("entity_interact", handler.getCommandName());
+        assertInstanceOf(EntityInteractionCommandHandler.class, handler);
+    }
+
+    @Test
+    void testSequenceCommandHandlerRegistration() {
+        // Test registration of SequenceCommandHandler
+        CommandHandlerFactory.registerHandler("sequence", SequenceCommandHandler.class);
+        assertTrue(CommandHandlerFactory.hasHandler("sequence"));
+
+        CommandHandler handler = CommandHandlerFactory.getHandler("sequence");
+        assertNotNull(handler);
+        assertEquals("sequence", handler.getCommandName());
+        assertInstanceOf(SequenceCommandHandler.class, handler);
+    }
+
+    @Test
+    void testAllNewHandlersRegistered() {
+        // Test that all new advanced command handlers can be registered
+        CommandHandlerFactory.registerHandler("advanced_craft", AdvancedCraftCommandHandler.class);
+        CommandHandlerFactory.registerHandler("entity_interact", EntityInteractionCommandHandler.class);
+        CommandHandlerFactory.registerHandler("sequence", SequenceCommandHandler.class);
+
+        String[] registered = CommandHandlerFactory.getRegisteredCommands();
+        assertTrue(java.util.Arrays.asList(registered).contains("advanced_craft"));
+        assertTrue(java.util.Arrays.asList(registered).contains("entity_interact"));
+        assertTrue(java.util.Arrays.asList(registered).contains("sequence"));
+
+        assertEquals(3, CommandHandlerFactory.getRegisteredHandlerCount());
+    }
+
+    @Test
+    void testHandlerSingletonPerCommand() {
+        // Test that each command gets its own singleton instance
+        CommandHandlerFactory.registerHandler("advanced_craft", AdvancedCraftCommandHandler.class);
+        CommandHandlerFactory.registerHandler("entity_interact", EntityInteractionCommandHandler.class);
+
+        CommandHandler craft1 = CommandHandlerFactory.getHandler("advanced_craft");
+        CommandHandler craft2 = CommandHandlerFactory.getHandler("advanced_craft");
+        CommandHandler entity1 = CommandHandlerFactory.getHandler("entity_interact");
+
+        assertSame(craft1, craft2); // Same command, same instance
+        assertNotSame(craft1, entity1); // Different commands, different instances
     }
 }

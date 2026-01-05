@@ -481,3 +481,52 @@ def craft_item(client, recipe_id: str, count: int = 1) -> bool:
             return craft(client, recipe_id, count)
         except Exception:
             return False
+def is_full(client) -> bool:
+    """Check if inventory is full (no empty slots)."""
+    try:
+        raw_inv = client.transport.dispatch("get_inventory", {})
+        items = raw_inv.get("inventory", [])
+        # Normal inventory has 36 slots (0-35). Count occupied ones.
+        occupied = 0
+        for item in items:
+            if item.get("id") and item.get("count", 0) > 0:
+                occupied += 1
+        return occupied >= 36
+    except Exception:
+        return False
+
+def drop_items(client, item_ids: List[str]) -> int:
+    """
+    Drop specified items from inventory to clear space.
+    
+    Args:
+        item_ids: List of item IDs to drop (e.g. ["minecraft:cobblestone", "minecraft:dirt"])
+        
+    Returns:
+        Number of stacks/slots dropped
+    """
+    dropped = 0
+    try:
+        raw_inv = client.transport.dispatch("get_inventory", {})
+        items = raw_inv.get("inventory", [])
+        
+        for item in items:
+            item_id = item.get("id")
+            slot = item.get("slot")
+            
+            if item_id in item_ids:
+                # Drop item using Drop Key (Q) or throwing from inventory
+                # throwing from inventory (Ctrl+Q equivalent or clicking outside)
+                # Using 'THROW' action on the slot
+                client.transport.dispatch("inventory_click", {
+                    "slot": slot,
+                    "type": "THROW",
+                    "button": 1 # 1 = Drop stack, 0 = Drop single?
+                })
+                dropped += 1
+                time.sleep(0.1)
+                
+    except Exception as e:
+        print(f"Drop items error: {e}")
+        
+    return dropped

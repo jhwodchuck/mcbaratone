@@ -3,8 +3,8 @@ import os
 from unittest.mock import MagicMock, patch
 
 import pytest
-from baritone_client.transport import WebSocketTransport
-from baritone_client.schemas import JsonRpcRequest, JsonRpcResponse
+from baritone_client import WebSocketTransport
+# Note: JsonRpcRequest/JsonRpcResponse are internal to transport, not needed for this test
 
 FIXTURE_PATH = os.path.join(os.path.dirname(__file__), "fixtures", "transcripts.json")
 

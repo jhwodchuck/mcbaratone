@@ -150,19 +150,20 @@ def build_dirt_shelter(
 
 
 def place_crafting_table(client, x: int, y: int, z: int) -> bool:
-    """
-    Place a crafting table at specified location.
-    
-    Returns:
-        True if placed
-    """
+    """Place a crafting table at specified location, reusing an existing one if possible."""
     if count_item(client, "minecraft:crafting_table") < 1:
         # Try to craft one
-        if count_item(client, "minecraft:oak_planks") >= 4:
+        plank_types = [
+            "minecraft:oak_planks", "minecraft:spruce_planks", "minecraft:birch_planks",
+            "minecraft:jungle_planks", "minecraft:acacia_planks", "minecraft:dark_oak_planks",
+            "minecraft:mangrove_planks", "minecraft:cherry_planks", "minecraft:bamboo_planks",
+            "minecraft:crimson_planks", "minecraft:warped_planks"
+        ]
+        if sum(count_item(client, p) for p in plank_types) >= 4:
             craft(client, "minecraft:crafting_table", 1)
             time.sleep(0.5)
         else:
-            print("  Need crafting table or 4 planks")
+            print("  Need crafting table or 4 planks (any type)")
             return False
     
     if not select_item(client, "minecraft:crafting_table", allow_swap=True):
@@ -172,13 +173,56 @@ def place_crafting_table(client, x: int, y: int, z: int) -> bool:
         print(f"  Skipping placement at ({x}, {y}, {z}) - Target is liquid")
         return False
 
+    # Attempt to reuse an existing crafting table near the saved base waypoint
     try:
-        client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
-    except Exception as e:
-        print(f"  Placement failed: {e}")
+        wp = client.transport.dispatch("waypoint", {"name": "base"})
+        if wp:
+            bx, by, bz = wp["x"], wp["y"], wp["z"]
+            nearby = client.transport.dispatch(
+                "find_blocks",
+                {
+                    "blocks": ["minecraft:crafting_table"],
+                    "radius": 3,
+                    "center": {"x": bx, "y": by, "z": bz},
+                },
+            )
+            if nearby:
+                print(f"  Existing crafting table found at {nearby[0]}; reusing.")
+                return True
+    except Exception:
+        pass
+
+    if not safe_place_block(client, x, y, z):
+        print(f"  Placement failed via safe_place_block")
         return False
         
     time.sleep(0.5)
+    
+    # Verify placement
+    try:
+        block_res = client.transport.dispatch("get_block", {"x": x, "y": y, "z": z})
+        if block_res.get("id") != "minecraft:crafting_table":
+            print(f"  Placement verification failed at ({x}, {y}, {z}): Found {block_res.get('id')}")
+            return False
+    except Exception:
+        pass
+        
+    # Safeguard: Blacklist crafting tables so we don't accidentally mine it
+    # Must use 'chat' route for Baritone commands
+    client.transport.dispatch("chat", {"message": "#blacklist minecraft:crafting_table"})
+    time.sleep(0.5)
+    
+    # Save location as "base"
+    client.transport.dispatch("chat", {"message": f"#waypoint save base {x} {y} {z}"})
+    print(f"  *** BASE LOCATION SET to ({x}, {y}, {z}) ***")
+    
+    # Update world_map.md
+    try:
+        with open("c:/gh/mcbaratone/world_map.md", "a") as f:
+            f.write(f"\n- **Crafting Table/Base**: ({x}, {y}, {z})")
+    except Exception as e:
+        print(f"  Failed to update world_map.md: {e}")
+    
     return True
 
 
@@ -198,16 +242,20 @@ def place_furnace(client, x: int, y: int, z: int) -> bool:
             print("  Need furnace or 8 cobblestone")
             return False
     
-    if not select_item(client, "minecraft:furnace"):
+    if not select_item(client, "minecraft:furnace", allow_swap=True):
         return False
     
     if not is_position_safe(client, x, y, z):
         print(f"  Skipping placement at ({x}, {y}, {z}) - Target is liquid")
         return False
 
-    client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
+    try:
+        client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
+    except Exception as e:
+        print(f"  Place furnace failed: {e}")
+        return False
+        
     time.sleep(0.5)
-    
     return True
 
 
@@ -227,16 +275,20 @@ def place_chest(client, x: int, y: int, z: int) -> bool:
             print("  Need chest or 8 planks")
             return False
     
-    if not select_item(client, "minecraft:chest"):
+    if not select_item(client, "minecraft:chest", allow_swap=True):
         return False
     
     if not is_position_safe(client, x, y, z):
         print(f"  Skipping placement at ({x}, {y}, {z}) - Target is liquid")
         return False
 
-    client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
+    try:
+        client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
+    except Exception as e:
+        print(f"  Place chest failed: {e}")
+        return False
+        
     time.sleep(0.5)
-    
     return True
 
 
@@ -257,7 +309,7 @@ def place_bed(client, x: int, y: int, z: int) -> bool:
     has_bed = False
     for bed in bed_types:
         if count_item(client, bed) > 0:
-            if select_item(client, bed):
+            if select_item(client, bed, allow_swap=True):
                 has_bed = True
                 break
     
@@ -269,9 +321,13 @@ def place_bed(client, x: int, y: int, z: int) -> bool:
         print(f"  Skipping placement at ({x}, {y}, {z}) - Target is liquid")
         return False
 
-    client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
+    try:
+        client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
+    except Exception as e:
+        print(f"  Place bed failed: {e}")
+        return False
+        
     time.sleep(0.5)
-    
     return True
 
 
@@ -503,7 +559,6 @@ def build_emergency_shelter(client) -> bool:
         # Needs blocks.
         if count_item(client, "minecraft:dirt") < 20 and count_item(client, "minecraft:cobblestone") < 20:
              print("Not enough blocks for shelter. Digging down...")
-             # Just dig a hole and stay in it?
              client.transport.dispatch("mine", {"x": x, "y": y-1, "z": z, "quantity": 1})
              time.sleep(1)
              client.transport.dispatch("mine", {"x": x, "y": y-2, "z": z, "quantity": 1})

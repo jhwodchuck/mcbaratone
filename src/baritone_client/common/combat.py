@@ -210,6 +210,7 @@ def hunt_passive_mobs(
     client,
     target_count: int = 10,
     timeout: int = 300,
+    type_filter: Optional[List[str]] = None,
 ) -> int:
     """
     Hunt passive mobs for food.
@@ -224,7 +225,7 @@ def hunt_passive_mobs(
     """
     result = hunt_mobs(
         client,
-        mob_types=["pig", "cow", "sheep", "chicken"],
+        mob_types=type_filter if type_filter else ["pig", "cow", "sheep", "chicken"],
         required_loot={"minecraft:cooked_beef": 0},
         search_radius=50,
         timeout=timeout,

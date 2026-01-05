@@ -1,8 +1,9 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List, Union
 
 from ...transport.command_dispatcher import CommandDispatcher
 from ...core.exceptions import CommandError, ValidationError
 from ...transport.transport import Transport
+from ...models.models import BatchRequest, BatchCommand, PriorityLevel, BatchResult
 
 
 class CommandFacade:
@@ -11,24 +12,30 @@ class CommandFacade:
     def __init__(self, transport: Transport) -> None:
         self.dispatcher = CommandDispatcher(transport)
 
-    def run(self, command: str) -> Dict[str, Any]:
+    def run(self, command: str, priority: Union[str, PriorityLevel] = "normal") -> Dict[str, Any]:
         """
         Execute a Baritone command string.
 
         Args:
             command: Command string (e.g., "#goto 100 64 200" or "goto 100 64 200")
+            priority: Priority level for command execution (PriorityLevel enum or "high", "normal", "low")
 
         Returns:
             Response dictionary from the bridge
 
         Raises:
-            ValidationError: If command is empty
+            ValidationError: If command is empty or priority is invalid
             CommandError: If command execution fails
             TransportError: If transport fails
         """
         if not command or not command.strip():
             raise ValidationError("Command cannot be empty", field="command")
-        result = self.dispatcher.dispatch("chat", {"message": command})
+        if isinstance(priority, PriorityLevel):
+            priority = priority.value
+        if priority not in ("high", "normal", "low"):
+            raise ValidationError(f"Invalid priority '{priority}'. Must be 'high', 'normal', or 'low'", field="priority")
+        payload = {"message": command, "priority": priority}
+        result = self.dispatcher.dispatch("chat", payload)
         if result.is_success():
             return result.get_data()
         else:
@@ -98,23 +105,90 @@ class CommandFacade:
         else:
             raise CommandError(result.get_error_message() or "Get block command failed")
 
-    def craft(self, recipe_id: str, count: int = 1) -> Dict[str, Any]:
+    def craft(self, recipe_id: str, count: int = 1, priority: Optional[PriorityLevel] = None) -> Dict[str, Any]:
         """
         Craft an item using a bridge-supported recipe.
 
         Args:
             recipe_id: Identifier for the recipe on the bridge side.
             count: Number of times to craft.
+            priority: Optional priority level for the craft command.
 
         Returns:
             Response data from the bridge.
         """
         payload = {"recipe_id": recipe_id, "count": count}
+        if priority is not None:
+            payload["priority"] = priority.value
         result = self.dispatcher.dispatch("craft", payload)
         if result.is_success():
             return result.get_data()
         else:
             raise CommandError(result.get_error_message() or "Craft command failed")
+
+    def mine(self, target_block: str, priority: Optional[PriorityLevel] = None) -> Dict[str, Any]:
+        """
+        Mine a specific block type.
+
+        Args:
+            target_block: Block type to mine (e.g., "diamond_ore")
+            priority: Optional priority level for the mine command
+
+        Returns:
+            Response dictionary
+        """
+        cmd = f"#mine {target_block}"
+        if priority is not None:
+            return self.run(cmd, priority=priority)
+        else:
+            return self.run(cmd)
+
+    def build(self, priority: Optional[PriorityLevel] = None) -> Dict[str, Any]:
+        """
+        Build the currently loaded schematic.
+
+        Args:
+            priority: Optional priority level for the build command
+
+        Returns:
+            Response dictionary
+        """
+        if priority is not None:
+            return self.run("#build", priority=priority)
+        else:
+            return self.run("#build")
+
+    def interact(self, priority: Optional[PriorityLevel] = None) -> Dict[str, Any]:
+        """
+        Interact with the current target.
+
+        Args:
+            priority: Optional priority level for the interact command
+
+        Returns:
+            Response dictionary
+        """
+        if priority is not None:
+            return self.run("#interact", priority=priority)
+        else:
+            return self.run("#interact")
+
+    def inventory_click(self, slot: int, priority: Optional[PriorityLevel] = None) -> Dict[str, Any]:
+        """
+        Click on an inventory slot.
+
+        Args:
+            slot: Inventory slot number
+            priority: Optional priority level for the inventory_click command
+
+        Returns:
+            Response dictionary
+        """
+        cmd = f"#inventory_click {slot}"
+        if priority is not None:
+            return self.run(cmd, priority=priority)
+        else:
+            return self.run(cmd)
 
     def smelt(self, input_item: str, count: int = 1, fuel_item: str = "minecraft:coal") -> Dict[str, Any]:
         """
@@ -132,21 +206,22 @@ class CommandFacade:
         else:
             raise CommandError(result.get_error_message() or "Smelt command failed")
 
-    def goto(self, x: Optional[int] = None, y: Optional[int] = None, z: Optional[int] = None, target: Optional[str] = None) -> Dict[str, Any]:
+    def goto(self, x: Optional[int] = None, y: Optional[int] = None, z: Optional[int] = None, target: Optional[str] = None, priority: Optional[PriorityLevel] = None) -> Dict[str, Any]:
         """
         Go to coordinates or a target.
         
         Args:
             x, y, z: Coordinates
             target: Target name (e.g. "portal", "ender_chest", "death") or block type
+            priority: Optional priority level for the goto command
         """
         if target:
-            return self.run(f"#goto {target}")
+            return self.run(f"#goto {target}", priority=priority or "normal")
         if x is not None and z is not None:
             cmd = f"#goto {x} {z}"
             if y is not None:
                 cmd = f"#goto {x} {y} {z}"
-            return self.run(cmd)
+            return self.run(cmd, priority=priority or "normal")
         raise ValidationError("Must provide coordinates or target for goto")
 
     def thisway(self, distance: int) -> Dict[str, Any]:
@@ -279,20 +354,23 @@ class CommandFacade:
         """
         return self.run(f"#sel {command}")
 
-    def screenshot(self, filename: Optional[str] = None, reason: str = "manual") -> Dict[str, Any]:
+    def screenshot(self, filename: Optional[str] = None, reason: str = "manual", priority: str = "normal") -> Dict[str, Any]:
         """
         Capture a screenshot of the current game view.
-        
+
         Screenshots are saved to Minecraft's screenshots/ folder.
-        
+
         Args:
             filename: Optional custom filename (auto-generated timestamp if omitted)
             reason: Reason for screenshot (e.g., "phase_transition", "error", "manual")
-            
+            priority: Priority level for screenshot command ("high", "normal", "low")
+
         Returns:
             Dictionary with 'path' (file location), 'filename', 'reason', 'queued' (bool)
         """
-        payload = {"reason": reason}
+        if priority not in ("high", "normal", "low"):
+            raise ValidationError(f"Invalid priority '{priority}'. Must be 'high', 'normal', or 'low'", field="priority")
+        payload = {"reason": reason, "priority": priority}
         if filename:
             payload["filename"] = filename
         result = self.dispatcher.dispatch("screenshot", payload)
@@ -300,4 +378,66 @@ class CommandFacade:
             return result.get_data()
         else:
             raise CommandError(result.get_error_message() or "Screenshot command failed")
+
+    def batch_execute(self, commands: List[Dict[str, Any]], transaction_mode: bool = True,
+                     overall_timeout: Optional[float] = None, batch_id: Optional[str] = None) -> BatchResult:
+        """
+        Execute multiple commands as a batch with transaction semantics.
+
+        Args:
+            commands: List of command dictionaries with keys: 'id', 'command', 'params' (optional),
+                     'priority' (optional, defaults to 'normal'), 'timeout' (optional)
+            transaction_mode: If True, all commands must succeed or all fail (rollback)
+            overall_timeout: Maximum time for entire batch execution
+            batch_id: Optional custom batch ID (auto-generated if not provided)
+
+        Returns:
+            BatchResult with execution details and individual command results
+
+        Raises:
+            ValidationError: If command structure is invalid
+            ValueError: If batch validation fails
+        """
+        import uuid
+
+        # Generate batch ID if not provided
+        if batch_id is None:
+            batch_id = str(uuid.uuid4())[:8]
+
+        # Convert command dicts to BatchCommand objects
+        batch_commands = []
+        for i, cmd_dict in enumerate(commands):
+            try:
+                command_id = cmd_dict.get('id', f"cmd_{i}")
+                command = cmd_dict['command']
+                params = cmd_dict.get('params', {})
+                priority_str = cmd_dict.get('priority', 'normal')
+                timeout = cmd_dict.get('timeout')
+
+                # Convert priority string to enum
+                try:
+                    priority = PriorityLevel(priority_str.lower())
+                except ValueError:
+                    raise ValidationError(f"Invalid priority '{priority_str}' for command {command_id}")
+
+                batch_commands.append(BatchCommand(
+                    id=command_id,
+                    command=command,
+                    params=params,
+                    priority=priority,
+                    timeout=timeout
+                ))
+            except KeyError as e:
+                raise ValidationError(f"Missing required field '{e}' in command {i}")
+
+        # Create batch request
+        batch_request = BatchRequest(
+            batch_id=batch_id,
+            commands=batch_commands,
+            transaction_mode=transaction_mode,
+            overall_timeout=overall_timeout
+        )
+
+        # Execute batch
+        return self.dispatcher.dispatch_batch(batch_request)
 

@@ -6,6 +6,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.util.math.MathHelper;
 
 import java.net.Socket;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Command handler for look_at: Points the camera at specific coordinates.
@@ -13,9 +14,9 @@ import java.net.Socket;
 public class LookAtCommandHandler implements CommandHandler {
 
     @Override
-    public CommandResult handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
         try {
-            return client.submit(() -> {
+            CommandResult result = client.submit(() -> {
                 if (client.player == null) {
                     return CommandResult.error("Player not available");
                 }
@@ -40,8 +41,9 @@ public class LookAtCommandHandler implements CommandHandler {
                 data.addProperty("pitch", pitch);
                 return CommandResult.success(data);
             }).get();
+            return CompletableFuture.completedFuture(result);
         } catch (Exception e) {
-            return CommandResult.error("Look at failed: " + e.getMessage());
+            return CompletableFuture.completedFuture(CommandResult.error("Look at failed: " + e.getMessage()));
         }
     }
 

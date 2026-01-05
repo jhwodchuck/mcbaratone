@@ -1,4 +1,4 @@
-from baritone_client.client import Client
+from baritone_client import Client
 
 
 class DummyTransport:

@@ -44,7 +44,7 @@ public class CommandHandlerFactory {
 
         // Mission commands
         registerHandler("mission", MissionCommandHandler.class);
-        
+
         // Explicit fixes for commands previously relying on legacy fallback
         registerHandler("place_block", PlaceBlockCommandHandler.class);
         registerHandler("get_block", GetBlockCommandHandler.class);
@@ -62,7 +62,48 @@ public class CommandHandlerFactory {
         registerHandler("attack_block", AttackBlockCommandHandler.class);
         registerHandler("get_view", GetViewCommandHandler.class);
         registerHandler("close_screen", CloseScreenCommandHandler.class);
+
+        // Newly migrated command handlers
+        registerHandler("explore", ExploreCommandHandler.class);
+        registerHandler("stop", StopCommandHandler.class);
+        registerHandler("pause", PauseCommandHandler.class);
+        registerHandler("goal", GoalCommandHandler.class);
+        registerHandler("farm", FarmCommandHandler.class);
+        registerHandler("tunnel", TunnelCommandHandler.class);
+        registerHandler("get_events", GetEventsCommandHandler.class);
+        registerHandler("get_screen", GetScreenCommandHandler.class);
+        registerHandler("settings", SettingsCommandHandler.class);
+        registerHandler("break_block", BreakBlockCommandHandler.class);
+        registerHandler("get_dimension", GetDimensionCommandHandler.class);
+        registerHandler("get_death_location", GetDeathLocationCommandHandler.class);
+        registerHandler("throw_item", ThrowItemCommandHandler.class);
+        registerHandler("axis", AxisMineCommandHandler.class);
+        registerHandler("strip", StripMineCommandHandler.class);
+        registerHandler("quarry", QuarryCommandHandler.class);
+
+        // Remaining Phase 1 handlers
+        registerHandler("path", PathCommandHandler.class);
+        registerHandler("tunnel_wide", TunnelWideCommandHandler.class);
+        registerHandler("harvest", HarvestCommandHandler.class);
+        registerHandler("plant", PlantCommandHandler.class);
+        registerHandler("place_torches", PlaceTorchesCommandHandler.class);
+        registerHandler("screenshot", ScreenshotCommandHandler.class);
+        registerHandler("auto_craft", AutoCraftCommandHandler.class);
+        registerHandler("smelt_items", SmeltItemsCommandHandler.class);
+        registerHandler("click_recipe", ClickRecipeCommandHandler.class);
+        registerHandler("place_fire", PlaceFireCommandHandler.class);
+
+        // Phase 4: Advanced Features
+        registerHandler("entity_interact", EntityInteractionCommandHandler.class);
+        registerHandler("advanced_goal", AdvancedGoalCommandHandler.class);
+        registerHandler("craft_advanced", AdvancedCraftCommandHandler.class);
+
+        // Sequence Commands with Rollback
+        registerHandler("sequence", SequenceCommandHandler.class);
+
+        logger.info("Command handler registry initialized with {} handlers", handlerRegistry.size());
     }
+
 
     /**
      * Register a command handler class for a specific command name.
@@ -73,6 +114,18 @@ public class CommandHandlerFactory {
     public static void registerHandler(String commandName, Class<? extends CommandHandler> handlerClass) {
         handlerRegistry.put(commandName, handlerClass);
         logger.debug("Registered command handler: {} -> {}", commandName, handlerClass.getSimpleName());
+    }
+
+    /**
+     * Register a pre-instantiated command handler for a specific command name.
+     * Use this for handlers that require constructor dependencies.
+     *
+     * @param commandName The command name
+     * @param handler The handler instance
+     */
+    public static void registerHandlerInstance(String commandName, CommandHandler handler) {
+        handlerInstances.put(commandName, handler);
+        logger.debug("Registered command handler instance: {} -> {}", commandName, handler.getClass().getSimpleName());
     }
 
     /**
@@ -118,7 +171,7 @@ public class CommandHandlerFactory {
      * @return true if a handler is registered, false otherwise
      */
     public static boolean hasHandler(String commandName) {
-        return commandName != null && handlerRegistry.containsKey(commandName);
+        return commandName != null && (handlerRegistry.containsKey(commandName) || handlerInstances.containsKey(commandName));
     }
 
     /**

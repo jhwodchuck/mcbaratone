@@ -3,6 +3,7 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
 import net.minecraft.client.MinecraftClient;
+
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
@@ -19,9 +20,9 @@ public class UseItemCommandHandler implements CommandHandler {
     private static final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
     @Override
-    public CommandResult handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
         if (client.player == null) {
-            return CommandResult.error("Player not available");
+            return CompletableFuture.completedFuture(CommandResult.error("Player not available"));
         }
         
         try {
@@ -49,9 +50,9 @@ public class UseItemCommandHandler implements CommandHandler {
                 data.addProperty("used", true);
             }
             
-            return CommandResult.success(data);
+            return CompletableFuture.completedFuture(CommandResult.success(data));
         } catch (Exception e) {
-            return CommandResult.error("Use item failed: " + e.getMessage());
+            return CompletableFuture.completedFuture(CommandResult.error("Use item failed: " + e.getMessage()));
         }
     }
 
