@@ -1,0 +1,120 @@
+package com.minecraftbot.baritone.events;
+
+import com.minecraftbot.baritone.EventManager;
+import com.minecraftbot.baritone.BaritoneAPIBridge;
+import com.google.gson.JsonObject;
+import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
+import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
+import net.fabricmc.fabric.api.event.player.UseBlockCallback;
+import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
+import net.fabricmc.fabric.api.event.player.UseEntityCallback;
+import net.minecraft.block.BlockState;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.registry.Registries;
+import net.minecraft.util.ActionResult;
+import net.minecraft.util.math.BlockPos;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Registers Fabric API event listeners and forwards events to the EventManager.
+ */
+public class FabricEventRegistrar {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger("baritone-event-registrar");
+    private final EventManager eventManager;
+
+    public FabricEventRegistrar(EventManager eventManager) {
+        this.eventManager = eventManager;
+    }
+
+    public void registerEvents() {
+        // Chat message listener
+        ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
+            if (!overlay) {
+                JsonObject data = new JsonObject();
+                data.addProperty("message", message.getString());
+                eventManager.publishEvent(EventManager.EventType.CHAT, data);
+            }
+        });
+
+        // Block break listener (when player starts breaking a block)
+        AttackBlockCallback.EVENT.register((player, world, hand, pos, direction) -> {
+            if (player == MinecraftClient.getInstance().player) {
+                BlockState state = world.getBlockState(pos);
+                JsonObject data = new JsonObject();
+                data.addProperty("x", pos.getX());
+                data.addProperty("y", pos.getY());
+                data.addProperty("z", pos.getZ());
+                data.addProperty("block_type", Registries.BLOCK.getId(state.getBlock()).toString());
+                data.addProperty("dimension", world.getRegistryKey().getValue().toString());
+                eventManager.publishEvent(EventManager.EventType.BLOCK_BREAK, data, EventManager.Priority.NORMAL, "block_break");
+            }
+            return ActionResult.PASS;
+        });
+
+        // Block place listener (when player uses/places a block)
+        UseBlockCallback.EVENT.register((player, world, hand, hitResult) -> {
+            if (player == MinecraftClient.getInstance().player) {
+                BlockPos pos = hitResult.getBlockPos();
+                BlockState state = world.getBlockState(pos);
+                JsonObject data = new JsonObject();
+                data.addProperty("x", pos.getX());
+                data.addProperty("y", pos.getY());
+                data.addProperty("z", pos.getZ());
+                data.addProperty("block_type", Registries.BLOCK.getId(state.getBlock()).toString());
+                data.addProperty("dimension", world.getRegistryKey().getValue().toString());
+                eventManager.publishEvent(EventManager.EventType.BLOCK_PLACE, data, EventManager.Priority.NORMAL, "block_place");
+            }
+            return ActionResult.PASS;
+        });
+
+        // Entity interaction listeners
+        AttackEntityCallback.EVENT.register((player, world, hand, entity, hitResult) -> {
+            if (player == MinecraftClient.getInstance().player) {
+                JsonObject data = new JsonObject();
+                data.addProperty("x", entity.getX());
+                data.addProperty("y", entity.getY());
+                data.addProperty("z", entity.getZ());
+                data.addProperty("entity_type", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
+                data.addProperty("entity_id", entity.getId());
+                data.addProperty("dimension", world.getRegistryKey().getValue().toString());
+                data.addProperty("item_used", Registries.ITEM.getId(player.getStackInHand(hand).getItem()).toString());
+                data.addProperty("success", true);
+                eventManager.publishEvent(EventManager.EventType.ENTITY_ATTACK, data, EventManager.Priority.NORMAL, "entity_attack");
+            }
+            return ActionResult.PASS;
+        });
+
+        UseEntityCallback.EVENT.register((player, world, hand, entity, hitResult) -> {
+            if (player == MinecraftClient.getInstance().player) {
+                String type = Registries.ENTITY_TYPE.getId(entity.getType()).toString();
+                EventManager.EventType eventType = null;
+
+                if (type.equals("minecraft:wolf") || type.equals("minecraft:cat") || type.equals("minecraft:parrot")) {
+                    eventType = EventManager.EventType.ENTITY_TAME;
+                } else if (type.equals("minecraft:sheep")) {
+                    eventType = EventManager.EventType.ENTITY_SHEAR;
+                } else if (type.equals("minecraft:cow") || type.equals("minecraft:mooshroom")) {
+                    eventType = EventManager.EventType.ENTITY_MILK;
+                }
+
+                if (eventType != null) {
+                    JsonObject data = new JsonObject();
+                    data.addProperty("x", entity.getX());
+                    data.addProperty("y", entity.getY());
+                    data.addProperty("z", entity.getZ());
+                    data.addProperty("entity_type", type);
+                    data.addProperty("entity_id", entity.getId());
+                    data.addProperty("dimension", world.getRegistryKey().getValue().toString());
+                    data.addProperty("item_used", Registries.ITEM.getId(player.getStackInHand(hand).getItem()).toString());
+                    data.addProperty("success", true);
+                    eventManager.publishEvent(eventType, data, EventManager.Priority.NORMAL, "entity_" + eventType.name().toLowerCase().substring(7));
+                }
+            }
+            return ActionResult.PASS;
+        });
+
+        LOGGER.info("Fabric event listeners registered");
+    }
+}

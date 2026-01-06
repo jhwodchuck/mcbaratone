@@ -12,7 +12,9 @@ from .systems import SafetySystem, HungerSystem, MappingSystem
 from .telemetry import TelemetrySystem
 from ..common.nether import find_nearest_portal
 from ..actions.death_recovery_action import DeathRecoveryAction
-from ..core.interfaces import ActionContext
+from ..core.interfaces import ActionContext, ActionResult
+from ..actions.base import BaseAction
+from ..actions.suites import SUITES
 
 
 class EndGameAutomator:
@@ -138,6 +140,7 @@ class EndGameAutomator:
             
         # Note: Lava avoidance handled by costLava setting above
 
+
     def load_or_start(self) -> Phase:
         """
         Load checkpoint or start fresh.
@@ -154,7 +157,8 @@ class EndGameAutomator:
             print("Starting fresh automation")
         
         return self.state.get_current_phase()
-    
+
+
     def run(self, resume: bool = True) -> bool:
         """
         Run the automation loop.
@@ -195,60 +199,119 @@ class EndGameAutomator:
         print(f"#  Overall Progress: {self.state.get_overall_progress()*100:.1f}%")
         print(f"{'#'*60}\n")
         
-        while self._running and self.state.get_current_phase() != Phase.COMPLETE:
-            phase = self.state.get_current_phase()
+        try:
+            while self._running and self.state.get_current_phase() != Phase.COMPLETE:
+                phase = self.state.get_current_phase()
 
-            # Check for death and handle recovery
-            if self._handle_death_recovery():
-                continue  # Skip to next phase after recovery
+                # Check for death and handle recovery
+                if self._handle_death_recovery():
+                    continue  # Skip to next phase after recovery
 
-            # Notify phase start
-            if self.on_phase_start:
-                self.on_phase_start(phase)
-            
-            # Start timing
-            self.telemetry.start_timer(f"phase_{phase.name}")
-            
-            # Execute phase
-            success = self.executor.execute_phase(phase)
-            
-            # Stop timing
-            self.telemetry.stop_timer(f"phase_{phase.name}", success=success)
-            
-            if success:
-                if self.on_phase_complete:
-                    self.on_phase_complete(phase)
+                # Notify phase start
+                if self.on_phase_start:
+                    self.on_phase_start(phase)
                 
-                # Advance to next phase
-                payload = self.state.get_phase_payload(phase)
-                if payload:
-                    print(f"Phase {phase.name} data: {payload}")
-                self.state.advance_phase()
+                # Start timing
+                self.telemetry.start_timer(f"phase_{phase.name}")
                 
-                # Auto checkpoint
-                self._maybe_checkpoint()
+                # Execute phase
+                success = self.executor.execute_phase(phase)
                 
+                # Stop timing
+                self.telemetry.stop_timer(f"phase_{phase.name}", success=success)
+                
+                if success:
+                    if self.on_phase_complete:
+                        self.on_phase_complete(phase)
+                    
+                    # Advance to next phase
+                    payload = self.state.get_phase_payload(phase)
+                    if payload:
+                        print(f"Phase {phase.name} data: {payload}")
+                    self.state.advance_phase()
+                    
+                    # Auto checkpoint
+                    self._maybe_checkpoint()
+                    
+                else:
+                    if self.on_phase_fail:
+                        self.on_phase_fail(phase)
+                    
+                    print(f"\nPhase {phase.name} failed. Stopping automation.")
+                    self._running = False
+                    return False
+            
+            if self.state.get_current_phase() == Phase.COMPLETE:
+                print("\n" + "="*60)
+                print("  🐉 ENDER DRAGON DEFEATED! 🎉")
+                print("  EndGame Automation Complete!")
+                print("="*60 + "\n")
+                
+                if self.on_complete:
+                    self.on_complete()
+                
+                self.state.clear_checkpoint()
+                return True
+            
+            return False
+
+        finally:
+             self.stop()
+
+
+    def run_suite(self, suite_name: str) -> bool:
+        """
+        Run a specific test suite/mission action.
+        
+        Args:
+            suite_name: Name of the suite (e.g. "T900")
+            
+        Returns:
+            True if success
+        """
+        if suite_name not in SUITES:
+            print(f"Error: Unknown suite '{suite_name}'")
+            return False
+            
+        action_class = SUITES[suite_name]
+        action = action_class()
+        
+        print(f"\n>>> Starting Suite: {suite_name} ({action.__class__.__name__})")
+        
+        self._running = True
+        self.configure_baritone()
+        self.resources.initialize_recipes()
+        
+        # Start background systems
+        for system in self.systems:
+            system.start()
+            
+        try:
+            context = ActionContext(
+                client=self.client,
+                state=self.state,
+                resources=self.resources
+            )
+            
+            result = action.execute(context)
+            
+            if result.success:
+                print(f"\n>>> Suite {suite_name} COMPLETED SUCCESSFULLY!")
+                return True
             else:
-                if self.on_phase_fail:
-                    self.on_phase_fail(phase)
-                
-                print(f"\nPhase {phase.name} failed. Stopping automation.")
-                self._running = False
+                print(f"\n!!! Suite {suite_name} FAILED: {result.reason}")
                 return False
-        
-        if self.state.get_current_phase() == Phase.COMPLETE:
-            print("\n" + "="*60)
-            print("  🐉 ENDER DRAGON DEFEATED! 🎉")
-            print("  EndGame Automation Complete!")
-            print("="*60 + "\n")
-            
-            if self.on_complete:
-                self.on_complete()
-            
-            self.state.clear_checkpoint()
-            return True
-        
-        return False
+                
+        except KeyboardInterrupt:
+            print("\nSuite execution interrupted.")
+            return False
+        except Exception as e:
+            print(f"\nError executing suite: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        finally:
+            self.stop()
     
     def stop(self) -> None:
         """Stop the automation loop."""

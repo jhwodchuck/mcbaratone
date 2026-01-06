@@ -21,16 +21,19 @@ logger = logging.getLogger(__name__)
 class Phase(Enum):
     """Phases of end-game progression."""
     BRIDGE_CHECK = auto()       # Verify bridge connectivity and APIs
-    BOOT_SEQUENCE = auto()      # Phase 1: Shelter, Food, Tools
-    FOOD_AND_IRON = auto()      # Phase 2: Food independence, Iron gear
-    ENCHANTING_PIPELINE = auto()# Phase 3: Level 30 enchanting
-    NETHER_AND_BLAZE = auto()   # Phase 4: Blaze rods
-    VILLAGER_INFRA = auto()     # Phase 5: Villager breeder operational
-    XP_ENGINE = auto()          # Phase 6: Infinite XP
-    IRON_FARM = auto()          # Phase 7: Infinite iron
-    TOOL_PERFECTION = auto()    # Phase 8: Mending economy
-    WORLD_UNLOCK = auto()       # Phase 9: End access and shulker boxes
-    MEGABASE_INIT = auto()      # Phase 10: Megabase initialization
+    SPAWN_BOOTSTRAP = auto()    # Phase 1: Initial spawn setup
+    INITIAL_GATHERING = auto()  # Phase 2: Gather basic resources
+    BASE_CONSTRUCTION = auto()  # Phase 3: Build initial base
+    BOOT_SEQUENCE = auto()      # Phase 4: Shelter, Food, Tools
+    FOOD_AND_IRON = auto()      # Phase 5: Food independence, Iron gear
+    ENCHANTING_PIPELINE = auto()# Phase 6: Level 30 enchanting
+    NETHER_AND_BLAZE = auto()   # Phase 7: Blaze rods
+    VILLAGER_INFRA = auto()     # Phase 8: Villager breeder operational
+    XP_ENGINE = auto()          # Phase 9: Infinite XP
+    IRON_FARM = auto()          # Phase 10: Infinite iron
+    TOOL_PERFECTION = auto()    # Phase 11: Mending economy
+    WORLD_UNLOCK = auto()       # Phase 12: End access and shulker boxes
+    MEGABASE_INIT = auto()      # Phase 13: Megabase initialization
     COMPLETE = auto()           # Victory!
 
 

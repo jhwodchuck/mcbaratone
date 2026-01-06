@@ -27,24 +27,30 @@ public class GetScreenCommandHandler extends AbstractCommandHandler {
             return CommandResult.error("Player not available");
         }
 
-        ScreenHandler handler = client.player.currentScreenHandler;
-        if (handler == null) {
-            return CommandResult.error("No screen handler");
+        try {
+            return client.submit(() -> {
+                ScreenHandler handler = client.player.currentScreenHandler;
+                if (handler == null) {
+                    return CommandResult.error("No screen handler");
+                }
+
+                JsonObject data = new JsonObject();
+                data.addProperty("sync_id", handler.syncId);
+                data.addProperty("type", handler.getClass().getSimpleName());
+
+                JsonArray slots = new JsonArray();
+                for (int i = 0; i < handler.slots.size(); i++) {
+                    Slot slot = handler.slots.get(i);
+                    slots.add(serializeItemStack(slot.getStack(), i));
+                }
+                data.add("slots", slots);
+                data.addProperty("total_slots", handler.slots.size());
+
+                return CommandResult.success(data);
+            }).get();
+        } catch (Exception e) {
+            return CommandResult.error("Failed to read screen: " + e.getMessage());
         }
-
-        JsonObject data = new JsonObject();
-        data.addProperty("sync_id", handler.syncId);
-        data.addProperty("type", handler.getClass().getSimpleName());
-
-        JsonArray slots = new JsonArray();
-        for (int i = 0; i < handler.slots.size(); i++) {
-            Slot slot = handler.slots.get(i);
-            slots.add(serializeItemStack(slot.getStack(), i));
-        }
-        data.add("slots", slots);
-        data.addProperty("total_slots", handler.slots.size());
-
-        return CommandResult.success(data);
     }
 
     private JsonObject serializeItemStack(ItemStack stack, int slot) {

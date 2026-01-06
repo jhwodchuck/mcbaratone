@@ -39,7 +39,7 @@ public class CommandCache {
 
     // Commands that are considered idempotent and safe to cache
     private static final Set<String> IDEMPOTENT_COMMANDS = Set.of(
-        "get_inventory", "get_screen", "get_events", "get_dimension",
+        "get_inventory", "get_screen", "get_events", "get_dimension", "get_version",
         "get_death_location", "get_view", "get_recipes", "state"
     );
 

@@ -11,7 +11,7 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
 
-from test_base import TestHarness
+from test_base import FunctionalHarness
 
 # Original suites
 from suite_0_1 import create_suite_0, create_suite_1
@@ -42,7 +42,7 @@ def main():
     args = parser.parse_args()
     
     # Create harness
-    harness = TestHarness(host=args.host, port=args.port)
+    harness = FunctionalHarness(host=args.host, port=args.port)
     
     # Register original suites
     harness.register_suite(create_suite_0())
@@ -84,6 +84,12 @@ def main():
         return
     
     print("Connected!\n")
+    try:
+        version = harness.client.transport.dispatch("get_version", {})
+        data = version.get("data", version)
+        print(f"Bridge version: {data.get('mod_version', 'unknown')}")
+    except Exception as e:
+        print(f"Bridge version: unknown ({e})")
     
     try:
         if args.test:
@@ -95,6 +101,10 @@ def main():
                         print(f"Running single test: {test.id}")
                         result, msg, events = test.run(harness.ctx)
                         print(f"Result: {result.value} - {msg}")
+                        if result != result.PASS and events:
+                            print("  Events:")
+                            for e in events[-5:]:
+                                print(f"    {e}")
                         found = True
                         break
             if not found:

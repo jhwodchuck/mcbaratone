@@ -63,6 +63,7 @@ public class BaritoneAPIBridgeTest {
     @BeforeEach
     void setUp() throws Exception {
         MockitoAnnotations.openMocks(this);
+        testExecutor = Executors.newCachedThreadPool();
 
         // Setup static mocks
         minecraftClientMock = mockStatic(MinecraftClient.class);
@@ -83,6 +84,7 @@ public class BaritoneAPIBridgeTest {
 
         // Ensure executor is set
         bridge.setExecutor(testExecutor);
+        bridge.setPlayerContext(mockContext);
         
         // Setup player context default behavior
         when(mockContext.isPlayerNull()).thenReturn(false);
@@ -96,19 +98,17 @@ public class BaritoneAPIBridgeTest {
         when(mockContext.getFoodLevel()).thenReturn(20);
         when(mockContext.getSaturationLevel()).thenReturn(5.0f);
         when(mockContext.getDimension()).thenReturn("minecraft:overworld");
-        when(mockContext.getBlockPos()).thenReturn(new net.minecraft.util.math.BlockPos(0, 64, 0));
+        try {
+            when(mockContext.getBlockPos()).thenReturn(new net.minecraft.util.math.BlockPos(0, 64, 0));
+        } catch (NoClassDefFoundError e) {
+            // BlockPos might not be available in some environments, but we mock it anyway
+        }
 
         // Setup socket mocks for TCP tests
         when(mockSocket.getRemoteSocketAddress()).thenReturn(new InetSocketAddress("127.0.0.1", 12345));
         when(mockSocket.getInputStream()).thenReturn(new ByteArrayInputStream("".getBytes()));
         when(mockSocket.getOutputStream()).thenReturn(new ByteArrayOutputStream());
         when(mockSocket.isClosed()).thenReturn(false);
-
-        testExecutor = Executors.newCachedThreadPool();
-
-        // Create bridge instance and inject mock context
-        bridge = new BaritoneAPIBridge();
-        bridge.setPlayerContext(mockContext);
     }
 
     @AfterEach

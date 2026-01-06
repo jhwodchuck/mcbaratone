@@ -56,12 +56,15 @@ public class CommandHandlerFactory {
         registerHandler("find_blocks", FindBlocksCommandHandler.class);
         registerHandler("interact_block", InteractBlockCommandHandler.class);
         registerHandler("look_at", LookAtCommandHandler.class);
+        registerHandler("look", LookCommandHandler.class);
         registerHandler("cancel", CancelCommandHandler.class);
         registerHandler("use_item", UseItemCommandHandler.class);
         registerHandler("attack_entity", AttackEntityCommandHandler.class);
         registerHandler("attack_block", AttackBlockCommandHandler.class);
         registerHandler("get_view", GetViewCommandHandler.class);
         registerHandler("close_screen", CloseScreenCommandHandler.class);
+        registerHandler("equip", EquipCommandHandler.class);
+        registerHandler("get_version", GetVersionCommandHandler.class);
 
         // Newly migrated command handlers
         registerHandler("explore", ExploreCommandHandler.class);

@@ -6,10 +6,13 @@ class DummyTransport:
         self.calls = []
         self.responses = responses or {}
 
-    def dispatch(self, route, payload):
+    def dispatch(self, route, payload, **kwargs):
         self.calls.append((route, payload))
+        # Support CommandDispatcher wrapping in "command" route
+        cmd = payload.get("command", route) if route == "command" else route
         # Return configured response or a default shape
-        return self.responses.get(route, {"ok": True})
+        data = self.responses.get(cmd, {"ok": True})
+        return {"status": "ok", "data": data}
 
 
 def test_craft_delegates_to_transport():
@@ -17,7 +20,8 @@ def test_craft_delegates_to_transport():
     client = Client(t)
     res = client.command.craft("minecraft:stone_pickaxe", count=1)
     assert res.get("crafted") is True
-    assert t.calls and t.calls[-1][0] == "craft"
+    assert t.calls and t.calls[-1][0] == "command"
+    assert t.calls[-1][1]["command"] == "craft"
 
 
 def test_smelt_delegates_and_returns_count():
@@ -26,4 +30,5 @@ def test_smelt_delegates_and_returns_count():
     res = client.command.smelt("minecraft:iron_ore", count=4)
     assert res.get("smelted") is True
     assert res.get("output_count") == 4
-    assert t.calls and t.calls[-1][0] == "smelt"
+    assert t.calls and t.calls[-1][0] == "command"
+    assert t.calls[-1][1]["command"] == "smelt"

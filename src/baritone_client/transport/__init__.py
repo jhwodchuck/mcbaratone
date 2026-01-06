@@ -1,4 +1,4 @@
-from .transport import Transport, TcpTransport, WebSocketTransport, Py4JTransport
+from .transport import Transport, TcpTransport, WebSocketTransport, Py4JTransport, connect
 from .transport_manager import TransportManager
 from .command_dispatcher import CommandDispatcher, CommandResult
 from .enums import MovementStatus, PathCalculationResultType, PathingCommandType, TransportEvent
@@ -14,6 +14,7 @@ __all__ = [
     "TcpTransport",
     "WebSocketTransport",
     "Py4JTransport",
+    "connect",
     "TransportManager",
     "CommandDispatcher",
     "CommandResult",

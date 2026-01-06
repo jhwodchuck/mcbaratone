@@ -1,17 +1,14 @@
 package com.minecraftbot.baritone;
 
+import com.minecraftbot.baritone.events.ClientTickHandler;
+import com.minecraftbot.baritone.events.FabricEventRegistrar;
+
 import baritone.api.BaritoneAPI;
 import baritone.api.IBaritone;
-import baritone.api.pathing.goals.GoalBlock;
-import baritone.api.pathing.goals.GoalNear;
-import baritone.api.pathing.goals.GoalYLevel;
 import baritone.api.schematic.ISchematic;
 import baritone.api.schematic.IStaticSchematic;
 import baritone.api.schematic.format.ISchematicFormat;
-import baritone.api.selection.ISelection;
-import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.BlockOptionalMeta;
-import baritone.api.utils.BlockOptionalMetaLookup;
 import com.goebl.david.Webb;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
@@ -21,49 +18,14 @@ import net.fabricmc.api.ModInitializer;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.Entity;
-import net.minecraft.entity.LivingEntity;
+import net.minecraft.item.ItemStack;
+import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Box;
-import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.Vec3i;
+import net.minecraft.util.Identifier;
+import net.minecraft.registry.Registries;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
-import net.minecraft.screen.slot.SlotActionType;
-import net.minecraft.util.Hand;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.math.Vec3d;
-import net.minecraft.screen.ScreenHandler;
-import net.minecraft.screen.slot.Slot;
-import net.minecraft.recipe.RecipeEntry;
-import net.minecraft.recipe.CraftingRecipe;
-import net.minecraft.recipe.RecipeType;
-import net.minecraft.recipe.Ingredient;
-import net.minecraft.item.ItemStack;
-import net.minecraft.inventory.Inventory;
-import net.minecraft.entity.player.PlayerInventory;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
-import net.minecraft.util.Identifier;
-import net.minecraft.registry.RegistryKeys;
-import net.minecraft.registry.Registry;
-import net.minecraft.registry.RegistryKey;
-import net.minecraft.registry.Registries;
-import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.minecraft.screen.CraftingScreenHandler;
-import net.minecraft.screen.PlayerScreenHandler;
-import net.minecraft.screen.FurnaceScreenHandler;
-import net.minecraft.screen.AbstractFurnaceScreenHandler;
-import net.minecraft.util.ActionResult;
-import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
-import net.fabricmc.fabric.api.event.player.UseBlockCallback;
-import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
-import net.fabricmc.fabric.api.event.player.UseEntityCallback;
-import net.minecraft.item.Items;
-import net.minecraft.client.texture.NativeImage;
-import net.minecraft.client.gl.Framebuffer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -112,22 +74,19 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     private ConnectionHandler connectionHandler;
     private RequestProcessor requestProcessor;
 
+    // Modular event system
+    private ClientTickHandler clientTickHandler;
+    private FabricEventRegistrar fabricEventRegistrar;
+
     // Connection tracking
     private final Set<Socket> activeConnections = ConcurrentHashMap.newKeySet();
     private long lastSeq = 0;
 
     // Event management
     private final EventManager eventManager = new EventManager(100, CACHE_TTL_MS);
-    private float lastHealth = 20.0f;
-    private String lastDimension = "minecraft:overworld";
     private final MissionController missionController = new MissionController(this);
 
-    // Weather and time change tracking
-    private boolean lastRaining = false;
-    private boolean lastThundering = false;
-    private float lastRainGradient = 0.0f;
-    private long lastTime = 0L;
-    private String lastTimePhase = "day";
+    // Weather and time fields removed - migrated to ClientTickHandler
     private CommandDispatcher commandDispatcher;
     private IPlayerContext playerContext;
 
@@ -138,10 +97,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         // Initialize command dispatcher with legacy handler
         commandDispatcher = new CommandDispatcher(missionController, this::handleLegacyCommandInternal);
     }
-    private final Map<String, Integer> lastInventorySnapshot = new ConcurrentHashMap<>();
-    private static final long TICK_EVENT_INTERVAL_MS = 750;
-    private long lastTickEventTime = 0L;
-    private final Map<BlockPos, BlockState> previousBlockStates = new ConcurrentHashMap<>();
+    // Tick event and block update fields removed - migrated to ClientTickHandler
 
     // New event types and caching
     private final Map<String, JsonObject> blockCache = new ConcurrentHashMap<>();
@@ -159,11 +115,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     private final Map<String, Integer> retryCounts = new ConcurrentHashMap<>();
     private static final int MAX_RETRIES = 3;
 
-    // Death tracking for recovery
-    private boolean wasDeadLastTick = false;
-    private double lastDeathX = 0, lastDeathY = 0, lastDeathZ = 0;
-    private String lastDeathDimension = "minecraft:overworld";
-    private long lastDeathTime = 0;
+    // Death tracking fields removed - migrated to ClientTickHandler
 
     // Player Context Abstraction for Testing
     public interface IPlayerContext {
@@ -309,243 +261,22 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         CommandHandlerFactory.registerHandlerInstance("upload_cancel", uploadHandler);
         CommandHandlerFactory.registerHandlerInstance("upload_stats", uploadHandler);
 
+        // Initialize modular event system
+        fabricEventRegistrar = new FabricEventRegistrar(eventManager);
+        fabricEventRegistrar.registerEvents();
+
+        clientTickHandler = new ClientTickHandler(playerContext, eventManager);
+        ClientTickEvents.END_CLIENT_TICK.register(clientTickHandler::onClientTick);
+
         // Initialize modular network layer
         initializeNetworkLayer();
         
-        registerEventListeners();
         LOGGER.info("Baritone API Bridge initialized on port " + DEFAULT_PORT);
     }
 
-    private void registerEventListeners() {
-        // Chat message listener
-        ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
-            if (!overlay) {
-                eventManager.publishEvent(EventManager.EventType.CHAT, createChatEventData(message.getString()));
-            }
-        });
+    // registerEventListeners removed - migrated to FabricEventRegistrar
 
-        // Block break listener (when player starts breaking a block)
-        AttackBlockCallback.EVENT.register((player, world, hand, pos, direction) -> {
-            if (player == MinecraftClient.getInstance().player) {
-                BlockState state = world.getBlockState(pos);
-                JsonObject data = new JsonObject();
-                data.addProperty("x", pos.getX());
-                data.addProperty("y", pos.getY());
-                data.addProperty("z", pos.getZ());
-                data.addProperty("block_type", Registries.BLOCK.getId(state.getBlock()).toString());
-                data.addProperty("dimension", world.getRegistryKey().getValue().toString());
-                eventManager.publishEvent(EventManager.EventType.BLOCK_BREAK, data, EventManager.Priority.NORMAL, "block_break");
-            }
-            return ActionResult.PASS;
-        });
-
-        // Block place listener (when player uses/places a block)
-        UseBlockCallback.EVENT.register((player, world, hand, hitResult) -> {
-            if (player == MinecraftClient.getInstance().player) {
-                BlockPos pos = hitResult.getBlockPos();
-                BlockState state = world.getBlockState(pos);
-                JsonObject data = new JsonObject();
-                data.addProperty("x", pos.getX());
-                data.addProperty("y", pos.getY());
-                data.addProperty("z", pos.getZ());
-                data.addProperty("block_type", Registries.BLOCK.getId(state.getBlock()).toString());
-                data.addProperty("dimension", world.getRegistryKey().getValue().toString());
-                eventManager.publishEvent(EventManager.EventType.BLOCK_PLACE, data, EventManager.Priority.NORMAL, "block_place");
-            }
-            return ActionResult.PASS;
-        });
-
-        // Entity interaction listeners
-        AttackEntityCallback.EVENT.register((player, world, hand, entity, hitResult) -> {
-            if (player == MinecraftClient.getInstance().player) {
-                JsonObject data = new JsonObject();
-                data.addProperty("x", entity.getX());
-                data.addProperty("y", entity.getY());
-                data.addProperty("z", entity.getZ());
-                data.addProperty("entity_type", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
-                data.addProperty("entity_id", entity.getId());
-                data.addProperty("dimension", world.getRegistryKey().getValue().toString());
-                data.addProperty("item_used", Registries.ITEM.getId(player.getStackInHand(hand).getItem()).toString());
-                data.addProperty("success", true);
-                eventManager.publishEvent(EventManager.EventType.ENTITY_ATTACK, data, EventManager.Priority.NORMAL, "entity_attack");
-            }
-            return ActionResult.PASS;
-        });
-
-        UseEntityCallback.EVENT.register((player, world, hand, entity, hitResult) -> {
-            if (player == MinecraftClient.getInstance().player) {
-                String type = Registries.ENTITY_TYPE.getId(entity.getType()).toString();
-                EventManager.EventType eventType = null;
-
-                if (type.equals("minecraft:wolf") || type.equals("minecraft:cat") || type.equals("minecraft:parrot")) {
-                    eventType = EventManager.EventType.ENTITY_TAME;
-                } else if (type.equals("minecraft:sheep")) {
-                    eventType = EventManager.EventType.ENTITY_SHEAR;
-                } else if (type.equals("minecraft:cow") || type.equals("minecraft:mooshroom")) {
-                    eventType = EventManager.EventType.ENTITY_MILK;
-                }
-
-                if (eventType != null) {
-                    JsonObject data = new JsonObject();
-                    data.addProperty("x", entity.getX());
-                    data.addProperty("y", entity.getY());
-                    data.addProperty("z", entity.getZ());
-                    data.addProperty("entity_type", type);
-                    data.addProperty("entity_id", entity.getId());
-                    data.addProperty("dimension", world.getRegistryKey().getValue().toString());
-                    data.addProperty("item_used", Registries.ITEM.getId(player.getStackInHand(hand).getItem()).toString());
-                    data.addProperty("success", true);
-                    eventManager.publishEvent(eventType, data, EventManager.Priority.NORMAL, "entity_" + eventType.name().toLowerCase().substring(7));
-                }
-            }
-            return ActionResult.PASS;
-        });
-
-        /*
-        AttackBlockCallback.EVENT.register((player, world, hand, pos, direction) -> {
-            if (player == MinecraftClient.getInstance().player) {
-                JsonObject data = new JsonObject();
-                data.addProperty("x", pos.getX());
-                data.addProperty("y", pos.getY());
-                data.addProperty("z", pos.getZ());
-                data.addProperty("action", "attack");
-                bufferEvent("block_interact", data);
-            }
-            return ActionResult.PASS;
-        });
-
-        UseBlockCallback.EVENT.register((player, world, hand, hitResult) -> {
-            if (player == MinecraftClient.getInstance().player) {
-                BlockPos pos = hitResult.getBlockPos();
-                JsonObject data = new JsonObject();
-                data.addProperty("x", pos.getX());
-                data.addProperty("y", pos.getY());
-                data.addProperty("z", pos.getZ());
-                data.addProperty("action", "use");
-                bufferEvent("block_interact", data);
-            }
-            return ActionResult.PASS;
-        });
-        */
-
-        // Monitor states and entities on the main thread every few ticks
-        ClientTickEvents.END_CLIENT_TICK.register(this::onClientTick);
-
-        LOGGER.info("Fabric event listeners registered for chat and client ticks");
-    }
-
-    private int tickCounter = 0;
-    private IBaritone lastBaritone = null;
-    private boolean lastPathingState = false;
-    private final Map<Integer, BlockPos> lastEntityPositions = new HashMap<>();
-
-    private void onClientTick(MinecraftClient client) {
-        if (!running || client.player == null || client.world == null) return;
-        
-        tickCounter++;
-
-        // Audit/EMIT tick event periodically (already does this)
-        // Audit/EMIT tick event periodically (already does this)
-        IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
-        if (baritone != null) {
-            emitTickEvent(baritone);
-        }
-
-        // Entity tracking (roughly once per second / 20 ticks)
-        if (tickCounter % 20 == 0) {
-            handleEntityTick(client);
-        }
-
-        // Pathfinding monitoring (roughly twice per second / 10 ticks)
-        if (tickCounter % 10 == 0 && baritone != null) {
-            handlePathfindingTick(baritone);
-        }
-        
-        // Player death tracking (every tick is fine)
-        trackPlayerDeath();
-
-        // Weather and time change detection (every tick)
-        checkWeatherChanges(client);
-        checkTimeChanges(client);
-
-        // Block update tracking (every 20 ticks)
-        handleBlockUpdates(client);
-    }
-
-    private void handleEntityTick(MinecraftClient client) {
-        try {
-            List<Entity> currentEntities = client.world.getOtherEntities(null, client.player.getBoundingBox().expand(64));
-
-            // Check for new entities
-            for (Entity entity : currentEntities) {
-                int id = entity.getId();
-                BlockPos currentPos = entity.getBlockPos();
-
-                if (!lastEntityPositions.containsKey(id)) {
-                    // New entity spawned
-                    JsonObject spawnData = new JsonObject();
-                    spawnData.addProperty("entity_id", id);
-                    spawnData.addProperty("type", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
-                    spawnData.addProperty("x", currentPos.getX());
-                    spawnData.addProperty("y", currentPos.getY());
-                    spawnData.addProperty("z", currentPos.getZ());
-                    eventManager.publishEvent(EventManager.EventType.ENTITY_SPAWN, spawnData);
-                } else {
-                    // Check for significant movement
-                    BlockPos lastPos = lastEntityPositions.get(id);
-                    double distance = Math.sqrt(currentPos.getSquaredDistance(lastPos));
-                    if (distance > 10.0) { // Significant movement threshold
-                        JsonObject moveData = new JsonObject();
-                        moveData.addProperty("entity_id", id);
-                        moveData.addProperty("distance", distance);
-                        moveData.addProperty("from_x", lastPos.getX());
-                        moveData.addProperty("from_y", lastPos.getY());
-                        moveData.addProperty("from_z", lastPos.getZ());
-                        moveData.addProperty("to_x", currentPos.getX());
-                        moveData.addProperty("to_y", currentPos.getY());
-                        moveData.addProperty("to_z", currentPos.getZ());
-                        eventManager.publishEvent(EventManager.EventType.ENTITY_MOVE, moveData);
-                    }
-                }
-                lastEntityPositions.put(id, currentPos);
-            }
-
-            // Check for despawned entities
-            lastEntityPositions.keySet().removeIf(id -> {
-                boolean exists = currentEntities.stream().anyMatch(e -> e.getId() == id);
-                if (!exists) {
-                    JsonObject despawnData = new JsonObject();
-                    despawnData.addProperty("entity_id", id);
-                    eventManager.publishEvent(EventManager.EventType.ENTITY_DESPAWN, despawnData);
-                    return true;
-                }
-                return false;
-            });
-        } catch (Exception e) {
-            LOGGER.warn("Error in entity tick", e);
-        }
-    }
-
-    private void handlePathfindingTick(IBaritone baritone) {
-        try {
-            boolean isPathing = baritone.getPathingBehavior().isPathing();
-            boolean stateChanged = (lastBaritone != baritone) || (lastPathingState != isPathing);
-
-            if (stateChanged) {
-                JsonObject pathData = new JsonObject();
-                pathData.addProperty("is_pathing", isPathing);
-                if (isPathing) {
-                    pathData.addProperty("goal_type", baritone.getPathingBehavior().getGoal() != null ?
-                        baritone.getPathingBehavior().getGoal().getClass().getSimpleName() : "unknown");
-                }
-                eventManager.publishEvent(EventManager.EventType.PATHFINDING_STATE, pathData);
-                lastPathingState = isPathing;
-                lastBaritone = baritone;
-            }
-        } catch (Exception e) {
-            LOGGER.warn("Error in pathfinding tick", e);
-        }
-    }
+    // onClientTick and related fields removed - migrated to ClientTickHandler
 
     @Override
     public void publishMissionEvent(String reason, JsonObject payload) {
@@ -560,280 +291,13 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
 
 
-    private void emitTickEvent(IBaritone baritone) {
-        if (playerContext.isPlayerNull() || baritone == null) {
-            return;
-        }
-        long now = System.currentTimeMillis();
-        if (now - lastTickEventTime < TICK_EVENT_INTERVAL_MS) {
-            return;
-        }
-        lastTickEventTime = now;
+    // emitTickEvent removed - migrated to ClientTickHandler
 
-        // Player context usage
-        JsonObject position = new JsonObject();
-        position.addProperty("x", playerContext.getX());
-        position.addProperty("y", playerContext.getY());
-        position.addProperty("z", playerContext.getZ());
-        
-        // Note: Velocity usually requires entity access, but we can skip it or add to interface if critical.
-        // For now, skipping velocity to avoid Entity dependency in test.
-        JsonObject velocity = new JsonObject(); 
-        velocity.addProperty("x", 0);
-        velocity.addProperty("y", 0);
-        velocity.addProperty("z", 0);
 
-        JsonObject payload = new JsonObject();
-        payload.add("position", position);
-        payload.add("velocity", velocity);
-        payload.addProperty("health", playerContext.getHealth());
-        payload.addProperty("food", playerContext.getFoodLevel());
-        payload.addProperty("dimension", playerContext.getDimension());
-        payload.addProperty("mission_phase", missionController.getPhaseValue());
-        payload.addProperty("mission_queue", missionController.queueSize());
-        payload.addProperty("timestamp", now);
-        try {
-            payload.addProperty("is_pathing", baritone.getPathingBehavior().isPathing());
-        } catch (Exception e) {
-            payload.addProperty("is_pathing", false);
-        }
-        eventManager.publishEvent(EventManager.EventType.TICK_UPDATE, payload);
 
-        String currentDimension = payload.get("dimension").getAsString();
-        if (!currentDimension.equals(lastDimension)) {
-            JsonObject eventData = new JsonObject();
-            eventData.addProperty("from_dimension", lastDimension);
-            eventData.addProperty("to_dimension", currentDimension);
-            eventData.add("position", position.deepCopy());
-            eventManager.publishEvent(EventManager.EventType.DIMENSION_CHANGE, eventData);
-            lastDimension = currentDimension;
-        }
-    }
 
-    private Map<String, Integer> flattenInventory(JsonArray main, JsonArray armor, JsonArray offhand) {
-        Map<String, Integer> counts = new LinkedHashMap<>();
-        accumulateInventorySection(main, counts);
-        accumulateInventorySection(armor, counts);
-        accumulateInventorySection(offhand, counts);
-        return counts;
-    }
 
-    private void accumulateInventorySection(JsonArray section, Map<String, Integer> counts) {
-        if (section == null) {
-            return;
-        }
-        for (JsonElement element : section) {
-            if (!element.isJsonObject()) {
-                continue;
-            }
-            JsonObject obj = element.getAsJsonObject();
-            String id = obj.has("id") ? obj.get("id").getAsString() : "minecraft:air";
-            if ("minecraft:air".equals(id)) {
-                continue;
-            }
-            int amount = obj.has("count") ? obj.get("count").getAsInt() : 0;
-            counts.merge(id, amount, Integer::sum);
-        }
-    }
-
-    private void emitInventoryChangeEvent(Map<String, Integer> currentCounts, int selectedSlot) {
-        Map<String, Integer> delta = new LinkedHashMap<>();
-        for (Map.Entry<String, Integer> entry : currentCounts.entrySet()) {
-            int previous = lastInventorySnapshot.getOrDefault(entry.getKey(), 0);
-            if (entry.getValue() != previous) {
-                delta.put(entry.getKey(), entry.getValue() - previous);
-            }
-        }
-        for (Map.Entry<String, Integer> entry : lastInventorySnapshot.entrySet()) {
-            if (!currentCounts.containsKey(entry.getKey())) {
-                delta.put(entry.getKey(), -entry.getValue());
-            }
-        }
-        if (!delta.isEmpty()) {
-            JsonArray changes = new JsonArray();
-            for (Map.Entry<String, Integer> entry : delta.entrySet()) {
-                JsonObject change = new JsonObject();
-                change.addProperty("item", entry.getKey());
-                change.addProperty("delta", entry.getValue());
-                change.addProperty("count", currentCounts.getOrDefault(entry.getKey(), 0));
-                changes.add(change);
-            }
-            JsonObject payload = new JsonObject();
-            payload.add("changes", changes);
-            payload.addProperty("unique_items", currentCounts.size());
-            payload.addProperty("selected_slot", selectedSlot);
-            eventManager.publishEvent(EventManager.EventType.INVENTORY_CHANGE, payload);
-        }
-        lastInventorySnapshot.clear();
-        lastInventorySnapshot.putAll(currentCounts);
-    }
-
-    private JsonArray sampleEntities(JsonArray entities, int limit) {
-        JsonArray sample = new JsonArray();
-        if (entities == null) {
-            return sample;
-        }
-        int max = Math.min(Math.max(limit, 0), entities.size());
-        for (int i = 0; i < max; i++) {
-            sample.add(entities.get(i));
-        }
-        return sample;
-    }
-
-    private JsonObject createChatEventData(String message) {
-        JsonObject data = new JsonObject();
-        data.addProperty("message", message);
-        return data;
-    }
-
-    private void trackPlayerDeath() {
-        if (playerContext.isPlayerNull()) return;
-
-        boolean isDead = playerContext.getHealth() <= 0; // Simplified check
-
-        if (isDead && !wasDeadLastTick) {
-            // Player just died - record death location
-            lastDeathX = playerContext.getX();
-            lastDeathY = playerContext.getY();
-            lastDeathZ = playerContext.getZ();
-            lastDeathDimension = playerContext.getDimension();
-            lastDeathTime = System.currentTimeMillis();
-
-            // Fire death event
-            JsonObject deathData = new JsonObject();
-            deathData.addProperty("x", lastDeathX);
-            deathData.addProperty("y", lastDeathY);
-            deathData.addProperty("z", lastDeathZ);
-            deathData.addProperty("dimension", lastDeathDimension);
-            deathData.addProperty("timestamp", lastDeathTime);
-            eventManager.publishEvent(EventManager.EventType.DEATH, deathData, EventManager.Priority.HIGH);
-
-            LOGGER.info("Player died at ({}, {}, {}) in {}",
-                lastDeathX, lastDeathY, lastDeathZ, lastDeathDimension);
-        } else if (!isDead && wasDeadLastTick) {
-            // Player just respawned
-            JsonObject respawnData = new JsonObject();
-            respawnData.addProperty("x", playerContext.getX());
-            respawnData.addProperty("y", playerContext.getY());
-            respawnData.addProperty("z", playerContext.getZ());
-            respawnData.addProperty("death_x", lastDeathX);
-            respawnData.addProperty("death_y", lastDeathY);
-            respawnData.addProperty("death_z", lastDeathZ);
-            respawnData.addProperty("death_dimension", lastDeathDimension);
-            eventManager.publishEvent(EventManager.EventType.RESPAWN, respawnData, EventManager.Priority.HIGH);
-
-            LOGGER.info("Player respawned");
-        }
-
-        wasDeadLastTick = isDead;
-    }
-
-    private void checkWeatherChanges(MinecraftClient client) {
-        if (client.world == null) return;
-
-        boolean currentRaining = client.world.isRaining();
-        boolean currentThundering = client.world.isThundering();
-        float currentRainGradient = client.world.getRainGradient(1.0f);
-
-        // Check for weather changes
-        boolean weatherChanged = (lastRaining != currentRaining) ||
-                                (lastThundering != currentThundering) ||
-                                (Math.abs(lastRainGradient - currentRainGradient) > 0.01f);
-
-        if (weatherChanged) {
-            JsonObject data = new JsonObject();
-
-            // Determine weather type
-            String weatherType;
-            if (currentThundering) {
-                weatherType = "thunder";
-            } else if (currentRaining) {
-                weatherType = "rain";
-            } else {
-                weatherType = "clear";
-            }
-
-            data.addProperty("weather_type", weatherType);
-            data.addProperty("strength", currentRainGradient);
-
-            // Previous state
-            String previousState;
-            if (lastThundering) {
-                previousState = "thunder";
-            } else if (lastRaining) {
-                previousState = "rain";
-            } else {
-                previousState = "clear";
-            }
-            data.addProperty("previous_state", previousState);
-
-            eventManager.publishEvent(EventManager.EventType.WEATHER_CHANGE, data, EventManager.Priority.LOW, "weather_change");
-
-            // Update last state
-            lastRaining = currentRaining;
-            lastThundering = currentThundering;
-            lastRainGradient = currentRainGradient;
-        }
-    }
-
-    private void checkTimeChanges(MinecraftClient client) {
-        if (client.world == null) return;
-
-        long currentTime = client.world.getTime();
-
-        // Determine current phase (0-11999: day, 12000-23999: night)
-        String currentPhase = (currentTime % 24000) < 12000 ? "day" : "night";
-
-        // Check for phase changes
-        boolean phaseChanged = !lastTimePhase.equals(currentPhase);
-
-        if (phaseChanged || lastTime == 0) { // Always publish on first check
-            JsonObject data = new JsonObject();
-            data.addProperty("time_of_day", currentTime);
-            data.addProperty("phase", currentPhase);
-            data.addProperty("previous_phase", lastTimePhase);
-
-            eventManager.publishEvent(EventManager.EventType.TIME_CHANGE, data, EventManager.Priority.LOW, "time_change");
-
-            lastTimePhase = currentPhase;
-        }
-
-        lastTime = currentTime;
-    }
-
-    private void handleBlockUpdates(MinecraftClient client) {
-        if (client.player == null || client.world == null) return;
-
-        // Check every 20 ticks (1 second)
-        if (tickCounter % 20 != 0) return;
-
-        BlockPos playerPos = client.player.getBlockPos();
-
-        // Check blocks in 3x3x3 area around player for natural changes
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dy = -1; dy <= 1; dy++) {
-                for (int dz = -1; dz <= 1; dz++) {
-                    BlockPos pos = playerPos.add(dx, dy, dz);
-                    BlockState currentState = client.world.getBlockState(pos);
-                    BlockState previousState = previousBlockStates.get(pos);
-
-                    if (previousState != null && !currentState.equals(previousState)) {
-                        // Block changed naturally
-                        JsonObject data = new JsonObject();
-                        data.addProperty("x", pos.getX());
-                        data.addProperty("y", pos.getY());
-                        data.addProperty("z", pos.getZ());
-                        data.addProperty("old_state", Registries.BLOCK.getId(previousState.getBlock()).toString());
-                        data.addProperty("new_state", Registries.BLOCK.getId(currentState.getBlock()).toString());
-                        data.addProperty("dimension", client.world.getRegistryKey().getValue().toString());
-                        eventManager.publishEvent(EventManager.EventType.BLOCK_UPDATE, data, EventManager.Priority.LOW, "block_update");
-                    }
-
-                    previousBlockStates.put(pos, currentState);
-                }
-            }
-        }
-    }
+    // Legacy tracking methods removed - migrated to ClientTickHandler
 
     /**
      * Initialize the modular network layer components.
@@ -848,7 +312,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             this::getMinecraftClient,
             playerContext,
             eventManager,
-            this::emitTickEvent,
+            clientTickHandler::emitTickEvent,
             this::isOfflineCommand
         );
         
@@ -1061,7 +525,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             // Check for damage events on each command - DELETED (handled by onClientTick -> trackPlayerDeath/health monitoring)
             // checkPlayerDamage(client); 
             
-            emitTickEvent(baritone);
+            clientTickHandler.emitTickEvent(baritone);
 
             // Dispatch through the command dispatcher
             CommandResult result = commandDispatcher.dispatchCommand(request, clientSocket, client, baritone);
@@ -1553,6 +1017,50 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         return itemData;
     }
 
+    private Map<String, Integer> flattenInventory(JsonArray... inventories) {
+        Map<String, Integer> counts = new HashMap<>();
+        if (inventories == null) {
+            return counts;
+        }
+        for (JsonArray array : inventories) {
+            if (array == null) {
+                continue;
+            }
+            for (JsonElement element : array) {
+                if (!element.isJsonObject()) {
+                    continue;
+                }
+                JsonObject obj = element.getAsJsonObject();
+                if (!obj.has("id") || !obj.has("count")) {
+                    continue;
+                }
+                String id = obj.get("id").getAsString();
+                int count = obj.get("count").getAsInt();
+                if (count <= 0 || "minecraft:air".equals(id)) {
+                    continue;
+                }
+                counts.put(id, counts.getOrDefault(id, 0) + count);
+            }
+        }
+        return counts;
+    }
+
+    private void emitInventoryChangeEvent(Map<String, Integer> counts, int selectedSlot) {
+        if (eventManager == null) {
+            return;
+        }
+        JsonObject payload = new JsonObject();
+        payload.addProperty("selected_slot", selectedSlot);
+        JsonObject countData = new JsonObject();
+        if (counts != null) {
+            for (Map.Entry<String, Integer> entry : counts.entrySet()) {
+                countData.addProperty(entry.getKey(), entry.getValue());
+            }
+        }
+        payload.add("counts", countData);
+        eventManager.publishEvent(EventManager.EventType.INVENTORY_CHANGE, payload, EventManager.Priority.NORMAL, "inventory_change");
+    }
+
 
     // All legacy handlers deleted (handleInventoryClick ... handleRetryCommand)
     // handleInventoryClick, handleInteractBlock, handleGetScreen, handleCloseScreen deleted (migrated)
@@ -1561,410 +1069,37 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
     // checkPlayerDamage deleted (migrated to onClientTick)
 
-    private void handleLookAt(MinecraftClient client, JsonObject params, JsonObject data) {
-        if (client.player == null) {
-            data.addProperty("error", "Player not available");
-            return;
-        }
-        
-        double targetX, targetY, targetZ;
-        
-        if (params.has("entity_id")) {
-            // Look at entity
-            int entityId = params.get("entity_id").getAsInt();
-            Entity target = client.world.getEntityById(entityId);
-            if (target == null) {
-                data.addProperty("error", "Entity not found: " + entityId);
-                return;
-            }
-            targetX = target.getX();
-            targetY = target.getEyeY();
-            targetZ = target.getZ();
-        } else {
-            // Look at position
-            targetX = params.get("x").getAsDouble();
-            targetY = params.get("y").getAsDouble();
-            targetZ = params.get("z").getAsDouble();
-        }
-        
-        // Calculate look direction
-        double dx = targetX - client.player.getX();
-        double dy = targetY - client.player.getEyeY();
-        double dz = targetZ - client.player.getZ();
-        
-        double horizontalDist = Math.sqrt(dx * dx + dz * dz);
-        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
-        float pitch = (float) Math.toDegrees(-Math.atan2(dy, horizontalDist));
-        
-        client.player.setYaw(yaw);
-        client.player.setPitch(pitch);
-        
-        data.addProperty("yaw", yaw);
-        data.addProperty("pitch", pitch);
-    }
+    // handleLookAt removed - migrated to LookAtCommandHandler
 
-    private void handleUseItem(MinecraftClient client, JsonObject params, JsonObject data) {
-        if (client.player == null) {
-            data.addProperty("error", "Player not available");
-            return;
-        }
-        
-        int durationMs = params.has("duration_ms") ? params.get("duration_ms").getAsInt() : 0;
-        
-        // Simulate right-click
-        client.options.useKey.setPressed(true);
-        
-        if (durationMs > 0) {
-            // Schedule release after duration
-            new Thread(() -> {
-                try {
-                    Thread.sleep(durationMs);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-                client.execute(() -> client.options.useKey.setPressed(false));
-            }).start();
-            data.addProperty("holding", true);
-            data.addProperty("duration_ms", durationMs);
-        } else {
-            // Immediate release
-            client.execute(() -> client.options.useKey.setPressed(false));
-            data.addProperty("used", true);
-        }
-    }
+    // handleUseItem removed - migrated to UseItemCommandHandler
 
-    private void handleAttackEntity(MinecraftClient client, JsonObject params, JsonObject data) {
-        if (client.player == null || client.interactionManager == null || client.world == null) {
-            data.addProperty("error", "Player/World not available");
-            return;
-        }
-        
-        int entityId = params.get("entity_id").getAsInt();
-        
-        Entity target = client.world.getEntityById(entityId);
-        if (target == null) {
-            data.addProperty("error", "Entity not found: " + entityId);
-            return;
-        }
-        
-        client.interactionManager.attackEntity(client.player, target);
-        data.addProperty("attacked", true);
-        data.addProperty("entity_id", entityId);
-        data.addProperty("entity_type", Registries.ENTITY_TYPE.getId(target.getType()).toString());
+    // handleAttackEntity removed - migrated to AttackEntityCommandHandler
 
-        // Publish entity attack event
-        JsonObject eventData = new JsonObject();
-        eventData.addProperty("x", target.getX());
-        eventData.addProperty("y", target.getY());
-        eventData.addProperty("z", target.getZ());
-        eventData.addProperty("entity_type", Registries.ENTITY_TYPE.getId(target.getType()).toString());
-        eventData.addProperty("entity_id", target.getId());
-        eventData.addProperty("dimension", playerContext.getDimension());
-        eventData.addProperty("item_used", client.player.getMainHandStack().isEmpty() ? "minecraft:air" :
-            Registries.ITEM.getId(client.player.getMainHandStack().getItem()).toString());
-        eventData.addProperty("success", true);
-        eventManager.publishEvent(EventManager.EventType.ENTITY_ATTACK, eventData, EventManager.Priority.NORMAL, "entity_attack");
-    }
+    // handleSelectSlot removed - migrated to SelectSlotCommandHandler
 
-    private void handleSelectSlot(MinecraftClient client, JsonObject params, JsonObject data) {
-        if (client.player == null) {
-            data.addProperty("error", "Player not available");
-            return;
-        }
-        
-        int slot = params.get("slot").getAsInt();
-        if (slot < 0 || slot > 8) {
-            data.addProperty("error", "Slot must be 0-8");
-            return;
-        }
-        
-        client.player.getInventory().selectedSlot = slot;
-        client.player.networkHandler.sendPacket(new net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket(slot));
-        data.addProperty("selected", slot);
-    }
-
-    private void handleGetBlock(MinecraftClient client, JsonObject params, JsonObject data) {
-        if (client.world == null || client.player == null) {
-            data.addProperty("error", "World or player not available");
-            return;
-        }
-
-        int x = params.has("x") ? params.get("x").getAsInt() : 0;
-        int y = params.has("y") ? params.get("y").getAsInt() : 64;
-        int z = params.has("z") ? params.get("z").getAsInt() : 0;
-
-        BlockPos pos = new BlockPos(x, y, z);
-        
-        final AtomicReference<String> errorRef = new AtomicReference<>();
-        
-        MinecraftClient.getInstance().execute(() -> {
-            try {
-                // Check if chunk is loaded
-                if (!client.world.isChunkLoaded(pos)) {
-                    errorRef.set("Chunk not loaded");
-                    return;
-                }
-    
-                BlockState blockState = client.world.getBlockState(pos);
-                Block block = blockState.getBlock();
-                
-                JsonObject blockInfo = new JsonObject();
-                blockInfo.addProperty("x", x);
-                blockInfo.addProperty("y", y);
-                blockInfo.addProperty("z", z);
-                blockInfo.addProperty("name", block.getName().getString());
-                blockInfo.addProperty("id", Registries.BLOCK.getKey(block).toString());
-                blockInfo.addProperty("is_air", blockState.isAir());
-                
-                // Check if liquid
-                boolean isLiquid = blockState.getFluidState().isEmpty() == false;
-                blockInfo.addProperty("is_liquid", isLiquid);
-                blockInfo.addProperty("is_solid", !blockState.isAir() && !isLiquid);
-                
-                // Hardness
-                try {
-                    float hardness = block.getDefaultState().getHardness(client.world, pos);
-                    blockInfo.addProperty("hardness", hardness);
-                } catch (Exception e) {
-                    blockInfo.addProperty("hardness", -1.0f);
-                }
-                
-                data.add("block", blockInfo);
-            } catch (Exception e) {
-                LOGGER.error("Error getting block info for ({}, {}, {}): {}", x, y, z, e.getMessage());
-                errorRef.set("Failed to get block info: " + e.getMessage());
-            }
-        });
-        
-        // Wait for main thread (simplified, since we can't easily wait here without blocking response)
-        // Ideally we'd use a CompletableFuture but for this bridge we just dispatch and return.
-        // However, this GET command expects data in response.
-        // Since we changed to async execute, we can't return data immediately if we wanted to be perfectly async.
-        // But the bridge response is sent AFTER this method returns.
-        // If we make this async, the response will be empty.
-        // WE CANNOT EASILY MAKE GET COMMANDS ASYNC WITH THE CURRENT ARCHITECTURE.
-        // Converting to blocking wait on main thread:
-        
-        /*
-           Wait, accessing world off-thread is the crash cause.
-           We MUST run on main thread.
-           But we need to return data.
-           We can block until the task is done.
-        */
-        
-        // For now, I will NOT change handleGetBlock to async because it breaks the return value.
-        // If handleGetBlock causes crashes, it needs a bigger refactor (Future-based response).
-        // Leaving handleGetBlock as is for now, assuming read-only might be "ok-ish" or user isn't using it.
-        // But wait, user MIGHT use it.
-        // Inspecting handleFindBlocks... same issue.
-        
-        // Reverting the thought process: I will NOT change handleGetBlock/handleFindBlocks in this edit
-        // because it complexifies the return value handling (sync vs async).
-        // I will trust that handleMine was the main issue.
-    }
+    // handleGetBlock removed - migrated to GetBlockCommandHandler
 
 
 
-    private void handlePath(MinecraftClient client, JsonObject params, JsonObject data) {
-        if (client.player == null) {
-            data.addProperty("error", "Player not available");
-            return;
-        }
+    // handlePath removed - migrated to PathCommandHandler
 
-        // Path command is complex via API - using chat fallback
-        // Path command format: #path [algorithm] [timeout]
-        String algorithm = params.has("algorithm") ? params.get("algorithm").getAsString() : "astar";
-        int timeout = params.has("timeout") ? params.get("timeout").getAsInt() : 30;
-        
-        String pathCommand = "#path " + algorithm + " " + timeout;
-        client.execute(() -> client.player.networkHandler.sendChatMessage(pathCommand));
-        
-        data.addProperty("sent", true);
-        data.addProperty("command", pathCommand);
-        data.addProperty("algorithm", algorithm);
-        data.addProperty("timeout", timeout);
-        data.addProperty("note", "Path command executed via chat (API pathfinding is complex)");
-    }
-
-    private void handleTunnel(IBaritone baritone, JsonObject params, JsonObject data) {
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player == null) {
-            data.addProperty("error", "Player not available");
-            return;
-        }
-
-        int x = params.has("x") ? params.get("x").getAsInt() : 0;
-        int y = params.has("y") ? params.get("y").getAsInt() : 64;
-        int z = params.has("z") ? params.get("z").getAsInt() : 0;
-        int radius = params.has("radius") ? params.get("radius").getAsInt() : 1;
-
-        try {
-            // Tunnel command via Baritone API is complex
-            // We'll use a combination of mine and goto commands
-            // First, set up mining for common tunnel blocks
-            BlockOptionalMetaLookup blocksToMine = new BlockOptionalMetaLookup(
-                new BlockOptionalMeta("stone"),
-                new BlockOptionalMeta("cobblestone"),
-                new BlockOptionalMeta("dirt"),
-                new BlockOptionalMeta("gravel"),
-                new BlockOptionalMeta("andesite"),
-                new BlockOptionalMeta("diorite"),
-                new BlockOptionalMeta("granite")
-            );
-            
-            // Start mining these blocks
-            MinecraftClient.getInstance().execute(() -> 
-                baritone.getMineProcess().mine(0, blocksToMine));
-            
-            // Set goal to tunnel destination
-            BlockPos targetPos = new BlockPos(x, y, z);
-            MinecraftClient.getInstance().execute(() -> {
-                if (radius > 1) {
-                    baritone.getCustomGoalProcess().setGoalAndPath(new GoalNear(targetPos, radius));
-                } else {
-                    baritone.getCustomGoalProcess().setGoalAndPath(new GoalBlock(targetPos));
-                }
-            });
-            
-            data.addProperty("started", true);
-            data.addProperty("target_x", x);
-            data.addProperty("target_y", y);
-            data.addProperty("target_z", z);
-            data.addProperty("radius", radius);
-            data.addProperty("note", "Tunnel started - mining common blocks while pathing to target");
-        } catch (Exception e) {
-            LOGGER.error("Error starting tunnel", e);
-            // Fallback to chat command
-            String tunnelCommand = "#tunnel";
-            if (params.has("width")) {
-                tunnelCommand += " " + params.get("width").getAsInt();
-            }
-            final String finalCmd = tunnelCommand;
-            client.execute(() -> client.player.networkHandler.sendChatMessage(finalCmd));
-            data.addProperty("sent", true);
-            data.addProperty("command", tunnelCommand);
-            data.addProperty("note", "Using chat command fallback due to error: " + e.getMessage());
-        }
-    }
+    // handleTunnel removed - migrated to TunnelCommandHandler
 
     // --- Advanced Command Implementations (Chat Fallback) ---
 
-    private void handleAxisMine(IBaritone baritone, JsonObject params, JsonObject data) {
-        // #axis
-        MinecraftClient.getInstance().execute(() -> MinecraftClient.getInstance().player.networkHandler.sendChatMessage("#axis"));
-        data.addProperty("started", true);
-    }
+    // handleAxisMine removed - migrated to AxisMineCommandHandler
 
-    private void handleStripMine(IBaritone baritone, JsonObject params, JsonObject data) {
-        // #strip
-        MinecraftClient.getInstance().execute(() -> MinecraftClient.getInstance().player.networkHandler.sendChatMessage("#strip"));
-        data.addProperty("started", true);
-    }
+    // handleStripMine removed - migrated to StripMineCommandHandler
 
-    private void handleQuarry(IBaritone baritone, JsonObject params, JsonObject data) {
-        // Quarry = Clear Area
-        int size = params.has("size") ? params.get("size").getAsInt() : 10;
-        int depth = params.has("depth") ? params.get("depth").getAsInt() : 5;
+    // handleQuarry removed - migrated to QuarryCommandHandler
 
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player != null) {
-            BlockPos center = client.player.getBlockPos();
-            BlockPos corner1 = center.add(size / 2, 0, size / 2);
-            BlockPos corner2 = center.add(-size / 2, -depth, -size / 2);
+    // handleWideTunnel removed - migrated to TunnelWideCommandHandler
 
-            MinecraftClient.getInstance().execute(() -> 
-                baritone.getBuilderProcess().clearArea(corner1, corner2));
-            data.addProperty("started", true);
-            data.addProperty("note", "Clearing area of size " + size + " and depth " + depth);
-        } else {
-            data.addProperty("error", "Player not available");
-        }
-    }
+    // handlePlaceTorches removed - migrated to PlaceTorchesCommandHandler
 
-    private void handleWideTunnel(IBaritone baritone, JsonObject params, JsonObject data) {
-        // tunnel_wide: x, y, z, width, [height]
-        int x = params.get("x").getAsInt();
-        int z = params.get("z").getAsInt();
-        int width = params.has("width") ? params.get("width").getAsInt() : 3;
-        int height = params.has("height") ? params.get("height").getAsInt() : 2;
+    // handleHarvest removed - migrated to HarvestCommandHandler
 
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player != null) {
-            double dist = Math.sqrt(client.player.squaredDistanceTo(x, client.player.getY(), z));
-            int depth = (int) Math.ceil(dist);
-
-            // Turn to face target first?
-            // Using #tunnel chat command requires facing.
-            // We can just use #lookAt then #tunnel?
-            // Or we just execute #tunnel and assume player is facing correctly or args are
-            // relative to visual.
-            // Better: Use #tunnel <h> <w> <d>
-            String cmd = "#tunnel " + height + " " + width + " " + depth;
-            client.execute(() -> {
-                client.player.networkHandler.sendChatMessage("#look at " + x + " " + client.player.getY() + " " + z);
-                client.player.networkHandler.sendChatMessage(cmd);
-            });
-
-            data.addProperty("started", true);
-            data.addProperty("command", cmd);
-        } else {
-            data.addProperty("error", "Player not available");
-        }
-    }
-
-    private void handlePlaceTorches(IBaritone baritone, JsonObject params, JsonObject data) {
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player == null) {
-            data.addProperty("error", "Player not available");
-            return;
-        }
-
-        // Find torches in hotbar
-        int slot = -1;
-        for (int i = 0; i < 9; i++) {
-            ItemStack stack = client.player.getInventory().getStack(i);
-            if (stack.getItem() == Items.TORCH || stack.getItem() == Items.SOUL_TORCH) {
-                slot = i;
-                break;
-            }
-        }
-
-        if (slot == -1) {
-            data.addProperty("error", "No torches in hotbar");
-            return;
-        }
-
-        // Select slot
-        client.player.getInventory().selectedSlot = slot;
-        
-        // Execute placement using #tunnel or just simple placement logic?
-        // Let's use simple placement logic if coords provided, or #place_torches chat command if available?
-        // Baritone doesn't have a native "place torches" command exposed easily to API except via certain behavior modifiers.
-        // We'll simulate it by placing a torch at the current location or looking around.
-        // Or if params has coords, place there.
-        
-        if (params.has("x") && params.has("y") && params.has("z")) {
-            JsonObject placeParams = new JsonObject();
-            placeParams.addProperty("x", params.get("x").getAsInt());
-            placeParams.addProperty("y", params.get("y").getAsInt());
-            placeParams.addProperty("z", params.get("z").getAsInt());
-            handlePlaceBlock(client, placeParams, data);
-        } else {
-             data.addProperty("error", "Coordinates required for torch placement");
-        }
-    }
-
-    private void handleHarvest(IBaritone baritone, JsonObject params, JsonObject data) {
-        // #farm handles harvesting usually.
-        MinecraftClient.getInstance().execute(() -> MinecraftClient.getInstance().player.networkHandler.sendChatMessage("#farm"));
-        data.addProperty("started", true);
-    }
-
-    private void handlePlant(IBaritone baritone, JsonObject params, JsonObject data) {
-        // #farm handles planting too.
-        MinecraftClient.getInstance().execute(() -> MinecraftClient.getInstance().player.networkHandler.sendChatMessage("#farm"));
-        data.addProperty("started", true);
-    }
+    // handlePlant removed - migrated to PlantCommandHandler
 
     // ========== Automation Command Handlers ==========
 
@@ -1986,893 +1121,38 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
      *   Slots 10-36: Main inventory
      *   Slots 37-45: Hotbar
      */
-    private void handleCraft(MinecraftClient client, JsonObject params, JsonObject data) {
-        if (client.player == null || client.interactionManager == null) {
-            data.addProperty("error", "Player not available");
-            return;
-        }
-        
-        // Accept both 'recipe', 'item', and 'recipe_id' parameters
-        String recipeId = null;
-        if (params.has("recipe")) {
-            recipeId = params.get("recipe").getAsString();
-        } else if (params.has("item")) {
-            recipeId = params.get("item").getAsString(); 
-        } else if (params.has("recipe_id")) {
-            recipeId = params.get("recipe_id").getAsString();
-        }
-        
-        if (recipeId == null || recipeId.isEmpty()) {
-            data.addProperty("error", "Missing recipe/item argument");
-            return;
-        }
-        
-        int count = params.has("count") ? params.get("count").getAsInt() : 1;
-        
-        // Normalize recipe ID
-        if (!recipeId.contains(":")) {
-            recipeId = "minecraft:" + recipeId;
-        }
-        
-        // Get recipe definition
-        CraftRecipe recipe = getRecipeDefinition(recipeId);
-        if (recipe == null) {
-            data.addProperty("error", "Unknown recipe: " + recipeId);
-            data.addProperty("note", "Recipe not in hardcoded list. Add to getRecipeDefinition().");
-            return;
-        }
-        
-        // Check if we need a crafting table
-        boolean hasCraftingTable = client.player.currentScreenHandler instanceof net.minecraft.screen.CraftingScreenHandler;
-        if (recipe.requiresTable && !hasCraftingTable) {
-            data.addProperty("error", "Recipe requires crafting table but none is open");
-            return;
-        }
-        
-        int crafted = 0;
-        int syncId = client.player.currentScreenHandler.syncId;
-        
-        // Craft the requested count
-        for (int i = 0; i < count; i += recipe.outputCount) {
-            try {
-                // Check ingredients
-                if (!hasIngredients(client, recipe)) {
-                    if (crafted == 0) {
-                        data.addProperty("error", "Missing ingredients for " + recipeId);
-                    }
-                    break;
-                }
-                
-                // Clear crafting grid first
-                clearCraftingGrid(client, syncId, recipe.requiresTable);
-                Thread.sleep(50);
-                
-                // Place ingredients in grid
-                if (!placeIngredients(client, syncId, recipe)) {
-                    data.addProperty("error", "Failed to place ingredients");
-                    break;
-                }
-                Thread.sleep(100);
-                
-                // Click output slot (slot 0) to craft
-                client.execute(() -> {
-                    client.interactionManager.clickSlot(syncId, 0, 0, SlotActionType.QUICK_MOVE, client.player);
-                });
-                Thread.sleep(100);
-                
-                crafted += recipe.outputCount;
-            } catch (Exception e) {
-                LOGGER.error("Crafting error", e);
-                data.addProperty("error", "Crafting failed: " + e.getMessage());
-                break;
-            }
-        }
-        
-        data.addProperty("crafted", crafted > 0);
-        data.addProperty("count", crafted);
-        data.addProperty("recipe", recipeId);
-        if (crafted > 0) {
-            data.addProperty("status", "ok");
-        }
-    }
+    // handleCraft removed - migrated to CraftCommandHandler
     
     /**
      * Simple recipe definition for hardcoded recipes.
      */
-    private static class CraftRecipe {
-        final String output;
-        final int outputCount;
-        final boolean requiresTable; // true = 3x3, false = 2x2
-        final String[] grid; // 2x2 or 3x3 grid, null = empty slot, "any_log" = any log type
-        final Map<String, Integer> ingredients; // Ingredient counts
-        
-        CraftRecipe(String output, int outputCount, boolean requiresTable, String[] grid) {
-            this.output = output;
-            this.outputCount = outputCount;
-            this.requiresTable = requiresTable;
-            this.grid = grid;
-            this.ingredients = new java.util.HashMap<>();
-            for (String s : grid) {
-                if (s != null && !s.isEmpty()) {
-                    ingredients.merge(s, 1, Integer::sum);
-                }
-            }
-        }
-    }
-    
-    /**
-     * Get hardcoded recipe definition.
-     * This bypasses the broken recipe API.
-     */
-    private CraftRecipe getRecipeDefinition(String recipeId) {
-        // Common early-game recipes
-        switch (recipeId) {
-            // Planks from logs (accepts any log type, returns oak planks for simplicity)
-            case "minecraft:oak_planks":
-            case "minecraft:spruce_planks":
-            case "minecraft:birch_planks":
-            case "minecraft:jungle_planks":
-            case "minecraft:acacia_planks":
-            case "minecraft:dark_oak_planks":
-            case "minecraft:mangrove_planks":
-            case "minecraft:cherry_planks":
-                // 2x2: just one log anywhere
-                return new CraftRecipe(recipeId, 4, false, new String[]{"any_log", null, null, null});
-            
-            // Sticks
-            case "minecraft:stick":
-                return new CraftRecipe(recipeId, 4, false, new String[]{
-                    "any_planks", null,
-                    "any_planks", null
-                });
-            
-            // Crafting Table
-            case "minecraft:crafting_table":
-                return new CraftRecipe(recipeId, 1, false, new String[]{
-                    "any_planks", "any_planks",
-                    "any_planks", "any_planks"
-                });
-            
-            // Wooden Pickaxe (3x3)
-            case "minecraft:wooden_pickaxe":
-                return new CraftRecipe(recipeId, 1, true, new String[]{
-                    "any_planks", "any_planks", "any_planks",
-                    null, "minecraft:stick", null,
-                    null, "minecraft:stick", null
-                });
-            
-            // Stone Pickaxe (3x3)
-            case "minecraft:stone_pickaxe":
-                return new CraftRecipe(recipeId, 1, true, new String[]{
-                    "minecraft:cobblestone", "minecraft:cobblestone", "minecraft:cobblestone",
-                    null, "minecraft:stick", null,
-                    null, "minecraft:stick", null
-                });
-            
-            // Stone Axe (3x3)
-            case "minecraft:stone_axe":
-                return new CraftRecipe(recipeId, 1, true, new String[]{
-                    "minecraft:cobblestone", "minecraft:cobblestone", null,
-                    "minecraft:cobblestone", "minecraft:stick", null,
-                    null, "minecraft:stick", null
-                });
-            
-            // Stone Sword (3x3)
-            case "minecraft:stone_sword":
-                return new CraftRecipe(recipeId, 1, true, new String[]{
-                    null, "minecraft:cobblestone", null,
-                    null, "minecraft:cobblestone", null,
-                    null, "minecraft:stick", null
-                });
-            
-            // Furnace (3x3)
-            case "minecraft:furnace":
-                return new CraftRecipe(recipeId, 1, true, new String[]{
-                    "minecraft:cobblestone", "minecraft:cobblestone", "minecraft:cobblestone",
-                    "minecraft:cobblestone", null, "minecraft:cobblestone",
-                    "minecraft:cobblestone", "minecraft:cobblestone", "minecraft:cobblestone"
-                });
-            
-            // Chest (3x3)
-            case "minecraft:chest":
-                return new CraftRecipe(recipeId, 1, true, new String[]{
-                    "any_planks", "any_planks", "any_planks",
-                    "any_planks", null, "any_planks",
-                    "any_planks", "any_planks", "any_planks"
-                });
-            
-            default:
-                return null;
-        }
-    }
-    
-    /**
-     * Check if player has required ingredients.
-     */
-    private boolean hasIngredients(MinecraftClient client, CraftRecipe recipe) {
-        Map<String, Integer> required = new java.util.HashMap<>();
-        for (String s : recipe.grid) {
-            if (s != null && !s.isEmpty()) {
-                required.merge(s, 1, Integer::sum);
-            }
-        }
-        
-        for (Map.Entry<String, Integer> entry : required.entrySet()) {
-            String item = entry.getKey();
-            int needed = entry.getValue();
-            int have = countItemInInventory(client, item);
-            if (have < needed) {
-                return false;
-            }
-        }
-        return true;
-    }
-    
-    /**
-     * Count item in player inventory, handling wildcards like "any_log".
-     */
-    private int countItemInInventory(MinecraftClient client, String itemId) {
-        PlayerInventory inv = client.player.getInventory();
-        int count = 0;
-        
-        for (int i = 0; i < inv.size(); i++) {
-            ItemStack stack = inv.getStack(i);
-            if (stack.isEmpty()) continue;
-            
-            String stackId = Registries.ITEM.getId(stack.getItem()).toString();
-            
-            if (itemId.equals("any_log")) {
-                if (stackId.endsWith("_log") || stackId.contains("_wood")) {
-                    count += stack.getCount();
-                }
-            } else if (itemId.equals("any_planks")) {
-                if (stackId.endsWith("_planks")) {
-                    count += stack.getCount();
-                }
-            } else if (itemId.equals(stackId)) {
-                count += stack.getCount();
-            }
-        }
-        return count;
-    }
-    
-    /**
-     * Find slot containing the specified item.
-     */
-    private int findItemSlot(MinecraftClient client, String itemId, int syncId, boolean isTable) {
-        PlayerInventory inv = client.player.getInventory();
-        // In player inventory screen: slots 9-44 are the main inventory + hotbar
-        // In crafting table: slots 10-45 are the main inventory + hotbar
-        int invStart = isTable ? 10 : 9;
-        
-        for (int i = 0; i < 36; i++) {
-            ItemStack stack = inv.getStack(i);
-            if (stack.isEmpty()) continue;
-            
-            String stackId = Registries.ITEM.getId(stack.getItem()).toString();
-            
-            if (itemId.equals("any_log")) {
-                if (stackId.endsWith("_log") || stackId.contains("_wood")) {
-                    return screenSlotFromInvSlot(i, isTable);
-                }
-            } else if (itemId.equals("any_planks")) {
-                if (stackId.endsWith("_planks")) {
-                    return screenSlotFromInvSlot(i, isTable);
-                }
-            } else if (itemId.equals(stackId)) {
-                return screenSlotFromInvSlot(i, isTable);
-            }
-        }
-        return -1;
-    }
-    
-    /**
-     * Convert player inventory index to screen slot index.
-     */
-    private int screenSlotFromInvSlot(int invSlot, boolean isTable) {
-        // Player inventory slots 0-8 are hotbar, 9-35 are main inventory
-        // In player inventory screen (syncId 0):
-        //   Hotbar (inv 0-8) = screen slots 36-44
-        //   Main (inv 9-35) = screen slots 9-35
-        // In crafting table screen:
-        //   Hotbar (inv 0-8) = screen slots 37-45  
-        //   Main (inv 9-35) = screen slots 10-36
-        if (isTable) {
-            if (invSlot < 9) {
-                return invSlot + 37; // Hotbar
-            } else {
-                return invSlot + 1; // Main inventory
-            }
-        } else {
-            if (invSlot < 9) {
-                return invSlot + 36; // Hotbar
-            } else {
-                return invSlot; // Main inventory
-            }
-        }
-    }
-    
-    /**
-     * Clear the crafting grid by clicking each slot.
-     */
-    private void clearCraftingGrid(MinecraftClient client, int syncId, boolean isTable) {
-        int gridSize = isTable ? 9 : 4;
-        int gridStart = 1; // Slot 0 is output, grid starts at 1
-        
-        for (int i = gridStart; i <= gridSize; i++) {
-            final int slot = i;
-            client.execute(() -> {
-                client.interactionManager.clickSlot(syncId, slot, 0, SlotActionType.QUICK_MOVE, client.player);
-            });
-            try { Thread.sleep(30); } catch (InterruptedException e) {}
-        }
-    }
-    
-    /**
-     * Place ingredients in crafting grid.
-     */
-    private boolean placeIngredients(MinecraftClient client, int syncId, CraftRecipe recipe) {
-        int gridStart = 1; // Output is slot 0
-        boolean isTable = recipe.requiresTable;
-        
-        for (int i = 0; i < recipe.grid.length; i++) {
-            String item = recipe.grid[i];
-            if (item == null || item.isEmpty()) continue;
-            
-            int gridSlot = gridStart + i;
-            int sourceSlot = findItemSlot(client, item, syncId, isTable);
-            
-            if (sourceSlot == -1) {
-                LOGGER.warn("Could not find {} for crafting", item);
-                return false;
-            }
-            
-            final int src = sourceSlot;
-            final int dst = gridSlot;
-            
-            // Pick up one item from source
-            client.execute(() -> {
-                client.interactionManager.clickSlot(syncId, src, 1, SlotActionType.PICKUP, client.player); // Right-click = 1 item
-            });
-            try { Thread.sleep(50); } catch (InterruptedException e) {}
-            
-            // Place in grid
-            client.execute(() -> {
-                client.interactionManager.clickSlot(syncId, dst, 0, SlotActionType.PICKUP, client.player);
-            });
-            try { Thread.sleep(50); } catch (InterruptedException e) {}
-        }
-        
-        return true;
-    }
+    // CraftRecipe and getRecipeDefinition removed - unused after handleCraft migration
+    // Helper methods (hasIngredients, countItemInInventory, findItemSlot, screenSlotFromInvSlot) removed - unused after handleCraft migration
+    // clearCraftingGrid and placeIngredients removed - unused after handleCraft migration
 
-    private void handleClickRecipe(MinecraftClient client, JsonObject params, JsonObject data) {
-        if (client.player == null) return;
-        
-        String recipeId = params.has("recipe") ? params.get("recipe").getAsString() : "";
-        if (recipeId.isEmpty()) {
-            data.addProperty("error", "Missing recipe ID");
-            return;
-        }
-        
-        // This is complex to implement without RecipeBookWidget access.
-        // For 1.21.4, we would need to get the recipe from registry and then use RecipeBookController.
-        // Leaving as simulated success/log for now as full implementation requires significant UI code.
-        
-        LOGGER.info("Simulating click recipe: {}", recipeId);
-        data.addProperty("clicked", true);
-        data.addProperty("recipe", recipeId);
-        data.addProperty("note", "Recipe click simulated (Full UI interaction not yet implemented)");
-    }
+    // handleClickRecipe removed - migrated to ClickRecipeCommandHandler
 
-    private void handleSmeltItems(MinecraftClient client, JsonObject params, JsonObject data) {
-        if (client.player == null || client.interactionManager == null) {
-            data.addProperty("error", "Player not available");
-            return;
-        }
+    // handleSmeltItems removed - migrated to SmeltItemsCommandHandler
 
-        ScreenHandler handler = client.player.currentScreenHandler;
-        if (!(handler instanceof AbstractFurnaceScreenHandler)) {
-            data.addProperty("error", "Not in a furnace screen");
-            return;
-        }
+    // handleAutoCraft, performCrafting, findIngredientSlot removed - migrated to AutoCraftCommandHandler
 
-        // Slot 0: Input, Slot 1: Fuel, Slot 2: Output
-        // Typical inventory slots follow (9-35 main, 36-44 hotbar usually)
-        
-        int inputSlot = params.has("input_slot") ? params.get("input_slot").getAsInt() : -1;
-        int fuelSlot = params.has("fuel_slot") ? params.get("fuel_slot").getAsInt() : -1;
+    // handlePlaceFire removed - migrated to PlaceFireCommandHandler
 
-        client.execute(() -> {
-            if (inputSlot != -1) {
-                client.interactionManager.clickSlot(handler.syncId, inputSlot, 0, SlotActionType.QUICK_MOVE, client.player);
-            }
-            if (fuelSlot != -1) {
-                client.interactionManager.clickSlot(handler.syncId, fuelSlot, 0, SlotActionType.QUICK_MOVE, client.player);
-            }
-        });
+    // handlePlaceBlock removed - migrated to PlaceBlockCommandHandler
 
-        data.addProperty("moved", true);
-    }
+    // handleBreakBlock removed - migrated to BreakBlockCommandHandler
 
-    private void handleAutoCraft(MinecraftClient client, JsonObject params, JsonObject data) {
-        if (client.player == null) {
-            data.addProperty("error", "Player not available");
-            return;
-        }
-        
-        String itemId = params.has("item") ? params.get("item").getAsString() : "";
-        if (itemId.isEmpty()) {
-            // Fallback to recipe_id if item not specified
-            itemId = params.has("recipe_id") ? params.get("recipe_id").getAsString() : "";
-        }
-
-        if (itemId.isEmpty()) {
-            data.addProperty("error", "Missing item or recipe_id");
-            return;
-        }
-        
-        // Define simple hardcoded recipes for the vertical slice
-        // Format: Key = Output ItemID, Value = List of Ingredients (slots 0-8)
-        // null means empty slot.
-        // We support both 2x2 (slots 0-3) and 3x3 (slots 0-8)
-        // 2x2 indices: 0 1
-        //              2 3
-        // 3x3 indices: 0 1 2
-        //              3 4 5
-        //              6 7 8
-        
-        Map<String, String[]> recipes = new HashMap<>();
-        
-        // Oak Planks (from Oak Log) - shapeless, usually 1 log in any slot. We'll use slot 0 (top-left)
-        recipes.put("minecraft:oak_planks", new String[]{"minecraft:oak_log", null, null, null});
-        recipes.put("minecraft:spruce_planks", new String[]{"minecraft:spruce_log", null, null, null});
-        recipes.put("minecraft:birch_planks", new String[]{"minecraft:birch_log", null, null, null});
-        recipes.put("minecraft:jungle_planks", new String[]{"minecraft:jungle_log", null, null, null});
-        recipes.put("minecraft:acacia_planks", new String[]{"minecraft:acacia_log", null, null, null});
-        recipes.put("minecraft:dark_oak_planks", new String[]{"minecraft:dark_oak_log", null, null, null});
-        
-        // Sticks (2 planks vertical)
-        String[] stickRecipe = new String[9];
-        stickRecipe[0] = "planks"; stickRecipe[3] = "planks"; // 3x3 grid indices: 0, 3 (col 1, row 1-2)
-        recipes.put("minecraft:stick", stickRecipe);
-        
-        // Crafting Table (4 planks)
-        recipes.put("minecraft:crafting_table", new String[]{"planks", "planks", "planks", "planks"}); // 2x2 valid
-        
-        // Wooden Pickaxe (3 planks top, 2 sticks middle)
-        String[] woodPick = new String[9];
-        woodPick[0] = "planks"; woodPick[1] = "planks"; woodPick[2] = "planks";
-        woodPick[4] = "minecraft:stick"; woodPick[7] = "minecraft:stick";
-        recipes.put("minecraft:wooden_pickaxe", woodPick);
-        
-        // Wooden Sword
-        String[] woodSword = new String[9];
-        woodSword[1] = "planks"; woodSword[4] = "planks"; woodSword[7] = "minecraft:stick";
-        recipes.put("minecraft:wooden_sword", woodSword);
-
-        // Wooden Axe
-        String[] woodAxe = new String[9];
-        woodAxe[0] = "planks"; woodAxe[1] = "planks"; 
-        woodAxe[3] = "planks"; woodAxe[4] = "minecraft:stick"; woodAxe[7] = "minecraft:stick";
-        recipes.put("minecraft:wooden_axe", woodAxe);
-
-         // Wooden Shovel
-        String[] woodShovel = new String[9];
-        woodShovel[1] = "planks"; woodShovel[4] = "minecraft:stick"; woodShovel[7] = "minecraft:stick";
-        recipes.put("minecraft:wooden_shovel", woodShovel);
-
-        // Lookup recipe
-        String[] ingredients = recipes.get(itemId);
-        
-        // Handle generic "planks" ingredient
-        // If recipe not found directly, maybe it uses "planks"?
-        // Actually, we need to map the ingredients.
-        
-        if (ingredients == null) {
-            data.addProperty("error", "Recipe not found (Hardcoded vertical slice only)");
-             // Fallback to legacy behavior just in case
-             // handleGetRecipes(client, params, data);
-            return;
-        }
-
-        boolean success = performCrafting(client, ingredients);
-        
-        data.addProperty("crafted", success);
-        data.addProperty("item", itemId);
-    }
-    
-    private boolean performCrafting(MinecraftClient client, String[] ingredients) {
-        if (client.player == null) return false;
-        
-        ScreenHandler handler = client.player.currentScreenHandler;
-        int syncId = handler.syncId;
-        
-        // Determine grid size and offsets
-        // For PlayerInventory (2x2): output=0, grid=1-4
-        // For CraftingTable (3x3): output=0, grid=1-9
-        
-        boolean isTable = handler instanceof net.minecraft.screen.CraftingScreenHandler;
-        boolean isPlayer = handler instanceof net.minecraft.screen.PlayerScreenHandler; // Survival inventory
-        
-        if (!isTable && !isPlayer) return false;
-        
-        int gridStart = 1;
-        int gridSize = isTable ? 9 : 4;
-        
-        if (ingredients.length > 4 && !isTable) {
-            LOGGER.warn("Recipe requires 3x3 grid but player inventory is 2x2");
-            return false;
-        }
-        
-        // Map ingredients to specific items in inventory
-        // Handle "planks" generic
-        
-        for (int i = 0; i < ingredients.length; i++) {
-            if (i >= gridSize) break; // Should not happen if recipe matches grid
-            
-            String ingredient = ingredients[i];
-            if (ingredient == null) continue;
-            
-            // Find item in inventory
-            int sourceSlot = findIngredientSlot(client, ingredient, syncId);
-            
-            if (sourceSlot == -1) {
-                LOGGER.warn("Missing ingredient: {}", ingredient);
-                return false;
-            }
-            
-            int finalSourceSlot = sourceSlot;
-            int targetSlot = gridStart + i; 
-            
-            // 3x3 mapping for 2x2 recipes if in table?
-            // If we define 2x2 recipes as array length 4, they map safely to 1,2,3,4?
-            // Wait, Crafting Table slots are 1,2,3 (row 1), 4,5,6 (row 2), 7,8,9 (row 3).
-            // Player 2x2 slots are 1,2 (row 1), 3,4 (row 2).
-            
-            // If we have a 2x2 recipe, we need to map it carefully if the array is just length 4.
-            // My definitions above used length 4 for 2x2.
-            int gridSlot = targetSlot;
-            
-            if (isTable && ingredients.length == 4) {
-                // Map 2x2 indices to 3x3 grid
-                // 0 -> 0 (1)
-                // 1 -> 1 (2)
-                // 2 -> 3 (4)
-                // 3 -> 4 (5)
-                int row = i / 2;
-                int col = i % 2;
-                gridSlot = gridStart + (row * 3) + col;
-            } else if (isTable) {
-                // 3x3 recipe, direct mapping
-                gridSlot = gridStart + i;
-            } else {
-                 // Player inventory 2x2
-                 gridSlot = gridStart + i;
-            }
-            
-            // Move item
-            // We need to run on main thread!
-            final int src = finalSourceSlot;
-            final int dst = gridSlot;
-            
-            try {
-                 client.execute(() -> {
-                     // PICKUP 1 item from source
-                     if (client.interactionManager != null) {
-                        client.interactionManager.clickSlot(syncId, src, 0, SlotActionType.PICKUP, client.player);
-                        // Place 1 item in grid
-                        client.interactionManager.clickSlot(syncId, dst, 1, SlotActionType.PICKUP, client.player); // Right click places 1
-                        // Put remainder back? Or just pickup to cursor and place?
-                        
-                        // Correct logic:
-                        // 1. Click source (PICKUP) -> Cursor has stack
-                        // 2. Right Click dst (PICKUP, button 1) -> Places 1 item
-                        // 3. Click source/empty (PICKUP) -> Returns remainder (or swaps if source wasn't empty)
-                        
-                        // Simplified: assuming we just hold it? No, we need to clear cursor for next ingredient.
-                        // Put back in source.
-                        client.interactionManager.clickSlot(syncId, src, 0, SlotActionType.PICKUP, client.player);
-                     }
-                 });
-                 // Brief delay for server processing?
-                 Thread.sleep(50);
-            } catch (Exception e) {
-                LOGGER.error("Crafting click failed", e);
-                return false;
-            }
-        }
-        
-        // Take result
-        try {
-            client.execute(() -> {
-                 // Shift-click result slot (0)
-                 client.interactionManager.clickSlot(syncId, 0, 0, SlotActionType.QUICK_MOVE, client.player);
-            });
-            Thread.sleep(50);
-        } catch (Exception e) {}
-        
-        return true;
-    }
-    
-    private int findIngredientSlot(MinecraftClient client, String ingredient, int syncId) {
-        if (client.player == null) return -1;
-        
-        // Inventory slots in container (after grid)
-        // For Player: Grid(0-4), Armor(5-8), Inv(9-35), Hotbar(36-44), Offhand(45)
-        // For Table: Output(0), Grid(1-9), Inv(10-36), Hotbar(37-45)
-        
-        ScreenHandler handler = client.player.currentScreenHandler;
-        boolean isTable = handler instanceof net.minecraft.screen.CraftingScreenHandler;
-        
-        int startSlot = isTable ? 10 : 9;
-        int endSlot = isTable ? 46 : 45; // loop limit
-        
-        for (int i = startSlot; i < endSlot; i++) {
-             ItemStack stack = handler.getSlot(i).getStack();
-             if (stack.isEmpty()) continue;
-             
-             String id = Registries.ITEM.getId(stack.getItem()).toString();
-             
-             if (ingredient.equals("planks")) {
-                 if (id.endsWith("_planks")) return i;
-             } else {
-                 if (id.equals(ingredient)) return i;
-             }
-        }
-        return -1;
-    }
-
-    private void handlePlaceFire(MinecraftClient client, JsonObject params, JsonObject data) {
-        if (client.player == null) {
-            data.addProperty("error", "Player not available");
-            return;
-        }
-
-        int x = params.get("x").getAsInt();
-        int y = params.get("y").getAsInt();
-        int z = params.get("z").getAsInt();
-        BlockPos pos = new BlockPos(x, y, z);
-
-        // Find flint and steel or fire charge
-        int slot = -1;
-        for (int i = 0; i < 9; i++) {
-            ItemStack stack = client.player.getInventory().getStack(i);
-            if (stack.getItem() == Items.FLINT_AND_STEEL || stack.getItem() == Items.FIRE_CHARGE) {
-                slot = i;
-                break;
-            }
-        }
-
-        if (slot == -1) {
-            data.addProperty("error", "No flint and steel or fire charge in hotbar");
-            return;
-        }
-
-        // Select slot
-        client.player.getInventory().selectedSlot = slot;
-
-        // Look at block and use
-        BlockPos targetPos = pos;
-        client.execute(() -> {
-            BlockHitResult hitResult = new BlockHitResult(Vec3d.ofCenter(targetPos), Direction.UP, targetPos, false);
-            client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hitResult);
-        });
-
-        data.addProperty("ignited", true);
-        data.addProperty("x", x);
-        data.addProperty("y", y);
-        data.addProperty("z", z);
-    }
-
-    private void handlePlaceBlock(MinecraftClient client, JsonObject params, JsonObject data) {
-        if (client.player == null || client.interactionManager == null) {
-            data.addProperty("error", "Player not available");
-            return;
-        }
-        
-        int x = params.get("x").getAsInt();
-        int y = params.get("y").getAsInt();
-        int z = params.get("z").getAsInt();
-        
-        BlockPos targetPos = new BlockPos(x, y, z);
-        
-        // Find a face to place against
-        Direction placeFace = Direction.UP;
-        BlockPos placeAgainst = targetPos.down();
-        
-        // Check each direction for a solid block to place against
-        for (Direction dir : Direction.values()) {
-            BlockPos adjacent = targetPos.offset(dir);
-            BlockState adjacentState = client.world.getBlockState(adjacent);
-            if (!adjacentState.isAir()) {
-                placeAgainst = adjacent;
-                placeFace = dir.getOpposite();
-                break;
-            }
-        }
-        
-        Vec3d hitPos = Vec3d.ofCenter(placeAgainst).add(Vec3d.of(placeFace.getVector()).multiply(0.5d));
-        
-        // Look at the target interaction point
-        double dx = hitPos.x - client.player.getX();
-        double dy = hitPos.y - client.player.getEyeY();
-        double dz = hitPos.z - client.player.getZ();
-        double horizontalDist = Math.sqrt(dx * dx + dz * dz);
-        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
-        float pitch = (float) Math.toDegrees(-Math.atan2(dy, horizontalDist));
-        
-        client.player.setYaw(yaw);
-        client.player.setPitch(pitch);
-
-        BlockHitResult hitResult = new BlockHitResult(hitPos, placeFace, placeAgainst, false);
-        
-        ActionResult result = client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hitResult);
-        
-        data.addProperty("placed", result.isAccepted());
-        data.addProperty("x", x);
-        data.addProperty("y", y);
-        data.addProperty("z", z);
-    }
-
-    private void handleBreakBlock(MinecraftClient client, IBaritone baritone, JsonObject params, JsonObject data) {
-        if (client.player == null) {
-            data.addProperty("error", "Player not available");
-            return;
-        }
-        
-        int x = params.get("x").getAsInt();
-        int y = params.get("y").getAsInt();
-        int z = params.get("z").getAsInt();
-        
-        BlockPos targetPos = new BlockPos(x, y, z);
-        BlockState blockState = client.world.getBlockState(targetPos);
-        
-        if (blockState.isAir()) {
-            data.addProperty("error", "No block at position");
-            return;
-        }
-        
-        String blockId = Registries.BLOCK.getId(blockState.getBlock()).toString();
-        
-        // Use Baritone to break the block
-        client.execute(() -> 
-            baritone.getCustomGoalProcess().setGoalAndPath(new GoalBlock(x, y, z)));
-        
-        data.addProperty("breaking", true);
-        data.addProperty("block", blockId);
-        data.addProperty("x", x);
-        data.addProperty("y", y);
-        data.addProperty("z", z);
-    }
-
-    private void handleFindBlocks(MinecraftClient client, JsonObject params, JsonObject data) {
-        try {
-            client.submit(() -> {
-                if (client.player == null || client.world == null) {
-                    data.addProperty("error", "Player/world not available");
-                    return null;
-                }
-                
-                JsonArray blocksParam = params.has("blocks") ? params.getAsJsonArray("blocks") : new JsonArray();
-                int radius = params.has("radius") ? params.get("radius").getAsInt() : 32;
-                int limit = params.has("limit") ? params.get("limit").getAsInt() : 10;
-                
-                Set<String> targetBlocks = new HashSet<>();
-                for (JsonElement el : blocksParam) {
-                    String blockName = el.getAsString();
-                    if (!blockName.contains(":")) {
-                        blockName = "minecraft:" + blockName;
-                    }
-                    targetBlocks.add(blockName);
-                }
-                
-                JsonArray found = new JsonArray();
-                BlockPos playerPos = client.player.getBlockPos();
-                
-                // Search in radius
-                for (int dx = -radius; dx <= radius && found.size() < limit; dx++) {
-                    for (int dy = -radius; dy <= radius && found.size() < limit; dy++) {
-                        for (int dz = -radius; dz <= radius && found.size() < limit; dz++) {
-                            BlockPos checkPos = playerPos.add(dx, dy, dz);
-                            BlockState state = client.world.getBlockState(checkPos);
-                            String blockId = Registries.BLOCK.getId(state.getBlock()).toString();
-                            
-                            if (targetBlocks.contains(blockId)) {
-                                JsonObject posResult = new JsonObject();
-                                posResult.addProperty("x", checkPos.getX());
-                                posResult.addProperty("y", checkPos.getY());
-                                posResult.addProperty("z", checkPos.getZ());
-                                posResult.addProperty("block", blockId);
-                                posResult.addProperty("distance", Math.sqrt(checkPos.getSquaredDistance(playerPos)));
-                                found.add(posResult);
-                            }
-                        }
-                    }
-                }
-                
-                data.add("found", found);
-                data.addProperty("count", found.size());
-                return null;
-            }).get(2, TimeUnit.SECONDS);
-        } catch (Exception e) {
-            data.addProperty("error", "Failed to find blocks: " + e.getMessage());
-        }
-    }
+    // handleFindBlocks removed - migrated to FindBlocksCommandHandler
 
     // ========== New Commands for Vertical Slice ==========
 
-    private void handleThrowItem(MinecraftClient client, JsonObject params, JsonObject data) {
-        if (client.player == null || client.interactionManager == null) {
-            data.addProperty("error", "Player not available");
-            return;
-        }
-        
-        // Get player's look direction for throwing
-        float yaw = client.player.getYaw();
-        float pitch = client.player.getPitch();
-        
-        // Use the item (throws if throwable like ender eye, snowball, etc.)
-        client.execute(() -> {
-            client.interactionManager.interactItem(client.player, Hand.MAIN_HAND);
-        });
-        
-        data.addProperty("thrown", true);
-        data.addProperty("yaw", yaw);
-        data.addProperty("pitch", pitch);
-        
-        // For ender eyes, we could track the entity
-        // This is a simplified version
-    }
+    // handleThrowItem removed - migrated to ThrowItemCommandHandler
 
-    private void handleRespawn(MinecraftClient client, JsonObject data) {
-        if (client.player == null) {
-            data.addProperty("error", "Player not available");
-            return;
-        }
-        
-        // Check if player is dead
-        if (client.player.isDead()) {
-            client.execute(() -> {
-                // Send respawn packet
-                client.player.requestRespawn();
-            });
-            data.addProperty("respawned", true);
-        } else {
-            data.addProperty("respawned", false);
-            data.addProperty("note", "Player not dead");
-        }
-    }
+    // handleRespawn removed - migrated to RespawnCommandHandler
 
-    private void handleGetDimension(MinecraftClient client, JsonObject data) {
-        if (client.player == null || client.world == null) {
-            data.addProperty("error", "Player/world not available");
-            return;
-        }
-        
-        String dimension = client.world.getRegistryKey().getValue().toString();
-        data.addProperty("dimension", dimension);
-        
-        // Check for dimension change and fire event
-        if (!dimension.equals(lastDimension)) {
-            JsonObject eventData = new JsonObject();
-            eventData.addProperty("from_dimension", lastDimension);
-            eventData.addProperty("to_dimension", dimension);
-            eventData.addProperty("x", client.player.getX());
-            eventData.addProperty("y", client.player.getY());
-            eventData.addProperty("z", client.player.getZ());
-            eventManager.publishEvent(EventManager.EventType.DIMENSION_CHANGE, eventData, EventManager.Priority.HIGH);
-            lastDimension = dimension;
-        }
-    }
+    // handleGetDimension removed - migrated to GetDimensionCommandHandler
 
-    private void handleGetDeathLocation(JsonObject data) {
-        data.addProperty("x", lastDeathX);
-        data.addProperty("y", lastDeathY);
-        data.addProperty("z", lastDeathZ);
-        data.addProperty("dimension", lastDeathDimension);
-        data.addProperty("timestamp", lastDeathTime);
-    }
+    // handleGetDeathLocation removed - migrated to GetDeathLocationCommandHandler
 
     // ========== New Enhanced Handlers ==========
 

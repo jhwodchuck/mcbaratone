@@ -60,16 +60,11 @@ public class CircuitBreaker {
 
         switch (state) {
             case CLOSED:
-                // Check if we should transition to half-open due to timeout
-                if (shouldAttemptRecovery(now)) {
-                    transitionToHalfOpen(now);
-                    return true; // Allow one test request
-                }
                 return true;
 
             case OPEN:
                 // Check if timeout has passed to transition to half-open
-                if (now - lastStateChangeTime.get() >= timeoutMs) {
+                if (shouldAttemptRecovery(now)) {
                     transitionToHalfOpen(now);
                     return true; // Allow one test request
                 }
@@ -136,7 +131,7 @@ public class CircuitBreaker {
      * Check if circuit should attempt recovery based on time window.
      */
     private boolean shouldAttemptRecovery(long now) {
-        return state == State.CLOSED && (now - lastFailureTime.get()) > windowMs;
+        return state == State.OPEN && (now - lastStateChangeTime.get()) >= timeoutMs;
     }
 
     private void transitionToClosed(long now) {

@@ -93,9 +93,9 @@ class DummyTransport:
         self.dispatched.append((route, payload))
 
         if route == "get_state":
-            return self.state.copy()
+            return {"status": "ok", "data": self.state.copy()}
         elif route == "get_inventory":
-            return {"inventory": self.inventory.copy()}
+            return {"status": "ok", "data": {"inventory": self.inventory.copy()}}
         elif route == "chat":
             message = payload.get("message", "")
             # Simulate movement commands
@@ -165,25 +165,18 @@ class DummyTransport:
             elif "iron_pickaxe" in recipe:
                 self._consume_item("minecraft:iron_ingot", 3)
                 self._consume_item("minecraft:stick", 2)
-            return {"crafted": True, "output_slot": 0}
+            return {"status": "ok", "data": {"crafted": True, "output_slot": 0}}
         elif route == "smelt":
             # Simulate smelting consuming fuel
             self._consume_item("minecraft:oak_log", 1)  # Fuel
-            return {"smelted": True, "output_count": 1}
+            return {"status": "ok", "data": {"smelted": True, "output_count": 1}}
         elif route == "check_craft":
-            return {"can_craft": True, "missing": [], "recipe_id": "test"}
-        elif route == "command":
-            return {"status": "ok"}
-        elif route == "goal/apply":
-            return {"status": "ok", "goal": payload}
-        elif route == "settings/set":
-            return {"status": "ok", "name": payload.get("name"), "value": payload.get("value")}
-        elif route == "process/status":
-            return {"status": "ok"}
-        elif route == "process/path_result":
-            return {"status": "ok"}
-        elif route == "process/builder/start":
-            return {"status": "ok"}
+            return {"status": "ok", "data": {"can_craft": True, "missing": [], "recipe_id": "test"}}
+        elif route == "get_block":
+            # Dummy block response
+            return {"status": "ok", "data": {"id": "minecraft:air", "properties": {}}}
+        elif route == "find_blocks":
+            return {"status": "ok", "data": {"found": []}}
         else:
             return {"status": "ok", "route": route, "payload": payload}
 
@@ -194,7 +187,7 @@ class DummyTransport:
         pass
 
 
-class TestResult(Enum):
+class FunctionalResult(Enum):
     PASS = "PASS"
     FAIL = "FAIL"
     SKIP = "SKIP"
@@ -243,6 +236,10 @@ class TestContext:
         if isinstance(pos, dict):
             return (pos.get("x", 0), pos.get("y", 64), pos.get("z", 0))
         return (0, 64, 0)
+
+    def get_block(self, x: int, y: int, z: int) -> Dict:
+        """Get block info at position."""
+        return self.client.transport.dispatch("get_block", {"x": x, "y": y, "z": z})
     
     def has_item(self, item_id: str, count: int = 1) -> bool:
         """Check if inventory has item."""
@@ -311,7 +308,86 @@ class TestContext:
 
     def set_gamemode(self, mode: str):
         """Set player gamemode."""
-        self.run_command(f"gamemode {mode}")
+        self.run_command(f"gamemode {mode} @p")
+
+    def close_open_screens(self, timeout: float = 2.0) -> bool:
+        """Close any open GUI screen."""
+        state = self.get_state()
+        if not state.get("has_gui") or state.get("screen") == "none":
+            return True
+        self.client.transport.dispatch("close_screen", {})
+        start = time.time()
+        while time.time() - start < timeout:
+            state = self.get_state()
+            if not state.get("has_gui") or state.get("screen") == "none":
+                return True
+            time.sleep(0.1)
+        return False
+
+    def respawn_if_needed(self, timeout: float = 5.0) -> bool:
+        """Respawn player if dead."""
+        state = self.get_state()
+        if not state.get("is_dead"):
+            return True
+        self.client.transport.dispatch("respawn", {})
+        start = time.time()
+        while time.time() - start < timeout:
+            state = self.get_state()
+            if not state.get("is_dead"):
+                return True
+            time.sleep(0.2)
+        return False
+
+    def move_out_of_water(self, radius: int = 12, attempts: int = 3) -> bool:
+        """Try to move out of water without teleporting."""
+        water_ids = {
+            "minecraft:water",
+            "minecraft:bubble_column",
+            "minecraft:kelp",
+            "minecraft:seagrass",
+            "minecraft:tall_seagrass"
+        }
+        solid_ids = [
+            "minecraft:stone",
+            "minecraft:cobblestone",
+            "minecraft:dirt",
+            "minecraft:grass_block",
+            "minecraft:sand",
+            "minecraft:gravel",
+            "minecraft:netherrack",
+            "minecraft:end_stone",
+            "minecraft:deepslate"
+        ]
+        for _ in range(attempts):
+            x, y, z = self.get_position()
+            block = self.get_block(int(x), int(y), int(z)).get("id")
+            above = self.get_block(int(x), int(y) + 1, int(z)).get("id")
+            if block not in water_ids and above not in water_ids:
+                return True
+            result = self.client.transport.dispatch("find_blocks", {
+                "blocks": solid_ids,
+                "radius": radius,
+                "limit": 1
+            })
+            found = result.get("found", result.get("data", {}).get("found", []))
+            if not found:
+                return False
+            pos = found[0]
+            if isinstance(pos, dict) and {"x", "y", "z"}.issubset(pos.keys()):
+                self.client.transport.dispatch("goto", {
+                    "x": int(pos["x"]),
+                    "y": int(pos["y"]) + 1,
+                    "z": int(pos["z"])
+                })
+                start = time.time()
+                while time.time() - start < 4.0:
+                    state = self.get_state()
+                    if not state.get("is_pathing", False):
+                        break
+                    time.sleep(0.2)
+                self.client.transport.dispatch("cancel", {})
+                time.sleep(0.2)
+        return False
 
     def set_block(self, x: int, y: int, z: int, block_id: str):
         """Set block at position."""
@@ -384,7 +460,7 @@ class TestContext:
 
 
 @dataclass
-class TestCase:
+class FunctionalCase:
     """A single functional test case."""
     id: str
     name: str
@@ -411,6 +487,17 @@ class TestCase:
         ctx.snapshots = []
         
         try:
+            ctx.log_event("PREP: ensure alive, clear water, close screens")
+            ctx.respawn_if_needed()
+            ctx.close_open_screens()
+            ctx.move_out_of_water()
+            time.sleep(0.2)
+
+            ctx.log_event("PREP: set survival + difficulty normal")
+            ctx.set_gamemode("survival")
+            ctx.run_command("difficulty normal")
+            time.sleep(0.2)
+
             # Setup
             if self.setup:
                 ctx.log_event(f"SETUP: {self.id}")
@@ -424,6 +511,17 @@ class TestCase:
                 if time.time() - ctx.start_time > self.timeout_seconds:
                     return TestResult.TIMEOUT, f"Timeout at step {i}", ctx.events
                 
+                # If player died mid-test, respawn and re-run setup to restore state
+                if ctx.get_state().get("is_dead"):
+                    ctx.log_event("PREP: respawned mid-test")
+                    ctx.respawn_if_needed()
+                    ctx.close_open_screens()
+                    ctx.move_out_of_water()
+                    if self.setup:
+                        ctx.log_event(f"SETUP: {self.id} (rerun after respawn)")
+                        self.setup(ctx)
+                        time.sleep(0.5)
+
                 ctx.log_event(f"STEP {i}: executing")
                 try:
                     result = step(ctx)
@@ -455,20 +553,24 @@ class TestCase:
                     self.teardown(ctx)
                 except:
                     pass
+            try:
+                ctx.run_command("difficulty peaceful")
+            except:
+                pass
 
 
-class TestSuite:
-    """Collection of related test cases."""
+class FunctionalSuite:
+    """Collection of related functional test cases."""
     
     def __init__(self, name: str, description: str = ""):
         self.name = name
         self.description = description
-        self.tests: List[TestCase] = []
+        self.tests: List[FunctionalCase] = []
     
-    def add(self, test: TestCase):
+    def add(self, test: FunctionalCase):
         self.tests.append(test)
     
-    def run_all(self, ctx: TestContext) -> Dict[str, Tuple[TestResult, str]]:
+    def run_all(self, ctx: TestContext) -> Dict[str, Tuple[FunctionalResult, str]]:
         """Run all tests in suite. Returns dict of test_id -> (result, message)."""
         results = {}
         for test in self.tests:
@@ -476,10 +578,10 @@ class TestSuite:
             result, msg, events = test.run(ctx)
             results[test.id] = (result, msg)
             
-            status = "PASS" if result == TestResult.PASS else "FAIL"
+            status = "PASS" if result == FunctionalResult.PASS else "FAIL"
             print(f"{status} {test.id}: {result.value} - {msg}")
             
-            if result != TestResult.PASS and events:
+            if result != FunctionalResult.PASS and events:
                 print("  Events:")
                 for e in events[-5:]:  # Last 5 events
                     print(f"    {e}")
@@ -487,7 +589,7 @@ class TestSuite:
         return results
 
 
-class TestHarness:
+class FunctionalHarness:
     """Main test harness for running functional tests."""
     
     def __init__(self, host: str = "localhost", port: int = 5555):
@@ -495,7 +597,7 @@ class TestHarness:
         self.port = port
         self.client: Optional[Client] = None
         self.ctx: Optional[TestContext] = None
-        self.suites: Dict[str, TestSuite] = {}
+        self.suites: Dict[str, FunctionalSuite] = {}
     
     def connect(self) -> bool:
         """Connect to live bridge."""
@@ -507,13 +609,21 @@ class TestHarness:
         except Exception as e:
             print(f"Connection failed: {e}")
             return False
+
+    def _reset_circuit_breaker(self):
+        if not self.client:
+            return
+        try:
+            self.client.transport.dispatch("debug_reset_circuit", {})
+        except Exception as e:
+            print(f"Warning: failed to reset circuit breaker: {e}")
     
     def disconnect(self):
         """Disconnect from bridge."""
         if self.client:
             self.client.shutdown()
     
-    def register_suite(self, suite: TestSuite):
+    def register_suite(self, suite: FunctionalSuite):
         """Register a test suite."""
         self.suites[suite.name] = suite
     
@@ -527,6 +637,8 @@ class TestHarness:
         print(f"\n{'='*60}")
         print(f"SUITE: {suite.name}")
         print(f"{'='*60}")
+
+        self._reset_circuit_breaker()
         
         return suite.run_all(self.ctx)
     

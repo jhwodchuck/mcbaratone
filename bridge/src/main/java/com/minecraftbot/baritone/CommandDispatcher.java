@@ -58,7 +58,7 @@ public class CommandDispatcher {
     // Rate limiting
     private final Map<Socket, Long> lastRequestTimes = new ConcurrentHashMap<>();
     private final Map<Socket, Integer> requestCounts = new ConcurrentHashMap<>();
-    private static final int RATE_LIMIT_REQUESTS = 500; // increased for automation
+    private static final int RATE_LIMIT_REQUESTS = 2000; // increased for automation
     private static final long RATE_LIMIT_WINDOW_MS = 10000; // 10 second window
 
     // Timeout management
@@ -80,6 +80,7 @@ public class CommandDispatcher {
         "goto", "mine", "build", "explore", "stop", "pause", "cancel",
         "goal", "path", "tunnel", "farm", "interact_block", "attack_entity",
         "use_item", "place_block", "break_block", "throw_item", "select_slot",
+        "equip", "inventory_click", "chat",
         "settings", "smelt_items", "craft", "auto_craft", "craft_advanced", "click_recipe",
         "place_fire", "respawn", "screenshot"
     );
@@ -181,9 +182,9 @@ public class CommandDispatcher {
                 metricsCollector.recordCacheAccess(false);
             }
 
-            // Invalidate cache for state-changing commands
+            // Invalidate all cached reads when state changes
             if (STATE_CHANGING_COMMANDS.contains(command)) {
-                commandCache.invalidate(command);
+                commandCache.invalidateAll();
             }
 
             CommandResult result;
@@ -335,9 +336,9 @@ public class CommandDispatcher {
                 metricsCollector.recordCacheAccess(false);
             }
 
-            // Invalidate cache for state-changing commands
+            // Invalidate all cached reads when state changes
             if (STATE_CHANGING_COMMANDS.contains(command)) {
-                commandCache.invalidate(command);
+                commandCache.invalidateAll();
             }
 
             CommandResult result;

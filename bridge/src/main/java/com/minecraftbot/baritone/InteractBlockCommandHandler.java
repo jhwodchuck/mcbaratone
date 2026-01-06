@@ -5,9 +5,11 @@ import com.google.gson.JsonObject;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.RaycastContext;
 
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
@@ -33,17 +35,35 @@ public class InteractBlockCommandHandler implements CommandHandler {
                 Hand hand = "OFF_HAND".equals(handStr) ? Hand.OFF_HAND : Hand.MAIN_HAND;
                 BlockPos pos = new BlockPos(x, y, z);
 
-                // Create a hit result pointing at the center-top of the block
-                Vec3d hitPos = new Vec3d(x + 0.5, y + 1.0, z + 0.5);
-                BlockHitResult hitResult = new BlockHitResult(hitPos, Direction.UP, pos, false);
+                // Raycast from the player's eye position toward the target block center
+                Vec3d start = new Vec3d(client.player.getX(), client.player.getEyeY(), client.player.getZ());
+                Vec3d end = new Vec3d(x + 0.5, y + 0.5, z + 0.5);
+                RaycastContext context = new RaycastContext(
+                    start,
+                    end,
+                    RaycastContext.ShapeType.OUTLINE,
+                    RaycastContext.FluidHandling.NONE,
+                    client.player
+                );
+                BlockHitResult hitResult = client.world.raycast(context);
+                if (hitResult.getType() == HitResult.Type.MISS || !hitResult.getBlockPos().equals(pos)) {
+                    // Fallback to a direct hit on the target block if raycast misses
+                    Vec3d hitPos = new Vec3d(x + 0.5, y + 0.5, z + 0.5);
+                    hitResult = new BlockHitResult(hitPos, Direction.UP, pos, false);
+                }
 
-                client.interactionManager.interactBlock(client.player, hand, hitResult);
+                var actionResult = client.interactionManager.interactBlock(client.player, hand, hitResult);
+                client.player.swingHand(hand);
 
                 JsonObject data = new JsonObject();
                 data.addProperty("interacted", true);
                 data.addProperty("x", x);
                 data.addProperty("y", y);
                 data.addProperty("z", z);
+                data.addProperty("result", actionResult.toString());
+                data.addProperty("hit_x", hitResult.getBlockPos().getX());
+                data.addProperty("hit_y", hitResult.getBlockPos().getY());
+                data.addProperty("hit_z", hitResult.getBlockPos().getZ());
                 return CommandResult.success(data);
             }).get();
             return CompletableFuture.completedFuture(result);

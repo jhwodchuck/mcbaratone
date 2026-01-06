@@ -19,9 +19,28 @@ if str(SRC) not in sys.path:
 
 
 # ============================================================================
-# Self-Contained Implementations for Testing
-# Since imports from baritone_client trigger circular dependency chains,
-# we define minimal action interfaces inline for testing.
+# Global Mocks for Heavy Actions
+# ============================================================================
+import baritone_client.common as common
+import baritone_client.actions.crafting as crafting
+import baritone_client.common.combat as combat_mod
+import baritone_client.actions.initial_gathering as ig
+
+# Global patch for CraftingAction.ensure_crafting_table
+crafting.CraftingAction.ensure_crafting_table = lambda self, ctx: True
+
+# Global patches for gathering and combat utilities
+common.gather_wood = lambda client, count: True
+common.gather_stone = lambda client, count: True
+common.hunt_mobs = lambda *args, **kwargs: ActionResult.ok("Mocked hunt")
+combat_mod.hunt_mobs = lambda *args, **kwargs: ActionResult.ok("Mocked hunt")
+combat_mod.hunt_passive_mobs = lambda *args, **kwargs: ActionResult.ok("Mocked passive hunt")
+
+# Ensure these are also patched in initial_gathering just in case they were already imported
+ig.gather_wood = lambda client, count: True
+ig.gather_stone = lambda client, count: True
+ig.hunt_mobs = lambda *args, **kwargs: ActionResult.ok("Mocked hunt")
+ig.hunt_passive_mobs = lambda *args, **kwargs: ActionResult.ok("Mocked passive hunt")
 # ============================================================================
 
 @dataclass
@@ -346,18 +365,18 @@ class TestWoodCollectionPhase:
         """Test wood collection succeeds with available wood."""
         from baritone_client.actions.initial_gathering import WoodCollectionPhase
         action = WoodCollectionPhase()
-
-        # Mock gather_wood to succeed
-        import baritone_client.common as common
-        original_gather_wood = common.gather_wood
-        common.gather_wood = lambda client, count: True
+        
+        # Mock gather_wood to succeed in the module scope
+        import baritone_client.actions.initial_gathering as ig
+        original_gather_wood = ig.gather_wood
+        ig.gather_wood = lambda client, count: True
 
         try:
             result = action.execute(mock_context)
             assert result.success is True
             assert "completed" in result.message.lower()
         finally:
-            common.gather_wood = original_gather_wood
+            ig.gather_wood = original_gather_wood
 
     def test_wood_collection_fails_on_minimal_wood(self, mock_context):
         """Test wood collection fails if minimal wood gathering fails."""
@@ -388,6 +407,9 @@ class TestToolProgressionPhase:
         """Test tool progression succeeds with proper inventory."""
         from baritone_client.actions.initial_gathering import ToolProgressionPhase
         action = ToolProgressionPhase()
+        
+        # Mock ensure_crafting_table to avoid heavy simulation/hang
+        action.crafting.ensure_crafting_table = lambda ctx: True
 
         # Add some planks and sticks to inventory
         mock_context.client.transport.add_inventory_item("minecraft:oak_planks", 16, slot=0)
@@ -416,16 +438,16 @@ class TestStoneCollectionPhase:
         action = StoneCollectionPhase()
 
         # Mock gather_stone to succeed
-        import baritone_client.common as common
-        original_gather_stone = common.gather_stone
-        common.gather_stone = lambda client, count: True
+        import baritone_client.actions.initial_gathering as ig
+        original_gather_stone = ig.gather_stone
+        ig.gather_stone = lambda client, count: True
 
         try:
             result = action.execute(mock_context)
             assert result.success is True
             assert "completed" in result.message.lower()
         finally:
-            common.gather_stone = original_gather_stone
+            ig.gather_stone = original_gather_stone
 
 
 class TestBedPreparationPhase:

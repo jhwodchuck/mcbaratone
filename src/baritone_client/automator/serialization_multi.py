@@ -62,6 +62,11 @@ class Serializer(ABC):
         """Get the serialization format."""
         pass
 
+    @abstractmethod
+    def is_available(self) -> bool:
+        """Check if the serializer is available (e.g., required libraries installed)."""
+        pass
+
 
 class JSONSerializer(Serializer):
     """JSON-based serializer."""
@@ -85,6 +90,10 @@ class JSONSerializer(Serializer):
     def get_format(self) -> SerializationFormat:
         """Get the serialization format."""
         return SerializationFormat.JSON
+
+    def is_available(self) -> bool:
+        """Check if the serializer is available."""
+        return True
 
 
 class MsgPackSerializer(Serializer):
@@ -122,6 +131,10 @@ class MsgPackSerializer(Serializer):
     def get_format(self) -> SerializationFormat:
         """Get the serialization format."""
         return SerializationFormat.MSGPACK
+
+    def is_available(self) -> bool:
+        """Check if the serializer is available."""
+        return self._msgpack is not None
 
 
 class CompressedSerializer:
@@ -172,12 +185,15 @@ class MultiFormatSerializer:
         """Initialize multi-format serializer."""
         self._serializers = {
             SerializationFormat.JSON: JSONSerializer(),
-            SerializationFormat.MSGPACK: MsgPackSerializer(),
         }
 
+        msgpack_serializer = MsgPackSerializer()
+        if msgpack_serializer.is_available():
+            self._serializers[SerializationFormat.MSGPACK] = msgpack_serializer
+
         # Initialize compressed serializers
-        for fmt in [SerializationFormat.JSON, SerializationFormat.MSGPACK]:
-            if fmt in self._serializers:
+        for fmt in list(self._serializers.keys()):
+            if fmt.value in ['json', 'msgpack']:
                 compressed_fmt = SerializationFormat(f"{fmt.value}.gz")
                 self._serializers[compressed_fmt] = CompressedSerializer(self._serializers[fmt])
 
@@ -324,8 +340,12 @@ class FileSerializer:
         except Exception as e:
             raise SerializationError(f"Failed to read file {filepath}: {str(e)}") from e
 
-        # Deserialize data
-        data = self._serializer.deserialize(data_bytes)
+        # Deserialize data, trying expected format from extension first
+        expected_format = self._detect_format_from_extension(filepath)
+        if expected_format in self._serializer._serializers:
+            data = self._serializer.deserialize(data_bytes, expected_format)
+        else:
+            data = self._serializer.deserialize(data_bytes)
 
         # Strip metadata if present
         return self._strip_metadata(data)

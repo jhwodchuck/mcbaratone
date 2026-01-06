@@ -12,7 +12,7 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 from baritone_client import Client, TcpTransport
 from baritone_client.automator import ResourceManager, StateManager
 from baritone_client.automator.phases.base_construction import BaseConstructionHandler
-from baritone_client.automator.phases.iron_age import IronAgeHandler
+from baritone_client.automator.phases.iron_age import FoodAndIronHandler
 from baritone_client.automator.phases.diamond_mining import DiamondMiningHandler
 from baritone_client.common.base import sleep_through_night
 from baritone_client.common.resources import gather_water
@@ -64,7 +64,7 @@ def test_iron_age(client, setup=False):
         give_item(client, "minecraft:furnace")
         set_time(client, "day")
         
-    handler = IronAgeHandler()
+    handler = FoodAndIronHandler()
     resources = ResourceManager(client)
     state = StateManager()
     

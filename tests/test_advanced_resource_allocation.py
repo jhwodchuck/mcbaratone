@@ -14,14 +14,14 @@ import time
 from datetime import datetime, timedelta
 from unittest.mock import Mock, MagicMock
 
-from src.baritone_client.automator.resource_allocator import (
+from baritone_client.automator.resource_allocator import (
     ResourceAllocator,
     ConflictDetector,
     ResourceForecaster,
     ConflictResolver
 )
-from src.baritone_client.automator.resource_manager import ResourceManager
-from src.baritone_client.models.models import (
+from baritone_client.automator.resource_manager import ResourceManager
+from baritone_client.models.models import (
     AllocationRequest, AllocationGrant, ResourceReservation,
     ConflictResolutionStrategy, AllocationConflict,
     ResourceAllocation, AllocationMode
@@ -50,12 +50,12 @@ class MockResourceManager:
         if enabled:
             # Create a real allocator but with this mock manager
             # We need to import it inside to avoid circular issues or just assume it's available
-            from src.baritone_client.automator.resource_allocator import ResourceAllocator
+            from baritone_client.automator.resource_allocator import ResourceAllocator
             self.advanced_allocator = ResourceAllocator(self)
 
     def request_advanced_allocation(self, **kwargs) -> tuple:
         if hasattr(self, 'advanced_allocator'):
-            from src.baritone_client.models.models import AllocationRequest
+            from baritone_client.models.models import AllocationRequest
             
             # Create request object
             request = AllocationRequest(
@@ -75,7 +75,7 @@ class MockResourceManager:
     def get_resource_forecast(self, resource_id: str, horizon: int):
         if hasattr(self, 'advanced_allocator'):
              # Return a dummy forecast
-             from src.baritone_client.automator.allocation.forecaster import ResourceForecast
+             from baritone_client.automator.allocation.forecaster import ResourceForecast
              return ResourceForecast(
                  resource_id=resource_id,
                  timestamp=datetime.now(),
@@ -505,7 +505,7 @@ class TestMissionCoordinatorIntegration:
         event_manager.subscribe = Mock()
         event_manager.unsubscribe = Mock()
 
-        from src.baritone_client.automator.mission_coordinator import MissionCoordinator
+        from baritone_client.automator.mission_coordinator import MissionCoordinator
         self.coordinator = MissionCoordinator(
             resource_manager=self.resource_manager,
             event_manager=event_manager

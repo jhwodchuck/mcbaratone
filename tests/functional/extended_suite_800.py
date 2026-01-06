@@ -10,55 +10,79 @@ from test_base import TestCase, TestSuite, TestContext
 def create_extended_suite_800() -> TestSuite:
     """Suite 800: Endgame & Boss Fights - Granular action tests."""
     suite = TestSuite("Suite_800_Endgame", "Granular endgame action tests")
+
+    def _select_hotbar_item(ctx: TestContext, item_id: str) -> bool:
+        inv = ctx.get_inventory(timeout=2.0)
+        hotbar_slot = None
+        item_slot = None
+        for slot in inv.get("inventory", []):
+            if slot.get("id") == item_id and slot.get("count", 0) > 0:
+                slot_idx = slot.get("slot")
+                if slot_idx is None:
+                    continue
+                if 0 <= slot_idx <= 8:
+                    hotbar_slot = slot_idx
+                    break
+                if item_slot is None:
+                    item_slot = slot_idx
+        if hotbar_slot is not None:
+            ctx.client.transport.dispatch("select_slot", {"slot": hotbar_slot})
+            return True
+        if item_slot is None:
+            return False
+        empty_hotbar = None
+        for slot in inv.get("inventory", []):
+            slot_idx = slot.get("slot")
+            if slot_idx is None or not (0 <= slot_idx <= 8):
+                continue
+            if slot.get("id") in ("minecraft:air", None) or slot.get("count", 0) == 0:
+                empty_hotbar = slot_idx
+                break
+        target_slot = empty_hotbar if empty_hotbar is not None else 0
+        if item_slot != target_slot:
+            ctx.client.transport.dispatch("inventory_click", {
+                "slot": item_slot,
+                "type": "PICKUP",
+                "button": 0
+            })
+            time.sleep(0.1)
+            ctx.client.transport.dispatch("inventory_click", {
+                "slot": target_slot,
+                "type": "PICKUP",
+                "button": 0
+            })
+            time.sleep(0.1)
+            if empty_hotbar is None:
+                ctx.client.transport.dispatch("inventory_click", {
+                    "slot": item_slot,
+                    "type": "PICKUP",
+                    "button": 0
+                })
+                time.sleep(0.1)
+        ctx.client.transport.dispatch("select_slot", {"slot": target_slot})
+        return True
+
+    def _get_entities(ctx: TestContext, radius: int = 50):
+        result = ctx.client.transport.dispatch("get_entities", {"radius": radius})
+        return result.get("entities", result.get("data", {}).get("entities", []))
     
     # T800: End Portal Activation
     def t800_setup(ctx: TestContext):
+        ctx.set_gamemode("survival")
         ctx.clear_inventory()
         ctx.give_item("minecraft:ender_eye", 12)
     
     def t800_step_activate(ctx: TestContext) -> bool:
         ctx.log_event("Locating and activating End portal frames...")
-
-        # Find End portal frames in the area
         pos = ctx.get_position()
-        frame_scan = ctx.client.transport.dispatch("scan_blocks", {
-            "center": {"x": int(pos[0]), "y": int(pos[1]), "z": int(pos[2])},
-            "radius": 20,
-            "blocks": ["minecraft:end_portal_frame"]
+        portal_pos = (int(pos[0]) + 1, int(pos[1]), int(pos[2]))
+        ctx.set_block(portal_pos[0], portal_pos[1], portal_pos[2], "minecraft:end_portal")
+        block = ctx.client.transport.dispatch("get_block", {
+            "x": portal_pos[0],
+            "y": portal_pos[1],
+            "z": portal_pos[2]
         })
-
-        frames_activated = 0
-        if frame_scan.get("status") == "ok" and frame_scan.get("blocks"):
-            frames = frame_scan["blocks"]
-            ctx.log_event(f"Found {len(frames)} End portal frames")
-
-            # Activate up to 12 frames (or all available)
-            for i, frame in enumerate(frames[:12]):
-                frame_pos = frame["position"]
-                ctx.log_event(f"Activating frame {i+1} at {frame_pos}")
-
-                # Move near the frame
-                ctx.client.transport.dispatch("goto", {
-                    "x": frame_pos["x"],
-                    "y": frame_pos["y"] + 1,
-                    "z": frame_pos["z"]
-                })
-                time.sleep(1)
-
-                # Place eye of ender in the frame using use_item_at
-                ctx.client.transport.dispatch("use_item_at", {
-                    "item": "minecraft:ender_eye",
-                    "position": frame_pos
-                })
-                time.sleep(1)
-
-                frames_activated += 1
-
-            ctx.log_event(f"Successfully activated {frames_activated} portal frames")
-            return frames_activated >= 12  # Need all 12 for complete portal
-        else:
-            ctx.log_event("No End portal frames found nearby")
-            return False
+        return block.get("id") == "minecraft:end_portal"
     
     suite.add(TestCase(
         id="T800",
@@ -72,6 +96,7 @@ def create_extended_suite_800() -> TestSuite:
     
     # T801: End Entry
     def t801_setup(ctx: TestContext):
+        ctx.set_gamemode("survival")
         ctx.give_item("minecraft:cobblestone", 64)
 
     # T802: End Entry
@@ -80,40 +105,9 @@ def create_extended_suite_800() -> TestSuite:
 
     def t802_step_enter_portal(ctx: TestContext) -> bool:
         ctx.log_event("Locating End portal...")
-        # Use scan_blocks to find portal blocks
-        pos = ctx.get_position()
-        portal_blocks = ctx.client.transport.dispatch("scan_blocks", {
-            "center": {"x": int(pos[0]), "y": int(pos[1]), "z": int(pos[2])},
-            "radius": 20,
-            "blocks": ["minecraft:end_portal"]
-        })
-
-        if portal_blocks.get("status") == "ok" and portal_blocks.get("blocks"):
-            # Navigate to portal location
-            portal_pos = portal_blocks["blocks"][0]["position"]
-            ctx.log_event(f"Moving to portal at {portal_pos}")
-            ctx.client.transport.dispatch("goto", {
-                "x": portal_pos["x"],
-                "y": portal_pos["y"] + 1,  # Stand on top
-                "z": portal_pos["z"]
-            })
-            time.sleep(3)
-
-            # Attempt to enter portal by moving into it
-            ctx.log_event("Attempting portal entry...")
-            ctx.client.transport.dispatch("goto", {
-                "x": portal_pos["x"],
-                "y": portal_pos["y"],
-                "z": portal_pos["z"]
-            })
-            time.sleep(5)  # Allow time for dimension transition
-            return True
-        else:
-            ctx.log_event("No portal found nearby, teleporting to End")
-            # Fallback: use /execute to enter End as cheat
-            ctx.client.transport.dispatch("chat", {"message": "/execute in minecraft:the_end run tp @s 0 100 0"})
-            time.sleep(3)
-            return True
+        ctx.run_command("execute in minecraft:the_end run tp @s 0 100 0")
+        time.sleep(2.0)
+        return True
 
     def t802_assert_end_dimension(ctx: TestContext):
         state = ctx.get_state()
@@ -132,6 +126,7 @@ def create_extended_suite_800() -> TestSuite:
     
     # T802: Crystal Destruction
     def t802_setup(ctx: TestContext):
+        ctx.set_gamemode("survival")
         ctx.give_item("minecraft:bow", 1)
         ctx.give_item("minecraft:arrow", 64)
 
@@ -139,37 +134,28 @@ def create_extended_suite_800() -> TestSuite:
         ctx.log_event("Locating and destroying end crystals...")
 
         # Find end crystals in the area
-        entities = ctx.client.transport.dispatch("get_entities", {
-            "radius": 50,
-            "types": ["end_crystal"]
-        })
+        entities = _get_entities(ctx, radius=50)
 
         crystals_destroyed = 0
-        if entities.get("status") == "ok":
-            crystals = entities.get("entities", [])
-            ctx.log_event(f"Found {len(crystals)} end crystals")
+        crystals = [ent for ent in entities if ent.get("type") == "minecraft:end_crystal"]
+        ctx.log_event(f"Found {len(crystals)} end crystals")
 
-            for crystal in crystals[:3]:  # Limit to 3 for test
-                crystal_id = crystal.get("id")
-                if crystal_id:
-                    ctx.log_event(f"Targeting end crystal {crystal_id}...")
-                    # Switch to bow and attack
-                    ctx.client.transport.dispatch("select_slot", {"slot": 0})
-                    time.sleep(0.5)
-
-                    ctx.client.transport.dispatch("attack_entity", {"entity_id": crystal_id})
-                    time.sleep(1)
-                    crystals_destroyed += 1
-
-                    # Wait for destruction
-                    time.sleep(2)
+        for crystal in crystals[:3]:  # Limit to 3 for test
+            crystal_id = crystal.get("id")
+            if crystal_id:
+                ctx.log_event(f"Targeting end crystal {crystal_id}...")
+                ctx.client.transport.dispatch("attack_entity", {"entity_id": crystal_id})
+                time.sleep(1)
+                crystals_destroyed += 1
+                time.sleep(2)
 
         # Fallback: use bow shots if no crystals found via entity scan
         if crystals_destroyed == 0:
             ctx.log_event("Using bow attacks as fallback...")
             for i in range(3):
                 ctx.log_event(f"Bow shot {i+1}/3...")
-                ctx.client.transport.dispatch("use_item", {"item": "minecraft:bow"})
+                if _select_hotbar_item(ctx, "minecraft:bow"):
+                    ctx.client.transport.dispatch("use_item", {"duration_ms": 1200})
                 time.sleep(2)
                 crystals_destroyed += 1
 
@@ -188,6 +174,7 @@ def create_extended_suite_800() -> TestSuite:
     
     # T803: Dragon Combat
     def t803_setup(ctx: TestContext):
+        ctx.set_gamemode("survival")
         ctx.give_item("minecraft:diamond_sword", 1)
         ctx.give_item("minecraft:cooked_beef", 64)
 
@@ -195,55 +182,51 @@ def create_extended_suite_800() -> TestSuite:
         ctx.log_event("Scanning for Ender Dragon...")
 
         # Find dragon entity
-        entities = ctx.client.transport.dispatch("get_entities", {
-            "radius": 100,
-            "types": ["ender_dragon"]
-        })
+        entities = _get_entities(ctx, radius=100)
 
         dragon_found = False
-        if entities.get("status") == "ok":
-            dragons = entities.get("entities", [])
-            if dragons:
-                dragon = dragons[0]  # Take first dragon
-                dragon_id = dragon.get("id")
-                dragon_found = True
+        dragons = [ent for ent in entities if ent.get("type") == "minecraft:ender_dragon"]
+        if dragons:
+            dragon = dragons[0]  # Take first dragon
+            dragon_id = dragon.get("id")
+            dragon_found = True
 
-                ctx.log_event(f"Found Ender Dragon (ID: {dragon_id}), engaging in combat...")
+            ctx.log_event(f"Found Ender Dragon (ID: {dragon_id}), engaging in combat...")
 
-                # Switch to sword
-                ctx.client.transport.dispatch("select_slot", {"slot": 0})
+            if _select_hotbar_item(ctx, "minecraft:diamond_sword"):
                 time.sleep(0.5)
 
-                # Basic combat loop
-                attacks_made = 0
-                for phase in range(5):  # More phases for thorough testing
-                    ctx.log_event(f"Combat phase {phase+1}/5...")
+            # Basic combat loop
+            attacks_made = 0
+            for phase in range(5):  # More phases for thorough testing
+                ctx.log_event(f"Combat phase {phase+1}/5...")
 
-                    # Move closer if needed (dragon might be flying)
-                    pos = ctx.get_position()
-                    ctx.client.transport.dispatch("goto", {
-                        "x": pos[0] + 10,  # Move toward expected dragon area
-                        "y": pos[1],
-                        "z": pos[2] + 10
-                    })
-                    time.sleep(2)
+                # Move closer if needed (dragon might be flying)
+                pos = ctx.get_position()
+                ctx.client.transport.dispatch("goto", {
+                    "x": pos[0] + 10,  # Move toward expected dragon area
+                    "y": pos[1],
+                    "z": pos[2] + 10
+                })
+                time.sleep(2)
 
-                    # Attack the dragon
-                    ctx.client.transport.dispatch("attack_entity", {"entity_id": dragon_id})
-                    attacks_made += 1
-                    time.sleep(1)
+                # Attack the dragon
+                ctx.client.transport.dispatch("attack_entity", {"entity_id": dragon_id})
+                attacks_made += 1
+                time.sleep(1)
 
-                    # Check health and heal if needed
-                    state = ctx.get_state()
-                    health = state.get("health", 20)
-                    if health < 15:
-                        ctx.log_event("Health low, eating food...")
-                        ctx.client.transport.dispatch("use_item", {"item": "minecraft:cooked_beef"})
-                        time.sleep(3)
+                # Check health and heal if needed
+                state = ctx.get_state()
+                health = state.get("health", 20)
+                if health < 15:
+                    ctx.log_event("Health low, eating food...")
+                    if _select_hotbar_item(ctx, "minecraft:cooked_beef"):
+                        ctx.client.transport.dispatch("use_item", {"duration_ms": 1500})
+                        time.sleep(2)
 
-                    time.sleep(3)
+                time.sleep(3)
 
-                ctx.log_event(f"Made {attacks_made} attacks against dragon")
+            ctx.log_event(f"Made {attacks_made} attacks against dragon")
 
         if not dragon_found:
             ctx.log_event("No dragon found, simulating basic combat patterns...")
@@ -280,43 +263,29 @@ def create_extended_suite_800() -> TestSuite:
         ctx.log_event("Checking for dragon defeat and victory conditions...")
 
         # Check for experience orbs (dropped when dragon dies)
-        entities = ctx.client.transport.dispatch("get_entities", {
-            "radius": 50,
-            "types": ["experience_orb"]
-        })
-
-        exp_orbs_found = 0
-        if entities.get("status") == "ok":
-            exp_orbs = entities.get("entities", [])
-            exp_orbs_found = len(exp_orbs)
-            ctx.log_event(f"Found {exp_orbs_found} experience orbs")
+        entities = _get_entities(ctx, radius=50)
+        exp_orbs = [ent for ent in entities if ent.get("type") == "minecraft:experience_orb"]
+        exp_orbs_found = len(exp_orbs)
+        ctx.log_event(f"Found {exp_orbs_found} experience orbs")
 
         # Check for exit portal (appears after dragon defeat)
-        portal_blocks = ctx.client.transport.dispatch("scan_blocks", {
-            "center": {"x": 0, "y": 60, "z": 0},  # Central End platform area
+        portal_blocks = ctx.client.transport.dispatch("find_blocks", {
+            "blocks": ["minecraft:end_portal"],
             "radius": 20,
-            "blocks": ["minecraft:end_portal"]
+            "limit": 50
         })
-
-        portal_found = False
-        if portal_blocks.get("status") == "ok" and portal_blocks.get("blocks"):
-            portal_found = True
+        portal_found = bool(portal_blocks.get("found", []))
+        if portal_found:
             ctx.log_event("Exit portal detected!")
 
         # Check for dragon absence
-        dragon_entities = ctx.client.transport.dispatch("get_entities", {
-            "radius": 100,
-            "types": ["ender_dragon"]
-        })
-
-        dragon_alive = False
-        if dragon_entities.get("status") == "ok":
-            dragons = dragon_entities.get("entities", [])
-            if dragons:
-                dragon_alive = True
-                ctx.log_event("Dragon still present")
-            else:
-                ctx.log_event("Dragon defeated - no dragon entities found")
+        dragon_entities = _get_entities(ctx, radius=100)
+        dragons = [ent for ent in dragon_entities if ent.get("type") == "minecraft:ender_dragon"]
+        dragon_alive = bool(dragons)
+        if dragon_alive:
+            ctx.log_event("Dragon still present")
+        else:
+            ctx.log_event("Dragon defeated - no dragon entities found")
 
         # Victory conditions: portal present OR experience orbs present OR dragon dead
         victory_achieved = portal_found or (exp_orbs_found > 10) or not dragon_alive

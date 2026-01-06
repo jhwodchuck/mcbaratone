@@ -225,6 +225,9 @@ class ResourceManager:
     # Phase requirements (item_id -> minimum count)
     PHASE_REQUIREMENTS: Dict[Phase, Dict[str, int]] = {
         Phase.BRIDGE_CHECK: {},
+        Phase.SPAWN_BOOTSTRAP: {},
+        Phase.INITIAL_GATHERING: {},
+        Phase.BASE_CONSTRUCTION: {},
         Phase.BOOT_SEQUENCE: {
             "minecraft:oak_log": 20,
             "minecraft:stone_pickaxe": 1,

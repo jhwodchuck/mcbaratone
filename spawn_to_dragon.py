@@ -20,10 +20,12 @@ def main():
         description="Minecraft Industrialization Agent - Survival Automation (Hour 0-10)",
         epilog="Mission: Convert a fresh world into a fully industrialized platform. No decorative building allowed."
     )
+
     parser.add_argument("--host", default="localhost", help="Bridge host")
     parser.add_argument("--port", type=int, default=5555, help="Bridge port")
     parser.add_argument("--timeout", type=float, default=15.0, help="Transport timeout in seconds (for bridge responses)")
     parser.add_argument("--resume", action="store_true", default=True, help="Resume from checkpoint")
+    parser.add_argument("--suite", type=str, help="Run specific test suite (e.g. T900, T901). Overrides normal automation.")
     args = parser.parse_args()
 
     print(f"Connecting to Baritone Bridge at {args.host}:{args.port}...")
@@ -79,7 +81,10 @@ def main():
         automator.on_phase_fail = on_phase_fail
         
         # Run automation
-        success = automator.run(resume=args.resume)
+        if args.suite:
+            success = automator.run_suite(args.suite)
+        else:
+            success = automator.run(resume=args.resume)
         
         if success:
             print("\nMISSION ACCOMPLISHED!")

@@ -7,7 +7,7 @@ import threading
 from typing import Dict, List
 from datetime import datetime, timedelta
 
-from src.baritone_client.models.models import (
+from baritone_client.models.models import (
     AllocationMode,
     AllocationRequest,
     ResourceReservation,
@@ -15,7 +15,7 @@ from src.baritone_client.models.models import (
     ResourceAllocation,
     AllocationConflict
 )
-from src.baritone_client.automator.resource_manager import ResourceManager
+from baritone_client.automator.resource_manager import ResourceManager
 
 
 

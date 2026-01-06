@@ -15,7 +15,7 @@ class DummyTransport:
 
     def dispatch(self, route, payload, **kwargs):
         self.dispatched.append((route, payload))
-        return {"route": route, "payload": payload}
+        return {"status": "ok", "data": payload, "route": route, "payload": payload}
 
     def subscribe(self, event, callback):
         self.events.subscribe(event, callback)
@@ -34,7 +34,7 @@ class ClientFacadeTest(TestCase):
 
     def test_command_dispatch(self):
         response = self.client.command.run("goto 1 64 1")
-        expected_payload = {"command": "chat", "params": {"message": "goto 1 64 1"}}
+        expected_payload = {"command": "chat", "params": {"message": "goto 1 64 1", "priority": "normal"}}
         self.assertIn(("command", expected_payload), self.transport.dispatched)
         self.assertEqual(expected_payload, response)
 

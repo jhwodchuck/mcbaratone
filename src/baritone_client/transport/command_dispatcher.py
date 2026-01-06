@@ -45,14 +45,14 @@ class CommandResult:
         self.priority_level = priority_level
 
     @classmethod
-    def success(cls, data: Optional[Dict[str, Any]] = None) -> "CommandResult":
+    def success(cls, data: Optional[Dict[str, Any]] = None, retry_status: Optional[Dict[str, Any]] = None, circuit_breaker_state: Optional[Dict[str, Any]] = None, priority_level: Optional[str] = None) -> "CommandResult":
         """Create a successful result with optional data."""
-        return cls(success=True, data=data)
+        return cls(success=True, data=data, retry_status=retry_status, circuit_breaker_state=circuit_breaker_state, priority_level=priority_level)
 
     @classmethod
-    def error(cls, error_message: str) -> "CommandResult":
+    def error(cls, error_message: str, retry_status: Optional[Dict[str, Any]] = None, circuit_breaker_state: Optional[Dict[str, Any]] = None, priority_level: Optional[str] = None) -> "CommandResult":
         """Create an error result with message."""
-        return cls(success=False, error_message=error_message)
+        return cls(success=False, error_message=error_message, retry_status=retry_status, circuit_breaker_state=circuit_breaker_state, priority_level=priority_level)
 
     def is_success(self) -> bool:
         """Check if the command result indicates success."""
@@ -195,9 +195,7 @@ class CommandDispatcher:
         try:
             # Dispatch to bridge - bridge will use CommandHandlerFactory if available,
             # otherwise fallback to legacy handleCommand logic
-            payload = {"command": command}
-            if params:
-                payload.update(params)  # Merge params directly for backward compatibility
+            payload = {"command": command, "params": params or {}}
 
             logger.info(f"Dispatching command '{command}' with params {params}")
 
