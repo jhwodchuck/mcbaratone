@@ -752,6 +752,16 @@ def create_mcp_server(config: BridgeConfig) -> FastMCP:
         """daniel"""
         return _call_bridge(ctx, "command/run", lambda client: client.command.run("damn"))
 
+    @mcp.tool()
+    def read_file(file_path: str, ctx: RequestContext) -> Dict[str, Any]:
+        """Read the contents of a file."""
+        try:
+            with open(file_path, 'r') as f:
+                content = f.read()
+            return {"success": True, "content": content}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     return mcp
 
 

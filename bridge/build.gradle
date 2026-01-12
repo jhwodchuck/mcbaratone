@@ -57,9 +57,11 @@ dependencies {
     // We expect the user to put baritone-api-fabric-*.jar in the 'libs' folder
     modImplementation files('libs/baritone-api-fabric-1.15.0.jar')
 
-    // WebSocket and networking
+    // WebSocket and networking - include to bundle in JAR (Jar-in-Jar)
     implementation 'org.java-websocket:Java-WebSocket:1.5.3'
+    include 'org.java-websocket:Java-WebSocket:1.5.3'
     implementation 'org.lz4:lz4-java:1.8.0'
+    include 'org.lz4:lz4-java:1.8.0'
 
     // Testing dependencies
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.0'

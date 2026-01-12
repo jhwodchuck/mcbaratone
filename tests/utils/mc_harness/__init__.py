@@ -17,6 +17,7 @@ from .world import (
     tp,
     prepare_test_world,
     teardown_test_world,
+    wait_for_tick_stabilization,
 )
 from .waits import (
     get_block_id,
@@ -24,11 +25,16 @@ from .waits import (
     assert_block,
     wait_for_pathing_stop,
     wait_for_position_change,
+    wait_for_position_stable,
+    wait_for_arrival,
     wait_for_gui_open,
     close_screen,
     cancel_pathing,
     wait_for_item_count,
     wait_for_item_decrease,
+    wait_for_dimension,
+    wait_for_entity_gone,
+    wait_for_entities_count,
 )
 from .inventory import (
     get_inventory,
@@ -57,6 +63,7 @@ from .screens import (
     get_screen,
     has_crafting_screen,
     wait_for_crafting_screen,
+    wait_for_screen,
     find_nearby_block,
     open_crafting_table,
 )
@@ -65,6 +72,21 @@ from .build import (
     build_ladder_wall,
     build_water_tunnel,
     build_narrow_ledge,
+    build_flat_pad,
+    build_corridor,
+)
+from .actions import (
+    do_goto,
+    do_interact,
+    do_inventory_click,
+    do_open_container,
+    do_close_container,
+)
+from .interaction import (
+    robust_interact,
+    robust_interact_block,
+    robust_place_block,
+    robust_break_block,
 )
 
 __all__ = [
@@ -90,6 +112,8 @@ __all__ = [
     "assert_block",
     "wait_for_pathing_stop",
     "wait_for_position_change",
+    "wait_for_position_stable",
+    "wait_for_arrival",
     "wait_for_gui_open",
     "close_screen",
     "cancel_pathing",
@@ -117,10 +141,26 @@ __all__ = [
     "get_screen",
     "has_crafting_screen",
     "wait_for_crafting_screen",
+    "wait_for_screen",
     "find_nearby_block",
     "open_crafting_table",
     "build_gap_course",
     "build_ladder_wall",
     "build_water_tunnel",
     "build_narrow_ledge",
+    "wait_for_tick_stabilization",
+    "robust_interact",
+    "robust_interact_block",
+    "robust_place_block",
+    "robust_break_block",
+    "wait_for_dimension",
+    "wait_for_entity_gone",
+    "wait_for_entities_count",
+    "build_flat_pad",
+    "build_corridor",
+    "do_goto",
+    "do_interact",
+    "do_inventory_click",
+    "do_open_container",
+    "do_close_container",
 ]

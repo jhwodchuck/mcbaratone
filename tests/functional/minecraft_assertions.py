@@ -10,7 +10,7 @@ import math
 from typing import Tuple, Optional, Dict, Any, Union, List
 import pytest
 
-from .test_base import TestContext
+from test_base import TestContext
 
 
 # Helper functions
@@ -101,6 +101,10 @@ def assert_position_close(ctx: TestContext, expected_pos: Tuple[float, float, fl
         expected_pos: Expected (x, y, z) position
         tolerance: Maximum allowed distance
         msg: Custom error message
+
+    Example:
+        >>> # Assert player is near spawn point (0, 80, 0) within 5 blocks
+        >>> assert_position_close(ctx, (0.0, 80.0, 0.0), tolerance=5.0)
     """
     current_pos = ctx.get_position()
     distance = _calculate_distance(current_pos, expected_pos)
@@ -253,6 +257,29 @@ def assert_block_at(ctx: TestContext, x: int, y: int, z: int, expected_block: st
         pytest.fail(error_msg)
 
 
+def assert_block_not_at(ctx: TestContext, x: int, y: int, z: int, unexpected_block: str,
+                        msg: Optional[str] = None) -> None:
+    """
+    Assert that specific block is NOT present at coordinates.
+
+    Args:
+        ctx: TestContext instance
+        x, y, z: Block coordinates
+        unexpected_block: Block ID that should NOT be present
+        msg: Custom error message
+    """
+    actual_block = _get_block_at(ctx, x, y, z)
+
+    if actual_block is None:
+        # If we can't inspect, we can't assert it's not there
+        error_msg = msg or f"Cannot inspect block at ({x}, {y}, {z}) - world inspection not available"
+        pytest.fail(error_msg)
+
+    if actual_block == unexpected_block:
+        error_msg = msg or f"Block at ({x}, {y}, {z}) is {actual_block}, but should not be {unexpected_block}"
+        pytest.fail(error_msg)
+
+
 def assert_blocks_placed(ctx: TestContext, blocks: List[Tuple[int, int, int, str]],
                         msg: Optional[str] = None) -> None:
     """
@@ -271,6 +298,38 @@ def assert_blocks_placed(ctx: TestContext, blocks: List[Tuple[int, int, int, str
 
     if incorrect_blocks:
         error_msg = msg or f"Incorrect blocks found: {', '.join(incorrect_blocks)}"
+        pytest.fail(error_msg)
+
+
+def assert_blocks_in_area(ctx: TestContext, start_x: int, start_y: int, start_z: int,
+                         end_x: int, end_y: int, end_z: int, expected_block: str,
+                         msg: Optional[str] = None) -> None:
+    """
+    Assert that all blocks in the specified area are of the expected type.
+
+    Args:
+        ctx: TestContext instance
+        start_x, start_y, start_z: Starting coordinates of the area
+        end_x, end_y, end_z: Ending coordinates of the area
+        expected_block: Expected block ID for all blocks in area
+        msg: Custom error message
+    """
+    incorrect_blocks = []
+
+    # Ensure start coordinates are less than or equal to end coordinates
+    x_min, x_max = min(start_x, end_x), max(start_x, end_x)
+    y_min, y_max = min(start_y, end_y), max(start_y, end_y)
+    z_min, z_max = min(start_z, end_z), max(start_z, end_z)
+
+    for x in range(x_min, x_max + 1):
+        for y in range(y_min, y_max + 1):
+            for z in range(z_min, z_max + 1):
+                actual_block = _get_block_at(ctx, x, y, z)
+                if actual_block != expected_block:
+                    incorrect_blocks.append(f"({x},{y},{z}): {actual_block} != {expected_block}")
+
+    if incorrect_blocks:
+        error_msg = msg or f"Blocks in area ({x_min},{y_min},{z_min}) to ({x_max},{y_max},{z_max}) are not all {expected_block}: {', '.join(incorrect_blocks)}"
         pytest.fail(error_msg)
 
 

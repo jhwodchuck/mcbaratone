@@ -81,12 +81,12 @@ public class CraftCommandHandler implements CommandHandler {
                     break;
                 }
                 
-                // Clear crafting grid first
-                clearCraftingGrid(client, syncId, recipe.requiresTable);
+                // Clear crafting grid first - use actual screen type, not recipe requirement
+                clearCraftingGrid(client, syncId, hasCraftingTable);
                 Thread.sleep(100); // Increased delay
                 
-                // Place ingredients in grid
-                String result = placeIngredients(client, syncId, recipe);
+                // Place ingredients in grid - pass actual screen type for correct slot mapping
+                String result = placeIngredients(client, syncId, recipe, hasCraftingTable);
                 if (result != null) {
                     return CompletableFuture.completedFuture(CommandResult.error("Failed to place ingredients: " + result));
                 }
@@ -585,15 +585,29 @@ public class CraftCommandHandler implements CommandHandler {
         }
     }
     
-    private String placeIngredients(MinecraftClient client, int syncId, CraftRecipe recipe) {
+    private String placeIngredients(MinecraftClient client, int syncId, CraftRecipe recipe, boolean isTable) {
         int gridStart = 1; // Output is slot 0
-        boolean isTable = recipe.requiresTable;
+        // isTable is now passed in based on actual screen type, not recipe.requiresTable
         
         for (int i = 0; i < recipe.grid.length; i++) {
             String item = recipe.grid[i];
             if (item == null || item.isEmpty()) continue;
             
-            int gridSlot = gridStart + i;
+            // Convert recipe grid index to screen grid slot
+            // For 2x2 recipes on a 3x3 crafting table, the mapping is:
+            // 2x2 grid:  0 1    3x3 slots: 1 2 3
+            //            2 3               4 5 6
+            //                              7 8 9
+            // So 2x2 index 0→slot 1, 1→slot 2, 2→slot 4, 3→slot 5
+            int gridSlot;
+            if (isTable && recipe.grid.length == 4) {
+                // 2x2 recipe on 3x3 table - map row/col correctly
+                int row = i / 2;
+                int col = i % 2;
+                gridSlot = gridStart + (row * 3) + col; // row * 3 because 3x3 grid
+            } else {
+                gridSlot = gridStart + i;
+            }
             
             // Re-find slot every time to handle moving items (inefficient but safe)
             int sourceSlot = findItemSlot(client, item, syncId, isTable);
@@ -602,6 +616,8 @@ public class CraftCommandHandler implements CommandHandler {
                 LOGGER.warn("Could not find {} for crafting", item);
                 return "Slot not found for " + item + " (Inv count: " + countItemInInventory(client, item) + ")";
             }
+            
+            LOGGER.info("placeIngredients: Item {} found at sourceSlot={}, placing at gridSlot={}", item, sourceSlot, gridSlot);
             
             final int dst = gridSlot;
             

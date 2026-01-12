@@ -89,6 +89,32 @@ public class StateCommandHandler extends AbstractCommandHandler {
             data.addProperty("experience_level", player.experienceLevel);
             data.addProperty("experience_total", player.totalExperience);
             data.addProperty("is_dead", player.isDead());
+            
+            // Player Flags
+            data.addProperty("is_sprinting", player.isSprinting());
+            data.addProperty("is_sneaking", player.isSneaking());
+            data.addProperty("is_on_ground", player.isOnGround());
+            
+            // Active Effects
+            JsonArray effects = new JsonArray();
+            player.getStatusEffects().forEach(effect -> {
+                JsonObject eff = new JsonObject();
+                // Fix: Handle RegistryEntry if needed, or check mappings. 
+                // In 1.21, getEffectType() returns RegistryEntry<StatusEffect>.
+                // We need to call .value() to get the StatusEffect, or use getId() on the entry.
+                eff.addProperty("id", Registries.STATUS_EFFECT.getId(effect.getEffectType().value()).toString());
+                eff.addProperty("duration", effect.getDuration());
+                eff.addProperty("amplifier", effect.getAmplifier());
+                effects.add(eff);
+            });
+            data.add("effects", effects);
+            
+            // Velocity
+            JsonObject velocity = new JsonObject();
+            velocity.addProperty("x", player.getVelocity().x);
+            velocity.addProperty("y", player.getVelocity().y);
+            velocity.addProperty("z", player.getVelocity().z);
+            data.add("velocity", velocity);
 
             // Baritone status - wrap in try/catch as it could throw
             try {
@@ -164,11 +190,11 @@ public class StateCommandHandler extends AbstractCommandHandler {
                     entityData.addProperty("name", entity.getDisplayName().getString());
                     entityData.addProperty("distance", entity.distanceTo(player));
 
-                    JsonObject velocity = new JsonObject();
-                    velocity.addProperty("x", entity.getVelocity().x);
-                    velocity.addProperty("y", entity.getVelocity().y);
-                    velocity.addProperty("z", entity.getVelocity().z);
-                    entityData.add("velocity", velocity);
+                    JsonObject entityVelocity = new JsonObject();
+                    entityVelocity.addProperty("x", entity.getVelocity().x);
+                    entityVelocity.addProperty("y", entity.getVelocity().y);
+                    entityVelocity.addProperty("z", entity.getVelocity().z);
+                    entityData.add("velocity", entityVelocity);
 
                     JsonObject position = new JsonObject();
                     position.addProperty("x", entity.getX());
@@ -183,6 +209,57 @@ public class StateCommandHandler extends AbstractCommandHandler {
                         LivingEntity living = (LivingEntity) entity;
                         entityData.addProperty("health", living.getHealth());
                         entityData.addProperty("max_health", living.getMaxHealth());
+                        
+                        // Age (Baby/Adult)
+                        if (living.isBaby()) {
+                            entityData.addProperty("age", -1); // Proxy for baby
+                            entityData.addProperty("is_baby", true);
+                        } else {
+                            entityData.addProperty("age", 0);
+                            entityData.addProperty("is_baby", false);
+                        }
+                    }
+                    
+                    // Specific Entity Type Data (NBT Proxies)
+                    if (entity instanceof net.minecraft.entity.passive.TameableEntity) {
+                         net.minecraft.entity.passive.TameableEntity tameable = (net.minecraft.entity.passive.TameableEntity) entity;
+                         entityData.addProperty("is_tamed", tameable.isTamed());
+                         try {
+                             if (tameable.getOwnerUuid() != null) {
+                                 entityData.addProperty("owner_uuid", tameable.getOwnerUuid().toString());
+                             }
+                         } catch (NoSuchMethodError e) {
+                             // Fallback for 1.21.8+ where getOwnerUuid might be missing/renamed
+                             // Try getOwner()
+                             if (tameable.getOwner() != null) {
+                                 entityData.addProperty("owner_uuid", tameable.getOwner().getUuid().toString());
+                             }
+                         }
+                    }
+                    
+                    if (entity instanceof net.minecraft.entity.passive.VillagerEntity) {
+                        net.minecraft.entity.passive.VillagerEntity villager = (net.minecraft.entity.passive.VillagerEntity) entity;
+                        try {
+                            entityData.addProperty("profession", villager.getVillagerData().getProfession().toString());
+                            entityData.addProperty("level", villager.getVillagerData().getLevel());
+                        } catch (Throwable t) {
+                            entityData.addProperty("profession", "unknown");
+                            entityData.addProperty("level", 0);
+                        }
+                        
+                        try {
+                            // Adding offers count as proxy for inspection
+                            entityData.addProperty("offers_count", villager.getOffers().size());
+                        } catch (Throwable t) {
+                            entityData.addProperty("offers_count", 0);
+                        }
+                    }
+                    
+                    if (entity instanceof net.minecraft.entity.projectile.FishingBobberEntity) {
+                        net.minecraft.entity.projectile.FishingBobberEntity bobber = (net.minecraft.entity.projectile.FishingBobberEntity) entity;
+                         // 0 = Fly, 1 = Hooked, 2 = Bobbing
+                        boolean hasCatch = bobber.getHookedEntity() != null || bobber.isInOpenWater(); 
+                        entityData.addProperty("has_catch", hasCatch); // Simplified proxy
                     }
 
                     entityList.add(entityData);

@@ -28,8 +28,8 @@ def clear_box(ctx, bounds: Dict[str, int]) -> None:
 
 
 def build_floor(ctx, min_x: int, y: int, min_z: int, max_x: int, max_z: int,
-                block: str = "minecraft:stone") -> None:
-    fill(ctx, min_x, y, min_z, max_x, y, max_z, block)
+                mat: str = "minecraft:stone") -> None:
+    fill(ctx, min_x, y, min_z, max_x, y, max_z, mat)
 
 
 def set_gamerules_for_test(ctx, mob_spawning: bool = False, daylight_cycle: bool = False,
@@ -74,6 +74,8 @@ def kill_nearby_entities(ctx, radius: int = 64) -> None:
 
 def tp(ctx, x: int, y: int, z: int, settle: float = 0.2) -> None:
     safe_run_command(ctx, f"tp @p {x} {y} {z}")
+    # Wait for chunk loading to prevent void_air errors
+    wait_for_chunk_loading(ctx)
     if settle:
         import time
         time.sleep(settle)
@@ -91,20 +93,64 @@ def prepare_test_world(
     """Standardized setup sequence for a deterministic test environment."""
     cancel_pathing(ctx)
     close_screen(ctx)
-    try:
-        ctx.set_gamemode(gamemode)
-    except Exception:
-        safe_run_command(ctx, f"gamemode {gamemode} @p")
+    
+    # Use spectator during setup to avoid physics/death
+    safe_run_command(ctx, "gamemode spectator @p")
+
     if peaceful:
         set_difficulty(ctx, "peaceful")
     set_gamerules_for_test(ctx, mob_spawning=False, daylight_cycle=not freeze_time, weather_cycle=not clear_weather)
     if clear_weather:
         set_weather_clear(ctx)
-    if freeze_time:
         set_time_day(ctx)
+    
+    # TP to safe area high up to let chunks load without interference
+    # Create a safety platform to prevent falling when switching to survival
+    # Bedrock at 0, 99, 0
+    safe_run_command(ctx, "fill -1 99 -1 1 99 1 minecraft:bedrock")
+    tp(ctx, 0, 100, 0)
+    wait_for_chunk_loading(ctx)
+    wait_for_tick_stabilization(ctx, ticks=60)
+    
+    # Reset player state
     clear_effects(ctx)
     set_health_full(ctx)
-    kill_nearby_entities(ctx, radius=kill_radius)
+    if not peaceful:
+        set_difficulty(ctx, "normal")
+
+    # Finally set the requested gamemode
+    try:
+        ctx.set_gamemode(gamemode)
+    except Exception:
+        safe_run_command(ctx, f"gamemode {gamemode} @p")
+
+    wait_for_tick_stabilization(ctx, ticks=60)
+
+
+def wait_for_chunk_loading(ctx, timeout: float = 10.0) -> None:
+    """Wait for the chunk at player position to be loaded (non-void)."""
+    import time
+    from .waits import get_block_id
+    
+    start = time.time()
+    while time.time() - start < timeout:
+        pos = ctx.get_position()
+        # Check block below player
+        block = get_block_id(ctx, int(pos[0]), int(pos[1]) - 1, int(pos[2]))
+        if "void_air" not in block:
+            return
+        time.sleep(0.5)
+    ctx.log_event("Warning: Chunk loading timed out (still void_air)")
+
+
+def wait_for_tick_stabilization(ctx, ticks: int = 60) -> None:
+    """Wait for server ticks to stabilize state."""
+    import time
+    # Approximate tick wait since we can't count true server ticks easily without bridge support
+    # 20 ticks = 1 second
+    time.sleep(ticks / 20.0)
+
+
 
 
 def teardown_test_world(

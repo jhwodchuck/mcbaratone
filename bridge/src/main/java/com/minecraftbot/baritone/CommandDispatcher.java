@@ -129,6 +129,35 @@ public class CommandDispatcher {
     }
 
     /**
+     * Simplified dispatch method for MCP use.
+     * Uses current MinecraftClient and Baritone instances.
+     *
+     * @param command The command name
+     * @param params Command parameters
+     * @return CommandResult from command execution
+     */
+    public CommandResult dispatch(String command, JsonObject params) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        IBaritone baritoneInstance = null;
+        
+        // Try to get Baritone instance
+        try {
+            if (client != null && client.player != null) {
+                baritoneInstance = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone();
+            }
+        } catch (Exception e) {
+            logger.debug("Could not get Baritone instance: {}", e.getMessage());
+        }
+        
+        // Build request object
+        JsonObject request = new JsonObject();
+        request.addProperty("command", command);
+        request.add("params", params != null ? params : new JsonObject());
+        
+        return dispatchCommand(request, null, client, baritoneInstance);
+    }
+
+    /**
      * Dispatch a command request through the handler pattern.
      *
      * @param request The command request containing command name and parameters

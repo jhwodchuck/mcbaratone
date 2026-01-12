@@ -15,6 +15,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonArray;
 import net.fabricmc.api.ModInitializer;
+import com.minecraftbot.baritone.mcp.McpServer;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.Entity;
@@ -73,6 +74,9 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     private NetworkServer networkServer;
     private ConnectionHandler connectionHandler;
     private RequestProcessor requestProcessor;
+    
+    // MCP Server (Native Java MCP implementation)
+    private McpServer mcpServer;
 
     // Modular event system
     private ClientTickHandler clientTickHandler;
@@ -270,8 +274,41 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
         // Initialize modular network layer
         initializeNetworkLayer();
-        
+
+        // Initialize MCP Server after client is fully started
+        ClientLifecycleEvents.CLIENT_STARTED.register(client -> {
+            initializeMcpServer();
+        });
+
         LOGGER.info("Baritone API Bridge initialized on port " + DEFAULT_PORT);
+    }
+    
+    /**
+     * Initialize the native Java MCP server on port 5557.
+     */
+    private void initializeMcpServer() {
+        if (!Boolean.parseBoolean(System.getProperty("mcp.enabled", "true"))) {
+            LOGGER.info("MCP server disabled via system property");
+            return;
+        }
+        
+        int mcpPort = Integer.parseInt(System.getProperty("mcp.port", "5557"));
+        try {
+            mcpServer = McpServer.create(mcpPort, commandDispatcher);
+            mcpServer.start();
+            LOGGER.info("MCP server started on ws://localhost:" + mcpPort);
+            
+            // Register shutdown hook to clean up MCP server
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                if (mcpServer != null) {
+                    LOGGER.info("Shutting down MCP server...");
+                    mcpServer.shutdown();
+                }
+            }, "mcp-shutdown-hook"));
+            
+        } catch (Exception e) {
+            LOGGER.error("Failed to start MCP server on port " + mcpPort, e);
+        }
     }
 
     // registerEventListeners removed - migrated to FabricEventRegistrar

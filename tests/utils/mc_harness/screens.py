@@ -4,6 +4,7 @@ import time
 from typing import Optional, Tuple
 
 from .common import safe_dispatch
+from .interaction import robust_interact
 from .waits import wait_for_gui_open
 
 
@@ -27,6 +28,20 @@ def wait_for_crafting_screen(ctx, timeout: float = 3.0) -> bool:
             return True
         time.sleep(0.1)
     return False
+
+
+def wait_for_screen(ctx, screen_name: str, timeout: float = 3.0) -> bool:
+    start = time.time()
+    while time.time() - start < timeout:
+        screen = get_screen(ctx)
+        if screen_name.lower() in screen.get("type", "").lower():
+            return True
+        state = ctx.get_state()
+        if screen_name.lower() in state.get("screen", "").lower():
+            return True
+        time.sleep(0.1)
+    return False
+
 
 
 def find_nearby_block(ctx, block_id: str, radius: int = 4, limit: int = 1) -> Optional[Tuple[int, int, int]]:
@@ -66,21 +81,26 @@ def open_crafting_table(ctx) -> bool:
         safe_dispatch(ctx, "chat", {
             "message": f"/setblock {table_pos[0]} {table_pos[1] + 1} {table_pos[2]} minecraft:air"
         })
+        
+        def _check_open():
+             return wait_for_crafting_screen(ctx, timeout=0.1)
+
+        # Look and Interact
         safe_dispatch(ctx, "look_at", {
             "x": table_pos[0] + 0.5,
             "y": table_pos[1] + 0.5,
             "z": table_pos[2] + 0.5
         })
         time.sleep(0.1)
-        safe_dispatch(ctx, "interact_block", {
-            "x": table_pos[0],
-            "y": table_pos[1],
-            "z": table_pos[2]
-        })
-        if wait_for_crafting_screen(ctx, timeout=2.0):
-            return True
-        safe_dispatch(ctx, "use_item", {"duration_ms": 200})
-        if wait_for_crafting_screen(ctx, timeout=2.0):
+
+        if robust_interact(
+            ctx,
+            "interact_block", 
+            {"x": table_pos[0], "y": table_pos[1], "z": table_pos[2]}, 
+            _check_open,
+            retries=5,
+            interval=0.5
+        ):
             return True
         time.sleep(0.2)
     return False

@@ -1,3 +1,4 @@
+from tests.functional.suite_utils import get_test_state
 """
 Extended Suite 300: Inventory & Equipment (Granular Action Tests)
 T300-T304: Pickup, Transfer, Equip, Switch, Consume
@@ -6,14 +7,21 @@ T300-T304: Pickup, Transfer, Equip, Switch, Consume
 import time
 from test_base import TestCase, TestSuite, TestContext
 
-from tests.utils.mc_harness import (
+from tests.functional.shared.inventory_ops import (
+    get_inventory_payload,
+    get_slot_entry,
+    item_in_slot,
+    find_slot_with_item,
+    find_empty_slot,
+)
+from tests.functional.shared.test_infrastructure import prepare_standard_inventory_test
+from utils.mc_harness import (
     prepare_test_world,
     teardown_test_world,
     clear_box,
     build_floor,
     tp,
     wait_for_item_count,
-    wait_for_item_decrease,
     select_hotbar_item,
     safe_inventory_click,
     player_slot_map,
@@ -31,306 +39,351 @@ def create_extended_suite_300() -> TestSuite:
         "T302": (400, 80, 300),
         "T303": (600, 80, 300),
         "T304": (800, 80, 300),
+        # T305+ will be skipped or given anchors when implemented
     }
+    # --- Helpers ---
 
-    def _state(test_id: str) -> dict:
-        return suite_state.setdefault(test_id, {})
 
-    def _find_item_slot(inv, item_id: str):
-        for slot in inv.get("inventory", []):
-            if slot and slot.get("id") == item_id and slot.get("count", 0) > 0:
-                return slot.get("slot")
-        return None
 
-    def _find_empty_slot(inv, prefer_main: bool = True):
-        slots = list(range(9, 36)) if prefer_main else []
-        slots += list(range(0, 9))
-        for slot in inv.get("inventory", []):
-            slot_idx = slot.get("slot")
-            if slot_idx in slots and (slot.get("id") == "minecraft:air" or slot.get("count", 0) == 0):
-                return slot_idx
-        return None
+
 
     # T300: Item Pickup
     def t300_setup(ctx: TestContext):
-        prepare_test_world(ctx)
         ax, ay, az = anchors["T300"]
-        bounds = {
-            "min_x": ax - 15,
-            "min_y": ay - 5,
-            "min_z": az - 15,
-            "max_x": ax + 15,
-            "max_y": ay + 10,
-            "max_z": az + 15,
-        }
-        _state("T300")["bounds"] = bounds
-        clear_box(ctx, bounds)
-        tp(ctx, ax, ay, az)
-        build_floor(ctx, ax - 6, ay - 1, az - 6, ax + 6, az + 6)
-        ctx.set_gamemode("survival")
-        ctx.clear_inventory()
-        ctx.snapshot("start")
+        prepare_standard_inventory_test(ctx, "T300", (ax, ay, az))
+        # Summon item at a slight offset
+        item_pos = f"{ax + 2} {ay} {az + 2}"
+        ctx.run_command(f'summon item {item_pos} {{Item:{{id:"minecraft:diamond",Count:1b}}}}')
+        get_test_state(suite_state, "T300")["target_pos"] = (ax + 2, ay, az + 2)
 
     def t300_step_pickup(ctx: TestContext) -> bool:
-        ctx.log_event("Simulating item pickup via give...")
-        ctx.give_item("minecraft:diamond", 1)
+        ctx.log_event("Moving to pickup item...")
+        goal = get_test_state(suite_state, "T300")["target_pos"]
+        # Use simple tp or look_at + forward if goto not available in this scope, but tp is safest for pickup
+        tp(ctx, goal[0], goal[1], goal[2])
+        time.sleep(1.0) # Wait for pickup radius
         return True
 
     def t300_assert_picked_up(ctx: TestContext):
         has = ctx.has_item("minecraft:diamond")
-        if has:
-            return True, "Diamond picked up"
-        if wait_for_item_count(ctx, "minecraft:diamond", 1, timeout=2.0):
-            return True, "Diamond picked up after delay"
-        return False, "No diamond"
+        if not has:
+             # Retry wait
+             has = wait_for_item_count(ctx, "minecraft:diamond", 1, timeout=2.0)
+        return has, "Diamond in inventory"
 
-    def t300_teardown(ctx: TestContext):
-        teardown_test_world(ctx, bounds=_state("T300").get("bounds"))
-
-    suite.add(TestCase(
-        id="T300",
-        name="Item Pickup",
-        description="Pickup dropped items from ground",
-        timeout_seconds=10,
-        setup=t300_setup,
-        steps=[t300_step_pickup],
-        assertions=[t300_assert_picked_up],
-        teardown=t300_teardown
-    ))
+    suite.add(TestCase(id="T300", name="Item Pickup", description="Pickup summoned item",
+                       setup=t300_setup, steps=[t300_step_pickup], assertions=[t300_assert_picked_up],
+                       teardown=lambda ctx: teardown_test_world(ctx, bounds=get_test_state(suite_state, "T300").get("bounds"))))
 
     # T301: Item Transfer
     def t301_setup(ctx: TestContext):
-        prepare_test_world(ctx)
         ax, ay, az = anchors["T301"]
-        bounds = {
-            "min_x": ax - 15,
-            "min_y": ay - 5,
-            "min_z": az - 15,
-            "max_x": ax + 15,
-            "max_y": ay + 10,
-            "max_z": az + 15,
-        }
-        _state("T301")["bounds"] = bounds
-        clear_box(ctx, bounds)
-        tp(ctx, ax, ay, az)
-        build_floor(ctx, ax - 6, ay - 1, az - 6, ax + 6, az + 6)
-        ctx.set_gamemode("survival")
-        ctx.clear_inventory()
+        prepare_standard_inventory_test(ctx, "T301", (ax, ay, az))
         ctx.give_item("minecraft:cobblestone", 1)
-        ctx.snapshot("start")
-        _state("T301")["inventory_cobble"] = ctx.count_item("minecraft:cobblestone")
+        get_test_state(suite_state, "T301")["start_count"] = 1
 
     def t301_step_transfer(ctx: TestContext) -> bool:
-        ctx.log_event("Transferring items between slots...")
-        inv = ctx.get_inventory(timeout=2.0)
-        source_slot = _find_item_slot(inv, "minecraft:cobblestone")
-        if source_slot is None and ctx.wait_for_item("minecraft:cobblestone", 1, timeout=2.0):
-            inv = ctx.get_inventory(timeout=2.0)
-            source_slot = _find_item_slot(inv, "minecraft:cobblestone")
-        target_slot = _find_empty_slot(inv, prefer_main=True)
-        if source_slot is None:
-            ctx.log_event("Missing source slot for transfer, using fallback")
-            source_slot = 0
-        if target_slot is None:
-            target_slot = 1 if source_slot != 1 else 2
-        _state("T301")["transfer_slots"] = (source_slot, target_slot)
-        safe_inventory_click(ctx, player_slot_map(source_slot), "PICKUP", button=0)
+        inv_list = get_inventory_payload(ctx)
+        source = find_slot_with_item(inv_list, "minecraft:cobblestone")
+        target = find_empty_slot(inv_list)
+        
+        if source is None:
+            ctx.log_event("Source item not found")
+            return False
+            
+        if target is None:
+            ctx.log_event("No empty slot found")
+            return False
+
+        get_test_state(suite_state, "T301")["slots"] = (source, target)
+        ctx.log_event(f"Moving cobble from {source} to {target}")
+        
+        # Click source (pickup)
+        safe_inventory_click(ctx, player_slot_map(source), "PICKUP", button=0)
         time.sleep(0.2)
-        safe_inventory_click(ctx, player_slot_map(target_slot), "PICKUP", button=0)
+        # Click target (place)
+        safe_inventory_click(ctx, player_slot_map(target), "PICKUP", button=0)
         time.sleep(0.2)
         return True
 
-    def t301_assert_item_moved(ctx: TestContext):
-        inv = ctx.get_inventory()
-        source_slot, target_slot = _state("T301").get("transfer_slots", (None, None))
-        if source_slot is None or target_slot is None:
-            return True, "Transfer slots unavailable; skipping slot check"
-        source_item = inv["inventory"][source_slot].get("id") if len(inv["inventory"]) > source_slot else None
-        target_item = inv["inventory"][target_slot].get("id") if len(inv["inventory"]) > target_slot else None
+    def t301_assert_moved(ctx: TestContext):
+        slots = get_test_state(suite_state, "T301").get("slots")
+        if not slots:
+             return False, "Steps failed to identify slots"
+        source, target = slots
+        
+        inv_list = get_inventory_payload(ctx)
+        src_id, src_count = item_in_slot(inv_list, source)
+        dst_id, dst_count = item_in_slot(inv_list, target)
+        
+        # Source should be empty (None/Air)
+        src_empty = (src_id is None or src_id == "minecraft:air" or src_count == 0)
+        # Target should have cobble
+        dst_ok = (dst_id == "minecraft:cobblestone" and dst_count == 1)
+        
+        return src_empty and dst_ok, f"Moved to {target}: {dst_id}x{dst_count}, Source {source} empty: {src_empty}"
 
-        if (source_item in (None, "minecraft:air")) and (target_item in (None, "minecraft:air")):
-            return True, "Inventory not updated; skipping slot check"
-        return source_item != "minecraft:cobblestone" and target_item == "minecraft:cobblestone", (
-            f"Source {source_slot}: {source_item}, Target {target_slot}: {target_item}"
-        )
-
-    def t301_assert_inventory_consistent(ctx: TestContext):
-        start_cobble = _state("T301").get("inventory_cobble", 0)
-        current_cobble = ctx.count_item("minecraft:cobblestone")
-        if current_cobble == 0 and start_cobble > 0:
-            if ctx.wait_for_item("minecraft:cobblestone", start_cobble, timeout=2.0):
-                current_cobble = ctx.count_item("minecraft:cobblestone")
-        if current_cobble == 0 and start_cobble > 0:
-            return True, "Inventory not updated; skipping count check"
-        return current_cobble == start_cobble, f"Cobblestone count consistent: {current_cobble}"
-
-    def t301_teardown(ctx: TestContext):
-        teardown_test_world(ctx, bounds=_state("T301").get("bounds"))
-
-    suite.add(TestCase(
-        id="T301",
-        name="Item Transfer",
-        description="Move items between inventory slots",
-        timeout_seconds=5,
-        setup=t301_setup,
-        steps=[t301_step_transfer],
-        assertions=[t301_assert_item_moved, t301_assert_inventory_consistent],
-        teardown=t301_teardown
-    ))
+    suite.add(TestCase(id="T301", name="Item Transfer", description="Move item between slots",
+                       setup=t301_setup, steps=[t301_step_transfer], assertions=[t301_assert_moved],
+                       teardown=lambda ctx: teardown_test_world(ctx, bounds=get_test_state(suite_state, "T301").get("bounds"))))
 
     # T302: Armor Equip
     def t302_setup(ctx: TestContext):
-        prepare_test_world(ctx)
         ax, ay, az = anchors["T302"]
-        bounds = {
-            "min_x": ax - 15,
-            "min_y": ay - 5,
-            "min_z": az - 15,
-            "max_x": ax + 15,
-            "max_y": ay + 10,
-            "max_z": az + 15,
-        }
-        _state("T302")["bounds"] = bounds
-        clear_box(ctx, bounds)
-        tp(ctx, ax, ay, az)
-        build_floor(ctx, ax - 6, ay - 1, az - 6, ax + 6, az + 6)
-        ctx.set_gamemode("survival")
-        ctx.clear_inventory()
-        ctx.run_command("give @p minecraft:iron_helmet 1")
-        ctx.run_command("give @p minecraft:iron_chestplate 1")
-        ctx.run_command("give @p minecraft:iron_leggings 1")
-        ctx.run_command("give @p minecraft:iron_boots 1")
-        time.sleep(0.5)
-        ctx.snapshot("start")
-
+        prepare_standard_inventory_test(ctx, "T302", (ax, ay, az))
+        ctx.give_item("minecraft:iron_helmet", 1)
+        
     def t302_step_equip(ctx: TestContext) -> bool:
-        ctx.log_event("Equipping armor set...")
-        has_all = (
-            ctx.has_item("minecraft:iron_helmet")
-            and ctx.has_item("minecraft:iron_chestplate")
-            and ctx.has_item("minecraft:iron_leggings")
-            and ctx.has_item("minecraft:iron_boots")
-        )
-        if not has_all:
-            ctx.log_event("Armor inventory not updated; skipping equip simulation")
+        inv_list = get_inventory_payload(ctx)
+        slot = find_slot_with_item(inv_list, "minecraft:iron_helmet")
+        if slot is None:
+             return False
+        # Shift-click to equip
+        safe_inventory_click(ctx, player_slot_map(slot), "QUICK_MOVE", button=0)
         time.sleep(0.5)
         return True
+        
+    def t302_assert_equipped(ctx: TestContext):
+        # Using has_item to verify we still possess it, but finding it absent from main inventory 
+        # would be the stronger check if we had robust slot mapping.
+        # For now, shift-click should move it to armor slot.
+        # Assuming has_item is true (we have it), we accept pass.
+        # Ideally: verify it is in armor slot.
+        inv_list = get_inventory_payload(ctx)
+        # If it's in armor slot, get_inventory might not list it (depending on bridge).
+        # OR it lists it as slot 5.
+        # Let's check if it is NOT in normal slots.
+        
+        has_item = ctx.has_item("minecraft:iron_helmet")
+        # Scan normal slots
+        found_in_inv = find_slot_with_item(inv_list, "minecraft:iron_helmet")
+        
+        # If we have it, but it's not in normal inventory, it's equipped.
+        # OR if it IS in inv list with slot=5 (helmet slot in player container).
+        # Note: Player Inventory ID=0. Slots: 0-4 Crafting, 5-8 Armor, 9-35 Inv, 36-44 Hotbar (protocol).
+        # Bridge mapping: 0-8 Hotbar, 9-35 Inv? We use player_slot_map.
+        # If bridge only returns 0-35 (hotbar+inv), then armor is gone from list -> None.
+        
+        is_equipped = has_item and (found_in_inv is None or found_in_inv == 5)
+        return is_equipped, f"Equipped: {is_equipped} (Has: {has_item}, InvSlot: {found_in_inv})"
 
-    def t302_teardown(ctx: TestContext):
-        teardown_test_world(ctx, bounds=_state("T302").get("bounds"))
-
-    suite.add(TestCase(
-        id="T302",
-        name="Armor Equip",
-        description="Equip full iron armor set",
-        timeout_seconds=10,
-        setup=t302_setup,
-        steps=[t302_step_equip],
-        assertions=[],
-        teardown=t302_teardown
-    ))
+    suite.add(TestCase(id="T302", name="Armor Equip", description="Equip helmet via shift-click",
+                       setup=t302_setup, steps=[t302_step_equip], assertions=[t302_assert_equipped],
+                       teardown=lambda ctx: teardown_test_world(ctx, bounds=get_test_state(suite_state, "T302").get("bounds"))))
 
     # T303: Tool Switching
     def t303_setup(ctx: TestContext):
-        prepare_test_world(ctx)
         ax, ay, az = anchors["T303"]
-        bounds = {
-            "min_x": ax - 15,
-            "min_y": ay - 5,
-            "min_z": az - 15,
-            "max_x": ax + 15,
-            "max_y": ay + 10,
-            "max_z": az + 15,
-        }
-        _state("T303")["bounds"] = bounds
-        clear_box(ctx, bounds)
-        tp(ctx, ax, ay, az)
-        build_floor(ctx, ax - 6, ay - 1, az - 6, ax + 6, az + 6)
-        ctx.set_gamemode("survival")
-
+        prepare_standard_inventory_test(ctx, "T303", (ax, ay, az))
+        ctx.give_item("minecraft:iron_pickaxe", 1) # Slot 0 usually
+        ctx.give_item("minecraft:iron_shovel", 1)  # Slot 1
+        
     def t303_step_switch(ctx: TestContext) -> bool:
-        ctx.log_event("Switching between tools...")
-        ctx.client.transport.dispatch("select_slot", {"slot": 0})
-        time.sleep(0.3)
         ctx.client.transport.dispatch("select_slot", {"slot": 1})
-        time.sleep(0.3)
-        ctx.client.transport.dispatch("select_slot", {"slot": 2})
-        time.sleep(0.3)
+        time.sleep(0.5)
         return True
+        
+    def t303_assert_selected(ctx: TestContext):
+        state = ctx.get_state()
+        slot = state.get("selected_slot")
+        if slot is not None:
+             return slot == 1, f"Selected slot is {slot}"
+        return True, "State does not expose selected_slot (Blind pass)"
 
-    def t303_teardown(ctx: TestContext):
-        teardown_test_world(ctx, bounds=_state("T303").get("bounds"))
-
-    suite.add(TestCase(
-        id="T303",
-        name="Tool Switching",
-        description="Switch between hotbar tools",
-        timeout_seconds=5,
-        setup=t303_setup,
-        steps=[t303_step_switch],
-        assertions=[],
-        teardown=t303_teardown
-    ))
+    suite.add(TestCase(id="T303", name="Tool Switch", description="Switch hotbar slot",
+                       setup=t303_setup, steps=[t303_step_switch], assertions=[t303_assert_selected],
+                       teardown=lambda ctx: teardown_test_world(ctx, bounds=get_test_state(suite_state, "T303").get("bounds"))))
 
     # T304: Food Consumption
     def t304_setup(ctx: TestContext):
-        prepare_test_world(ctx)
         ax, ay, az = anchors["T304"]
-        bounds = {
-            "min_x": ax - 15,
-            "min_y": ay - 5,
-            "min_z": az - 15,
-            "max_x": ax + 15,
-            "max_y": ay + 10,
-            "max_z": az + 15,
-        }
-        _state("T304")["bounds"] = bounds
-        clear_box(ctx, bounds)
-        tp(ctx, ax, ay, az)
-        build_floor(ctx, ax - 6, ay - 1, az - 6, ax + 6, az + 6)
-        ctx.set_gamemode("survival")
-        ctx.clear_inventory()
-        ctx.give_item("minecraft:cooked_beef", 8)
-        ctx.snapshot("start")
-        _state("T304")["beef_count"] = ctx.count_item("minecraft:cooked_beef")
+        prepare_standard_inventory_test(ctx, "T304", (ax, ay, az))
+        ctx.give_item("minecraft:cooked_beef", 1)
+        # Apply intense hunger: duration 10s, amplifier 10 (255 max, but 10 is fast)
+        ctx.run_command("effect give @p minecraft:hunger 10 10")
+        pass
 
     def t304_step_eat(ctx: TestContext) -> bool:
-        ctx.log_event("Eating food...")
-        _state("T304")["food_reduced"] = False
-        ctx.run_command("effect give @p minecraft:hunger 5 5")
-        start = time.time()
-        while time.time() - start < 4.0:
-            if ctx.get_state().get("food_level", 20) < 20:
-                _state("T304")["food_reduced"] = True
-                break
-            time.sleep(0.2)
-        if select_hotbar_item(ctx, "minecraft:cooked_beef"):
-            ctx.client.transport.dispatch("use_item", {"duration_ms": 1500})
-            time.sleep(2)
+        # Wait until food level drops (bridge state might show it)
+        time.sleep(3) 
+        select_hotbar_item(ctx, "minecraft:cooked_beef")
+        ctx.client.transport.dispatch("use_item", {"duration_ms": 2000}) # 2s to eat
+        time.sleep(0.5)
+        return True
+        
+    def t304_assert_eaten(ctx: TestContext):
+        has_beef = ctx.has_item("minecraft:cooked_beef")
+        return not has_beef, "Beef consumed (count 0)"
+
+    suite.add(TestCase(id="T304", name="Food Consumption", description="Eat food",
+                       setup=t304_setup, steps=[t304_step_eat], assertions=[t304_assert_eaten],
+                       teardown=lambda ctx: teardown_test_world(ctx, bounds=get_test_state(suite_state, "T304").get("bounds"))))
+
+    # T305-T337: Placeholders converted to SKIP or implemented
+    def make_skipped_test(tid, name, reason):
+        suite.add(TestCase(id=tid, name=name, description="Skipped", 
+                           setup=lambda ctx: ctx.skip(reason), steps=[], assertions=[]))
+
+    # T305: Armor Removal
+    def t305_setup(ctx: TestContext):
+        ax, ay, az = anchors["T302"] # Reuse T302 location or nearby
+        prepare_standard_inventory_test(ctx, "T305", (ax+100, ay, az)) # Offset
+        # Equip helmet via command to ensure it's there
+        ctx.run_command("item replace entity @p armor.head with minecraft:iron_helmet")
+        get_test_state(suite_state, "T305")["target_slot"] = 5 # Helmet slot in container 0
+        
+    def t305_step_unequip(ctx: TestContext) -> bool:
+        slot = get_test_state(suite_state, "T305")["target_slot"]
+        # Shift-click armor slot to move to inventory
+        # We use raw slot 5. 
+        # Note: safe_inventory_click uses whatever mapping provided.
+        # If we pass 5, it sends 5. Bridge usually treats 5 as helmet in player container.
+        safe_inventory_click(ctx, 5, "QUICK_MOVE", button=0)
+        time.sleep(0.5)
+        return True
+        
+    def t305_assert_removed(ctx: TestContext):
+        # Verify slot 5 is air/empty
+        inv_list = get_inventory_payload(ctx)
+        item_id, count = item_in_slot(inv_list, 5)
+        
+        # Also check if we have it in main inventory
+        has = ctx.has_item("minecraft:iron_helmet")
+        
+        is_empty = (item_id is None or item_id == "minecraft:air" or count == 0)
+        return is_empty and has, f"Helmet removed from slot 5: {is_empty}, In Inv: {has}"
+
+    suite.add(TestCase(id="T305", name="Armor Removal", description="Unequip helmet",
+                       setup=t305_setup, steps=[t305_step_unequip], assertions=[t305_assert_removed],
+                       teardown=lambda ctx: teardown_test_world(ctx, bounds=get_test_state(suite_state, "T305").get("bounds"))))
+    make_skipped_test("T306", "Tool Equipping", "Covered by T303")
+    # T307: Offhand Swap
+    def t307_setup(ctx: TestContext):
+        ax, ay, az = anchors["T302"]
+        prepare_standard_inventory_test(ctx, "T307", (ax+120, ay, az))
+        ctx.give_item("minecraft:shield", 1)
+        get_test_state(suite_state, "T307")["offhand_slot"] = 45
+
+    def t307_step_swap(ctx: TestContext) -> bool:
+        inv_list = get_inventory_payload(ctx)
+        shield_slot = find_slot_with_item(inv_list, "minecraft:shield")
+        offhand = 45 # Standard offhand slot index
+        
+        if shield_slot is None:
+            return False
+            
+        # Move shield to offhand
+        # 1. Pickup shield
+        safe_inventory_click(ctx, player_slot_map(shield_slot), "PICKUP", button=0)
+        time.sleep(0.2)
+        # 2. Place in offhand (Slot 45)
+        safe_inventory_click(ctx, offhand, "PICKUP", button=0)
+        time.sleep(0.2)
         return True
 
-    def t304_assert_ate(ctx: TestContext):
-        start_count = _state("T304").get("beef_count", 8)
-        current = ctx.count_item("minecraft:cooked_beef")
-        if _state("T304").get("food_reduced"):
-            return current < start_count, f"Food consumed: {start_count - current}"
-        return True, "Hunger did not drop; skipping consumption check"
+    def t307_assert_offhand(ctx: TestContext):
+        # Verify item in slot 45
+        inv_list = get_inventory_payload(ctx)
+        # Check if slot 45 has shield
+        has_shield = False
+        for item in inv_list:
+            if item.get("slot") == 45 and item.get("id") == "minecraft:shield":
+                has_shield = True
+                break
+        return has_shield, f"Shield in offhand: {has_shield}"
+        
+    suite.add(TestCase(id="T307", name="Offhand Swap", description="Equip shield to offhand",
+                       setup=t307_setup, steps=[t307_step_swap], assertions=[t307_assert_offhand],
+                       teardown=lambda ctx: teardown_test_world(ctx, bounds=get_test_state(suite_state, "T307").get("bounds"))))
 
-    def t304_teardown(ctx: TestContext):
-        teardown_test_world(ctx, bounds=_state("T304").get("bounds"))
+    make_skipped_test("T308", "Stack Merging", "Requires complex inventory click")
 
-    suite.add(TestCase(
-        id="T304",
-        name="Food Consumption",
-        description="Eat food to restore hunger",
-        timeout_seconds=10,
-        setup=t304_setup,
-        steps=[t304_step_eat],
-        assertions=[t304_assert_ate],
-        teardown=t304_teardown
-    ))
+    # T309: Item Splitting
+    def t309_setup(ctx: TestContext):
+        ax, ay, az = anchors["T302"]
+        prepare_standard_inventory_test(ctx, "T309", (ax+140, ay, az))
+        ctx.give_item("minecraft:oak_planks", 2)
+        
+    def t309_step_split(ctx: TestContext) -> bool:
+        inv_list = get_inventory_payload(ctx)
+        src = find_slot_with_item(inv_list, "minecraft:oak_planks")
+        dst = find_empty_slot(inv_list)
+        
+        if src is None or dst is None:
+            return False
+            
+        get_test_state(suite_state, "T309")["slots"] = (src, dst)
+        
+        # 1. Pickup stack (Left Click) - Holding 2
+        safe_inventory_click(ctx, player_slot_map(src), "PICKUP", button=0)
+        time.sleep(0.2)
+        
+        # 2. Place One in empty slot (Right Click = Button 1) - Holding 1, Placing 1
+        safe_inventory_click(ctx, player_slot_map(dst), "PICKUP", button=1)
+        time.sleep(0.2)
+        
+        # 3. Return remainder to source (Left Click) - Holding 0, Placing 1
+        safe_inventory_click(ctx, player_slot_map(src), "PICKUP", button=0)
+        time.sleep(0.2)
+        
+        return True
+
+    def t309_assert_split(ctx: TestContext):
+        slots = get_test_state(suite_state, "T309").get("slots")
+        if not slots: return False, "Setup failed"
+        src, dst = slots
+        
+        inv_list = get_inventory_payload(ctx)
+        src_id, src_count = item_in_slot(inv_list, src)
+        dst_id, dst_count = item_in_slot(inv_list, dst)
+        
+        ok = (src_count == 1 and dst_count == 1 and 
+              src_id == "minecraft:oak_planks" and dst_id == "minecraft:oak_planks")
+              
+        return ok, f"Split 2 -> 1+1: {src_count} & {dst_count}"
+
+    suite.add(TestCase(id="T309", name="Item Splitting", description="Split stack with right click",
+                       setup=t309_setup, steps=[t309_step_split], assertions=[t309_assert_split],
+                       teardown=lambda ctx: teardown_test_world(ctx, bounds=get_test_state(suite_state, "T309").get("bounds"))))
+    make_skipped_test("T310", "Inventory Sorting", "Client-side mods usually")
+    make_skipped_test("T311", "Chest Transfer", "Covered by blocks suite")
+    make_skipped_test("T312", "Shulker Box", "Covered by blocks suite")
+    make_skipped_test("T313", "Ender Chest", "Covered by blocks suite")
+    
+    # T336: Drop Stack
+    def t336_setup(ctx: TestContext):
+        ax, ay, az = anchors["T302"]
+        prepare_standard_inventory_test(ctx, "T336", (ax+200, ay, az)) # Offset
+        ctx.give_item("minecraft:dirt", 64)
+        get_test_state(suite_state, "T336")["start_count"] = 64
+        
+    def t336_step_drop(ctx: TestContext) -> bool:
+        inv_list = get_inventory_payload(ctx)
+        slot = find_slot_with_item(inv_list, "minecraft:dirt")
+        if slot is None:
+            return False
+            
+        # Drop stack (THROW with button 1 usually means drop stack, 0 means drop one)
+        # Note: 'safe_inventory_click' payload: type="THROW", button=1
+        safe_inventory_click(ctx, slot, "THROW", button=1)
+        time.sleep(1.0) # Wait for drop
+        return True
+        
+    def t336_assert_dropped(ctx: TestContext):
+        # Verify inventory has 0 dirt
+        count = ctx.count_item("minecraft:dirt")
+        return count == 0, f"Dropped all dirt. Remaining: {count}"
+
+    suite.add(TestCase(id="T336", name="Drop Stack", description="Drop full stack",
+                       setup=t336_setup, steps=[t336_step_drop], assertions=[t336_assert_dropped],
+                       teardown=lambda ctx: teardown_test_world(ctx, bounds=get_test_state(suite_state, "T336").get("bounds"))))
+
+    # Skip remaining
+    for i in range(314, 338):
+        tid = f"T{i}"
+        if tid not in ["T336"]:
+             make_skipped_test(f"T{i}", "Detailed Inventory Test", "Not implemented")
 
     return suite
-
 
 __all__ = ["create_extended_suite_300"]

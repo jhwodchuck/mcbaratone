@@ -1,6 +1,6 @@
 """Building primitives for deterministic test arenas."""
 
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Union
 
 from .world import fill, build_floor
 from .waits import assert_block
@@ -82,4 +82,32 @@ def build_narrow_ledge(ctx, anchor: Tuple[int, int, int], length: int = 6,
         "start": (ax + 1, ay, az),
         "end": (ax + length - 1, ay, az),
         "floor_y": floor_y,
+    }
+
+
+def build_flat_pad(ctx, anchor: Tuple[int, int, int], size: int = 20, block: str = "minecraft:stone") -> Dict[str, Union[int, Tuple[int, int, int]]]:
+    ax, ay, az = anchor
+    floor_y = ay - 1
+    half = size // 2
+    build_floor(ctx, ax - half, floor_y, az - half, ax + half, az + half, block)
+    return {
+        "floor_y": floor_y,
+        "center": (ax, ay, az),
+        "bounds_min": (ax - half, floor_y, az - half),
+        "bounds_max": (ax + half, floor_y, az + half),
+    }
+
+def build_corridor(ctx, anchor: Tuple[int, int, int], length: int = 20,
+                   width: int = 3, height: int = 3, wall_block: str = "minecraft:stone") -> Dict[str, Tuple[int, int, int]]:
+    ax, ay, az = anchor
+    half_w = width // 2
+    
+    # Fill solid box
+    fill(ctx, ax - 1, ay - 1, az - half_w - 1, ax + length + 1, ay + height, az + half_w + 1, wall_block)
+    # Hollow out center
+    fill(ctx, ax, ay, az - half_w, ax + length, ay + height - 1, az + half_w, "minecraft:air")
+    
+    return {
+        "start": (ax + 1, ay, az),
+        "end": (ax + length - 1, ay, az),
     }

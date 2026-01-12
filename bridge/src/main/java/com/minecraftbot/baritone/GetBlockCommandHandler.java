@@ -30,6 +30,13 @@ public class GetBlockCommandHandler implements CommandHandler {
                 String id = "";
                 if (state != null && state.getBlock() != null) {
                     id = Registries.BLOCK.getId(state.getBlock()).toString();
+                    
+                    // Add state properties
+                    JsonObject properties = new JsonObject();
+                    state.getEntries().forEach((property, value) -> {
+                        properties.addProperty(property.getName(), value.toString());
+                    });
+                    data.add("state", properties);
                 }
                 data.addProperty("id", id);
                 return CommandResult.success(data);

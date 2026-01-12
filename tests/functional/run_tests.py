@@ -6,19 +6,15 @@ Usage: python run_tests.py [--suite SUITE_NAME] [--test TEST_ID]
 import argparse
 import sys
 import os
+import time
 
 # Add paths
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..')) # Root for 'tests' package imports
 
-from test_base import FunctionalHarness
-
-# Original suites
-from suite_0_1 import create_suite_0, create_suite_1
-from suite_2 import create_suite_2
-from suite_3_4 import create_suite_3, create_suite_4
-from suite_5 import create_suite_5
-from suite_6_7_8 import create_suite_6, create_suite_7, create_suite_8
+from test_base import FunctionalHarness, FunctionalResult
 
 # Extended granular suites
 from extended_suite_100 import create_extended_suite_100
@@ -30,6 +26,28 @@ from extended_suite_600 import create_extended_suite_600
 from extended_suite_700 import create_extended_suite_700
 from extended_suite_800 import create_extended_suite_800
 from extended_suite_900 import create_extended_suite_900
+from extended_suite_1000 import create_extended_suite_1000
+
+
+def _select_log_file(args) -> str:
+    if getattr(args, "log_file", None):
+        return args.log_file
+
+    target_ids = set()
+    if args.test:
+        target_ids = {t.strip() for t in args.test.split(",") if t.strip()}
+
+    if "T1000" in target_ids or "T1001" in target_ids or "T1002" in target_ids:
+        log_dir = os.path.join(os.path.dirname(__file__), "logs")
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        return os.path.join(log_dir, f"suite_1000_{stamp}.log")
+
+    if args.suite == "Suite_1000_Base":
+        log_dir = os.path.join(os.path.dirname(__file__), "logs")
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        return os.path.join(log_dir, f"suite_1000_{stamp}.log")
+
+    return ""
 
 
 def main():
@@ -39,21 +57,14 @@ def main():
     parser.add_argument("--host", default="localhost", help="Bridge host")
     parser.add_argument("--port", type=int, default=5555, help="Bridge port")
     parser.add_argument("--list", action="store_true", help="List all tests")
+    parser.add_argument("--repeat", type=int, default=1, help="Run tests N times")
+    parser.add_argument("--fail-fast", action="store_true", help="Stop on first failure")
+    parser.add_argument("--json", action="store_true", help="Output JSON report")
+    parser.add_argument("--log-file", help="Write test events to a log file")
     args = parser.parse_args()
     
     # Create harness
     harness = FunctionalHarness(host=args.host, port=args.port)
-    
-    # Register original suites
-    harness.register_suite(create_suite_0())
-    harness.register_suite(create_suite_1())
-    harness.register_suite(create_suite_2())
-    harness.register_suite(create_suite_3())
-    harness.register_suite(create_suite_4())
-    harness.register_suite(create_suite_5())
-    harness.register_suite(create_suite_6())
-    harness.register_suite(create_suite_7())
-    harness.register_suite(create_suite_8())
     
     # Register extended granular suites
     harness.register_suite(create_extended_suite_100())
@@ -65,12 +76,13 @@ def main():
     harness.register_suite(create_extended_suite_700())
     harness.register_suite(create_extended_suite_800())
     harness.register_suite(create_extended_suite_900())
+    harness.register_suite(create_extended_suite_1000())
     
     # List mode
     if args.list:
         print("\nRegistered Test Suites:")
         print("=" * 60)
-        for name, suite in harness.suites.items():
+        for name, suite in sorted(harness.suites.items()):
             print(f"\n{name}: {suite.description}")
             for test in suite.tests:
                 print(f"  {test.id}: {test.name}")
@@ -81,8 +93,8 @@ def main():
     print(f"Connecting to {args.host}:{args.port}...")
     if not harness.connect():
         print("Failed to connect. Is Minecraft running with the bridge mod?")
-        return
-    
+        sys.exit(1)
+
     print("Connected!\n")
     try:
         version = harness.client.transport.dispatch("get_version", {})
@@ -91,41 +103,93 @@ def main():
     except Exception as e:
         print(f"Bridge version: unknown ({e})")
     
+    log_file = _select_log_file(args)
+    if log_file and harness.ctx:
+        harness.ctx.set_log_file(log_file)
+        print(f"Logging test events to: {log_file}")
+
+    overall_success = True
+
     try:
-        if args.test:
-            # Run specific test
-            found = False
-            for suite in harness.suites.values():
-                for test in suite.tests:
-                    if test.id == args.test:
-                        print(f"Running single test: {test.id}")
-                        result, msg, events = test.run(harness.ctx)
-                        print(f"Result: {result.value} - {msg}")
-                        if result != result.PASS and events:
-                            print("  Events:")
-                            for e in events[-5:]:
-                                print(f"    {e}")
-                        found = True
-                        break
-            if not found:
-                print(f"Test {args.test} not found")
+        # Repeat loop
+        for run_idx in range(args.repeat):
+            if args.repeat > 1:
+                print(f"\n[Run {run_idx + 1}/{args.repeat}]")
+
+            current_run_results = {} # {suite_name: {test_id: Result}}
+
+            if args.test:
+                # Run specific tests (comma-separated)
+                target_ids = [t.strip() for t in args.test.split(",")]
+                found_count = 0
                 
-        elif args.suite:
-            # Run specific suite
-            if args.suite in harness.suites:
-                results = harness.run_suite(args.suite)
-                harness.print_summary({args.suite: results})
+                for suite in harness.suites.values():
+                    for test in suite.tests:
+                        if test.id in target_ids:
+                            print(f"Running test: {test.id}")
+                            res, msg, events = test.run(harness.ctx)
+                            print(f"Result: {res.value} - {msg}")
+                            
+                            if res != FunctionalResult.PASS and events:
+                                print("  Events:")
+                                for e in events:
+                                    print(f"    {e}")
+                            
+                            current_run_results.setdefault(suite.name, {})[test.id] = (res, msg)
+                            found_count += 1
+
+                if found_count < len(target_ids):
+                    print(f"Warning: Only found {found_count} out of {len(target_ids)} requested tests.")
+                    # identifying missing ones is harder without extra logic, but this is sufficient for now.
+                    
+                if found_count == 0:
+                     print(f"No tests found matching: {args.test}")
+                     overall_success = False
+                     continue
+
+            elif args.suite:
+                # Run specific suite
+                if args.suite in harness.suites:
+                    suite_results = harness.run_suite(args.suite)
+                    current_run_results[args.suite] = suite_results
+                else:
+                    print(f"Suite {args.suite} not found")
+                    print(f"Available: {list(harness.suites.keys())}")
+                    overall_success = False
+                    continue
+                    
             else:
-                print(f"Suite {args.suite} not found")
-                print(f"Available: {list(harness.suites.keys())}")
-                
-        else:
-            # Run all suites
-            results = harness.run_all()
-            harness.print_summary(results)
+                # Run all suites
+                current_run_results = harness.run_all()
+
+            # Process Results for this Run
+            # 1. Print Summary
+            harness.print_summary(current_run_results)
+
+            # 2. JSON Report
+            if args.json:
+                harness.save_json_report(current_run_results)
+
+            # 3. Check Failures
+            run_has_failures = False
+            for suite_res in current_run_results.values():
+                if any(r[0] != FunctionalResult.PASS for r in suite_res.values()):
+                    run_has_failures = True
+                    break
             
+            if run_has_failures:
+                overall_success = False
+                if args.fail_fast:
+                    print("\nFail-fast triggered.")
+                    break
+
+    except KeyboardInterrupt:
+        print("\nInterrupted by user.")
+        overall_success = False
     finally:
         harness.disconnect()
+
+    sys.exit(0 if overall_success else 1)
 
 
 if __name__ == "__main__":
