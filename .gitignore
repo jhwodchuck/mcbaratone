@@ -443,3 +443,7 @@ downloads/
 !composer.json
 !tsconfig.json
 !*.md
+
+# Downloaded Gradle distribution
+bridge/gradle-8.12/
+bridge/gradle-8.12-bin.zip

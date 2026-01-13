@@ -27,6 +27,7 @@ import net.minecraft.registry.Registries;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -74,7 +75,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     private NetworkServer networkServer;
     private ConnectionHandler connectionHandler;
     private RequestProcessor requestProcessor;
-    
+
     // MCP Server (Native Java MCP implementation)
     private McpServer mcpServer;
 
@@ -97,7 +98,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     public BaritoneAPIBridge() {
         // Initialize player context
         playerContext = new MinecraftPlayerContext();
-        
+
         // Initialize command dispatcher with legacy handler
         commandDispatcher = new CommandDispatcher(missionController, this::handleLegacyCommandInternal);
     }
@@ -124,19 +125,33 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     // Player Context Abstraction for Testing
     public interface IPlayerContext {
         boolean isPlayerNull();
+
         double getX();
+
         double getY();
+
         double getZ();
+
         float getYaw();
+
         float getPitch();
+
         float getHealth();
+
         float getMaxHealth();
+
         int getFoodLevel();
+
         float getSaturationLevel();
+
         float getArmor();
+
         int getTotalExperience();
+
         BlockPos getBlockPos();
+
         String getDimension();
+
         ClientPlayerEntity getPlayer(); // For cases where we really need the entity, but try to avoid
     }
 
@@ -181,7 +196,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             ClientPlayerEntity player = MinecraftClient.getInstance().player;
             return player != null ? player.getHealth() : 0;
         }
-        
+
         @Override
         public float getMaxHealth() {
             ClientPlayerEntity player = MinecraftClient.getInstance().player;
@@ -199,13 +214,13 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             ClientPlayerEntity player = MinecraftClient.getInstance().player;
             return player != null ? player.getHungerManager().getSaturationLevel() : 0;
         }
-        
+
         @Override
         public float getArmor() {
             ClientPlayerEntity player = MinecraftClient.getInstance().player;
             return player != null ? player.getArmor() : 0;
         }
-        
+
         @Override
         public int getTotalExperience() {
             ClientPlayerEntity player = MinecraftClient.getInstance().player;
@@ -225,12 +240,10 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
         @Override
         public String getDimension() {
-             MinecraftClient client = MinecraftClient.getInstance();
-             return client.world != null ? client.world.getRegistryKey().getValue().toString() : "minecraft:overworld";
+            MinecraftClient client = MinecraftClient.getInstance();
+            return client.world != null ? client.world.getRegistryKey().getValue().toString() : "minecraft:overworld";
         }
     }
-
-
 
     public void setPlayerContext(IPlayerContext context) {
         this.playerContext = context;
@@ -240,12 +253,12 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     public void onInitialize() {
         // Use bounded thread pool to prevent resource exhaustion
         executor = new ThreadPoolExecutor(
-            THREAD_POOL_CORE_SIZE,
-            THREAD_POOL_MAX_SIZE,
-            THREAD_POOL_KEEP_ALIVE_SECONDS,
-            TimeUnit.SECONDS,
-            new LinkedBlockingQueue<>(100), // Queue up to 100 tasks
-            new ThreadPoolExecutor.CallerRunsPolicy() // Reject policy: run on calling thread if queue full
+                THREAD_POOL_CORE_SIZE,
+                THREAD_POOL_MAX_SIZE,
+                THREAD_POOL_KEEP_ALIVE_SECONDS,
+                TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(100), // Queue up to 100 tasks
+                new ThreadPoolExecutor.CallerRunsPolicy() // Reject policy: run on calling thread if queue full
         );
         schematicDir = new File(MinecraftClient.getInstance().runDirectory, "schematics");
         if (!schematicDir.exists()) {
@@ -282,7 +295,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
         LOGGER.info("Baritone API Bridge initialized on port " + DEFAULT_PORT);
     }
-    
+
     /**
      * Initialize the native Java MCP server on port 5557.
      */
@@ -291,13 +304,13 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             LOGGER.info("MCP server disabled via system property");
             return;
         }
-        
+
         int mcpPort = Integer.parseInt(System.getProperty("mcp.port", "5557"));
         try {
             mcpServer = McpServer.create(mcpPort, commandDispatcher);
             mcpServer.start();
             LOGGER.info("MCP server started on ws://localhost:" + mcpPort);
-            
+
             // Register shutdown hook to clean up MCP server
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 if (mcpServer != null) {
@@ -305,7 +318,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                     mcpServer.shutdown();
                 }
             }, "mcp-shutdown-hook"));
-            
+
         } catch (Exception e) {
             LOGGER.error("Failed to start MCP server on port " + mcpPort, e);
         }
@@ -323,16 +336,11 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         if (payload != null) {
             eventPayload.add("payload", payload);
         }
-        eventManager.publishEvent(EventManager.EventType.MISSION, eventPayload, EventManager.Priority.NORMAL, "mission_controller");
+        eventManager.publishEvent(EventManager.EventType.MISSION, eventPayload, EventManager.Priority.NORMAL,
+                "mission_controller");
     }
 
-
-
     // emitTickEvent removed - migrated to ClientTickHandler
-
-
-
-
 
     // Legacy tracking methods removed - migrated to ClientTickHandler
 
@@ -344,30 +352,27 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     private void initializeNetworkLayer() {
         // Create the request processor with all necessary dependencies
         requestProcessor = new RequestProcessor(
-            commandDispatcher,
-            this::getBaritone,
-            this::getMinecraftClient,
-            playerContext,
-            eventManager,
-            clientTickHandler::emitTickEvent,
-            this::isOfflineCommand
-        );
-        
+                commandDispatcher,
+                this::getBaritone,
+                this::getMinecraftClient,
+                playerContext,
+                eventManager,
+                clientTickHandler::emitTickEvent,
+                this::isOfflineCommand);
+
         // Create connection handler
         connectionHandler = new ConnectionHandler(
-            requestProcessor,
-            missionController,
-            uploadManager
-        );
-        
+                requestProcessor,
+                missionController,
+                uploadManager);
+
         // Create and start the network server
         networkServer = new NetworkServer(
-            connectionHandler,
-            activeConnections,
-            MAX_CONNECTIONS,
-            SOCKET_TIMEOUT_MS
-        );
-        
+                connectionHandler,
+                activeConnections,
+                MAX_CONNECTIONS,
+                SOCKET_TIMEOUT_MS);
+
         try {
             networkServer.start(DEFAULT_PORT, executor);
             running = true;
@@ -381,7 +386,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
     /**
      * @deprecated Use {@link #initializeNetworkLayer()} instead.
-     * This method is kept for fallback purposes during migration.
+     *             This method is kept for fallback purposes during migration.
      */
     @Deprecated
     private void startAPIServer() {
@@ -394,10 +399,11 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                 while (running) {
                     try {
                         Socket clientSocket = serverSocket.accept();
-                        
+
                         // Check connection limit
                         if (activeConnections.size() >= MAX_CONNECTIONS) {
-                            LOGGER.warn("Connection limit reached, rejecting client: {}", clientSocket.getRemoteSocketAddress());
+                            LOGGER.warn("Connection limit reached, rejecting client: {}",
+                                    clientSocket.getRemoteSocketAddress());
                             try {
                                 clientSocket.close();
                             } catch (IOException e) {
@@ -405,13 +411,13 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                             }
                             continue;
                         }
-                        
+
                         // Set socket timeout
                         clientSocket.setSoTimeout(SOCKET_TIMEOUT_MS);
-                        
+
                         // Track connection
                         activeConnections.add(clientSocket);
-                        
+
                         executor.submit(() -> handleClient(clientSocket));
                     } catch (IOException e) {
                         if (running)
@@ -430,7 +436,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                 BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
                 PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true)) {
             LOGGER.debug("Client connected: {}", clientId);
-            
+
             String line;
             while ((line = in.readLine()) != null) {
                 JsonObject request = null;
@@ -445,7 +451,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                     JsonObject response = new JsonObject();
                     response.addProperty("seq", ++lastSeq);
                     response.addProperty("timestamp", System.currentTimeMillis());
-                    
+
                     if (requestId != null) {
                         response.addProperty("id", requestId);
                     } else if (request != null && request.has("id")) {
@@ -486,24 +492,23 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             LOGGER.debug("Client disconnected: {}", clientId);
         }
     }
-    
+
     private void cleanupClientResources(Socket clientSocket) {
         missionController.releaseOwner(clientSocket);
         // Cleanup uploads owned by this client
         uploadManager.cleanupClientUploads(clientSocket);
     }
-    
-
 
     private JsonObject handleCommand(JsonObject request) {
         return handleCommand(request, null);
     }
-    
+
     /**
      * Handle legacy commands that haven't been migrated to the handler pattern.
      * 
      * @deprecated All commands have been migrated to CommandHandler pattern.
-     * This method is kept as a fallback for any commands that may have been missed.
+     *             This method is kept as a fallback for any commands that may have
+     *             been missed.
      */
     @Deprecated
     private CommandResult handleLegacyCommandInternal(String command, JsonObject params,
@@ -545,10 +550,12 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             MinecraftClient client = getMinecraftClient();
             IBaritone baritone = getBaritone();
 
-            // Basic precondition checks (rate limiting and other checks are handled by dispatcher)
+            // Basic precondition checks (rate limiting and other checks are handled by
+            // dispatcher)
             if (baritone == null) {
                 response.addProperty("status", "error");
-                response.addProperty("error", "Baritone not available. Make sure Baritone mod is installed and loaded.");
+                response.addProperty("error",
+                        "Baritone not available. Make sure Baritone mod is installed and loaded.");
                 return response;
             }
 
@@ -559,9 +566,10 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                 return response;
             }
 
-            // Check for damage events on each command - DELETED (handled by onClientTick -> trackPlayerDeath/health monitoring)
-            // checkPlayerDamage(client); 
-            
+            // Check for damage events on each command - DELETED (handled by onClientTick ->
+            // trackPlayerDeath/health monitoring)
+            // checkPlayerDamage(client);
+
             clientTickHandler.emitTickEvent(baritone);
 
             // Dispatch through the command dispatcher
@@ -586,10 +594,9 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     }
 
     private boolean isOfflineCommand(String command) {
-        return command.startsWith("schematic_") || command.startsWith("upload_") || missionController.isOfflineSafe(command);
+        return command.startsWith("schematic_") || command.startsWith("upload_")
+                || missionController.isOfflineSafe(command);
     }
-
-
 
     private boolean validateCoordinates(JsonObject params, JsonObject data) {
         if (params.has("x") && params.has("y") && params.has("z")) {
@@ -643,7 +650,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             telemetry.addProperty("armor", playerContext.getArmor());
             telemetry.addProperty("experience", playerContext.getTotalExperience());
             telemetry.addProperty("dimension",
-                client.world != null ? client.world.getRegistryKey().getValue().toString() : "unknown");
+                    client.world != null ? client.world.getRegistryKey().getValue().toString() : "unknown");
 
             BlockPos pos = playerContext.getBlockPos();
             JsonObject position = new JsonObject();
@@ -656,7 +663,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             rotation.addProperty("yaw", playerContext.getYaw());
             rotation.addProperty("pitch", playerContext.getPitch());
             telemetry.add("rotation", rotation);
-            
+
             telemetry.addProperty("is_pathing", baritone.getPathingBehavior().isPathing());
         } else {
             telemetry.addProperty("player", "not_loaded");
@@ -670,8 +677,6 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         telemetry.addProperty("timestamp", System.currentTimeMillis());
         return telemetry;
     }
-
-
 
     @Override
     public void handleSelection(IBaritone baritone, JsonObject params, JsonObject data) {
@@ -693,16 +698,15 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
     public void handleMine(IBaritone baritone, JsonObject params, JsonObject data) {
         // Baritone's mine process needs to be run on main thread in 1.21+
-        int count = params.has("count") ? params.get("count").getAsInt() : 
-                   (params.has("quantity") ? params.get("quantity").getAsInt() : 0);
+        int count = params.has("count") ? params.get("count").getAsInt()
+                : (params.has("quantity") ? params.get("quantity").getAsInt() : 0);
 
         if (params.has("block_type")) {
             String blockId = params.get("block_type").getAsString();
             Identifier id = Identifier.of(blockId);
             if (Registries.BLOCK.containsId(id)) {
                 Block block = Registries.BLOCK.get(id);
-                MinecraftClient.getInstance().execute(() -> 
-                    baritone.getMineProcess().mine(count, block));
+                MinecraftClient.getInstance().execute(() -> baritone.getMineProcess().mine(count, block));
                 data.addProperty("started", true);
             } else {
                 data.addProperty("error", "Unknown block: " + blockId);
@@ -717,7 +721,8 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             MinecraftClient.getInstance().execute(() -> {
                 List<BlockOptionalMeta> lookup = new ArrayList<>();
                 for (JsonElement element : blocksArray) {
-                    if (!element.isJsonPrimitive()) continue;
+                    if (!element.isJsonPrimitive())
+                        continue;
                     String blockId = element.getAsString();
                     Identifier id = Identifier.of(blockId);
                     if (Registries.BLOCK.containsId(id)) {
@@ -732,7 +737,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             });
             data.addProperty("started", true);
         } else {
-             data.addProperty("error", "Missing block_type or blocks");
+            data.addProperty("error", "Missing block_type or blocks");
         }
     }
 
@@ -740,15 +745,14 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
     // Schematic upload handlers migrated to SchematicUploadHandler.java
 
-
     // Schematic Upload Handlers
 
     private void handleSchematicInit(JsonObject params, JsonObject data, Socket clientSocket) throws Exception {
         String name = params.get("name").getAsString();
         long expectedSize = params.has("size") ? params.get("size").getAsLong() : -1;
-        UploadManager.UploadPriority priority = params.has("priority") ?
-            UploadManager.UploadPriority.valueOf(params.get("priority").getAsString().toUpperCase()) :
-            UploadManager.UploadPriority.NORMAL;
+        UploadManager.UploadPriority priority = params.has("priority")
+                ? UploadManager.UploadPriority.valueOf(params.get("priority").getAsString().toUpperCase())
+                : UploadManager.UploadPriority.NORMAL;
 
         boolean started = uploadManager.startUpload(name, expectedSize, clientSocket, priority);
         if (started) {
@@ -849,9 +853,9 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             String key = params.get("get").getAsString();
             try {
                 baritone.api.Settings.Setting<?> setting = BaritoneAPI.getSettings().allSettings.stream()
-                    .filter(s -> s.getName().equalsIgnoreCase(key))
-                    .findFirst().orElse(null);
-                
+                        .filter(s -> s.getName().equalsIgnoreCase(key))
+                        .findFirst().orElse(null);
+
                 if (setting != null) {
                     data.addProperty("key", setting.getName());
                     data.addProperty("value", setting.value.toString());
@@ -864,18 +868,18 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         } else if (params.has("set")) {
             String key = params.get("set").getAsString();
             String val = params.get("value").getAsString();
-            
+
             try {
                 // Run on main thread to be safe, though most settings can be set off-thread.
                 // Baritone settings are usually primitive wrappers or Enums.
                 MinecraftClient.getInstance().execute(() -> {
                     baritone.api.Settings.Setting<?> setting = BaritoneAPI.getSettings().allSettings.stream()
-                        .filter(s -> s.getName().equalsIgnoreCase(key))
-                        .findFirst().orElse(null);
-                    
+                            .filter(s -> s.getName().equalsIgnoreCase(key))
+                            .findFirst().orElse(null);
+
                     if (setting != null) {
                         try {
-                            // Using Baritone's internal string parsing if available, 
+                            // Using Baritone's internal string parsing if available,
                             // but safest is to handle common types or let Baritone handle it.
                             // In 1.15.0, Setting has a generic value field.
                             // We attempt to cast and set.
@@ -931,7 +935,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     public void handleGetState(MinecraftClient client, IBaritone baritone, JsonObject data) {
         try {
             // Using playerContext to allow testing without Entity class loading
-             client.submit(() -> {
+            client.submit(() -> {
                 if (playerContext.isPlayerNull()) {
                     data.addProperty("error", "Player not available");
                     return null;
@@ -945,7 +949,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                 position.addProperty("yaw", playerContext.getYaw());
                 position.addProperty("pitch", playerContext.getPitch());
                 data.add("position", position);
-                
+
                 // Block position
                 BlockPos blockPos = playerContext.getBlockPos();
                 JsonObject blockPosition = new JsonObject();
@@ -953,21 +957,22 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                 blockPosition.addProperty("y", blockPos.getY());
                 blockPosition.addProperty("z", blockPos.getZ());
                 data.add("block_position", blockPosition);
-                
+
                 // Health and status
                 data.addProperty("health", playerContext.getHealth());
                 data.addProperty("max_health", playerContext.getMaxHealth());
                 data.addProperty("food_level", playerContext.getFoodLevel());
                 data.addProperty("saturation", playerContext.getSaturationLevel());
-                data.addProperty("experience_level", 0 /* playerContext.experienceLevel */); // Not available in context yet
+                data.addProperty("experience_level", 0 /* playerContext.experienceLevel */); // Not available in context
+                                                                                             // yet
                 data.addProperty("experience_total", playerContext.getTotalExperience());
                 data.addProperty("is_dead", playerContext.getHealth() <= 0);
-                
+
                 // Baritone status
                 try {
                     boolean isPathing = baritone.getPathingBehavior().isPathing();
                     data.addProperty("is_pathing", isPathing);
-                    
+
                     if (isPathing) {
                         data.addProperty("pathing_goal", baritone.getPathingBehavior().getGoal() != null);
                     }
@@ -975,7 +980,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                     LOGGER.debug("Could not get pathing status", e);
                     data.addProperty("is_pathing", false);
                 }
-                
+
                 // World info
                 data.addProperty("dimension", playerContext.getDimension());
                 return null;
@@ -984,8 +989,6 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             data.addProperty("error", "Failed to get state: " + e.getMessage());
         }
     }
-
-
 
     // handleGetEntities deleted
 
@@ -999,7 +1002,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                 }
 
                 PlayerInventory inv = client.player.getInventory();
-                
+
                 // Main Inventory (0-35)
                 JsonArray mainInventory = new JsonArray();
                 for (int i = 0; i < 36; i++) {
@@ -1034,7 +1037,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     private JsonObject serializeItemStack(ItemStack stack, int slot) {
         JsonObject itemData = new JsonObject();
         itemData.addProperty("slot", slot);
-        
+
         if (stack.isEmpty()) {
             itemData.addProperty("id", "minecraft:air");
             itemData.addProperty("count", 0);
@@ -1045,12 +1048,12 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             itemData.addProperty("max_count", stack.getMaxCount());
             itemData.addProperty("damage", stack.getDamage());
             itemData.addProperty("max_damage", stack.getMaxDamage());
-            
+
             // SKIP name translation to prevent deadlock/freeze on off-thread access
-            // itemData.addProperty("name", stack.getName().getString()); 
-            itemData.addProperty("name", stack.getItem().toString()); // Safer fallback 
+            // itemData.addProperty("name", stack.getName().getString());
+            itemData.addProperty("name", stack.getItem().toString()); // Safer fallback
         }
-        
+
         return itemData;
     }
 
@@ -1095,12 +1098,13 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             }
         }
         payload.add("counts", countData);
-        eventManager.publishEvent(EventManager.EventType.INVENTORY_CHANGE, payload, EventManager.Priority.NORMAL, "inventory_change");
+        eventManager.publishEvent(EventManager.EventType.INVENTORY_CHANGE, payload, EventManager.Priority.NORMAL,
+                "inventory_change");
     }
 
-
     // All legacy handlers deleted (handleInventoryClick ... handleRetryCommand)
-    // handleInventoryClick, handleInteractBlock, handleGetScreen, handleCloseScreen deleted (migrated)
+    // handleInventoryClick, handleInteractBlock, handleGetScreen, handleCloseScreen
+    // deleted (migrated)
 
     // handleGetRecipes, handleGetEvents deleted (migrated)
 
@@ -1115,8 +1119,6 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     // handleSelectSlot removed - migrated to SelectSlotCommandHandler
 
     // handleGetBlock removed - migrated to GetBlockCommandHandler
-
-
 
     // handlePath removed - migrated to PathCommandHandler
 
@@ -1145,33 +1147,37 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
      * Works with 2x2 player inventory crafting (when no crafting table open).
      * 
      * Player Inventory Slot Layout (syncId=0):
-     *   Slot 0: Craft output
-     *   Slots 1-4: 2x2 crafting grid (1=TL, 2=TR, 3=BL, 4=BR)
-     *   Slots 5-8: Armor
-     *   Slots 9-35: Main inventory
-     *   Slots 36-44: Hotbar
-     *   Slot 45: Offhand
+     * Slot 0: Craft output
+     * Slots 1-4: 2x2 crafting grid (1=TL, 2=TR, 3=BL, 4=BR)
+     * Slots 5-8: Armor
+     * Slots 9-35: Main inventory
+     * Slots 36-44: Hotbar
+     * Slot 45: Offhand
      *
      * Crafting Table Slot Layout (syncId depends on open screen):
-     *   Slot 0: Craft output  
-     *   Slots 1-9: 3x3 crafting grid
-     *   Slots 10-36: Main inventory
-     *   Slots 37-45: Hotbar
+     * Slot 0: Craft output
+     * Slots 1-9: 3x3 crafting grid
+     * Slots 10-36: Main inventory
+     * Slots 37-45: Hotbar
      */
     // handleCraft removed - migrated to CraftCommandHandler
-    
+
     /**
      * Simple recipe definition for hardcoded recipes.
      */
-    // CraftRecipe and getRecipeDefinition removed - unused after handleCraft migration
-    // Helper methods (hasIngredients, countItemInInventory, findItemSlot, screenSlotFromInvSlot) removed - unused after handleCraft migration
-    // clearCraftingGrid and placeIngredients removed - unused after handleCraft migration
+    // CraftRecipe and getRecipeDefinition removed - unused after handleCraft
+    // migration
+    // Helper methods (hasIngredients, countItemInInventory, findItemSlot,
+    // screenSlotFromInvSlot) removed - unused after handleCraft migration
+    // clearCraftingGrid and placeIngredients removed - unused after handleCraft
+    // migration
 
     // handleClickRecipe removed - migrated to ClickRecipeCommandHandler
 
     // handleSmeltItems removed - migrated to SmeltItemsCommandHandler
 
-    // handleAutoCraft, performCrafting, findIngredientSlot removed - migrated to AutoCraftCommandHandler
+    // handleAutoCraft, performCrafting, findIngredientSlot removed - migrated to
+    // AutoCraftCommandHandler
 
     // handlePlaceFire removed - migrated to PlaceFireCommandHandler
 
@@ -1216,8 +1222,10 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             data.addProperty("is_pathing", isPathing);
 
             if (isPathing) {
-                data.addProperty("goal_type", baritone.getPathingBehavior().getGoal() != null ?
-                    baritone.getPathingBehavior().getGoal().getClass().getSimpleName() : "unknown");
+                data.addProperty("goal_type",
+                        baritone.getPathingBehavior().getGoal() != null
+                                ? baritone.getPathingBehavior().getGoal().getClass().getSimpleName()
+                                : "unknown");
                 // Note: Path details are complex in Baritone API, simplified here
                 data.addProperty("path_available", baritone.getPathingBehavior().getPath() != null);
             }
@@ -1241,7 +1249,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             if (baritone != null) {
                 config.addProperty("has_goal", baritone.getCustomGoalProcess().getGoal() != null);
                 config.addProperty("is_pathing", baritone.getPathingBehavior().isPathing());
-                
+
                 // Add some key settings to the config response
                 JsonObject currentSettings = new JsonObject();
                 baritone.api.Settings settings = BaritoneAPI.getSettings();
@@ -1295,11 +1303,11 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             for (Map.Entry<String, JsonElement> entry : params.entrySet()) {
                 String key = entry.getKey();
                 String val = entry.getValue().getAsString();
-                
+
                 baritone.api.Settings.Setting<?> setting = BaritoneAPI.getSettings().allSettings.stream()
-                    .filter(s -> s.getName().equalsIgnoreCase(key))
-                    .findFirst().orElse(null);
-                
+                        .filter(s -> s.getName().equalsIgnoreCase(key))
+                        .findFirst().orElse(null);
+
                 if (setting != null) {
                     modifySettingSafely(setting, val);
                 }
@@ -1342,7 +1350,8 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             // connection recovery, state synchronization, etc.
             data.addProperty("reconnected", true);
             data.addProperty("client_address", clientSocket.getRemoteSocketAddress().toString());
-            data.addProperty("note", "Reconnection logic placeholder - full implementation would require connection state management");
+            data.addProperty("note",
+                    "Reconnection logic placeholder - full implementation would require connection state management");
 
             // Reset rate limiting for this client
             lastRequestTimes.remove(clientSocket);
@@ -1353,10 +1362,12 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         }
     }
 
-    private void handleRetryCommand(JsonObject params, JsonObject data, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    private void handleRetryCommand(JsonObject params, JsonObject data, MinecraftClient client, IBaritone baritone,
+            Socket clientSocket) {
         String commandId = params.has("command_id") ? params.get("command_id").getAsString() : null;
         JsonObject originalParams = params.has("original_params") && params.get("original_params").isJsonObject()
-            ? params.getAsJsonObject("original_params") : new JsonObject();
+                ? params.getAsJsonObject("original_params")
+                : new JsonObject();
 
         if (commandId == null) {
             data.addProperty("error", "Missing command_id for retry");
@@ -1396,7 +1407,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             if (networkServer != null) {
                 networkServer.stop();
             }
-            
+
             // Legacy shutdown - close all active connections (if using legacy server)
             for (Socket socket : activeConnections) {
                 try {
@@ -1424,10 +1435,8 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         }
     }
 
-
     // handleGetView and handleScreenshot deleted
     // handleGetView and handleScreenshot deleted (migrated)
-
 
     // Helper methods for testing
     protected IBaritone getBaritone() {
