@@ -23,7 +23,8 @@ import java.util.Set;
 
 /**
  * Enhanced ScreenshotCommandHandler with advanced screenshot capabilities.
- * Supports multiple formats, metadata inclusion, custom naming, and organized file storage.
+ * Supports multiple formats, metadata inclusion, custom naming, and organized
+ * file storage.
  */
 public class ScreenshotCommandHandler extends AsyncCommandHandler {
 
@@ -37,7 +38,8 @@ public class ScreenshotCommandHandler extends AsyncCommandHandler {
     }
 
     @Override
-    public CompletableFuture<CommandResult> execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> execute(JsonObject params, MinecraftClient client, IBaritone baritone,
+            Socket clientSocket) {
         // Validate parameters
         CommandResult validation = validateScreenshotParameters(params);
         if (validation != null) {
@@ -109,17 +111,13 @@ public class ScreenshotCommandHandler extends AsyncCommandHandler {
     private ScreenshotOptions parseScreenshotOptions(JsonObject params) {
         ScreenshotOptions options = new ScreenshotOptions();
 
-        options.format = params.has("format") ?
-            params.get("format").getAsString().toUpperCase() : "PNG";
+        options.format = params.has("format") ? params.get("format").getAsString().toUpperCase() : "PNG";
 
-        options.customName = params.has("custom_name") ?
-            params.get("custom_name").getAsString() : null;
+        options.customName = params.has("custom_name") ? params.get("custom_name").getAsString() : null;
 
-        options.includeMetadata = params.has("include_metadata") ?
-            params.get("include_metadata").getAsBoolean() : true;
+        options.includeMetadata = params.has("include_metadata") ? params.get("include_metadata").getAsBoolean() : true;
 
-        options.subdirectory = params.has("subdirectory") ?
-            params.get("subdirectory").getAsString() : null;
+        options.subdirectory = params.has("subdirectory") ? params.get("subdirectory").getAsString() : null;
 
         return options;
     }
@@ -154,11 +152,10 @@ public class ScreenshotCommandHandler extends AsyncCommandHandler {
             // Take screenshot using Minecraft API
             try {
                 ScreenshotRecorder.saveScreenshot(
-                    client.runDirectory,
-                    fileName,
-                    framebuffer,
-                    msg -> {} // No message callback needed
-                );
+                        client.runDirectory,
+                        framebuffer,
+                        msg -> {
+                        });
 
                 // Verify file was created
                 if (Files.exists(filePath)) {
@@ -213,8 +210,8 @@ public class ScreenshotCommandHandler extends AsyncCommandHandler {
         if (options.customName != null && !options.customName.trim().isEmpty()) {
             // Sanitize custom name
             String sanitized = options.customName.trim()
-                .replaceAll("[^a-zA-Z0-9_-]", "_")
-                .replaceAll("__+", "_");
+                    .replaceAll("[^a-zA-Z0-9_-]", "_")
+                    .replaceAll("__+", "_");
             if (!sanitized.isEmpty()) {
                 baseName = sanitized;
             }

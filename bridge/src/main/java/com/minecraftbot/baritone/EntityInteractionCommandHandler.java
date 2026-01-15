@@ -21,8 +21,10 @@ import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Advanced entity interaction system supporting multiple interaction types with safety checks.
- * Supports attack, tame, trade, look_at actions with distance validation and interaction type detection.
+ * Advanced entity interaction system supporting multiple interaction types with
+ * safety checks.
+ * Supports attack, tame, trade, look_at actions with distance validation and
+ * interaction type detection.
  */
 public class EntityInteractionCommandHandler extends AsyncCommandHandler {
 
@@ -64,7 +66,8 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
     }
 
     @Override
-    public CompletableFuture<CommandResult> execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> execute(JsonObject params, MinecraftClient client, IBaritone baritone,
+            Socket clientSocket) {
         String action = params.has("action") ? params.get("action").getAsString() : "look_at";
 
         switch (action) {
@@ -81,7 +84,8 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
         }
     }
 
-    private CompletableFuture<CommandResult> handleEntityInteraction(JsonObject params, MinecraftClient client, String action) {
+    private CompletableFuture<CommandResult> handleEntityInteraction(JsonObject params, MinecraftClient client,
+            String action) {
         return executeOnMainThread(client, () -> {
             if (client.player == null || client.world == null) {
                 return CommandResult.error("Player or world not available");
@@ -153,7 +157,7 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
             JsonObject data = new JsonObject();
             data.addProperty("target_entity_id", target.getId());
             data.addProperty("entity_type", Registries.ENTITY_TYPE.getId(target.getType()).toString());
-            Vec3d pos = target.getPos();
+            Vec3d pos = new Vec3d(target.getX(), target.getY(), target.getZ());
             data.addProperty("target_x", pos.x);
             data.addProperty("target_y", pos.y);
             data.addProperty("target_z", pos.z);
@@ -172,14 +176,17 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
 
             JsonArray interactions = new JsonArray();
             for (Entity entity : client.world.getEntities()) {
-                double distance = client.player.getPos().distanceTo(entity.getPos());
+                double distance = new Vec3d(client.player.getX(), client.player.getY(), client.player.getZ())
+                        .distanceTo(new Vec3d(entity.getX(), entity.getY(), entity.getZ()));
                 if (distance <= maxDistance) {
                     for (InteractionType type : InteractionType.values()) {
-                        InteractionValidation validation = validateInteraction(client, entity, type.name().toLowerCase());
+                        InteractionValidation validation = validateInteraction(client, entity,
+                                type.name().toLowerCase());
                         if (validation.valid) {
                             JsonObject interaction = new JsonObject();
                             interaction.addProperty("entity_id", entity.getId());
-                            interaction.addProperty("entity_type", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
+                            interaction.addProperty("entity_type",
+                                    Registries.ENTITY_TYPE.getId(entity.getType()).toString());
                             interaction.addProperty("interaction_type", type.name());
                             interaction.addProperty("distance", distance);
                             interactions.add(interaction);
@@ -204,7 +211,8 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
                 // Check for shears
                 for (int i = 0; i < client.player.getInventory().size(); i++) {
                     var item = client.player.getInventory().getStack(i);
-                    if (!item.isEmpty() && Registries.ITEM.getId(item.getItem()).toString().equals("minecraft:shears")) {
+                    if (!item.isEmpty()
+                            && Registries.ITEM.getId(item.getItem()).toString().equals("minecraft:shears")) {
                         return null; // Found shears
                     }
                 }
@@ -213,7 +221,8 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
                 // Check for empty bucket
                 for (int i = 0; i < client.player.getInventory().size(); i++) {
                     var item = client.player.getInventory().getStack(i);
-                    if (!item.isEmpty() && Registries.ITEM.getId(item.getItem()).toString().equals("minecraft:bucket")) {
+                    if (!item.isEmpty()
+                            && Registries.ITEM.getId(item.getItem()).toString().equals("minecraft:bucket")) {
                         return null; // Found bucket
                     }
                 }
@@ -227,8 +236,8 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
     }
 
     private InteractionValidation validateInteraction(MinecraftClient client, Entity target, String action) {
-        Vec3d playerPos = client.player.getPos();
-        Vec3d targetPos = target.getPos();
+        Vec3d playerPos = new Vec3d(client.player.getX(), client.player.getY(), client.player.getZ());
+        Vec3d targetPos = new Vec3d(target.getX(), target.getY(), target.getZ());
         double distance = playerPos.distanceTo(targetPos);
 
         // Distance check (Minecraft interaction range)
@@ -247,7 +256,8 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
 
                 case TAME:
                     if (!(target instanceof TameableEntity)) {
-                        return InteractionValidation.error("Entity cannot be tamed: " + Registries.ENTITY_TYPE.getId(target.getType()).toString());
+                        return InteractionValidation.error(
+                                "Entity cannot be tamed: " + Registries.ENTITY_TYPE.getId(target.getType()).toString());
                     }
                     TameableEntity tameable = (TameableEntity) target;
                     if (tameable.isTamed()) {
@@ -255,15 +265,16 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
                     }
                     String entityTypeId = Registries.ENTITY_TYPE.getId(target.getType()).toString();
                     if (!entityTypeId.equals("minecraft:wolf") &&
-                        !entityTypeId.equals("minecraft:cat") &&
-                        !entityTypeId.equals("minecraft:parrot")) {
+                            !entityTypeId.equals("minecraft:cat") &&
+                            !entityTypeId.equals("minecraft:parrot")) {
                         return InteractionValidation.error("Only wolves, cats, and parrots can be tamed");
                     }
                     return InteractionValidation.success(distance, InteractionType.TAME);
 
                 case SHEAR:
                     if (!(target instanceof SheepEntity)) {
-                        return InteractionValidation.error("Entity cannot be sheared: " + Registries.ENTITY_TYPE.getId(target.getType()).toString());
+                        return InteractionValidation.error("Entity cannot be sheared: "
+                                + Registries.ENTITY_TYPE.getId(target.getType()).toString());
                     }
                     SheepEntity sheep = (SheepEntity) target;
                     if (sheep.isSheared()) {
@@ -273,7 +284,8 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
 
                 case MILK:
                     if (!(target instanceof CowEntity) && !(target instanceof MooshroomEntity)) {
-                        return InteractionValidation.error("Entity cannot be milked: " + Registries.ENTITY_TYPE.getId(target.getType()).toString());
+                        return InteractionValidation.error("Entity cannot be milked: "
+                                + Registries.ENTITY_TYPE.getId(target.getType()).toString());
                     }
                     return InteractionValidation.success(distance, InteractionType.MILK);
 
@@ -297,14 +309,16 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
                 case TAME:
                     if (target instanceof AnimalEntity) {
                         // Attempt to tame by interacting
-                        client.interactionManager.interactEntity(client.player, target, net.minecraft.util.Hand.MAIN_HAND);
+                        client.interactionManager.interactEntity(client.player, target,
+                                net.minecraft.util.Hand.MAIN_HAND);
                         return true;
                     }
                     break;
 
                 case TRADE:
                     if (target instanceof VillagerEntity) {
-                        client.interactionManager.interactEntity(client.player, target, net.minecraft.util.Hand.MAIN_HAND);
+                        client.interactionManager.interactEntity(client.player, target,
+                                net.minecraft.util.Hand.MAIN_HAND);
                         return true;
                     }
                     break;
@@ -326,9 +340,10 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
     }
 
     private void lookAtEntity(MinecraftClient client, Entity target) {
-        Vec3d targetPos = target.getPos();
+        Vec3d targetPos = new Vec3d(target.getX(), target.getY(), target.getZ());
         double dx = targetPos.x - client.player.getX();
-        double dy = (targetPos.y + target.getHeight() / 2) - (client.player.getY() + client.player.getEyeHeight(client.player.getPose()));
+        double dy = (targetPos.y + target.getHeight() / 2)
+                - (client.player.getY() + client.player.getEyeHeight(client.player.getPose()));
         double dz = targetPos.z - client.player.getZ();
 
         double dist = Math.sqrt(dx * dx + dz * dz);
@@ -346,7 +361,8 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
         for (Entity entity : client.world.getEntities()) {
             String typeId = Registries.ENTITY_TYPE.getId(entity.getType()).toString();
             if (typeId.equals(entityType) || typeId.endsWith(":" + entityType)) {
-                double distance = client.player.getPos().distanceTo(entity.getPos());
+                double distance = new Vec3d(client.player.getX(), client.player.getY(), client.player.getZ())
+                        .distanceTo(new Vec3d(entity.getX(), entity.getY(), entity.getZ()));
                 if (distance <= maxDistance && distance < minDistance) {
                     minDistance = distance;
                     nearest = entity;

@@ -20,6 +20,7 @@ import time
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 from baritone_client.common.inventory import select_item
+from tests.utils.mc_harness.waits import cancel_pathing
 
 # Constants
 BASE_Y = 80
@@ -101,23 +102,31 @@ def find_stand_pos(ctx, x: Union[int, float], y: Union[int, float], z: Union[int
         Tuple of (x, y, z) coordinates for standing.
     """
     offsets = []
-    for dy in (0, 1, -1):
+    for dy in (0, 1, -1, 2): # Try standing a bit higher too
         for dx in range(-radius, radius + 1):
             for dz in range(-radius, radius + 1):
+                # Avoid standing exactly in the target block OR directly above/below it
+                if abs(dx) < 1 and abs(dz) < 1:
+                    continue
                 offsets.append((dx, dy, dz))
-    offsets.sort(key=lambda o: (o[0] * o[0] + o[1] * o[1] + o[2] * o[2], abs(o[1])))
+    
+    # Sort by horizontal distance, aiming for ~2 blocks away
+    offsets.sort(key=lambda o: (abs(2.2 - (o[0]*o[0] + o[2]*o[2])**0.5), abs(o[1])))
+    
     for dx, dy, dz in offsets:
         sx, sy, sz = int(x + dx), int(y + dy), int(z + dz)
         block_at = block_id_at(ctx, sx, sy, sz)
+        block_above = block_id_at(ctx, sx, sy + 1, sz)
         block_below = block_id_at(ctx, sx, sy - 1, sz)
+        
         if is_liquid(block_at) or is_liquid(block_below):
             continue
-        if "air" not in block_at:
+        if "air" not in block_at or "air" not in block_above:
             continue
         if "air" in block_below:
             continue
         return (sx, sy, sz)
-    return (int(x), int(y), int(z))
+    return (int(x) + 2, int(y), int(z)) # Fallback
 
 
 def find_place_pos_near(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, float],
@@ -146,18 +155,33 @@ def find_place_pos_near(ctx, x: Union[int, float], y: Union[int, float], z: Unio
             for dz in range(-radius, radius + 1):
                 offsets.append((dx, dy, dz))
     offsets.sort(key=lambda o: (o[0] * o[0] + o[1] * o[1] + o[2] * o[2], abs(o[1])))
+    curr_px, curr_py, curr_pz = ctx.get_position()
     for dx, dy, dz in offsets:
         px, py, pz = int(x + dx), int(y + dy), int(z + dz)
         if (px, py, pz) in avoid:
             continue
+        
+        # Avoid placing at the exact same block the player is standing in (hitbox roughly 0.6x1.8x0.6)
+        if abs(px - curr_px) < 0.8 and abs(pz - curr_pz) < 0.8 and abs(py - int(curr_py)) < 2:
+             continue
         block_at = block_id_at(ctx, px, py, pz)
         block_below = block_id_at(ctx, px, py - 1, pz)
-        if is_liquid(block_at) or is_liquid(block_below):
+        
+        # Must be placing in air/replaceable
+        if "air" not in block_at and "water" not in block_at and "lava" not in block_at:
             continue
-        if "air" not in block_at:
+            
+        # Support block must be solid
+        if not block_below or "air" in block_below or "water" in block_below or "lava" in block_below:
             continue
-        if "air" in block_below:
-            continue
+            
+        # Exclude common non-solid ground covers
+        non_solid = ["grass", "flower", "fern", "sapling", "dead_bush", "torch", "fire", "leaf_litter", "snow"]
+        if any(ns in block_below for ns in non_solid):
+            # grass_block is an exception, it is solid
+            if "grass_block" not in block_below:
+                continue
+                
         return (px, py, pz)
     return (int(x), int(y), int(z))
 
@@ -178,7 +202,8 @@ def move_near(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, flo
     from tests.utils.mc_harness.actions import do_goto
     stand_x, stand_y, stand_z = find_stand_pos(ctx, x, y, z, radius=3)
     target = {"x": stand_x, "y": stand_y, "z": stand_z}
-    ok = do_goto(ctx, target, timeout=timeout, arrival_radius=2.5, require_arrival=False)
+    # Use smaller arrival radius for interaction
+    ok = do_goto(ctx, target, timeout=timeout, arrival_radius=1.2, require_arrival=True)
     if not ok and not in_range(ctx, stand_x, stand_y, stand_z):
         ctx.log_event(f"Move failed near {x},{y},{z}")
         return False
@@ -304,11 +329,22 @@ def place_block_at(ctx, x: Union[int, float], y: Union[int, float], z: Union[int
         ctx.log_event(f"Placement target block at {x},{y},{z}: {target_block}")
         return False
 
-    # DEBUG: verify we really have it
-    inv = ctx.get_inventory()
-    slots = get_inv_slots(inv)
-    matching_slots = [s for s in slots if s.get("id") == block_type]
-    ctx.log_event(f"DEBUG: select_item OK. Inventory slots for {block_type}: {matching_slots}")
+    # DEBUG: verify we really have it (with retries for sync)
+    matching_slots = []
+    for _ in range(3):
+        inv = ctx.get_inventory()
+        slots = get_inv_slots(inv)
+        matching_slots = [s for s in slots if s.get("id") == block_type]
+        if matching_slots:
+            break
+        time.sleep(0.5)
+
+    ctx.log_event(f"DEBUG: select_item finished. Inventory slots for {block_type}: {matching_slots}")
+
+    # Ensure we are looking at the target and not pathing
+    cancel_pathing(ctx)
+    ctx.client.transport.dispatch("look_at", {"x": x + 0.5, "y": y + 0.5, "z": z + 0.5})
+    time.sleep(0.5)
 
     px, py, pz = ctx.get_position()
     if int(px) == int(x) and int(py) == int(y) and int(pz) == int(z):
@@ -384,7 +420,7 @@ def place_block_at(ctx, x: Union[int, float], y: Union[int, float], z: Union[int
 
 
 def bot_place_block(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, float], block_type: str, allow_move: bool = True):
-    """Place a single block using survival-safe placement.
+    """Place a single block using survival-safe placement with retries.
 
     Args:
         ctx: Test context.
@@ -397,10 +433,30 @@ def bot_place_block(ctx, x: Union[int, float], y: Union[int, float], z: Union[in
     Returns:
         True if placement successful.
     """
-    if allow_move:
-        # Use the target Y+1 for standing level, not hardcoded BASE_Y
-        move_near(ctx, x, int(y) + 1, z, timeout=15.0)
-    return place_block_at(ctx, x, y, z, block_type, allow_move=allow_move)
+    failed_spots = set()
+    for attempt in range(4):
+        # Find a suitable position (increase search radius on retry)
+        target = find_place_pos_near(ctx, int(x), int(y), int(z), radius=attempt + 2, avoid=failed_spots)
+        if not target:
+            continue
+            
+        tx, ty, tz = target
+        if allow_move:
+            # Move to a stand position relative to THAT specific target
+            move_near(ctx, tx, ty, tz, timeout=12.0)
+            
+        if place_block_at(ctx, tx, ty, tz, block_type, allow_move=False): # allow_move=False because we just moved
+            return True
+            
+        # If failed, record this spot and try another
+        failed_spots.add(target)
+        
+        # Move slightly to clear potentially conflicting state
+        px, py, pz = ctx.get_position()
+        move_near(ctx, px + 0.5, py, pz + 0.5, timeout=5.0)
+        time.sleep(0.5)
+        
+    return False
 
 
 def bot_build_hollow_box(ctx, min_x: int, min_y: int, min_z: int, max_x: int, max_y: int, max_z: int, wall_block: str):

@@ -114,12 +114,13 @@ def select_item(client, item_id: str, allow_swap: bool = False) -> bool:
         # Move to Hotbar 0 (Protocol 36)
         # Use PICKUP sequence
         client.transport.dispatch('inventory_click', {'slot': slot, 'type': 'PICKUP', 'button': 0})
-        time.sleep(0.15)
+        time.sleep(0.2)
         client.transport.dispatch('inventory_click', {'slot': 36, 'type': 'PICKUP', 'button': 0})
-        time.sleep(0.15)
+        time.sleep(0.2)
         client.transport.dispatch('inventory_click', {'slot': slot, 'type': 'PICKUP', 'button': 0})
-        time.sleep(0.15)
+        time.sleep(0.2)
         client.transport.dispatch('select_slot', {'slot': 0})
+        time.sleep(0.2)
         return True
         
     return False

@@ -27,6 +27,7 @@ from extended_suite_700 import create_extended_suite_700
 from extended_suite_800 import create_extended_suite_800
 from extended_suite_900 import create_extended_suite_900
 from extended_suite_1000 import create_extended_suite_1000
+from extended_suite_1100 import create_extended_suite_1100
 
 
 def _select_log_file(args) -> str:
@@ -77,6 +78,7 @@ def main():
     harness.register_suite(create_extended_suite_800())
     harness.register_suite(create_extended_suite_900())
     harness.register_suite(create_extended_suite_1000())
+    harness.register_suite(create_extended_suite_1100())
     
     # List mode
     if args.list:

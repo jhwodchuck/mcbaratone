@@ -27,14 +27,14 @@ public class McpJsonRpcHandler {
      */
     public String handle(String message, McpSession session) {
         JsonElement id = null;
-        
+
         try {
             JsonObject request = GSON.fromJson(message, JsonObject.class);
 
             // Validate JSON-RPC 2.0
             if (!request.has("jsonrpc") || !"2.0".equals(request.get("jsonrpc").getAsString())) {
-                return errorResponse(null, McpErrorCodes.INVALID_REQUEST, 
-                    "Missing or invalid jsonrpc version", null);
+                return errorResponse(null, McpErrorCodes.INVALID_REQUEST,
+                        "Missing or invalid jsonrpc version", null);
             }
 
             String method = request.has("method") ? request.get("method").getAsString() : null;
@@ -77,6 +77,7 @@ public class McpJsonRpcHandler {
             // Lifecycle
             case "initialize" -> handleInitialize(params, session);
             case "initialized" -> handleInitialized(session);
+            case "notifications/initialized" -> handleInitialized(session); // Alias for newer MCP clients
             case "ping" -> handlePing();
             case "shutdown" -> handleShutdown(session);
 
@@ -93,8 +94,8 @@ public class McpJsonRpcHandler {
             // Cancellation
             case "notifications/cancelled" -> handleCancelled(params, session);
 
-            default -> throw new McpException(McpErrorCodes.METHOD_NOT_FOUND, 
-                "Method not found: " + method);
+            default -> throw new McpException(McpErrorCodes.METHOD_NOT_FOUND,
+                    "Method not found: " + method);
         };
     }
 
@@ -111,10 +112,10 @@ public class McpJsonRpcHandler {
             if (paramsObj.has("clientInfo")) {
                 clientInfo = paramsObj.getAsJsonObject("clientInfo");
             }
-            
+
             // Optional: Validate authentication
             // if (authRequired && !validateAuth(paramsObj)) {
-            //     throw new McpException(McpErrorCodes.AUTH_FAILED, "Authentication failed");
+            // throw new McpException(McpErrorCodes.AUTH_FAILED, "Authentication failed");
             // }
         }
 
@@ -155,38 +156,38 @@ public class McpJsonRpcHandler {
         }
 
         JsonObject paramsObj = params.getAsJsonObject();
-        
+
         if (!paramsObj.has("name")) {
             throw new McpException(McpErrorCodes.INVALID_PARAMS, "Missing tool name");
         }
 
         String toolName = paramsObj.get("name").getAsString();
-        JsonObject arguments = paramsObj.has("arguments") 
-            ? paramsObj.getAsJsonObject("arguments") 
-            : new JsonObject();
+        JsonObject arguments = paramsObj.has("arguments")
+                ? paramsObj.getAsJsonObject("arguments")
+                : new JsonObject();
 
         LOGGER.debug("Calling tool: {} with args: {}", toolName, arguments);
-        
+
         JsonObject toolResult = toolRegistry.invokeTool(toolName, arguments, session);
-        
+
         // Wrap result in MCP spec-compliant content array format
         // See: https://spec.modelcontextprotocol.io/specification/server/tools/
         JsonObject response = new JsonObject();
         JsonArray content = new JsonArray();
-        
+
         JsonObject textContent = new JsonObject();
         textContent.addProperty("type", "text");
         textContent.addProperty("text", GSON.toJson(toolResult));
         content.add(textContent);
-        
+
         response.add("content", content);
-        
+
         // Add isError flag if tool returned an error
-        if (toolResult.has("error") || 
-            (toolResult.has("success") && !toolResult.get("success").getAsBoolean())) {
+        if (toolResult.has("error") ||
+                (toolResult.has("success") && !toolResult.get("success").getAsBoolean())) {
             response.addProperty("isError", true);
         }
-        
+
         return response;
     }
 
@@ -222,7 +223,7 @@ public class McpJsonRpcHandler {
 
         String uri = paramsObj.get("uri").getAsString();
         resourceRegistry.subscribe(uri, session);
-        
+
         JsonObject result = new JsonObject();
         result.addProperty("success", true);
         return result;
@@ -240,7 +241,7 @@ public class McpJsonRpcHandler {
 
         String uri = paramsObj.get("uri").getAsString();
         resourceRegistry.unsubscribe(uri, session);
-        
+
         JsonObject result = new JsonObject();
         result.addProperty("success", true);
         return result;
@@ -268,7 +269,7 @@ public class McpJsonRpcHandler {
         JsonObject response = new JsonObject();
         response.addProperty("jsonrpc", "2.0");
         response.add("id", id);
-        
+
         if (result == null) {
             response.add("result", JsonNull.INSTANCE);
         } else if (result instanceof JsonElement) {
@@ -276,7 +277,7 @@ public class McpJsonRpcHandler {
         } else {
             response.add("result", GSON.toJsonTree(result));
         }
-        
+
         return response.toString();
     }
 
@@ -287,7 +288,7 @@ public class McpJsonRpcHandler {
         JsonObject response = new JsonObject();
         response.addProperty("jsonrpc", "2.0");
         response.add("id", id != null ? id : JsonNull.INSTANCE);
-        
+
         JsonObject error = new JsonObject();
         error.addProperty("code", code);
         error.addProperty("message", message);
@@ -297,7 +298,7 @@ public class McpJsonRpcHandler {
             error.add("data", dataObj);
         }
         response.add("error", error);
-        
+
         return response.toString();
     }
 
@@ -308,7 +309,7 @@ public class McpJsonRpcHandler {
         JsonObject notification = new JsonObject();
         notification.addProperty("jsonrpc", "2.0");
         notification.addProperty("method", method);
-        
+
         if (params != null) {
             if (params instanceof JsonElement) {
                 notification.add("params", (JsonElement) params);
@@ -316,7 +317,7 @@ public class McpJsonRpcHandler {
                 notification.add("params", GSON.toJsonTree(params));
             }
         }
-        
+
         return notification.toString();
     }
 }

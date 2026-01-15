@@ -51,9 +51,13 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("action", "attack");
 
         Entity mockEntity = mock(Entity.class);
-        when(mockEntity.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        when(mockEntity.getX()).thenReturn(0.0);
+        when(mockEntity.getY()).thenReturn(0.0);
+        when(mockEntity.getZ()).thenReturn(0.0);
         when(mockClient.world.getEntityById(123)).thenReturn(mockEntity);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(1, 1, 1));
+        when(mockClient.player.getX()).thenReturn(1.0);
+        when(mockClient.player.getY()).thenReturn(1.0);
+        when(mockClient.player.getZ()).thenReturn(1.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);
@@ -90,13 +94,18 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("entity_id", 456);
         params.addProperty("action", "tame");
 
-        net.minecraft.entity.passive.TameableEntity mockAnimal = mock(net.minecraft.entity.passive.TameableEntity.class);
-        when(mockAnimal.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        net.minecraft.entity.passive.TameableEntity mockAnimal = mock(
+                net.minecraft.entity.passive.TameableEntity.class);
+        when(mockAnimal.getX()).thenReturn(0.0);
+        when(mockAnimal.getY()).thenReturn(0.0);
+        when(mockAnimal.getZ()).thenReturn(0.0);
         when(mockAnimal.isTamed()).thenReturn(false);
         when(mockAnimal.getType()).thenReturn((EntityType) EntityType.WOLF);
 
         when(mockClient.world.getEntityById(456)).thenReturn(mockAnimal);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(1, 1, 1));
+        when(mockClient.player.getX()).thenReturn(1.0);
+        when(mockClient.player.getY()).thenReturn(1.0);
+        when(mockClient.player.getZ()).thenReturn(1.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);
@@ -114,12 +123,17 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("entity_id", 456);
         params.addProperty("action", "tame");
 
-        net.minecraft.entity.passive.TameableEntity mockAnimal = mock(net.minecraft.entity.passive.TameableEntity.class);
-        when(mockAnimal.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        net.minecraft.entity.passive.TameableEntity mockAnimal = mock(
+                net.minecraft.entity.passive.TameableEntity.class);
+        when(mockAnimal.getX()).thenReturn(0.0);
+        when(mockAnimal.getY()).thenReturn(0.0);
+        when(mockAnimal.getZ()).thenReturn(0.0);
         when(mockAnimal.isTamed()).thenReturn(true);
 
         when(mockClient.world.getEntityById(456)).thenReturn(mockAnimal);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(1, 1, 1));
+        when(mockClient.player.getX()).thenReturn(1.0);
+        when(mockClient.player.getY()).thenReturn(1.0);
+        when(mockClient.player.getZ()).thenReturn(1.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);
@@ -138,11 +152,15 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("action", "trade");
 
         VillagerEntity mockVillager = mock(VillagerEntity.class);
-        when(mockVillager.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        when(mockVillager.getX()).thenReturn(0.0);
+        when(mockVillager.getY()).thenReturn(0.0);
+        when(mockVillager.getZ()).thenReturn(0.0);
         when(mockVillager.getType()).thenReturn((EntityType) EntityType.VILLAGER);
 
         when(mockClient.world.getEntityById(789)).thenReturn(mockVillager);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(1, 1, 1));
+        when(mockClient.player.getX()).thenReturn(1.0);
+        when(mockClient.player.getY()).thenReturn(1.0);
+        when(mockClient.player.getZ()).thenReturn(1.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);
@@ -161,11 +179,15 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("action", "look_at");
 
         Entity mockEntity = mock(Entity.class);
-        when(mockEntity.getPos()).thenReturn(new Vec3d(10, 10, 10));
+        when(mockEntity.getX()).thenReturn(10.0);
+        when(mockEntity.getY()).thenReturn(10.0);
+        when(mockEntity.getZ()).thenReturn(10.0);
         when(mockEntity.getId()).thenReturn(321);
 
         when(mockClient.world.getEntityById(321)).thenReturn(mockEntity);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        when(mockClient.player.getX()).thenReturn(0.0);
+        when(mockClient.player.getY()).thenReturn(0.0);
+        when(mockClient.player.getZ()).thenReturn(0.0);
         when(mockClient.player.getEyeHeight(any())).thenReturn(1.62f);
 
         // Execute
@@ -185,11 +207,15 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("action", "look_at");
 
         VillagerEntity mockVillager = mock(VillagerEntity.class);
-        when(mockVillager.getPos()).thenReturn(new Vec3d(5, 5, 5));
+        when(mockVillager.getX()).thenReturn(5.0);
+        when(mockVillager.getY()).thenReturn(5.0);
+        when(mockVillager.getZ()).thenReturn(5.0);
         when(mockVillager.getId()).thenReturn(555);
 
         when(mockClient.world.getEntities()).thenReturn(java.util.List.of(mockVillager));
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        when(mockClient.player.getX()).thenReturn(0.0);
+        when(mockClient.player.getY()).thenReturn(0.0);
+        when(mockClient.player.getZ()).thenReturn(0.0);
         when(mockClient.player.getEyeHeight(any())).thenReturn(1.62f);
 
         // Execute
@@ -209,9 +235,13 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("action", "attack");
 
         Entity mockEntity = mock(Entity.class);
-        when(mockEntity.getPos()).thenReturn(new Vec3d(100, 100, 100)); // Very far
+        when(mockEntity.getX()).thenReturn(100.0);
+        when(mockEntity.getY()).thenReturn(100.0);
+        when(mockEntity.getZ()).thenReturn(100.0);
         when(mockClient.world.getEntityById(123)).thenReturn(mockEntity);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        when(mockClient.player.getX()).thenReturn(0.0);
+        when(mockClient.player.getY()).thenReturn(0.0);
+        when(mockClient.player.getZ()).thenReturn(0.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);
@@ -229,12 +259,16 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("action", "detect");
 
         Entity mockCow = mock(Entity.class);
-        when(mockCow.getPos()).thenReturn(new Vec3d(2, 2, 2));
+        when(mockCow.getX()).thenReturn(2.0);
+        when(mockCow.getY()).thenReturn(2.0);
+        when(mockCow.getZ()).thenReturn(2.0);
         when(mockCow.getId()).thenReturn(100);
         when(mockCow.getType()).thenReturn((EntityType) EntityType.COW);
 
         when(mockClient.world.getEntities()).thenReturn(java.util.List.of(mockCow));
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        when(mockClient.player.getX()).thenReturn(0.0);
+        when(mockClient.player.getY()).thenReturn(0.0);
+        when(mockClient.player.getZ()).thenReturn(0.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);
@@ -253,12 +287,16 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("action", "tame");
 
         net.minecraft.entity.passive.TameableEntity mockCat = mock(net.minecraft.entity.passive.TameableEntity.class);
-        when(mockCat.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        when(mockCat.getX()).thenReturn(0.0);
+        when(mockCat.getY()).thenReturn(0.0);
+        when(mockCat.getZ()).thenReturn(0.0);
         when(mockCat.isTamed()).thenReturn(false);
         when(mockCat.getType()).thenReturn((EntityType) EntityType.CAT);
 
         when(mockClient.world.getEntityById(200)).thenReturn(mockCat);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(1, 1, 1));
+        when(mockClient.player.getX()).thenReturn(1.0);
+        when(mockClient.player.getY()).thenReturn(1.0);
+        when(mockClient.player.getZ()).thenReturn(1.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);
@@ -277,12 +315,16 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("action", "tame");
 
         net.minecraft.entity.passive.TameableEntity mockHorse = mock(net.minecraft.entity.passive.TameableEntity.class);
-        when(mockHorse.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        when(mockHorse.getX()).thenReturn(0.0);
+        when(mockHorse.getY()).thenReturn(0.0);
+        when(mockHorse.getZ()).thenReturn(0.0);
         when(mockHorse.isTamed()).thenReturn(false);
         when(mockHorse.getType()).thenReturn((EntityType) EntityType.HORSE);
 
         when(mockClient.world.getEntityById(300)).thenReturn(mockHorse);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(1, 1, 1));
+        when(mockClient.player.getX()).thenReturn(1.0);
+        when(mockClient.player.getY()).thenReturn(1.0);
+        when(mockClient.player.getZ()).thenReturn(1.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);
@@ -300,7 +342,8 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("entity_id", 400);
         params.addProperty("action", "tame");
 
-        net.minecraft.entity.passive.TameableEntity mockParrot = mock(net.minecraft.entity.passive.TameableEntity.class);
+        net.minecraft.entity.passive.TameableEntity mockParrot = mock(
+                net.minecraft.entity.passive.TameableEntity.class);
         when(mockParrot.getPos()).thenReturn(new Vec3d(0, 0, 0));
         when(mockParrot.isTamed()).thenReturn(false);
         when(mockParrot.getType()).thenReturn((EntityType) EntityType.PARROT);
@@ -325,12 +368,16 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("action", "shear");
 
         net.minecraft.entity.passive.SheepEntity mockSheep = mock(net.minecraft.entity.passive.SheepEntity.class);
-        when(mockSheep.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        when(mockSheep.getX()).thenReturn(0.0);
+        when(mockSheep.getY()).thenReturn(0.0);
+        when(mockSheep.getZ()).thenReturn(0.0);
         when(mockSheep.isShearable()).thenReturn(true);
         when(mockSheep.getType()).thenReturn((EntityType) EntityType.SHEEP);
 
         when(mockClient.world.getEntityById(500)).thenReturn(mockSheep);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(1, 1, 1));
+        when(mockClient.player.getX()).thenReturn(1.0);
+        when(mockClient.player.getY()).thenReturn(1.0);
+        when(mockClient.player.getZ()).thenReturn(1.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);
@@ -350,12 +397,16 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("action", "shear");
 
         net.minecraft.entity.passive.SheepEntity mockSheep = mock(net.minecraft.entity.passive.SheepEntity.class);
-        when(mockSheep.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        when(mockSheep.getX()).thenReturn(0.0);
+        when(mockSheep.getY()).thenReturn(0.0);
+        when(mockSheep.getZ()).thenReturn(0.0);
         when(mockSheep.isShearable()).thenReturn(false); // Baby sheep or already sheared
         when(mockSheep.getType()).thenReturn((EntityType) EntityType.SHEEP);
 
         when(mockClient.world.getEntityById(501)).thenReturn(mockSheep);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(1, 1, 1));
+        when(mockClient.player.getX()).thenReturn(1.0);
+        when(mockClient.player.getY()).thenReturn(1.0);
+        when(mockClient.player.getZ()).thenReturn(1.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);
@@ -374,11 +425,15 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("action", "milk");
 
         net.minecraft.entity.passive.CowEntity mockCow = mock(net.minecraft.entity.passive.CowEntity.class);
-        when(mockCow.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        when(mockCow.getX()).thenReturn(0.0);
+        when(mockCow.getY()).thenReturn(0.0);
+        when(mockCow.getZ()).thenReturn(0.0);
         when(mockCow.getType()).thenReturn((EntityType) EntityType.COW);
 
         when(mockClient.world.getEntityById(600)).thenReturn(mockCow);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(1, 1, 1));
+        when(mockClient.player.getX()).thenReturn(1.0);
+        when(mockClient.player.getY()).thenReturn(1.0);
+        when(mockClient.player.getZ()).thenReturn(1.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);
@@ -397,12 +452,17 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("entity_id", 700);
         params.addProperty("action", "milk");
 
-        net.minecraft.entity.passive.MooshroomEntity mockMooshroom = mock(net.minecraft.entity.passive.MooshroomEntity.class);
-        when(mockMooshroom.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        net.minecraft.entity.passive.MooshroomEntity mockMooshroom = mock(
+                net.minecraft.entity.passive.MooshroomEntity.class);
+        when(mockMooshroom.getX()).thenReturn(0.0);
+        when(mockMooshroom.getY()).thenReturn(0.0);
+        when(mockMooshroom.getZ()).thenReturn(0.0);
         when(mockMooshroom.getType()).thenReturn((EntityType) EntityType.MOOSHROOM);
 
         when(mockClient.world.getEntityById(700)).thenReturn(mockMooshroom);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(1, 1, 1));
+        when(mockClient.player.getX()).thenReturn(1.0);
+        when(mockClient.player.getY()).thenReturn(1.0);
+        when(mockClient.player.getZ()).thenReturn(1.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);
@@ -422,11 +482,15 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("action", "milk");
 
         Entity mockChicken = mock(Entity.class);
-        when(mockChicken.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        when(mockChicken.getX()).thenReturn(0.0);
+        when(mockChicken.getY()).thenReturn(0.0);
+        when(mockChicken.getZ()).thenReturn(0.0);
         when(mockChicken.getType()).thenReturn((EntityType) EntityType.CHICKEN);
 
         when(mockClient.world.getEntityById(800)).thenReturn(mockChicken);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(1, 1, 1));
+        when(mockClient.player.getX()).thenReturn(1.0);
+        when(mockClient.player.getY()).thenReturn(1.0);
+        when(mockClient.player.getZ()).thenReturn(1.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);
@@ -445,11 +509,15 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("action", "tame");
 
         Entity mockZombie = mock(Entity.class);
-        when(mockZombie.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        when(mockZombie.getX()).thenReturn(0.0);
+        when(mockZombie.getY()).thenReturn(0.0);
+        when(mockZombie.getZ()).thenReturn(0.0);
         when(mockZombie.getType()).thenReturn((EntityType) EntityType.ZOMBIE);
 
         when(mockClient.world.getEntityById(900)).thenReturn(mockZombie);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(1, 1, 1));
+        when(mockClient.player.getX()).thenReturn(1.0);
+        when(mockClient.player.getY()).thenReturn(1.0);
+        when(mockClient.player.getZ()).thenReturn(1.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);
@@ -468,9 +536,13 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("action", "attack");
 
         Entity mockEntity = mock(Entity.class);
-        when(mockEntity.getPos()).thenReturn(new Vec3d(1000, 1000, 1000)); // Very far
+        when(mockEntity.getX()).thenReturn(1000.0);
+        when(mockEntity.getY()).thenReturn(1000.0);
+        when(mockEntity.getZ()).thenReturn(1000.0);
         when(mockClient.world.getEntityById(123)).thenReturn(mockEntity);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        when(mockClient.player.getX()).thenReturn(0.0);
+        when(mockClient.player.getY()).thenReturn(0.0);
+        when(mockClient.player.getZ()).thenReturn(0.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);
@@ -489,9 +561,13 @@ class EntityInteractionCommandHandlerTest {
         params.addProperty("action", "attack");
 
         Entity mockEntity = mock(Entity.class);
-        when(mockEntity.getPos()).thenReturn(new Vec3d(3, 3, 3)); // Close enough
+        when(mockEntity.getX()).thenReturn(3.0);
+        when(mockEntity.getY()).thenReturn(3.0);
+        when(mockEntity.getZ()).thenReturn(3.0);
         when(mockClient.world.getEntityById(124)).thenReturn(mockEntity);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        when(mockClient.player.getX()).thenReturn(0.0);
+        when(mockClient.player.getY()).thenReturn(0.0);
+        when(mockClient.player.getZ()).thenReturn(0.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);

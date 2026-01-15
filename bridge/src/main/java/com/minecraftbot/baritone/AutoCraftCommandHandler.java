@@ -78,102 +78,102 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
             case "minecraft:dark_oak_planks":
             case "minecraft:mangrove_planks":
             case "minecraft:cherry_planks":
-                return new CraftRecipe(recipeId, 4, false, new String[]{"any_log", null, null, null});
+                return new CraftRecipe(recipeId, 4, false, new String[] { "any_log", null, null, null });
 
             // Sticks
             case "minecraft:stick":
-                return new CraftRecipe(recipeId, 4, false, new String[]{
-                    "any_planks", null,
-                    "any_planks", null
+                return new CraftRecipe(recipeId, 4, false, new String[] {
+                        "any_planks", null,
+                        "any_planks", null
                 });
 
             // Crafting Table
             case "minecraft:crafting_table":
-                return new CraftRecipe(recipeId, 1, false, new String[]{
-                    "any_planks", "any_planks",
-                    "any_planks", "any_planks"
+                return new CraftRecipe(recipeId, 1, false, new String[] {
+                        "any_planks", "any_planks",
+                        "any_planks", "any_planks"
                 });
 
             // Wooden Pickaxe (3x3)
             case "minecraft:wooden_pickaxe":
-                return new CraftRecipe(recipeId, 1, true, new String[]{
-                    "any_planks", "any_planks", "any_planks",
-                    null, "minecraft:stick", null,
-                    null, "minecraft:stick", null
+                return new CraftRecipe(recipeId, 1, true, new String[] {
+                        "any_planks", "any_planks", "any_planks",
+                        null, "minecraft:stick", null,
+                        null, "minecraft:stick", null
                 });
 
             // Stone Pickaxe (3x3)
             case "minecraft:stone_pickaxe":
-                return new CraftRecipe(recipeId, 1, true, new String[]{
-                    "minecraft:cobblestone", "minecraft:cobblestone", "minecraft:cobblestone",
-                    null, "minecraft:stick", null,
-                    null, "minecraft:stick", null
+                return new CraftRecipe(recipeId, 1, true, new String[] {
+                        "minecraft:cobblestone", "minecraft:cobblestone", "minecraft:cobblestone",
+                        null, "minecraft:stick", null,
+                        null, "minecraft:stick", null
                 });
 
             // Stone Tools
             case "minecraft:stone_axe":
-                return new CraftRecipe(recipeId, 1, true, new String[]{
-                    "minecraft:cobblestone", "minecraft:cobblestone", null,
-                    "minecraft:cobblestone", "minecraft:stick", null,
-                    null, "minecraft:stick", null
+                return new CraftRecipe(recipeId, 1, true, new String[] {
+                        "minecraft:cobblestone", "minecraft:cobblestone", null,
+                        "minecraft:cobblestone", "minecraft:stick", null,
+                        null, "minecraft:stick", null
                 });
 
             case "minecraft:stone_sword":
-                return new CraftRecipe(recipeId, 1, true, new String[]{
-                    null, "minecraft:cobblestone", null,
-                    null, "minecraft:cobblestone", null,
-                    null, "minecraft:stick", null
+                return new CraftRecipe(recipeId, 1, true, new String[] {
+                        null, "minecraft:cobblestone", null,
+                        null, "minecraft:cobblestone", null,
+                        null, "minecraft:stick", null
                 });
 
             case "minecraft:stone_shovel":
-                return new CraftRecipe(recipeId, 1, true, new String[]{
-                    null, "minecraft:cobblestone", null,
-                    null, "minecraft:stick", null,
-                    null, "minecraft:stick", null
+                return new CraftRecipe(recipeId, 1, true, new String[] {
+                        null, "minecraft:cobblestone", null,
+                        null, "minecraft:stick", null,
+                        null, "minecraft:stick", null
                 });
 
             case "minecraft:stone_hoe":
-                return new CraftRecipe(recipeId, 1, true, new String[]{
-                    "minecraft:cobblestone", "minecraft:cobblestone", null,
-                    null, "minecraft:stick", null,
-                    null, "minecraft:stick", null
+                return new CraftRecipe(recipeId, 1, true, new String[] {
+                        "minecraft:cobblestone", "minecraft:cobblestone", null,
+                        null, "minecraft:stick", null,
+                        null, "minecraft:stick", null
                 });
 
             // Furnace
             case "minecraft:furnace":
-                return new CraftRecipe(recipeId, 1, true, new String[]{
-                    "minecraft:cobblestone", "minecraft:cobblestone", "minecraft:cobblestone",
-                    "minecraft:cobblestone", null, "minecraft:cobblestone",
-                    "minecraft:cobblestone", "minecraft:cobblestone", "minecraft:cobblestone"
+                return new CraftRecipe(recipeId, 1, true, new String[] {
+                        "minecraft:cobblestone", "minecraft:cobblestone", "minecraft:cobblestone",
+                        "minecraft:cobblestone", null, "minecraft:cobblestone",
+                        "minecraft:cobblestone", "minecraft:cobblestone", "minecraft:cobblestone"
                 });
 
             case "minecraft:chest":
-                return new CraftRecipe(recipeId, 1, true, new String[]{
-                    "any_planks", "any_planks", "any_planks",
-                    "any_planks", null, "any_planks",
-                    "any_planks", "any_planks", "any_planks"
+                return new CraftRecipe(recipeId, 1, true, new String[] {
+                        "any_planks", "any_planks", "any_planks",
+                        "any_planks", null, "any_planks",
+                        "any_planks", "any_planks", "any_planks"
                 });
 
             // Iron Tools
             case "minecraft:iron_pickaxe":
-                return new CraftRecipe(recipeId, 1, true, new String[]{
-                    "minecraft:iron_ingot", "minecraft:iron_ingot", "minecraft:iron_ingot",
-                    null, "minecraft:stick", null,
-                    null, "minecraft:stick", null
+                return new CraftRecipe(recipeId, 1, true, new String[] {
+                        "minecraft:iron_ingot", "minecraft:iron_ingot", "minecraft:iron_ingot",
+                        null, "minecraft:stick", null,
+                        null, "minecraft:stick", null
                 });
 
             case "minecraft:iron_sword":
-                return new CraftRecipe(recipeId, 1, true, new String[]{
-                    null, "minecraft:iron_ingot", null,
-                    null, "minecraft:iron_ingot", null,
-                    null, "minecraft:stick", null
+                return new CraftRecipe(recipeId, 1, true, new String[] {
+                        null, "minecraft:iron_ingot", null,
+                        null, "minecraft:iron_ingot", null,
+                        null, "minecraft:stick", null
                 });
 
             // Torch
             case "minecraft:torch":
-                return new CraftRecipe(recipeId, 4, false, new String[]{
-                    "minecraft:coal", null,
-                    "minecraft:stick", null
+                return new CraftRecipe(recipeId, 4, false, new String[] {
+                        "minecraft:coal", null,
+                        "minecraft:stick", null
                 });
 
             default:
@@ -192,7 +192,8 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
     }
 
     @Override
-    public CompletableFuture<CommandResult> execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> execute(JsonObject params, MinecraftClient client, IBaritone baritone,
+            Socket clientSocket) {
         // Support multiple modes: single item, queue items, get status, clear queue
         String action = params.has("action") ? params.get("action").getAsString() : "craft";
 
@@ -234,57 +235,90 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
 
             // Define simple hardcoded recipes for the vertical slice
             Map<String, String[]> recipes = new HashMap<>();
-            
+
             // Oak Planks (from Oak Log)
-            recipes.put("minecraft:oak_planks", new String[]{"minecraft:oak_log", null, null, null});
-            recipes.put("minecraft:spruce_planks", new String[]{"minecraft:spruce_log", null, null, null});
-            recipes.put("minecraft:birch_planks", new String[]{"minecraft:birch_log", null, null, null});
-            recipes.put("minecraft:jungle_planks", new String[]{"minecraft:jungle_log", null, null, null});
-            recipes.put("minecraft:acacia_planks", new String[]{"minecraft:acacia_log", null, null, null});
-            recipes.put("minecraft:dark_oak_planks", new String[]{"minecraft:dark_oak_log", null, null, null});
-            
+            recipes.put("minecraft:oak_planks", new String[] { "minecraft:oak_log", null, null, null });
+            recipes.put("minecraft:spruce_planks", new String[] { "minecraft:spruce_log", null, null, null });
+            recipes.put("minecraft:birch_planks", new String[] { "minecraft:birch_log", null, null, null });
+            recipes.put("minecraft:jungle_planks", new String[] { "minecraft:jungle_log", null, null, null });
+            recipes.put("minecraft:acacia_planks", new String[] { "minecraft:acacia_log", null, null, null });
+            recipes.put("minecraft:dark_oak_planks", new String[] { "minecraft:dark_oak_log", null, null, null });
+
             // Sticks
             String[] stickRecipe = new String[9];
-            stickRecipe[0] = "planks"; stickRecipe[3] = "planks";
+            stickRecipe[0] = "planks";
+            stickRecipe[3] = "planks";
             recipes.put("minecraft:stick", stickRecipe);
-            
+
             // Crafting Table
-            recipes.put("minecraft:crafting_table", new String[]{"planks", "planks", "planks", "planks"});
-            
+            recipes.put("minecraft:crafting_table", new String[] { "planks", "planks", "planks", "planks" });
+
             // Wooden Pickaxe
             String[] woodPick = new String[9];
-            woodPick[0] = "planks"; woodPick[1] = "planks"; woodPick[2] = "planks";
-            woodPick[4] = "minecraft:stick"; woodPick[7] = "minecraft:stick";
+            woodPick[0] = "planks";
+            woodPick[1] = "planks";
+            woodPick[2] = "planks";
+            woodPick[4] = "minecraft:stick";
+            woodPick[7] = "minecraft:stick";
             recipes.put("minecraft:wooden_pickaxe", woodPick);
-            
+
             // Wooden Sword
             String[] woodSword = new String[9];
-            woodSword[1] = "planks"; woodSword[4] = "planks"; woodSword[7] = "minecraft:stick";
+            woodSword[1] = "planks";
+            woodSword[4] = "planks";
+            woodSword[7] = "minecraft:stick";
             recipes.put("minecraft:wooden_sword", woodSword);
 
             // Wooden Axe
             String[] woodAxe = new String[9];
-            woodAxe[0] = "planks"; woodAxe[1] = "planks"; 
-            woodAxe[3] = "planks"; woodAxe[4] = "minecraft:stick"; woodAxe[7] = "minecraft:stick";
+            woodAxe[0] = "planks";
+            woodAxe[1] = "planks";
+            woodAxe[3] = "planks";
+            woodAxe[4] = "minecraft:stick";
+            woodAxe[7] = "minecraft:stick";
             recipes.put("minecraft:wooden_axe", woodAxe);
 
-             // Wooden Shovel
+            // Wooden Shovel
             String[] woodShovel = new String[9];
-            woodShovel[1] = "planks"; woodShovel[4] = "minecraft:stick"; woodShovel[7] = "minecraft:stick";
+            woodShovel[1] = "planks";
+            woodShovel[4] = "minecraft:stick";
+            woodShovel[7] = "minecraft:stick";
             recipes.put("minecraft:wooden_shovel", woodShovel);
 
+            // Chest
+            String[] chestRecipe = new String[9];
+            chestRecipe[0] = "planks";
+            chestRecipe[1] = "planks";
+            chestRecipe[2] = "planks";
+            chestRecipe[3] = "planks";
+            chestRecipe[5] = "planks";
+            chestRecipe[6] = "planks";
+            chestRecipe[7] = "planks";
+            chestRecipe[8] = "planks";
+            recipes.put("minecraft:chest", chestRecipe);
+
             String[] ingredients = recipes.get(targetItem);
-            
+
             if (ingredients == null) {
                 return CommandResult.error("Recipe not found (Hardcoded vertical slice only)");
             }
 
-            boolean success = performCrafting(client, ingredients);
-            
+            int perCraft = (targetItem.endsWith("_planks") || targetItem.equals("minecraft:stick")) ? 4 : 1;
+            int crafted = 0;
+            for (int i = 0; i < quantity; i += perCraft) {
+                if (!performCrafting(client, ingredients))
+                    break;
+                crafted += perCraft;
+                try {
+                    Thread.sleep(50);
+                } catch (Exception e) {
+                }
+            }
+
             JsonObject data = new JsonObject();
-            data.addProperty("crafted", success);
+            data.addProperty("crafted", crafted > 0);
             data.addProperty("item", targetItem);
-            
+            data.addProperty("count", crafted);
             return CommandResult.success(data);
         });
     }
@@ -417,7 +451,8 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
 
         for (int i = 0; i < inv.size(); i++) {
             ItemStack stack = inv.getStack(i);
-            if (stack.isEmpty()) continue;
+            if (stack.isEmpty())
+                continue;
 
             String stackId = Registries.ITEM.getId(stack.getItem()).toString();
 
@@ -469,7 +504,8 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         boolean isTable = handler instanceof net.minecraft.screen.CraftingScreenHandler;
         boolean isPlayer = handler instanceof net.minecraft.screen.PlayerScreenHandler;
 
-        if (!isTable && !isPlayer) return false;
+        if (!isTable && !isPlayer)
+            return false;
 
         int gridStart = 1;
         int gridSize = isTable ? 9 : 4;
@@ -480,10 +516,12 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         }
 
         for (int i = 0; i < recipe.grid.length; i++) {
-            if (i >= gridSize) break;
+            if (i >= gridSize)
+                break;
 
             String ingredient = recipe.grid[i];
-            if (ingredient == null || ingredient.isEmpty()) continue;
+            if (ingredient == null || ingredient.isEmpty())
+                continue;
 
             int sourceSlot = findIngredientSlot(client, ingredient);
             if (sourceSlot == -1) {
@@ -521,94 +559,102 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
     }
 
     private boolean performCrafting(MinecraftClient client, String[] ingredients) {
-        if (client.player == null) return false;
-        
+        if (client.player == null)
+            return false;
+
         ScreenHandler handler = client.player.currentScreenHandler;
         int syncId = handler.syncId;
-        
+
         boolean isTable = handler instanceof net.minecraft.screen.CraftingScreenHandler;
         boolean isPlayer = handler instanceof net.minecraft.screen.PlayerScreenHandler;
-        
-        if (!isTable && !isPlayer) return false;
-        
+
+        if (!isTable && !isPlayer)
+            return false;
+
         int gridStart = 1;
         int gridSize = isTable ? 9 : 4;
-        
+
         if (ingredients.length > 4 && !isTable) {
             LOGGER.warn("Recipe requires 3x3 grid but player inventory is 2x2");
             return false;
         }
-        
+
         for (int i = 0; i < ingredients.length; i++) {
-            if (i >= gridSize) break;
-            
+            if (i >= gridSize)
+                break;
+
             String ingredient = ingredients[i];
-            if (ingredient == null) continue;
-            
+            if (ingredient == null)
+                continue;
+
             int sourceSlot = findIngredientSlot(client, ingredient);
-            
+
             if (sourceSlot == -1) {
                 LOGGER.warn("Missing ingredient: {}", ingredient);
                 return false;
             }
-            
+
             // Logic to calculate grid slot mapping
             int gridSlot = gridStart + i;
-            
+
             if (isTable && ingredients.length == 4) {
                 int row = i / 2;
                 int col = i % 2;
                 gridSlot = gridStart + (row * 3) + col;
             }
-            
+
             final int src = sourceSlot;
             final int dst = gridSlot;
-            
+
             try {
-                 // PICKUP 1 item from source
-                 if (client.interactionManager != null) {
+                // PICKUP 1 item from source
+                if (client.interactionManager != null) {
                     client.interactionManager.clickSlot(syncId, src, 0, SlotActionType.PICKUP, client.player);
                     // Place 1 item in grid (Right Click)
                     client.interactionManager.clickSlot(syncId, dst, 1, SlotActionType.PICKUP, client.player);
                     // Return remainder to source
                     client.interactionManager.clickSlot(syncId, src, 0, SlotActionType.PICKUP, client.player);
-                 }
+                }
             } catch (Exception e) {
                 LOGGER.error("Crafting click failed", e);
                 return false;
             }
         }
-        
+
         // Take result
         try {
-             client.interactionManager.clickSlot(syncId, 0, 0, SlotActionType.QUICK_MOVE, client.player);
+            client.interactionManager.clickSlot(syncId, 0, 0, SlotActionType.QUICK_MOVE, client.player);
         } catch (Exception e) {
             return false;
         }
-        
+
         return true;
     }
-    
+
     private int findIngredientSlot(MinecraftClient client, String ingredient) {
-        if (client.player == null) return -1;
-        
+        if (client.player == null)
+            return -1;
+
         ScreenHandler handler = client.player.currentScreenHandler;
         boolean isTable = handler instanceof net.minecraft.screen.CraftingScreenHandler;
-        
+
         int startSlot = isTable ? 10 : 9;
         int endSlot = isTable ? 46 : 45;
-        
+
         for (int i = startSlot; i < endSlot; i++) {
-             ItemStack stack = handler.getSlot(i).getStack();
-             if (stack.isEmpty()) continue;
-             
-             String id = Registries.ITEM.getId(stack.getItem()).toString();
-             
-             if (ingredient.equals("planks")) {
-                 if (id.endsWith("_planks")) return i;
-             } else {
-                 if (id.equals(ingredient)) return i;
-             }
+            ItemStack stack = handler.getSlot(i).getStack();
+            if (stack.isEmpty())
+                continue;
+
+            String id = Registries.ITEM.getId(stack.getItem()).toString();
+
+            if (ingredient.equals("planks")) {
+                if (id.endsWith("_planks"))
+                    return i;
+            } else {
+                if (id.equals(ingredient))
+                    return i;
+            }
         }
         return -1;
     }
@@ -737,19 +783,23 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         // Check all inventory items to see what can be crafted
         for (int i = 0; i < inv.size(); i++) {
             ItemStack stack = inv.getStack(i);
-            if (stack.isEmpty()) continue;
+            if (stack.isEmpty())
+                continue;
 
             String itemId = Registries.ITEM.getId(stack.getItem()).toString();
             int count = stack.getCount();
 
             // Check common crafting patterns
             if (itemId.endsWith("_log") || itemId.endsWith("_planks")) {
-                if (count >= 1) craftable.add("minecraft:stick");
-                if (count >= 4) craftable.add("minecraft:crafting_table");
+                if (count >= 1)
+                    craftable.add("minecraft:stick");
+                if (count >= 4)
+                    craftable.add("minecraft:crafting_table");
             }
 
             if (itemId.equals("minecraft:cobblestone")) {
-                if (count >= 8) craftable.add("minecraft:furnace");
+                if (count >= 8)
+                    craftable.add("minecraft:furnace");
             }
         }
 
@@ -810,7 +860,8 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         Deque<Map.Entry<String, Integer>> queue = new LinkedList<>();
 
         CraftRecipe recipe = getRecipeDefinition(item);
-        if (recipe == null) return requirements;
+        if (recipe == null)
+            return requirements;
 
         int batches = (int) Math.ceil((double) quantity / recipe.outputCount);
         for (Map.Entry<String, Integer> entry : recipe.ingredients.entrySet()) {
@@ -826,7 +877,7 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
                 int subBatches = (int) Math.ceil((double) req.getValue() / subRecipe.outputCount);
                 for (Map.Entry<String, Integer> subEntry : subRecipe.ingredients.entrySet()) {
                     requirements.put(subEntry.getKey(),
-                        requirements.getOrDefault(subEntry.getKey(), 0) + subEntry.getValue() * subBatches);
+                            requirements.getOrDefault(subEntry.getKey(), 0) + subEntry.getValue() * subBatches);
                 }
             }
         }
@@ -865,9 +916,11 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
     }
 
     private void topologicalSortVisit(String item, Set<String> allItems, Set<String> visited,
-                                    Set<String> visiting, List<String> result) {
-        if (visiting.contains(item)) return; // Cycle detected, skip
-        if (visited.contains(item)) return;
+            Set<String> visiting, List<String> result) {
+        if (visiting.contains(item))
+            return; // Cycle detected, skip
+        if (visited.contains(item))
+            return;
 
         visiting.add(item);
 

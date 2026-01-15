@@ -10,41 +10,62 @@ import net.minecraft.registry.Registries;
 
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 public class GetInventoryCommandHandler implements CommandHandler {
 
     @Override
     public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
-        try {
-            CommandResult result = client.submit(() -> {
-                if (client.player == null) return CommandResult.error("Player not available");
-                PlayerInventory inv = client.player.getInventory();
+        CompletableFuture<CommandResult> result = new CompletableFuture<>();
 
-                JsonArray mainInventory = new JsonArray();
-                for (int i = 0; i < 36; i++) {
-                    mainInventory.add(serializeItemStack(inv.getStack(i), i));
-                }
-
-                JsonArray armorInventory = new JsonArray();
-                for (int i = 0; i < 4; i++) {
-                    armorInventory.add(serializeItemStack(inv.getStack(36 + i), 36 + i));
-                }
-
-                JsonArray offhandInventory = new JsonArray();
-                offhandInventory.add(serializeItemStack(inv.getStack(40), 40));
-
-                JsonObject data = new JsonObject();
-                data.add("inventory", mainInventory);
-                data.add("armor", armorInventory);
-                data.add("offhand", offhandInventory);
-                data.addProperty("selected_slot", inv.selectedSlot);
-
-                return CommandResult.success(data);
-            }).get();
-            return CompletableFuture.completedFuture(result);
-        } catch (Exception e) {
-            return CompletableFuture.completedFuture(CommandResult.error("GetInventory failed: " + e.getMessage()));
+        if (client == null) {
+            result.complete(CommandResult.error("Client not available"));
+            return result;
         }
+
+        try {
+            client.execute(() -> {
+                try {
+                    if (client.player == null) {
+                        result.complete(CommandResult.error("Player not available"));
+                        return;
+                    }
+
+                    PlayerInventory inv = client.player.getInventory();
+
+                    JsonArray mainInventory = new JsonArray();
+                    for (int i = 0; i < 36; i++) {
+                        mainInventory.add(serializeItemStack(inv.getStack(i), i));
+                    }
+
+                    JsonArray armorInventory = new JsonArray();
+                    for (int i = 0; i < 4; i++) {
+                        armorInventory.add(serializeItemStack(inv.getStack(36 + i), 36 + i));
+                    }
+
+                    JsonArray offhandInventory = new JsonArray();
+                    offhandInventory.add(serializeItemStack(inv.getStack(40), 40));
+
+                    JsonObject data = new JsonObject();
+                    data.add("inventory", mainInventory);
+                    data.add("armor", armorInventory);
+                    data.add("offhand", offhandInventory);
+                    data.addProperty("selected_slot", inv.selectedSlot);
+
+                    result.complete(CommandResult.success(data));
+                } catch (Exception e) {
+                    result.complete(CommandResult.error("GetInventory failed: " + e.getMessage()));
+                }
+            });
+        } catch (Exception e) {
+            result.complete(CommandResult.error("GetInventory failed: " + e.getMessage()));
+        }
+
+        return result.completeOnTimeout(
+            CommandResult.error("Timeout waiting for inventory data"),
+            5,
+            TimeUnit.SECONDS
+        );
     }
 
     private JsonObject serializeItemStack(ItemStack stack, int slot) {
