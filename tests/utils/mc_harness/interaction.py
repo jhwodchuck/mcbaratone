@@ -54,8 +54,8 @@ def robust_interact_block(ctx, x: int, y: int, z: int, retries: int = 5, interva
     # Sanitize dynamic fields if any (usually get_block returns deterministic state)
     
     def _check():
-        # Case A: GUI Opened
-        if wait_for_gui_open(ctx, timeout=0.05):
+        # Case A: GUI Opened (give enough time for server to respond)
+        if wait_for_gui_open(ctx, timeout=0.5):
             return True
         
         # Case B: Block changed (e.g. lever flip, door open, cake eat)

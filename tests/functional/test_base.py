@@ -15,6 +15,15 @@ from enum import Enum
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
 
 from baritone_client import Client, TcpTransport
+from baritone_client.transport.enums import TransportEvent
+
+
+def _ts() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _print_status(message: str) -> None:
+    print(f"[{_ts()}] {message}", flush=True)
 
 
 class DummyTransport:
@@ -264,21 +273,25 @@ class FunctionalCase:
         ctx.start_time = time.time()
         ctx.events = []
         ctx.snapshots = []
-        
+
         try:
+            _print_status(f"TEST START {self.id}: {self.name}")
             # ... (prep code)
-            
+
             # Setup
             if self.setup:
+                _print_status(f"SETUP START {self.id}")
                 ctx.log_event(f"SETUP: {self.id}")
                 self.setup(ctx)
                 time.sleep(0.5)
-            
+                _print_status(f"SETUP END {self.id}")
+
             ctx.snapshot("after_setup")
-            
+
             # Execute steps
             for i, step in enumerate(self.steps):
                 if time.time() - ctx.start_time > self.timeout_seconds:
+                    _print_status(f"TIMEOUT {self.id} at step {i}")
                     return TestResult.TIMEOUT, f"Timeout at step {i}", ctx.events
                 
                 # Check dead
@@ -286,21 +299,28 @@ class FunctionalCase:
                     # ...
                     pass
 
+                _print_status(f"STEP {i} START {self.id}")
                 ctx.log_event(f"STEP {i}: executing")
                 try:
+                    step_start = time.time()
                     result = step(ctx)
                     if not result:
                         ctx.snapshot(f"step_{i}_failed")
                         state_dump = str(ctx.get_state())[:200]
                         ctx.log_event(f"FAILURE STATE: {state_dump}...")
+                        _print_status(f"STEP {i} FAIL {self.id}")
                         return TestResult.FAIL, f"Step {i} returned False", ctx.events
+                    step_elapsed = time.time() - step_start
+                    _print_status(f"STEP {i} OK {self.id} ({step_elapsed:.1f}s)")
                 except SkipTest as e:
                     ctx.log_event(f"SKIPPED: {e}")
+                    _print_status(f"STEP {i} SKIP {self.id}: {e}")
                     return TestResult.SKIP, str(e), ctx.events
                 except Exception as e:
                     ctx.log_event(f"STEP {i} ERROR: {e}")
                     import traceback
                     ctx.log_event(f"TRACE: {traceback.format_exc()}")
+                    _print_status(f"STEP {i} ERROR {self.id}: {e}")
                     return TestResult.FAIL, f"Step {i} error: {e}", ctx.events
             
             ctx.snapshot("after_steps")
@@ -312,28 +332,30 @@ class FunctionalCase:
                     # ...
                     pass
             
+            _print_status(f"TEST PASS {self.id}")
             return TestResult.PASS, "All steps and assertions passed", ctx.events
             
         except SkipTest as e:
             ctx.log_event(f"SKIPPED: {e}")
+            _print_status(f"TEST SKIP {self.id}: {e}")
             return TestResult.SKIP, str(e), ctx.events
         except Exception as e:
             import traceback
             ctx.log_event(f"CRASH: {e}")
             ctx.log_event(f"TRACE: {traceback.format_exc()}")
+            _print_status(f"TEST ERROR {self.id}: {e}")
             return TestResult.FAIL, f"Unexpected error: {e}", ctx.events
         
         finally:
             # Teardown
             if self.teardown:
                 try:
+                    _print_status(f"TEARDOWN START {self.id}")
                     self.teardown(ctx)
+                    _print_status(f"TEARDOWN END {self.id}")
                 except:
                     pass
-            try:
-                ctx.run_command("difficulty peaceful")
-            except:
-                pass
+            # Avoid admin-only commands in shared environments.
 
 
 class FunctionalSuite:
@@ -350,6 +372,7 @@ class FunctionalSuite:
     def run_all(self, ctx: TestContext) -> Dict[str, Tuple[FunctionalResult, str]]:
         """Run all tests in suite. Returns dict of test_id -> (result, message)."""
         results = {}
+        _print_status(f"SUITE START {self.name}")
         for test in self.tests:
             print(f"\n>>> Running {test.id}: {test.name}")
             result, msg, events = test.run(ctx)
@@ -362,7 +385,8 @@ class FunctionalSuite:
                 print("  Events:")
                 for e in events[-5:]:  # Last 5 events
                     print(f"    {e}")
-        
+
+        _print_status(f"SUITE END {self.name}")
         return results
 
 
@@ -387,6 +411,14 @@ class FunctionalHarness:
             transport = TcpTransport(host=self.host, port=self.port, timeout=15.0)
             self.client = Client(transport)
             self.ctx = TestContext(client=self.client)
+            def _chat_callback(message):
+                text = message.get("text") or message.get("message")
+                if text and self.ctx:
+                    self.ctx.log_event(f"CHAT: {text}")
+            try:
+                self.client.on(TransportEvent.CHAT, _chat_callback)
+            except Exception as e:
+                print(f"Warning: failed to subscribe to chat events: {e}")
             return True
         except Exception as e:
             print(f"Connection failed: {e}")
@@ -414,8 +446,9 @@ class FunctionalHarness:
         if name not in self.suites:
             print(f"Suite '{name}' not found")
             return {}
-        
+
         suite = self.suites[name]
+        _print_status(f"RUN SUITE {suite.name}")
         print(f"\n{'='*60}")
         print(f"SUITE: {suite.name}")
         print(f"{'='*60}")

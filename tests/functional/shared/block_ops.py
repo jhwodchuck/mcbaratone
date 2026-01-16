@@ -20,7 +20,7 @@ import time
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 from baritone_client.common.inventory import select_item
-from tests.utils.mc_harness.waits import cancel_pathing
+from tests.utils.mc_harness.waits import cancel_pathing, wait_for_pathing_stop, wait_for_position_stable
 
 # Constants
 BASE_Y = 80
@@ -184,6 +184,77 @@ def find_place_pos_near(ctx, x: Union[int, float], y: Union[int, float], z: Unio
                 
         return (px, py, pz)
     return (int(x), int(y), int(z))
+
+
+def find_ground_place_pos(ctx, radius: int = 5) -> Optional[Tuple[int, int, int]]:
+    """Find a placement position on solid ground.
+    
+    Scans DOWN from player position to find actual ground level first,
+    then searches for a placement spot at that level.
+    Only places on grass_block, dirt, stone, cobblestone, etc.
+    
+    Args:
+        ctx: Test context.
+        radius: Search radius.
+        
+    Returns:
+        Tuple of (x, y, z) coordinates for placement, or None if not found.
+    """
+    px, py, pz = ctx.get_position()
+    player_x, player_z = int(px), int(pz)
+    
+    # Ground block types we want to place ON TOP OF
+    ground_blocks = ["grass_block", "dirt", "stone", "cobblestone", 
+                     "deepslate", "diorite", "granite", "andesite", "terracotta"]
+    
+    # First, find the ACTUAL ground level by scanning down from player
+    # This handles cases where player is standing on a tree/log
+    actual_ground_y = None
+    for scan_y in range(int(py), int(py) - 20, -1):
+        block_at = block_id_at(ctx, player_x, scan_y, player_z)
+        if block_at and any(gb in block_at for gb in ground_blocks):
+            actual_ground_y = scan_y + 1  # Place position is ON TOP of ground
+            break
+    
+    if actual_ground_y is None:
+        actual_ground_y = int(py)  # Fallback to player Y
+    
+    # Search in spiral pattern from player position at ground level
+    offsets = []
+    for dx in range(-radius, radius + 1):
+        for dz in range(-radius, radius + 1):
+            offsets.append((dx, dz))
+    offsets.sort(key=lambda o: o[0] * o[0] + o[1] * o[1])
+    
+    for dx, dz in offsets:
+        x, z = player_x + dx, player_z + dz
+        
+        # Skip if too close to player
+        if abs(dx) < 1 and abs(dz) < 1:
+            continue
+        
+        # For each XZ position, scan down to find ground at that location
+        for scan_y in range(actual_ground_y + 5, actual_ground_y - 10, -1):
+            block_at = block_id_at(ctx, x, scan_y, z)
+            block_below = block_id_at(ctx, x, scan_y - 1, z)
+            
+            # Must be air at placement spot
+            if not block_at or "air" not in block_at:
+                continue
+            
+            # Must have solid ground below
+            if not block_below:
+                continue
+            
+            # Check if block below is actual ground (not leaves, logs, etc.)
+            is_ground = any(gb in block_below for gb in ground_blocks)
+            if not is_ground:
+                continue
+            
+            return (x, scan_y, z)
+    
+    return None
+
 
 
 def move_near(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, float], timeout: float = 20.0) -> bool:
@@ -574,3 +645,14 @@ def build_simple_structure(ctx, x: int, y: int, z: int, width: int, depth: int, 
     wait_for_block(ctx, x, y, z, floor_block, timeout=2.0)
 
 
+
+def wait_for_baritone_idle(ctx, timeout: float = 10.0):
+    """
+    Wait for Baritone to stop pathing and position to stabilize.
+    
+    Args:
+        ctx: Test context
+        timeout: Max wait time
+    """
+    wait_for_pathing_stop(ctx, timeout=timeout)
+    wait_for_position_stable(ctx, timeout=2.0, stable_window=0.5)

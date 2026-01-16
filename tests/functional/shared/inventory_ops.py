@@ -28,6 +28,13 @@ from tests.functional.shared.block_ops import (
 )
 from tests.utils.mc_harness.interaction import robust_interact_block
 from tests.utils.mc_harness.waits import close_screen
+from tests.functional.shared.constants import (
+    PLANK_ITEM_IDS,
+    LOG_BLOCK_IDS,
+    STRIPPED_LOG_BLOCK_IDS,
+    WOOD_BLOCK_IDS,
+    STRIPPED_WOOD_BLOCK_IDS,
+)
 
 
 def get_inventory_payload(ctx) -> List[Dict]:
@@ -540,25 +547,56 @@ def craft_door_manual(ctx, door_id: str = "minecraft:oak_door") -> bool:
     """
     Manually craft a door (2 columns of 3 planks).
     """
-    screen = ctx.client.transport.dispatch("get_screen", {})
-    data = screen.get("data", screen)
-    slots = data.get("slots", [])
+    ctx.log_event("Door craft: Starting manual door crafting")
+    
+    # Wait a moment for screen to fully open
+    time.sleep(0.5)
+    
+    # Try getting screen with retry
+    slots = []
+    for attempt in range(5):
+        screen = ctx.client.transport.dispatch("get_screen", {})
+        data = screen.get("data", screen)
+        slots = data.get("slots", [])
+        if slots and len(slots) > 10:
+            break
+        ctx.log_event(f"Door craft: Wait for screen (attempt {attempt+1}, got {len(slots)} slots)")
+        time.sleep(0.5)
+    
+    ctx.log_event(f"Door craft: Got screen with {len(slots)} slots")
     
     if not slots:
         ctx.log_event("Door craft failed: no slots in screen")
         return False
+    
+    # Debug: log all plank slots found
+    plank_slots_found = []
+    for slot in slots:
+        slot_idx = slot.get("slot", -1)
+        item_id = slot.get("id", "")
+        count = slot.get("count", 0)
+        if "_planks" in item_id and count > 0:
+            plank_slots_found.append(f"slot{slot_idx}:{item_id}x{count}")
+    ctx.log_event(f"Door craft: Plank slots found: {plank_slots_found}")
         
-    def find_slot(predicate, min_count: int = 1):
+    def find_plank_slot(min_count: int = 6):
+        """Find a plank slot in player inventory (slots 10+ for crafting table screen)."""
         for slot in slots:
-            if predicate(slot) and slot.get("count", 0) >= min_count:
-                return slot.get("slot")
+            slot_idx = slot.get("slot", -1)
+            # Crafting table screen: slots 1-9 are grid, 0 is output, 10+ is player inventory
+            if slot_idx < 10:
+                continue
+            if slot.get("id", "").endswith("_planks") and slot.get("count", 0) >= min_count:
+                return slot_idx
         return None
         
-    plank_slot = find_slot(lambda s: s.get("id", "").endswith("_planks"), min_count=6)
+    plank_slot = find_plank_slot(min_count=6)
     if plank_slot is None:
-        ctx.log_event("Door craft failed: missing 6 planks")
+        ctx.log_event("Door craft failed: missing 6 planks in inventory (checked slots 10+)")
         return False
         
+    ctx.log_event(f"Door craft: found planks at slot {plank_slot}")
+    
     # Recipe: Left and Middle columns (1,4,7 and 2,5,8)
     target_slots = [1, 4, 7, 2, 5, 8]
     
@@ -573,9 +611,29 @@ def craft_door_manual(ctx, door_id: str = "minecraft:oak_door") -> bool:
         
     place_one_each(plank_slot, target_slots)
     
+    # Check result slot before taking
+    screen = ctx.client.transport.dispatch("get_screen", {})
+    data = screen.get("data", screen)
+    result_slot = None
+    for s in data.get("slots", []):
+        if s.get("slot") == 0:
+            result_slot = s
+            break
+    ctx.log_event(f"Door craft: Result slot before taking: {result_slot}")
+    
     safe_inventory_click(ctx, 0, "QUICK_MOVE")
-    time.sleep(0.1)
-    return ctx.has_item(door_id)
+    time.sleep(0.3)
+    
+    # Check if door is in inventory using screen slots (not base inventory)
+    screen = ctx.client.transport.dispatch("get_screen", {})
+    data = screen.get("data", screen)
+    for s in data.get("slots", []):
+        if s.get("slot", -1) >= 10 and "_door" in s.get("id", ""):
+            ctx.log_event(f"Door craft: Found door in slot {s.get('slot')}")
+            return True
+    
+    ctx.log_event("Door craft: Door not found in inventory after crafting")
+    return False
 
 
 def ensure_crafting_table_open(ctx, table_pos: Optional[Tuple[int, int, int]] = None, suite_state: Optional[Dict] = None) -> bool:
@@ -617,10 +675,15 @@ def ensure_crafting_table_open(ctx, table_pos: Optional[Tuple[int, int, int]] = 
 
         move_near(ctx, tx, ty, tz, timeout=8.0)
 
-        if "crafting_table" in block_id_at(ctx, tx, ty, tz):
-            if suite_state is not None:
-                suite_state["crafting_table_pos"] = (tx, ty, tz)
-            return bool(do_open_container(ctx, (tx, ty, tz), timeout=3.0))
+        # Retry block detection to handle timing issues (block may be placed but state not updated yet)
+        for check_attempt in range(5):
+            detected_block = block_id_at(ctx, tx, ty, tz)
+            if "crafting_table" in detected_block:
+                if suite_state is not None:
+                    suite_state["crafting_table_pos"] = (tx, ty, tz)
+                return bool(do_open_container(ctx, (tx, ty, tz), timeout=3.0))
+            if check_attempt < 4:
+                time.sleep(0.5)
 
         if bot_place_block(ctx, tx, ty, tz, "minecraft:crafting_table", allow_move=True):
             if suite_state is not None:
@@ -1034,3 +1097,439 @@ def get_workshop_furnace(suite_state: Dict) -> Tuple[int, int, int]:
     # Fallback: beyond the 4 double chests (x to x+10)
     pos = suite_state.get("T1000", {}).get("chest_pos") or (0, BASE_Y, 0)
     return (pos[0] + 13, pos[1], pos[2])
+
+
+def craft_wooden_axe_manual(ctx) -> bool:
+    """
+    Manually craft wooden axe in 3x3 grid.
+    
+    Args:
+        ctx: Test context
+    
+    Returns:
+        True if crafting successful
+    """
+    return _craft_tool_manual_generic(ctx, "_planks", "axe", "minecraft:wooden_axe")
+
+
+def craft_chest_manual(ctx) -> bool:
+    """
+    Manual chest crafting sequence.
+    
+    Args:
+        ctx: Test context
+        
+    Returns:
+        True if crafting successful
+    """
+    ctx.log_event("Starting manual chest click sequence...")
+    # 1. Take result slot if any (clear it)
+    safe_inventory_click(ctx, 0, "QUICK_MOVE", 0)
+    time.sleep(0.2)
+    
+    # 2. Find planks from screen slots (NOT base inventory - slot numbers are different!)
+    # When crafting table is open: 0=output, 1-9=grid, 10-36=main inventory, 37-45=hotbar
+    screen = ctx.client.transport.dispatch("get_screen", {})
+    data = screen.get("data", screen)
+    screen_slots = data.get("slots", [])
+    plank_slots = []
+    total_planks = 0
+    for s in screen_slots:
+        slot_id = s.get("slot", -1)
+        item_id = s.get("id", "")
+        count = s.get("count", 0)
+        # Player inventory starts at slot 10 in crafting table screen
+        if slot_id >= 10 and item_id.endswith("_planks") and count > 0:
+            plank_slots.append((slot_id, count))
+            total_planks += count
+            if total_planks >= 8:
+                break
+
+    if total_planks < 8:
+        ctx.log_event(f"ERROR: Not enough planks (have {total_planks}, need 8)")
+        return False
+    
+    ctx.log_event(f"Found plank slots for chest: {plank_slots}, total: {total_planks}")
+
+    # 3. Place in 'O' shape: 1,2,3, 4,6, 7,8,9 (middle 5 empty)
+    chest_pattern = [1, 2, 3, 4, 6, 7, 8, 9]
+    slot_idx = 0
+    remaining = 0
+    current_slot = None
+    for grid_slot in chest_pattern:
+        if remaining == 0:
+            if slot_idx >= len(plank_slots):
+                ctx.log_event("ERROR: Ran out of planks during chest craft")
+                return False
+            current_slot, remaining = plank_slots[slot_idx]
+            slot_idx += 1
+            safe_inventory_click(ctx, current_slot, "PICKUP", 0)
+            time.sleep(0.1)
+
+        safe_inventory_click(ctx, grid_slot, "PICKUP", 1) # Right click to place 1
+        time.sleep(0.1)
+        remaining -= 1
+
+        if remaining == 0 and current_slot is not None:
+            safe_inventory_click(ctx, current_slot, "PICKUP", 0)
+            time.sleep(0.1)
+            current_slot = None
+
+    if remaining > 0 and current_slot is not None:
+        safe_inventory_click(ctx, current_slot, "PICKUP", 0)
+        time.sleep(0.1)
+    
+    # Debug: Check screen state before taking result
+    screen = ctx.client.transport.dispatch("get_screen", {})
+    data = screen.get("data", screen)
+    result_slot = None
+    for s in data.get("slots", []):
+        if s.get("slot") == 0:
+            result_slot = s
+            break
+    ctx.log_event(f"Result slot (0) before taking: {result_slot}")
+    
+    # 6. Take result
+    safe_inventory_click(ctx, 0, "QUICK_MOVE", 0)
+    time.sleep(0.5)
+    
+    if ctx.has_item("minecraft:chest"):
+        ctx.log_event("Manual chest crafting successful!")
+        return True
+    
+    ctx.log_event("ERROR: Chest not in inventory after crafting sequence")
+    return False
+
+# --- Generic Manual Crafting Helpers ---
+
+def _craft_tool_manual_generic(ctx, material_id_or_tag: str, tool_type: str, result_id: str) -> bool:
+    """
+    Generic manual tool crafting helper.
+
+    Args:
+        ctx: Test context
+        material_id_or_tag: Item ID substring (e.g. "_planks", "minecraft:cobblestone")
+        tool_type: "axe", "pickaxe", "shovel", "sword", "hoe"
+        result_id: Expected result item ID (e.g. "minecraft:stone_axe")
+
+    Returns:
+        True if successful.
+    """
+    TOOL_Recipes = {
+        "axe": {"material": [1, 2, 4], "stick": [5, 8], "mat_count": 3},
+        "pickaxe": {"material": [1, 2, 3], "stick": [5, 8], "mat_count": 3},
+        "shovel": {"material": [2], "stick": [5, 8], "mat_count": 1},
+        "sword": {"material": [2, 5], "stick": [8], "mat_count": 2},
+        "hoe": {"material": [1, 2], "stick": [5, 8], "mat_count": 2},
+    }
+
+    recipe = TOOL_Recipes.get(tool_type)
+    if not recipe:
+        ctx.log_event(f"Unknown tool type: {tool_type}")
+        return False
+
+    screen = ctx.client.transport.dispatch("get_screen", {})
+    data = screen.get("data", screen)
+    slots = data.get("slots", [])
+    
+    mat_slot = -1
+    stick_slot = -1
+    
+    # 1. Check ingredients
+    for s in slots:
+        sid = s.get("id", "")
+        count = s.get("count", 0)
+        
+        # Check material
+        if material_id_or_tag in sid and count >= recipe["mat_count"]:
+            # Special case for planks vs logs vs sticks
+            if "stick" not in sid: 
+                mat_slot = s.get("slot")
+        
+        # Check sticks
+        if "stick" in sid and count >= len(recipe["stick"]):
+            stick_slot = s.get("slot")
+
+    if mat_slot == -1 or stick_slot == -1:
+        ctx.log_event(f"Manual {tool_type}: Missing ingredients (mat_slot={mat_slot}, stick_slot={stick_slot})")
+        return False
+
+    ctx.log_event(f"Placing {tool_type} recipe: material from {mat_slot}, sticks from {stick_slot}")
+
+    # 2. Clear output slot
+    safe_inventory_click(ctx, 0, "QUICK_MOVE", 0)
+    time.sleep(0.1)
+
+    # 3. Place Materials
+    safe_inventory_click(ctx, mat_slot, "PICKUP", 0)
+    time.sleep(0.1)
+    for grid_idx in recipe["material"]:
+        safe_inventory_click(ctx, grid_idx, "PICKUP", 1) # Right click place 1
+        time.sleep(0.1)
+    safe_inventory_click(ctx, mat_slot, "PICKUP", 0) # Return rest
+    time.sleep(0.1)
+
+    # 4. Place Sticks
+    safe_inventory_click(ctx, stick_slot, "PICKUP", 0)
+    time.sleep(0.1)
+    for grid_idx in recipe["stick"]:
+        safe_inventory_click(ctx, grid_idx, "PICKUP", 1)
+        time.sleep(0.1)
+    safe_inventory_click(ctx, stick_slot, "PICKUP", 0) # Return rest
+    time.sleep(0.1)
+
+    # 5. Take Result
+    safe_inventory_click(ctx, 0, "QUICK_MOVE", 0)
+    time.sleep(0.3)
+    
+    do_close_container(ctx)
+    time.sleep(0.2)
+
+    return ctx.has_item(result_id)
+
+def craft_stone_axe_manual(ctx) -> bool:
+    return _craft_tool_manual_generic(ctx, "minecraft:cobblestone", "axe", "minecraft:stone_axe")
+
+def craft_iron_axe_manual(ctx) -> bool:
+    return _craft_tool_manual_generic(ctx, "minecraft:iron_ingot", "axe", "minecraft:iron_axe")
+
+def craft_golden_axe_manual(ctx) -> bool:
+    return _craft_tool_manual_generic(ctx, "minecraft:gold_ingot", "axe", "minecraft:golden_axe")
+
+def craft_diamond_axe_manual(ctx) -> bool:
+    return _craft_tool_manual_generic(ctx, "minecraft:diamond", "axe", "minecraft:diamond_axe")
+
+def craft_stone_pickaxe_manual(ctx) -> bool:
+    return _craft_tool_manual_generic(ctx, "minecraft:cobblestone", "pickaxe", "minecraft:stone_pickaxe")
+
+def craft_iron_pickaxe_manual(ctx) -> bool:
+    return _craft_tool_manual_generic(ctx, "minecraft:iron_ingot", "pickaxe", "minecraft:iron_pickaxe")
+
+def craft_diamond_pickaxe_manual(ctx) -> bool:
+    return _craft_tool_manual_generic(ctx, "minecraft:diamond", "pickaxe", "minecraft:diamond_pickaxe")
+
+def craft_stone_shovel_manual(ctx) -> bool:
+    return _craft_tool_manual_generic(ctx, "minecraft:cobblestone", "shovel", "minecraft:stone_shovel")
+
+def craft_iron_shovel_manual(ctx) -> bool:
+    return _craft_tool_manual_generic(ctx, "minecraft:iron_ingot", "shovel", "minecraft:iron_shovel")
+
+def craft_stone_sword_manual(ctx) -> bool:
+    return _craft_tool_manual_generic(ctx, "minecraft:cobblestone", "sword", "minecraft:stone_sword")
+
+def craft_iron_sword_manual(ctx) -> bool:
+    return _craft_tool_manual_generic(ctx, "minecraft:iron_ingot", "sword", "minecraft:iron_sword")
+
+def craft_stone_hoe_manual(ctx) -> bool:
+    return _craft_tool_manual_generic(ctx, "minecraft:cobblestone", "hoe", "minecraft:stone_hoe")
+
+def craft_iron_hoe_manual(ctx) -> bool:
+    return _craft_tool_manual_generic(ctx, "minecraft:iron_ingot", "hoe", "minecraft:iron_hoe")
+
+# --- Advanced Helpers (Refactored) ---
+
+def equip_item_to_hotbar(ctx, slot: int, hotbar_idx: int = 0):
+    """
+    Move an item from inventory slot to hotbar slot (default 0).
+    """
+    try:
+        # Swap with hotbar slot (slots 36-44 are hotbar in player inventory screen)
+        # Note: This assumes standard inventory screen numbering where hotbar is 36-44 or similar.
+        # But safe_inventory_click usually handles the raw slot ID. 
+        # For 'swap' to hotbar via number key, we can use 'SWAP' mode if needed, 
+        # but here we follow the click-click pattern from the original suite.
+        
+        target_hotbar_slot = 36 + hotbar_idx # 36 is usually hotbar slot 0 in main inventory container
+        
+        safe_inventory_click(ctx, slot, "PICKUP", 0)
+        time.sleep(0.1)
+        safe_inventory_click(ctx, target_hotbar_slot, "PICKUP", 0)
+        time.sleep(0.1)
+        # If there was something in hotbar, put it back in the original slot
+        safe_inventory_click(ctx, slot, "PICKUP", 0)
+        time.sleep(0.1)
+    except Exception as e:
+        ctx.log_event(f"Failed to equip item: {e}")
+
+def get_best_tool_durability(ctx, tool_type_id: str = "minecraft:wooden_axe") -> Optional[int]:
+    """
+    Check tool durability. Returns remaining uses of BEST tool of that type (None if no tool).
+    """
+    inv = ctx.get_inventory().get("inventory", [])
+    best_durability = None
+    best_slot = None
+    
+    # Generic max damage map? For now hardcoded for wooden axe as per original, 
+    # but we can make it smarter later.
+    max_damage = 59 if "wooden" in tool_type_id else 131 if "stone" in tool_type_id else 250
+    if "iron" in tool_type_id: max_damage = 250
+    if "diamond" in tool_type_id: max_damage = 1561
+    
+    for item in inv:
+        if item.get("id") == tool_type_id:
+            damage = item.get("damage", 0)
+            remaining = max_damage - damage
+            slot = item.get("slot", -1)
+            
+            if best_durability is None or remaining > best_durability:
+                best_durability = remaining
+                best_slot = slot
+    
+    # If we found a good tool not in hotbar, equip it
+    if best_slot is not None and best_slot >= 9 and best_durability is not None and best_durability > 10:
+        ctx.log_event(f"Best {tool_type_id} (durability {best_durability}) at slot {best_slot}, moving to hotbar...")
+        equip_item_to_hotbar(ctx, best_slot)
+    
+    return best_durability
+
+def robust_craft(ctx, item_id: str, count: int = 1, is_tool: bool = False, timeout: float = 30.0) -> bool:
+    """
+    Craft an item with retries and multiple methods (auto_craft, generic craft, manual fallback).
+    """
+    
+    def _check_count():
+        return ctx.count_item(item_id)
+        
+    start_time = time.time()
+    
+    # Attempt loop
+    for attempt in range(6):
+        if time.time() - start_time > timeout:
+            break
+            
+        current_count = _check_count()
+        if not is_tool and current_count >= count:
+            return True
+        if is_tool and ctx.has_item(item_id):
+             # For tools, we might want to check durability, but basic existence is often enough for 'crafted' check
+             return True
+
+        # Method 1: auto_craft (baritone)
+        try:
+            ctx.log_event(f"Crafting {count}x {item_id} (Attempt {attempt+1}, using auto_craft)...")
+            ctx.client.transport.dispatch("auto_craft", {"item": item_id, "quantity": count})
+            time.sleep(3.0)
+        except Exception as e:
+            ctx.log_event(f"auto_craft attempt failed: {e}")
+
+        if not is_tool and _check_count() >= count: return True
+        if is_tool and ctx.has_item(item_id): return True
+
+        # Method 2: craft (vanilla/mod packet)
+        try:
+            ctx.log_event(f"Crafting {count}x {item_id} (Attempt {attempt+1}, using craft)...")
+            ctx.client.transport.dispatch("craft", {"item": item_id, "count": count})
+            time.sleep(2.0)
+        except Exception as e:
+            ctx.log_event(f"craft attempt failed: {e}")
+        
+        if not is_tool and _check_count() >= count: return True
+        if is_tool and ctx.has_item(item_id): return True
+
+        # Method 3: Manual Fallbacks
+        fallback_success = False
+        if is_tool and item_id == "minecraft:wooden_axe":
+            fallback_success = craft_wooden_axe_manual(ctx)
+        elif item_id == "minecraft:chest":
+             # Try generic manual craft for chest if specific one fails? 
+             # We have craft_chest_manual
+             fallback_success = craft_chest_manual(ctx)
+        elif item_id == "minecraft:stick":
+             # We can add a simple manual stick craft if needed, or rely on auto
+             pass 
+        elif item_id == "minecraft:stick":
+             # We can add a simple manual stick craft if needed, or rely on auto
+             pass 
+        elif item_id == "minecraft:crafting_table":
+             pass
+        elif "door" in item_id:
+             fallback_success = craft_door_manual(ctx, item_id)
+
+        if fallback_success:
+            return True
+        
+        time.sleep(1.0)
+        
+    return False
+
+def craft_sticks_manual(ctx) -> bool:
+    """Craft sticks using robust crafting wrapper."""
+    return robust_craft(ctx, "minecraft:stick", 1)
+
+def craft_crafting_table_manual(ctx) -> bool:
+    """Craft crafting table using robust crafting wrapper."""
+    return robust_craft(ctx, "minecraft:crafting_table", 1)
+
+
+# --- Status and Counting Helpers ---
+
+def safe_count_item(ctx, item_id: str) -> int:
+    """Safe wrapper for counting items."""
+    try:
+        return ctx.count_item(item_id)
+    except Exception:
+        return 0
+
+def get_inventory_counts(ctx) -> Dict[str, int]:
+    """Get dictionary of all items in inventory and their counts."""
+    inv = ctx.get_inventory().get("inventory", [])
+    items = {}
+    for slot in inv:
+        if slot and slot.get("id") and slot.get("id") != "minecraft:air":
+            item_id = slot.get("id")
+            count = slot.get("count", 0)
+            if item_id in items:
+                items[item_id] += count
+            else:
+                items[item_id] = count
+    return items
+
+def count_all_logs(ctx) -> int:
+    """Count all wood-like blocks considered as 'logs'."""
+    all_ids = (
+        LOG_BLOCK_IDS
+        + STRIPPED_LOG_BLOCK_IDS
+        + WOOD_BLOCK_IDS
+        + STRIPPED_WOOD_BLOCK_IDS
+    )
+    return sum(max(0, safe_count_item(ctx, item_id)) for item_id in all_ids)
+
+def count_any_planks(ctx) -> int:
+    """Count all plank types."""
+    return sum(max(0, safe_count_item(ctx, item_id)) for item_id in PLANK_ITEM_IDS)
+
+def log_full_status(ctx, prefix: str = "STATUS:"):
+    """Print comprehensive status: health, hunger, position, inventory."""
+    try:
+        # Get position
+        pos = ctx.get_position()
+        pos_str = f"Pos({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f})" if pos else "unknown"
+        
+        # Get health/hunger from player state
+        state = ctx.client.transport.dispatch("get_state", {})
+        health = state.get("health", "?")
+        hunger = state.get("food", state.get("hunger", "?"))
+        world_time = state.get("world_time")
+        time_str = ""
+        if isinstance(world_time, (int, float)):
+            day_time = int(world_time) % 24000
+            if day_time < 12000:
+                eta_ticks = 12000 - day_time
+                eta_label = "etaDark"
+            else:
+                eta_ticks = 24000 - day_time
+                eta_label = "etaDay"
+            eta_seconds = eta_ticks / 20.0
+            time_str = f" | Time={day_time} {eta_label}={eta_seconds:.0f}s"
+        
+        # Get full inventory
+        inv_contents = get_inventory_counts(ctx)
+        inv_str = ", ".join([f"{k.replace('minecraft:', '')}: {v}" for k, v in inv_contents.items()]) if inv_contents else "empty"
+        
+        status_line = f"{prefix} HP={health} Hunger={hunger} | {pos_str}{time_str} | Inv: {inv_str}"
+        ctx.log_event(status_line)
+        print(status_line)
+    except Exception as e:
+        print(f"{prefix} Error getting status: {e}")
+
+
