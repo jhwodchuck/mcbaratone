@@ -298,123 +298,134 @@ def create_extended_suite_1100() -> TestSuite:
             logger.info( f"ERROR: Insufficient materials for axe: {all_planks} planks, {current_sticks} sticks")
             return False
         
-    def _ensure_crafting_table_placed(ctx: TestContext) -> bool:
-        """Ensure a crafting table is placed and reachable, prioritizing planned position."""
+    def _ensure_crafting_table_placed(ctx: TestContext) -> Optional[List[int]]:
+        """Ensure a crafting table is placed and reachable, prioritizing base then extras."""
         store = _get_persistent_store(ctx)
-        table_pos = store.get("crafting_table")
-        
-        # 1. Verify existing stored position
-        if table_pos is not None:
-             logger.info( f"Verifying stored crafting table at {table_pos}...")
-             try:
-                 block = ctx.client.transport.dispatch("get_block", {"x": int(table_pos[0]), "y": int(table_pos[1]), "z": int(table_pos[2])})
-                 block_id = block.get("id", "")
-                 if block_id != "minecraft:crafting_table":
-                     logger.info( f"WARNING: Block at stored pos is {block_id}, not crafting_table. Clearing.")
-                     store["crafting_table"] = None
-                     table_pos = None
-                     _save_persistent(ctx)
-             except Exception as e:
-                 logger.info( f"WARNING: Failed to check block: {e}")
-            
-             if table_pos:
-                 # Check if we can reach it
-                 if not move_near(ctx, table_pos[0], table_pos[1], table_pos[2], timeout=20.0):
-                     logger.info( "WARNING: Stored crafting table unreachable. Clearing stored position.")
-                     store["crafting_table"] = None
-                     table_pos = None
-                     _save_persistent(ctx)
-                 else:
-                     # Check distance
-                     px, py, pz = ctx.get_position()
-                     dist_sq = (px-table_pos[0])**2 + (py-table_pos[1])**2 + (pz-table_pos[2])**2
-                     if dist_sq > 36: # > 6 blocks away
-                         logger.info( "WARNING: Still too far from crafting table. Clearing stored position.")
-                         store["crafting_table"] = None
-                         table_pos = None
-                         _save_persistent(ctx)
-                     else:
-                         return True # Existing table is good
-        
-        # 2. Need to place one
-        if table_pos is None:
-            logger.info( "No crafting table position stored/reachable, checking/placing one...")
-            
-            # Check if we have a crafting table item, craft if needed
-            if safe_count_item(ctx, "minecraft:crafting_table") == 0:
-                if count_any_planks(ctx) < 4:
-                     logger.info( f"ERROR: Not enough planks for crafting table (have {count_any_planks(ctx)}, need 4)")
-                     return False
-                
-                logger.info( "Crafting a crafting table...")
-                if not craft_and_wait(ctx, "minecraft:crafting_table", 1):
-                    logger.info( "Recipe crafting failed, trying manual 2x2 crafting...")
-                    if not craft_crafting_table_manual(ctx):
-                        logger.info( "ERROR: Failed to craft crafting table manually")
-                        return False
-            
-            # 3. Check for planned position
-            planned_pos = store.get("planned_crafting_table")
-            
-            if planned_pos:
-                logger.info(f"Navigating to planned crafting table position at {planned_pos}...")
-                if move_near(ctx, planned_pos[0], planned_pos[1], planned_pos[2], timeout=30.0):
-                    x, y, z = planned_pos
-                    existing_block = block_id_at(ctx, x, y, z)
-                    if existing_block and "crafting_table" in existing_block:
-                        table_pos = [x, y, z]
+        base_pos = _normalize_pos(store.get("crafting_table"))
+        extra_tables = _dedupe_positions(store.get("crafting_tables", []))
+        store["crafting_tables"] = extra_tables
+        if base_pos:
+            store["crafting_table"] = base_pos
+
+        def _check_table(pos: List[int]) -> bool:
+            logger.info(f"Verifying stored crafting table at {pos}...")
+            try:
+                block = ctx.client.transport.dispatch("get_block", {"x": int(pos[0]), "y": int(pos[1]), "z": int(pos[2])})
+                block_id = block.get("id", "")
+            except Exception as e:
+                logger.info(f"WARNING: Failed to check block at {pos}: {e}")
+                return False
+            if block_id != "minecraft:crafting_table":
+                logger.info(f"WARNING: Block at stored pos is {block_id}, not crafting_table.")
+                return False
+            if not _move_near_with_reset(ctx, pos, timeout=20.0):
+                logger.info("WARNING: Stored crafting table unreachable.")
+                return False
+            px, py, pz = ctx.get_position()
+            dist_sq = (px - pos[0])**2 + (py - pos[1])**2 + (pz - pos[2])**2
+            if dist_sq > 36:  # > 6 blocks away
+                logger.info("WARNING: Still too far from crafting table.")
+                return False
+            return True
+
+        candidates = []
+        if base_pos:
+            candidates.append(base_pos)
+        candidates.extend([pos for pos in extra_tables if not base_pos or _pos_key(pos) != _pos_key(base_pos)])
+
+        for pos in candidates:
+            if _check_table(pos):
+                store["crafting_table_active"] = pos
+                _clear_table_failure(store, pos)
+                _save_persistent(ctx)
+                return pos
+            if _record_table_failure(store, pos):
+                logger.info(f"WARNING: Removing crafting table after repeated failures at {pos}")
+                _remove_table_pos(store, pos)
+            _save_persistent(ctx)
+
+        base_pos = _normalize_pos(store.get("crafting_table"))
+        extra_tables = _dedupe_positions(store.get("crafting_tables", []))
+        store["crafting_tables"] = extra_tables
+
+        logger.info("No crafting table position stored/reachable, checking/placing one...")
+
+        if safe_count_item(ctx, "minecraft:crafting_table") == 0:
+            if count_any_planks(ctx) < 4:
+                logger.info(f"ERROR: Not enough planks for crafting table (have {count_any_planks(ctx)}, need 4)")
+                return None
+
+            logger.info("Crafting a crafting table...")
+            if not craft_and_wait(ctx, "minecraft:crafting_table", 1):
+                logger.info("Recipe crafting failed, trying manual 2x2 crafting...")
+                if not craft_crafting_table_manual(ctx):
+                    logger.info("ERROR: Failed to craft crafting table manually")
+                    return None
+
+        planned_pos = _normalize_pos(store.get("planned_crafting_table"))
+        if planned_pos:
+            logger.info(f"Navigating to planned crafting table position at {planned_pos}...")
+            if _move_near_with_reset(ctx, planned_pos, timeout=30.0):
+                x, y, z = planned_pos
+                existing_block = block_id_at(ctx, x, y, z)
+                if existing_block and "crafting_table" in existing_block:
+                    table_pos = [x, y, z]
+                    if not base_pos:
                         store["crafting_table"] = table_pos
-                        _save_persistent(ctx)
-                        logger.info(f"Found existing crafting table at planned position {table_pos}")
-                        return True
                     else:
-                        logger.info(f"Placing crafting table at planned position ({x}, {y}, {z})...")
-                        # Use place_block_at for exact position (bot_place_block may pick a different spot)
-                        if place_block_at(ctx, x, y, z, "minecraft:crafting_table"):
-                            # Verify placement succeeded
-                            time.sleep(0.5)
-                            actual_block = block_id_at(ctx, x, y, z)
-                            if "crafting_table" in actual_block:
-                                table_pos = [x, y, z]
-                                store["crafting_table"] = table_pos
-                                _save_persistent(ctx)
-                                logger.info(f"Placed and verified crafting table at {table_pos}")
-                                return True
-                            else:
-                                logger.info(f"Placement reported success but block is {actual_block}, trying nearby...")
-                        else:
-                            logger.info("Failed to place at planned position, trying nearby...")
-                else:
-                    logger.info("Couldn't reach planned position, trying nearby...")
-            
-            # 4. Fallback placement
-            pos = find_ground_place_pos(ctx, radius=5)
-            if not pos:
-                px, py, pz = ctx.get_position()
-                pos = find_place_pos_near(ctx, int(px), int(py), int(pz), radius=3)
-            if pos:
-                x, y, z = pos
-                logger.info(f"Placing crafting table at ground level ({x}, {y}, {z})...")
+                        store["crafting_tables"] = _dedupe_positions(extra_tables + [table_pos])
+                    store["crafting_table_active"] = table_pos
+                    _clear_table_failure(store, table_pos)
+                    _save_persistent(ctx)
+                    logger.info(f"Found existing crafting table at planned position {table_pos}")
+                    return table_pos
+                logger.info(f"Placing crafting table at planned position ({x}, {y}, {z})...")
                 if place_block_at(ctx, x, y, z, "minecraft:crafting_table"):
-                    # Verify placement succeeded
                     time.sleep(0.5)
                     actual_block = block_id_at(ctx, x, y, z)
                     if "crafting_table" in actual_block:
                         table_pos = [x, y, z]
-                        store["crafting_table"] = table_pos
+                        if not base_pos:
+                            store["crafting_table"] = table_pos
+                        else:
+                            store["crafting_tables"] = _dedupe_positions(extra_tables + [table_pos])
+                        store["crafting_table_active"] = table_pos
+                        _clear_table_failure(store, table_pos)
                         _save_persistent(ctx)
                         logger.info(f"Placed and verified crafting table at {table_pos}")
-                        return True
-                    else:
-                        logger.info(f"Fallback placement reported success but block is {actual_block}")
-                        return False
-                else:
-                    logger.info("ERROR: Failed to place crafting table")
-                    return False
+                        return table_pos
+                    logger.info(f"Placement reported success but block is {actual_block}, trying nearby...")
             else:
-                logger.info("ERROR: Could not find position to place crafting table")
-                return False
-        return True
+                logger.info("Couldn't reach planned position, trying nearby...")
+
+        pos = find_ground_place_pos(ctx, radius=5)
+        if not pos:
+            px, py, pz = ctx.get_position()
+            pos = find_place_pos_near(ctx, int(px), int(py), int(pz), radius=3)
+        if pos:
+            x, y, z = pos
+            logger.info(f"Placing crafting table at ground level ({x}, {y}, {z})...")
+            if place_block_at(ctx, x, y, z, "minecraft:crafting_table"):
+                time.sleep(0.5)
+                actual_block = block_id_at(ctx, x, y, z)
+                if "crafting_table" in actual_block:
+                    table_pos = [x, y, z]
+                    if not base_pos:
+                        store["crafting_table"] = table_pos
+                    else:
+                        store["crafting_tables"] = _dedupe_positions(extra_tables + [table_pos])
+                    store["crafting_table_active"] = table_pos
+                    _clear_table_failure(store, table_pos)
+                    _save_persistent(ctx)
+                    logger.info(f"Placed and verified crafting table at {table_pos}")
+                    return table_pos
+                logger.info(f"Fallback placement reported success but block is {actual_block}")
+                return None
+            logger.info("ERROR: Failed to place crafting table")
+            return None
+
+        logger.info("ERROR: Could not find position to place crafting table")
+        return None
 
     def _craft_replacement_axe(ctx: TestContext) -> bool:
         """Craft a new wooden axe."""
@@ -430,12 +441,10 @@ def create_extended_suite_1100() -> TestSuite:
              return False
 
         # Ensure crafting table is placed (using planned pos if available)
-        if not _ensure_crafting_table_placed(ctx):
+        table_pos = _ensure_crafting_table_placed(ctx)
+        if not table_pos:
             logger.info("Failed to ensure crafting table placement")
             return False
-            
-        store = _get_persistent_store(ctx)
-        table_pos = store.get("crafting_table")
         
         # Open the crafting table
         logger.info( f"Opening crafting table at {table_pos}...")
@@ -497,6 +506,89 @@ def create_extended_suite_1100() -> TestSuite:
     def _save_persistent(ctx):
         save_farming_state(suite_state["persistent"])
 
+    CRAFTING_TABLE_FAILURE_LIMIT = 2
+
+    def _pos_key(pos: List[int]) -> str:
+        return f"{int(pos[0])},{int(pos[1])},{int(pos[2])}"
+
+    def _normalize_pos(pos: Optional[List[int]]) -> Optional[List[int]]:
+        if not pos or len(pos) < 3:
+            return None
+        return [int(pos[0]), int(pos[1]), int(pos[2])]
+
+    def _dedupe_positions(positions: List[List[int]]) -> List[List[int]]:
+        seen = set()
+        result = []
+        for pos in positions:
+            norm = _normalize_pos(pos)
+            if not norm:
+                continue
+            key = _pos_key(norm)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(norm)
+        return result
+
+    def _get_table_failures(store: dict) -> dict:
+        failures = store.get("crafting_table_failures")
+        if not isinstance(failures, dict):
+            failures = {}
+        return failures
+
+    def _record_table_failure(store: dict, pos: List[int]) -> bool:
+        failures = _get_table_failures(store)
+        key = _pos_key(pos)
+        failures[key] = failures.get(key, 0) + 1
+        store["crafting_table_failures"] = failures
+        return failures[key] >= CRAFTING_TABLE_FAILURE_LIMIT
+
+    def _clear_table_failure(store: dict, pos: List[int]) -> None:
+        failures = _get_table_failures(store)
+        key = _pos_key(pos)
+        if key in failures:
+            failures.pop(key)
+            store["crafting_table_failures"] = failures
+
+    def _remove_table_pos(store: dict, pos: List[int]) -> None:
+        base_pos = _normalize_pos(store.get("crafting_table"))
+        if base_pos and _pos_key(base_pos) == _pos_key(pos):
+            store["crafting_table"] = None
+        extra = store.get("crafting_tables", [])
+        store["crafting_tables"] = [
+            p for p in _dedupe_positions(extra) if _pos_key(p) != _pos_key(pos)
+        ]
+
+    def _move_near_with_reset(ctx: TestContext, pos: List[int], timeout: float) -> bool:
+        cancel_pathing(ctx)
+        wait_for_baritone_idle(ctx, timeout=5.0)
+        return move_near(ctx, pos[0], pos[1], pos[2], timeout=timeout)
+
+    def _get_plank_counts(ctx: TestContext) -> dict:
+        inv = get_inventory_counts(ctx)
+        return {item_id: count for item_id, count in inv.items() if item_id in PLANK_ITEM_IDS and count > 0}
+
+    def _pick_plank_with_min(ctx: TestContext, min_count: int) -> Optional[str]:
+        plank_counts = _get_plank_counts(ctx)
+        candidates = [(item_id, count) for item_id, count in plank_counts.items() if count >= min_count]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[1], reverse=True)
+        return candidates[0][0]
+
+    def _pick_any_plank(ctx: TestContext) -> Optional[str]:
+        plank_counts = _get_plank_counts(ctx)
+        if not plank_counts:
+            return None
+        return max(plank_counts.items(), key=lambda item: item[1])[0]
+
+    def _find_any_door(ctx: TestContext) -> Optional[str]:
+        inv = get_inventory_counts(ctx)
+        for item_id, count in inv.items():
+            if item_id.endswith("_door") and item_id != "minecraft:iron_door" and count > 0:
+                return item_id
+        return None
+
     def _ensure_planks(ctx: TestContext, min_planks: int) -> bool:
         total_planks = count_any_planks(ctx)
         if total_planks >= min_planks:
@@ -540,39 +632,64 @@ def create_extended_suite_1100() -> TestSuite:
 
         return True
 
-    def _ensure_door(ctx: TestContext) -> bool:
-        if safe_count_item(ctx, "minecraft:oak_door") > 0:
-            return True
+    def _ensure_door(ctx: TestContext) -> Optional[str]:
+        existing_door = _find_any_door(ctx)
+        if existing_door:
+            return existing_door
         if count_any_planks(ctx) < 6:
             if not _ensure_planks(ctx, 6):
                 logger.info("ERROR: Not enough planks for door")
-                return False
-        
-        # Use manual crafting directly (autocraft doesn't work well for doors)
-        store = _get_persistent_store(ctx)
-        table_pos = store.get("crafting_table")
+                return None
+
+        plank_type = _pick_plank_with_min(ctx, 6)
+        if not plank_type:
+            inv = get_inventory_counts(ctx)
+            log_candidates = [(item_id, count) for item_id, count in inv.items() if item_id in LOG_BLOCK_IDS and count > 0]
+            if log_candidates:
+                log_candidates.sort(key=lambda item: item[1], reverse=True)
+                target_log, available_logs = log_candidates[0]
+                target_plank = target_log.replace("_log", "_planks")
+                current_planks = safe_count_item(ctx, target_plank)
+                while current_planks < 6 and available_logs > 0:
+                    desired_planks = current_planks + 4
+                    if not robust_craft(ctx, target_plank, desired_planks):
+                        logger.info(f"ERROR: Failed to craft planks ({target_plank}) for door")
+                        break
+                    time.sleep(0.3)
+                    available_logs -= 1
+                    current_planks = safe_count_item(ctx, target_plank)
+                plank_type = _pick_plank_with_min(ctx, 6)
+            if not plank_type:
+                logger.info("ERROR: Not enough matching planks for door crafting")
+                return None
+        door_item = plank_type.replace("_planks", "_door")
+
+        table_pos = _ensure_crafting_table_placed(ctx)
         if not table_pos:
-            logger.info("ERROR: No crafting table position stored for door crafting")
-            return False
+            logger.info("ERROR: Could not place crafting table for door crafting")
+            return None
         if not ensure_crafting_table_open(ctx, table_pos=table_pos):
             logger.info("ERROR: Could not open crafting table for door crafting")
-            return False
+            return None
         if count_any_planks(ctx) < 6:
             if not _ensure_planks(ctx, 6):
                 logger.info("ERROR: Not enough planks for door after crafting table opened")
                 do_close_container(ctx)
-                return False
-        
-        ok = craft_door_manual(ctx, "minecraft:oak_door")
+                return None
+
+        ok = craft_door_manual(ctx, door_item)
         do_close_container(ctx)
-        
-        # Final verification
-        if ok and safe_count_item(ctx, "minecraft:oak_door") > 0:
-            logger.info("Door crafted successfully via manual crafting")
-            return True
-        
+
+        if ok and safe_count_item(ctx, door_item) > 0:
+            logger.info(f"Door crafted successfully via manual crafting ({door_item})")
+            return door_item
+
+        existing_door = _find_any_door(ctx)
+        if existing_door:
+            return existing_door
+
         logger.info("ERROR: Failed to craft door (manual crafting returned False or no door in inventory)")
-        return False
+        return None
 
     def _withdraw_wood_for_shelter(ctx: TestContext, min_planks: int) -> bool:
         store = _get_persistent_store(ctx)
@@ -645,7 +762,7 @@ def create_extended_suite_1100() -> TestSuite:
         if not door or not origin:
             return False
         door_id = block_id_at(ctx, door[0], door[1], door[2])
-        return door_id == "minecraft:oak_door"
+        return bool(door_id and door_id.endswith("_door"))
 
     def _move_to_shelter(ctx: TestContext, shelter: dict) -> bool:
         origin = shelter.get("origin")
@@ -656,7 +773,7 @@ def create_extended_suite_1100() -> TestSuite:
         return move_near(ctx, target[0], target[1], target[2], timeout=45.0)
 
     def _clear_area_tunnel(ctx: TestContext) -> bool:
-        """Clear a 7x5x7 area using #tunnel command and save planned positions."""
+        """Clear a 7w x 5h x 7d area using #tunnel (h,w,d) and save planned positions."""
         # First ensure any previous command is stopped with delay
         ctx.client.transport.dispatch("chat", {"message": "#stop"})
         time.sleep(1.0)
@@ -710,8 +827,8 @@ def create_extended_suite_1100() -> TestSuite:
         # Use current position as origin
         px, py, pz = ctx.get_position()
         origin_x, origin_y, origin_z = int(px), int(py), int(pz)
-        # Tunnel is 5 high 7 wide 7 deep
-        logger.info("Clearing 7x5x7 area with tunnel command...")
+        # Baritone tunnel args are (height, width, depth)
+        logger.info("Clearing 7w x 5h x 7d area with tunnel command (h,w,d: 5 7 7)...")
         ctx.client.transport.dispatch("chat", {"message": "#tunnel 5 7 7"})
         
         # Track progress via inventory and position changes
@@ -822,16 +939,18 @@ def create_extended_suite_1100() -> TestSuite:
         min_logs_needed = 20
         
         # Check if we have enough materials, mine more if needed
-        current_logs = count_all_logs(ctx)
-        current_planks = count_any_planks(ctx)
-        planks_from_logs = current_logs * 4
-        total_available = current_planks + planks_from_logs
-        
-        if total_available < min_planks:
+        max_mine_attempts = 2
+        for attempt in range(max_mine_attempts + 1):
+            current_logs = count_all_logs(ctx)
+            current_planks = count_any_planks(ctx)
+            total_available = current_planks + (current_logs * 4)
+            if total_available >= min_planks:
+                break
             logs_to_mine = ((min_planks - total_available) // 4) + 5  # Add buffer
-            logger.info(f"Need {logs_to_mine} more logs for house (have {current_logs} logs, {current_planks} planks)")
-            
-            # Mine more logs
+            logger.info(
+                f"Need {logs_to_mine} more logs for house (have {current_logs} logs, {current_planks} planks). "
+                f"Mining attempt {attempt + 1}/{max_mine_attempts + 1}..."
+            )
             ctx.client.transport.dispatch("chat", {"message": f"#mine {LOG_MINE_ARG}"})
             start = time.time()
             timeout = 90.0
@@ -844,15 +963,22 @@ def create_extended_suite_1100() -> TestSuite:
             time.sleep(1.0)  # Delay after stop
             cancel_pathing(ctx)
             time.sleep(0.5)
-            
             logger.info(f"Mined logs - now have {count_all_logs(ctx)} logs")
-        
+
+        current_logs = count_all_logs(ctx)
+        current_planks = count_any_planks(ctx)
+        total_available = current_planks + (current_logs * 4)
+        if total_available < min_planks:
+            logger.info(f"ERROR: Not enough logs/planks for house after mining ({total_available} < {min_planks})")
+            return False
+
         if not _ensure_planks(ctx, min_planks):
             logger.info("ERROR: Not enough planks for house")
             return False
-        
+
         # Ensure we have door
-        if not _ensure_door(ctx):
+        door_item = _ensure_door(ctx)
+        if not door_item:
             logger.info("ERROR: Failed to craft door for house")
             return False
         
@@ -863,17 +989,40 @@ def create_extended_suite_1100() -> TestSuite:
         
         # Ensure we have chest
         if safe_count_item(ctx, "minecraft:chest") < 1:
-            store = _get_persistent_store(ctx)
-            table_pos = store.get("crafting_table")
-            if table_pos and ensure_crafting_table_open(ctx, table_pos=table_pos):
-                if not robust_craft(ctx, "minecraft:chest", 1):
-                    logger.info("ERROR: Failed to craft chest for house")
+            table_pos = _ensure_crafting_table_placed(ctx)
+            if not table_pos:
+                logger.info("ERROR: Could not place crafting table for house chest")
+                return False
+            if not ensure_crafting_table_open(ctx, table_pos=table_pos):
+                logger.info("ERROR: Could not open crafting table for house chest")
+                return False
+            if count_any_planks(ctx) < 8:
+                if not _ensure_planks(ctx, 8):
+                    logger.info("ERROR: Not enough planks for house chest")
                     do_close_container(ctx)
                     return False
+            if not craft_chest_manual(ctx):
+                logger.info("ERROR: Failed to craft chest manually for house")
                 do_close_container(ctx)
+                return False
+            do_close_container(ctx)
         
         ok = True
-        
+        current_plank = _pick_any_plank(ctx)
+        if not current_plank:
+            logger.info("ERROR: No planks available for house build")
+            return False
+
+        def _place_plank(x: int, y: int, z: int) -> bool:
+            nonlocal current_plank
+            if current_plank and safe_count_item(ctx, current_plank) > 0:
+                if place_block_at(ctx, x, y, z, current_plank):
+                    return True
+            current_plank = _pick_any_plank(ctx)
+            if current_plank and place_block_at(ctx, x, y, z, current_plank):
+                return True
+            return False
+
         # Wall positions (perimeter of 7x7, excluding corners which we'll handle)
         # Row 1 (north wall): x=1..5, z=1
         # Row 5 (south wall): x=1..5, z=5 (skip x=3 for door)
@@ -889,33 +1038,33 @@ def create_extended_suite_1100() -> TestSuite:
             
             # North wall (z = oz + 1)
             for x_offset in range(1, 6):
-                ok = place_block_at(ctx, ox + x_offset, y, oz + 1, "minecraft:oak_planks") and ok
+                ok = _place_plank(ox + x_offset, y, oz + 1) and ok
             
             # South wall (z = oz + 5), skip door at x=3
             for x_offset in range(1, 6):
                 if x_offset == 3:  # Door position
                     continue
-                ok = place_block_at(ctx, ox + x_offset, y, oz + 5, "minecraft:oak_planks") and ok
+                ok = _place_plank(ox + x_offset, y, oz + 5) and ok
             
             # West wall (x = ox + 1)
             for z_offset in range(2, 5):  # Skip corners (already built)
-                ok = place_block_at(ctx, ox + 1, y, oz + z_offset, "minecraft:oak_planks") and ok
+                ok = _place_plank(ox + 1, y, oz + z_offset) and ok
             
             # East wall (x = ox + 5)
             for z_offset in range(2, 5):  # Skip corners
-                ok = place_block_at(ctx, ox + 5, y, oz + z_offset, "minecraft:oak_planks") and ok
+                ok = _place_plank(ox + 5, y, oz + z_offset) and ok
         
         # Build roof (5x5 interior)
         logger.info("Building roof...")
         roof_y = oy + 1 + wall_height
         for x_offset in range(1, 6):
             for z_offset in range(1, 6):
-                ok = place_block_at(ctx, ox + x_offset, roof_y, oz + z_offset, "minecraft:oak_planks") and ok
+                ok = _place_plank(ox + x_offset, roof_y, oz + z_offset) and ok
         
         # Place door (south wall, center)
         door_x, door_y, door_z = ox + 3, oy + 1, oz + 5
         logger.info(f"Placing door at ({door_x}, {door_y}, {door_z})...")
-        ok = place_block_at(ctx, door_x, door_y, door_z, "minecraft:oak_door") and ok
+        ok = place_block_at(ctx, door_x, door_y, door_z, door_item) and ok
         
         # Place crafting table at C position (row 2, col 4 -> z=oz+2, x=ox+4)
         craft_x, craft_y, craft_z = ox + 4, oy + 1, oz + 2
@@ -935,10 +1084,16 @@ def create_extended_suite_1100() -> TestSuite:
         store["house_7x7"] = {
             "origin": [ox, oy, oz],
             "door": [door_x, door_y, door_z],
+            "door_item": door_item,
             "crafting_table": [craft_x, craft_y, craft_z],
             "supply_chest": [chest_x, chest_y, chest_z],
         }
-        store["crafting_table"] = [craft_x, craft_y, craft_z]  # Update main reference
+        if not store.get("crafting_table"):
+            store["crafting_table"] = [craft_x, craft_y, craft_z]
+        else:
+            existing_tables = _dedupe_positions(store.get("crafting_tables", []))
+            existing_tables.append([craft_x, craft_y, craft_z])
+            store["crafting_tables"] = _dedupe_positions(existing_tables)
         store["night_shelter"] = {
             "origin": [ox, oy, oz],
             "door": [door_x, door_y, door_z],
@@ -990,7 +1145,7 @@ def create_extended_suite_1100() -> TestSuite:
 
         start = time.time()
         next_log = time.time()
-        while time.time() - start < 600.0:
+        while time.time() - start < 1200.0:
             current_time = get_world_time(ctx)
             if not is_near_night(current_time):
                 logger.info( f"Daytime reached (time {current_time})")
@@ -1035,7 +1190,7 @@ def create_extended_suite_1100() -> TestSuite:
         # Check if we need to clear area for house (run tunnel before any placement)
         store = _get_persistent_store(ctx)
         if not store.get("house_7x7") and not store.get("area_cleared"):
-            logger.info("No house yet - clearing 5x7x7 area first...")
+            logger.info("No house yet - clearing 7w x 5h x 7d area first...")
             _clear_area_tunnel(ctx)
             store["area_cleared"] = True
             store["area_origin"] = list(ctx.get_position()[:3])  # Save origin for later
@@ -1253,17 +1408,15 @@ def create_extended_suite_1100() -> TestSuite:
         # Craft chest if needed (requires 8 planks and crafting table)
         if safe_count_item(ctx, "minecraft:chest") == 0:
             # Ensure crafting table is placed (prioritizing planned position)
-            if not _ensure_crafting_table_placed(ctx):
+            table_pos = _ensure_crafting_table_placed(ctx)
+            if not table_pos:
                 logger.info( "ERROR: Could not place crafting table for storage setup")
                 return False
-
-            store = _get_persistent_store(ctx)
-            table_pos = store.get("crafting_table")
 
             # Navigate to crafting table first
             logger.info( f"Navigating to crafting table at {table_pos}...")
             
-            reached = move_near(ctx, table_pos[0], table_pos[1], table_pos[2], timeout=45.0)
+            reached = _move_near_with_reset(ctx, table_pos, timeout=45.0)
             
             # Verify we are close enough
             px, py, pz = ctx.get_position()
@@ -1452,25 +1605,21 @@ def create_extended_suite_1100() -> TestSuite:
         
         # Ensure we have a chest
         if safe_count_item(ctx, "minecraft:chest") == 0:
-            store = _get_persistent_store(ctx)
-            table_pos = store.get("crafting_table")
-            if not ensure_crafting_table_open(ctx, table_pos=table_pos, suite_state=suite_state):
+            table_pos = _ensure_crafting_table_placed(ctx)
+            if not table_pos:
+                logger.info( "ERROR: Could not place crafting table for overflow chest")
+                return None
+            if not ensure_crafting_table_open(ctx, table_pos=table_pos):
                 logger.info( "ERROR: Could not open crafting table for overflow chest")
                 return None
             if count_any_planks(ctx) < 8:
-                inv = get_inventory_counts(ctx)
-                log_item = next((item_id for item_id in inv.keys() if "_log" in item_id), None)
-                if not log_item:
-                    logger.info( "ERROR: No logs available for overflow chest planks")
+                if not _ensure_planks(ctx, 8):
+                    logger.info( "ERROR: Not enough planks for overflow chest")
                     do_close_container(ctx)
                     return None
-                target_plank = log_item.replace("_log", "_planks")
-                if not robust_craft(ctx, target_plank, 8):
-                    logger.info( f"ERROR: Failed to craft planks ({target_plank}) for overflow chest")
-                    do_close_container(ctx)
-                    return None
-                time.sleep(0.5)
-            if not craft_and_wait(ctx, "minecraft:chest", 1):
+            if not craft_chest_manual(ctx):
+                logger.info( "ERROR: Failed to craft chest manually for overflow chest")
+                do_close_container(ctx)
                 return None
             do_close_container(ctx)
         
