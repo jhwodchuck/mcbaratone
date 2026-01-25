@@ -21,6 +21,7 @@ src/baritone_client/actions/night_survival.py
 src/baritone_client/actions/recovery.py
 src/baritone_client/actions/resource_gathering.py
 src/baritone_client/actions/sensing.py
+src/baritone_client/actions/suites.py
 src/baritone_client/actions/survival_check.py
 src/baritone_client/actions/tool_progression.py
 src/baritone_client/actions/travel.py
