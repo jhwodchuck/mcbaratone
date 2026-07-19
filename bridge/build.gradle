@@ -66,6 +66,9 @@ dependencies {
     // Testing dependencies
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.0'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.0'
+    // Gradle 9 no longer puts the JUnit Platform launcher on the test runtime
+    // classpath automatically.
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     testImplementation 'org.mockito:mockito-core:5.5.0'
     testImplementation 'org.mockito:mockito-junit-jupiter:5.5.0'
     testImplementation files('libs/baritone-api-fabric-1.15.0.jar')

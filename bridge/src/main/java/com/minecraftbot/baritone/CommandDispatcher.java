@@ -303,6 +303,14 @@ public class CommandDispatcher {
         if (clientSocket == null) return null; // Allow for testing
 
         long now = System.currentTimeMillis();
+
+        // Entries are keyed by Socket and would otherwise accumulate forever
+        // across reconnects; lazily evict sockets whose window has long expired.
+        if (lastRequestTimes.size() > 16) {
+            lastRequestTimes.entrySet().removeIf(e -> (now - e.getValue()) > 2 * RATE_LIMIT_WINDOW_MS);
+            requestCounts.keySet().retainAll(lastRequestTimes.keySet());
+        }
+
         Long lastTime = lastRequestTimes.get(clientSocket);
 
         if (lastTime == null || (now - lastTime) > RATE_LIMIT_WINDOW_MS) {

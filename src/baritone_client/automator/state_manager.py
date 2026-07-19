@@ -14,6 +14,7 @@ from .versioning import VersionManager, SemanticVersion
 from .migration import MigrationManager, create_default_checkpoint_migration_registry
 from .serialization_multi import FileSerializer, SerializationFormat
 from .storage import DistributedStorageManager, create_filesystem_storage, StorageMetadata
+from ..world_identity import WorldIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,16 @@ class StateManager:
         # Versioning state
         self.current_schema_version = self.version_manager.get_current_version()
         self.loaded_schema_version: Optional[SemanticVersion] = None
+        self.bound_world_identity: Optional[WorldIdentity] = None
+        self.last_checkpoint_validation = "unverified"
+
+    def bind_world_identity(self, identity: Optional[Union[WorldIdentity, Dict[str, Any]]]) -> None:
+        """Bind subsequent checkpoint writes to one stable world identity."""
+        if identity is None:
+            return
+        resolved = identity if isinstance(identity, WorldIdentity) else WorldIdentity.from_dict(identity)
+        if resolved.available:
+            self.bound_world_identity = resolved
 
     def check_transition(self, phase: Phase, context: Any = None) -> bool:
         """
@@ -184,21 +195,25 @@ class StateManager:
         """
         phases = list(Phase)
         current_idx = phases.index(self.current_phase)
-        
+
         if current_idx < len(phases) - 1:
+            # Advancing IS the completion evidence for the phase being left;
+            # don't rely on the executor having stamped 1.0 first.
+            self.phase_progress[self.current_phase] = 1.0
             self.current_phase = phases[current_idx + 1]
             self.phase_progress[self.current_phase] = 0.0
             return True
         return False
-    
-    def update_progress(self, progress: float) -> None:
+
+    def update_progress(self, progress: float, phase: Optional[Phase] = None) -> None:
         """
-        Update progress for current phase.
-        
+        Update progress for a phase (default: current phase).
+
         Args:
             progress: Progress percentage (0.0 to 1.0)
+            phase: Phase to credit; defaults to the current phase
         """
-        self.phase_progress[self.current_phase] = max(0.0, min(1.0, progress))
+        self.phase_progress[phase or self.current_phase] = max(0.0, min(1.0, progress))
     
     def get_progress(self, phase: Optional[Phase] = None) -> float:
         """Get progress for a phase (default: current)."""
@@ -261,7 +276,12 @@ class StateManager:
         """Retrieve stored payload for a phase."""
         return self.phase_payloads.get(phase.name, {})
     
-    def save_checkpoint(self, inventory_summary: Dict[str, int], world_seed: Optional[int] = None) -> str:
+    def save_checkpoint(
+        self,
+        inventory_summary: Dict[str, int],
+        world_seed: Optional[int] = None,
+        world_identity: Optional[Union[WorldIdentity, Dict[str, Any]]] = None,
+    ) -> str:
         """
         Save current state to checkpoint file with versioning support.
 
@@ -275,6 +295,20 @@ class StateManager:
         import time
         import asyncio
 
+        if world_identity is not None:
+            self.bind_world_identity(world_identity)
+        if world_seed is not None:
+            current = self.bound_world_identity
+            self.bound_world_identity = WorldIdentity(
+                seed=world_seed,
+                world_name=current.world_name if current else None,
+                server_address=current.server_address if current else None,
+            )
+        effective_identity = self.bound_world_identity
+        effective_seed = world_seed
+        if effective_seed is None and effective_identity is not None:
+            effective_seed = effective_identity.seed
+
         # Create checkpoint data with version metadata
         checkpoint = {
             "phase": self.current_phase.name,
@@ -284,7 +318,9 @@ class StateManager:
             "phase_progress": {p.name: v for p, v in self.phase_progress.items()},
             "custom_data": self.custom_data,
             "phase_payloads": self.phase_payloads,
-            "world_seed": world_seed,
+            "world_seed": effective_seed,
+            "world_identity": effective_identity.to_dict() if effective_identity else None,
+            "world_signature": effective_identity.stable_hash if effective_identity else None,
             "schema_version": str(self.current_schema_version)
         }
 
@@ -351,7 +387,12 @@ class StateManager:
             json.dump(checkpoint, f, indent=2)
         return str(filepath)
     
-    def load_checkpoint(self, current_seed: Optional[int] = None) -> bool:
+    def load_checkpoint(
+        self,
+        current_seed: Optional[int] = None,
+        current_world_identity: Optional[Union[WorldIdentity, Dict[str, Any]]] = None,
+        allow_legacy_without_identity: bool = True,
+    ) -> bool:
         """
         Load state from checkpoint file with automatic migration support.
 
@@ -377,7 +418,7 @@ class StateManager:
                     # Fallback to file-based loading
                     filepath = self.checkpoint_dir / self.CHECKPOINT_FILE
                     if not filepath.exists():
-                        return False
+                        return None
                     checkpoint_data = self.serializer.load_from_file(filepath)
 
                 return checkpoint_data
@@ -385,15 +426,96 @@ class StateManager:
             checkpoint_data = loop.run_until_complete(load_async())
             loop.close()
 
-            # Handle versioning and migration
-            return self._load_checkpoint_with_migration(checkpoint_data, current_seed)
+            # No checkpoint on disk is a normal fresh start, not an error;
+            # only dict payloads may enter the migration path.
+            if not isinstance(checkpoint_data, dict):
+                return False
+
+            current_identity = self._resolve_current_identity(current_seed, current_world_identity)
+            return self._load_checkpoint_with_migration(
+                checkpoint_data,
+                current_seed,
+                current_identity,
+                allow_legacy_without_identity,
+            )
 
         except Exception as e:
             logger.warning(f"Failed to load checkpoint with new system: {str(e)}")
             # Fallback to legacy loading for backward compatibility
-            return self._load_checkpoint_legacy(current_seed)
+            current_identity = self._resolve_current_identity(current_seed, current_world_identity)
+            return self._load_checkpoint_legacy(
+                current_seed, current_identity, allow_legacy_without_identity
+            )
 
-    def _load_checkpoint_with_migration(self, checkpoint_data: Dict[str, Any], current_seed: Optional[int] = None) -> bool:
+    def _resolve_current_identity(
+        self,
+        current_seed: Optional[int],
+        current_world_identity: Optional[Union[WorldIdentity, Dict[str, Any]]],
+    ) -> Optional[WorldIdentity]:
+        if isinstance(current_world_identity, WorldIdentity):
+            return current_world_identity
+        if isinstance(current_world_identity, dict):
+            return WorldIdentity.from_dict(current_world_identity)
+        if current_seed is not None:
+            return WorldIdentity(seed=current_seed)
+        return self.bound_world_identity
+
+    def _validate_checkpoint_identity(
+        self,
+        checkpoint_data: Dict[str, Any],
+        current_identity: Optional[WorldIdentity],
+        allow_legacy_without_identity: bool,
+    ) -> bool:
+        raw_saved = checkpoint_data.get("world_identity")
+        saved_identity: Optional[WorldIdentity] = None
+        if isinstance(raw_saved, dict):
+            saved_identity = WorldIdentity.from_dict(raw_saved)
+        elif checkpoint_data.get("world_seed") is not None:
+            saved_identity = WorldIdentity(seed=int(checkpoint_data["world_seed"]))
+
+        if saved_identity is None or not saved_identity.available:
+            self.last_checkpoint_validation = "legacy_no_identity"
+            if not allow_legacy_without_identity:
+                logger.error("Checkpoint has no world identity; strict resume denied")
+                return False
+            logger.warning("Checkpoint has no world identity; allowing one legacy resume")
+            if current_identity and current_identity.available:
+                self.bind_world_identity(current_identity)
+            return True
+
+        if current_identity is None or not current_identity.available:
+            if allow_legacy_without_identity:
+                self.last_checkpoint_validation = "current_world_unverified"
+                self.bind_world_identity(saved_identity)
+                logger.warning(
+                    "Current world identity is unavailable; allowing compatibility load "
+                    "without protected resume verification"
+                )
+                return True
+            self.last_checkpoint_validation = "current_world_unknown"
+            logger.error("Current world identity is unavailable; protected resume denied")
+            return False
+
+        if not saved_identity.matches(current_identity):
+            self.last_checkpoint_validation = "world_mismatch"
+            logger.error(
+                "Checkpoint world mismatch (saved=%s, current=%s); resume denied",
+                saved_identity.stable_hash,
+                current_identity.stable_hash,
+            )
+            return False
+
+        self.last_checkpoint_validation = "world_match"
+        self.bind_world_identity(current_identity)
+        return True
+
+    def _load_checkpoint_with_migration(
+        self,
+        checkpoint_data: Dict[str, Any],
+        current_seed: Optional[int] = None,
+        current_identity: Optional[WorldIdentity] = None,
+        allow_legacy_without_identity: bool = True,
+    ) -> bool:
         """
         Load checkpoint data with migration support.
 
@@ -409,12 +531,10 @@ class StateManager:
             schema_version_str = checkpoint_data.get("schema_version", str(self.LEGACY_CHECKPOINT_VERSION))
             loaded_version = self.version_manager.parse_version(schema_version_str)
 
-            # Check seed if provided
-            saved_seed = checkpoint_data.get("world_seed")
-            if current_seed is not None and saved_seed is not None:
-                if current_seed != saved_seed:
-                    logger.warning(f"Seed mismatch (current={current_seed}, saved={saved_seed}). Resetting state.")
-                    return False
+            if not self._validate_checkpoint_identity(
+                checkpoint_data, current_identity, allow_legacy_without_identity
+            ):
+                return False
 
             # Migrate if necessary
             if loaded_version < self.current_schema_version:
@@ -450,7 +570,12 @@ class StateManager:
             logger.error(f"Failed to load checkpoint with migration: {str(e)}")
             return False
 
-    def _load_checkpoint_legacy(self, current_seed: Optional[int] = None) -> bool:
+    def _load_checkpoint_legacy(
+        self,
+        current_seed: Optional[int] = None,
+        current_identity: Optional[WorldIdentity] = None,
+        allow_legacy_without_identity: bool = True,
+    ) -> bool:
         """
         Legacy checkpoint loading for backward compatibility.
 
@@ -469,12 +594,10 @@ class StateManager:
             with open(filepath) as f:
                 data = json.load(f)
 
-            # Check seed if provided
-            saved_seed = data.get("world_seed")
-            if current_seed is not None and saved_seed is not None:
-                if current_seed != saved_seed:
-                    logger.warning(f"Seed mismatch (current={current_seed}, saved={saved_seed}). Resetting state.")
-                    return False
+            if not self._validate_checkpoint_identity(
+                data, current_identity, allow_legacy_without_identity
+            ):
+                return False
 
             # Apply legacy data with version 0.0.0
             self._apply_checkpoint_data(data)
@@ -506,10 +629,16 @@ class StateManager:
             self.phase_payloads = {name: dict(value) for name, value in payloads.items()}
     
     def clear_checkpoint(self) -> None:
-        """Delete checkpoint file."""
+        """Delete checkpoint file and its storage metadata sidecar."""
         filepath = self.checkpoint_dir / self.CHECKPOINT_FILE
         if filepath.exists():
             filepath.unlink()
+        # The filesystem storage provider writes a .meta sidecar next to the
+        # checkpoint; leaving it behind makes a deleted checkpoint look like a
+        # partially-written one.
+        meta_path = filepath.with_suffix(".meta")
+        if meta_path.exists():
+            meta_path.unlink()
     
     def is_phase_complete(self, phase: Optional[Phase] = None) -> bool:
         """Check if a phase is complete (progress >= 1.0)."""

@@ -5,6 +5,7 @@ Verifies phase transitions, error handling, and success conditions.
 """
 
 import unittest
+import tempfile
 from unittest.mock import MagicMock
 from typing import Dict, Any
 
@@ -36,22 +37,20 @@ class StubPhaseHandler(PhaseHandler):
             return TaskResult.ok(f"{self._name} completed", inventory={"minecraft:oak_log": 16, "minecraft:cobblestone": 16})
         elif self._phase == Phase.BASE_CONSTRUCTION:
             return TaskResult.ok(f"{self._name} completed", inventory={"minecraft:crafting_table": 1, "minecraft:furnace": 1})
-        elif self._phase == Phase.IRON_AGE:
+        elif self._phase == Phase.FOOD_AND_IRON:
             return TaskResult.ok(f"{self._name} completed", inventory={"minecraft:iron_ingot": 32})
-        elif self._phase == Phase.DIAMOND_MINING:
+        elif self._phase == Phase.ENCHANTING_PIPELINE:
             return TaskResult.ok(f"{self._name} completed", inventory={"minecraft:diamond": 20})
-        elif self._phase == Phase.NETHER_PREP:
-            return TaskResult.ok(f"{self._name} completed", inventory={"minecraft:obsidian": 14})
-        elif self._phase == Phase.NETHER_TRAVEL:
+        elif self._phase == Phase.NETHER_AND_BLAZE:
             return TaskResult.ok(f"{self._name} completed", inventory={"minecraft:blaze_rod": 10})
-        elif self._phase == Phase.ENDER_PEARL_FARM:
-            return TaskResult.ok(f"{self._name} completed", inventory={"minecraft:ender_pearl": 16})
-        elif self._phase == Phase.STRONGHOLD_LOCATE:
-            return TaskResult.ok(f"{self._name} completed", stronghold_coords=(100, 200))
-        elif self._phase == Phase.END_PORTAL:
-            return TaskResult.ok(f"{self._name} completed")
-        elif self._phase == Phase.DRAGON_FIGHT:
-            return TaskResult.ok(f"{self._name} completed - Dragon defeated!")
+        elif self._phase == Phase.WORLD_UNLOCK:
+            return TaskResult.ok(
+                f"{self._name} completed - Dragon defeated!",
+                dragon_defeated=True,
+                stronghold_coords=(100, 200),
+            )
+        elif self._phase == Phase.MEGABASE_INIT:
+            return TaskResult.ok(f"{self._name} completed", inventory={"minecraft:beacon": 1})
         else:
             return TaskResult.ok(f"{self._name} completed")
 
@@ -211,9 +210,11 @@ class TestFullAutomation(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
+        self.checkpoint_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.checkpoint_dir.cleanup)
         self.client = EnhancedMockClient()
         self.resources = ResourceManager(self.client)
-        self.state_manager = StateManager()
+        self.state_manager = StateManager(checkpoint_dir=self.checkpoint_dir.name)
         self.executor = PhaseExecutor(self.client, self.resources, self.state_manager)
 
         # Register stub handlers for all phases to test orchestration logic
@@ -222,15 +223,16 @@ class TestFullAutomation(unittest.TestCase):
             (Phase.SPAWN_BOOTSTRAP, "Spawn Bootstrap"),
             (Phase.INITIAL_GATHERING, "Initial Gathering"),
             (Phase.BASE_CONSTRUCTION, "Base Construction"),
-            (Phase.IRON_AGE, "Iron Age"),
-            (Phase.DIAMOND_MINING, "Diamond Mining"),
-            (Phase.ENCHANTING, "Enchanting"),
-            (Phase.NETHER_PREP, "Nether Preparation"),
-            (Phase.NETHER_TRAVEL, "Nether Travel"),
-            (Phase.ENDER_PEARL_FARM, "Ender Pearl Farming"),
-            (Phase.STRONGHOLD_LOCATE, "Stronghold Location"),
-            (Phase.END_PORTAL, "End Portal"),
-            (Phase.DRAGON_FIGHT, "Dragon Fight"),
+            (Phase.BOOT_SEQUENCE, "Boot Sequence"),
+            (Phase.FOOD_AND_IRON, "Food and Iron"),
+            (Phase.ENCHANTING_PIPELINE, "Enchanting Pipeline"),
+            (Phase.NETHER_AND_BLAZE, "Nether and Blaze"),
+            (Phase.VILLAGER_INFRA, "Villager Infrastructure"),
+            (Phase.XP_ENGINE, "XP Engine"),
+            (Phase.IRON_FARM, "Iron Farm"),
+            (Phase.TOOL_PERFECTION, "Tool Perfection"),
+            (Phase.WORLD_UNLOCK, "World Unlock"),
+            (Phase.MEGABASE_INIT, "Megabase Initialization"),
         ]
 
         for phase, name in phase_handlers:
@@ -255,11 +257,7 @@ class TestFullAutomation(unittest.TestCase):
             current_phase = self.state_manager.get_current_phase()
 
         # Verify all phases were executed
-        expected_phases = [
-            "BRIDGE_CHECK", "SPAWN_BOOTSTRAP", "INITIAL_GATHERING", "BASE_CONSTRUCTION",
-            "IRON_AGE", "DIAMOND_MINING", "ENCHANTING", "NETHER_PREP", "NETHER_TRAVEL",
-            "ENDER_PEARL_FARM", "STRONGHOLD_LOCATE", "END_PORTAL", "DRAGON_FIGHT"
-        ]
+        expected_phases = [phase.name for phase in Phase if phase is not Phase.COMPLETE]
         self.assertEqual(phases_executed, expected_phases)
 
         # Verify final state
@@ -277,8 +275,7 @@ class TestFullAutomation(unittest.TestCase):
             self.assertEqual(self.state_manager.get_current_phase(), phase)
             success = self.executor.execute_phase(phase)
             self.assertTrue(success)
-            if phase != Phase.DRAGON_FIGHT:
-                self.state_manager.advance_phase()
+            self.state_manager.advance_phase()
 
         # Verify progression
         self.assertEqual(self.state_manager.get_current_phase(), Phase.BASE_CONSTRUCTION)
@@ -292,22 +289,22 @@ class TestFullAutomation(unittest.TestCase):
 
         failing_client = EnhancedMockClient()
         failing_resources = ResourceManager(failing_client)
-        failing_state_manager = StateManager()
+        failing_state_manager = StateManager(checkpoint_dir=self.checkpoint_dir.name)
         failing_executor = PhaseExecutor(failing_client, failing_resources, failing_state_manager)
 
         # Register the failing handler
-        failing_handler = FailingStubHandler("Failing Phase", Phase.IRON_AGE)
-        failing_executor.register_handler(Phase.IRON_AGE, failing_handler)
+        failing_handler = FailingStubHandler("Failing Phase", Phase.FOOD_AND_IRON)
+        failing_executor.register_handler(Phase.FOOD_AND_IRON, failing_handler)
 
         # Set to iron age phase
-        failing_state_manager.set_phase(Phase.IRON_AGE)
+        failing_state_manager.set_phase(Phase.FOOD_AND_IRON)
 
         # Attempt the phase - should fail
-        success = failing_executor.execute_phase(Phase.IRON_AGE)
+        success = failing_executor.execute_phase(Phase.FOOD_AND_IRON)
         self.assertFalse(success)
 
         # Verify phase did not advance
-        self.assertEqual(failing_state_manager.get_current_phase(), Phase.IRON_AGE)
+        self.assertEqual(failing_state_manager.get_current_phase(), Phase.FOOD_AND_IRON)
 
     def test_checkpoint_save_and_load(self):
         """Test checkpoint persistence during automation."""
@@ -318,7 +315,7 @@ class TestFullAutomation(unittest.TestCase):
         checkpoint_path = self.state_manager.save_checkpoint({"minecraft:oak_log": 16})
 
         # Create new state manager and load
-        new_state_manager = StateManager()
+        new_state_manager = StateManager(checkpoint_dir=self.checkpoint_dir.name)
         loaded = new_state_manager.load_checkpoint()
 
         self.assertTrue(loaded)

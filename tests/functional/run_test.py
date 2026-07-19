@@ -21,7 +21,10 @@ from baritone_client.common.combat import hunt_mobs
 from baritone_client.common.inventory import equip_offhand
 
 
-from utils import give_item, set_time, clear_inventory, gamemode
+try:
+    from tests.functional.utils import give_item, set_time, clear_inventory, gamemode
+except ImportError:
+    from utils import give_item, set_time, clear_inventory, gamemode
 
 def create_client(host, port, timeout):
     transport = TcpTransport(host=host, port=port, timeout=timeout)

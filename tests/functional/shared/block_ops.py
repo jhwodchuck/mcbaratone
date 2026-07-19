@@ -390,6 +390,14 @@ def place_block_at(ctx, x: Union[int, float], y: Union[int, float], z: Union[int
     """
     from tests.utils.mc_harness import wait_for_block
 
+    # A resumed structure build commonly revisits coordinates that were
+    # successfully placed before the process stopped.  Recognize that before
+    # requiring another inventory item; otherwise an already-complete target
+    # is reported as a failure as soon as its material stack runs out.
+    existing_block = block_id_at(ctx, x, y, z)
+    if existing_block == block_type:
+        return True
+
     if not select_item(ctx.client, block_type, allow_swap=True):
         ctx.log_event(f"Missing item for placement: {block_type}")
         inv = ctx.get_inventory()
@@ -424,13 +432,21 @@ def place_block_at(ctx, x: Union[int, float], y: Union[int, float], z: Union[int
             return False
     if not in_range(ctx, x, y, z):
         if allow_move:
-            move_near(ctx, x, y, z, timeout=10.0)
+            if not move_near(ctx, x, y, z, timeout=10.0) and not in_range(ctx, x, y, z):
+                return False
         else:
             ctx.log_event(f"Out of range for placement at {x},{y},{z}")
             return False
     block = block_id_at(ctx, x, y, z)
-    if block_type in block:
+    if block == block_type:
         return True
+
+    # Pathing can change the selected hotbar slot.  Re-select immediately
+    # before breaking/placing and again on every retry so we never place the
+    # sword, food, or another neighboring hotbar item into a structure.
+    if not select_item(ctx.client, block_type, allow_swap=True):
+        ctx.log_event(f"Lost selected placement item after moving: {block_type}")
+        return False
     if block and "air" not in block and allow_break and not is_liquid(block):
         try:
             ctx.client.transport.dispatch("break_block", {"x": int(x), "y": int(y), "z": int(z)})
@@ -439,6 +455,8 @@ def place_block_at(ctx, x: Union[int, float], y: Union[int, float], z: Union[int
             return False
         wait_for_block(ctx, x, y, z, "air", timeout=6.0)
     try:
+        if not select_item(ctx.client, block_type, allow_swap=True):
+            return False
         block_below = block_id_at(ctx, x, y - 1, z)
         if block_below and "air" not in block_below:
             ctx.client.transport.dispatch("look_at", {"x": x + 0.5, "y": y - 0.5, "z": z + 0.5})
@@ -456,6 +474,8 @@ def place_block_at(ctx, x: Union[int, float], y: Union[int, float], z: Union[int
             try:
                 ctx.client.transport.dispatch("break_block", {"x": int(x), "y": int(y), "z": int(z)})
                 wait_for_block(ctx, x, y, z, "air", timeout=6.0)
+                if not select_item(ctx.client, block_type, allow_swap=True):
+                    return False
                 payload = {
                     "x": int(x),
                     "y": int(y),
@@ -469,6 +489,8 @@ def place_block_at(ctx, x: Union[int, float], y: Union[int, float], z: Union[int
         elif "Placement failed" in str(exc):
             try:
                 time.sleep(0.2)
+                if not select_item(ctx.client, block_type, allow_swap=True):
+                    return False
                 payload = {
                     "x": int(x),
                     "y": int(y),

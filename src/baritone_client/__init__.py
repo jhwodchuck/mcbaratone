@@ -44,6 +44,8 @@ from .transport.transport import Py4JTransport, TcpTransport, Transport, WebSock
 from .transport.transport_manager import TransportManager
 from .utils.cache_manager import CacheManager, CacheStats
 from .utils.upload_manager import UploadManager, UploadPriority, UploadProgress, UploadStatus
+from .chat_control import FollowController, FollowCommandConfig, parse_chat_command
+from .world_identity import WorldIdentity
 
 __all__ = [
     "Client",
@@ -96,6 +98,10 @@ __all__ = [
     "BatchRequest",
     "BatchCommandResult",
     "BatchResult",
+    "FollowController",
+    "FollowCommandConfig",
+    "parse_chat_command",
+    "WorldIdentity",
 ]
 
 

@@ -233,19 +233,32 @@ def find_nearby_block(
         (x, y, z) of nearest block or None
     """
     try:
-        data = client.transport.dispatch("find_blocks", {
-            "blocks": block_types,
-            "radius": radius,
-            "limit": 1,
-        })
-        
-        found = data.get("found", [])
-        if found:
-            block = found[0]
-            return (block["x"], block["y"], block["z"])
-        
+        requested_radius = max(1, min(int(radius), 128))
+        search_radii = [value for value in (8, 16, 32, 64, 128) if value < requested_radius]
+        search_radii.append(requested_radius)
+
+        # The bridge scans x/y/z order and does not sort its response.  Asking
+        # for limit=1 therefore returns the western-most match, which can send
+        # the bot hundreds of blocks away from a much closer tree or utility.
+        # Search outward in bounded rings and sort the returned batch here.
+        for search_radius in search_radii:
+            data = client.transport.dispatch("find_blocks", {
+                "blocks": block_types,
+                "radius": search_radius,
+                "limit": 4096,
+            })
+            found = data.get("found", [])
+            if not found:
+                continue
+
+            block = min(
+                found,
+                key=lambda value: float(value.get("distance", float("inf"))),
+            )
+            return (int(block["x"]), int(block["y"]), int(block["z"]))
+
         return None
-        
+
     except Exception:
         return None
 

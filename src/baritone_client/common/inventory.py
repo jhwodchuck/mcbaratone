@@ -2,11 +2,13 @@
 Inventory management - Item counting, crafting, and organization.
 """
 
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 import logging
 import time
 
 logger = logging.getLogger(__name__)
+
+_last_inventory: Dict[str, int] = {}
 
 def get_inventory(client) -> Dict[str, int]:
     """
@@ -15,23 +17,31 @@ def get_inventory(client) -> Dict[str, int]:
     Returns:
         Dict of item_id -> count
     """
-    try:
-        response = client.transport.dispatch("get_inventory", {})
+    global _last_inventory
+    for attempt in range(3):
+        try:
+            response = client.transport.dispatch("get_inventory", {})
+        except Exception:
+            response = None
+        if not response or (isinstance(response, dict) and response.get("error")):
+            if attempt < 2:
+                time.sleep(0.3)
+            continue
         data = response.get("data", response)
         counts: Dict[str, int] = {}
-        
         for section in ["inventory", "armor", "offhand"]:
             for item in data.get(section, []):
                 item_id = item.get("id", "")
                 count = item.get("count", 0)
                 if item_id and count > 0:
                     counts[item_id] = counts.get(item_id, 0) + count
-        
+        _last_inventory = dict(counts)
         return counts
-
-    except Exception as e:
-        logger.exception(f"Exception in get_inventory: {e}")
-        return {}
+    logger.warning(
+        "get_inventory: returning last-known inventory (%s) because bridge read failed",
+        _last_inventory,
+    )
+    return dict(_last_inventory)
 
 
 def count_item(client, item_id: str) -> int:
@@ -141,6 +151,60 @@ def equip_best_weapon(client) -> bool:
     return False
 
 
+_ARMOR_RANK = {
+    "leather": 1,
+    "golden": 2,
+    "chainmail": 3,
+    "iron": 4,
+    "diamond": 5,
+    "netherite": 6,
+}
+_ARMOR_PIECES = ("helmet", "chestplate", "leggings", "boots")
+_PLAYER_ARMOR_CONTAINER_SLOTS = {
+    "helmet": 5,
+    "chestplate": 6,
+    "leggings": 7,
+    "boots": 8,
+}
+
+
+def _armor_identity(item_id: str):
+    name = item_id.split(":", 1)[-1]
+    for material, rank in _ARMOR_RANK.items():
+        for piece in _ARMOR_PIECES:
+            if name == f"{material}_{piece}":
+                return material, piece, rank
+    return None
+
+
+def get_equipped_armor(client) -> Dict[str, str]:
+    """Return equipped armor as ``piece -> item id`` from bridge truth."""
+    try:
+        response = client.transport.dispatch("get_inventory", {})
+        data = response.get("data", response)
+        equipped: Dict[str, str] = {}
+        for item in data.get("armor", []):
+            item_id = item.get("id", "")
+            identity = _armor_identity(item_id)
+            if identity and item.get("count", 0) > 0:
+                equipped[identity[1]] = item_id
+        return equipped
+    except Exception as exc:
+        logger.warning("Could not inspect equipped armor: %s", exc)
+        return {}
+
+
+def has_full_armor(client, minimum_material: str = "iron") -> bool:
+    """Verify all four equipped pieces meet a minimum material tier."""
+    minimum_rank = _ARMOR_RANK.get(minimum_material, _ARMOR_RANK["iron"])
+    equipped = get_equipped_armor(client)
+    for piece in _ARMOR_PIECES:
+        identity = _armor_identity(equipped.get(piece, ""))
+        if not identity or identity[2] < minimum_rank:
+            return False
+    return True
+
+
 def equip_best_armor(client) -> int:
     """
     Equip best available armor from inventory.
@@ -148,33 +212,60 @@ def equip_best_armor(client) -> int:
     Returns:
         Number of armor pieces equipped
     """
-    # Armor materials from worst to best
-    materials = ["leather", "chainmail", "iron", "diamond", "netherite"]
-    armor_slots = ["helmet", "chestplate", "leggings", "boots"]
-    
-    equipped = 0
-    inventory = get_inventory(client)
-    
-    for slot_type in armor_slots:
-        for material in reversed(materials):  # Best first
-            item_id = f"minecraft:{material}_{slot_type}"
-            if inventory.get(item_id, 0) > 0:
-                # Try to equip
-                slot = find_item_slot(client, item_id)
-                if slot is not None:
-                    # Right-click to auto-equip
-                    try:
-                        client.transport.dispatch("inventory_click", {
-                            "slot": slot,
-                            "type": "PICKUP",
-                            "button": 1,  # Right-click
-                        })
-                        equipped += 1
-                    except:
-                        pass
-                break
-    
-    return equipped
+    try:
+        client.transport.dispatch("close_screen", {})
+    except Exception:
+        pass
+
+    for piece in _ARMOR_PIECES:
+        response = client.transport.dispatch("get_inventory", {})
+        data = response.get("data", response)
+        current = get_equipped_armor(client).get(piece)
+        current_identity = _armor_identity(current or "")
+        current_rank = current_identity[2] if current_identity else 0
+
+        candidates = []
+        for item in data.get("inventory", []):
+            identity = _armor_identity(item.get("id", ""))
+            if not identity or identity[1] != piece or item.get("count", 0) <= 0:
+                continue
+            candidates.append((identity[2], item))
+        if not candidates:
+            continue
+
+        best_rank, best_item = max(candidates, key=lambda entry: entry[0])
+        if best_rank <= current_rank:
+            continue
+
+        try:
+            # QUICK_MOVE on a player-container slot is the same verified path
+            # used by functional test T302.  Hotbar indices 0-8 map to
+            # protocol slots 36-44; main inventory indices already match.
+            if current:
+                client.transport.dispatch(
+                    "inventory_click",
+                    {
+                        "slot": _PLAYER_ARMOR_CONTAINER_SLOTS[piece],
+                        "type": "QUICK_MOVE",
+                        "button": 0,
+                    },
+                )
+                time.sleep(0.2)
+            inventory_slot = int(best_item["slot"])
+            player_slot = 36 + inventory_slot if 0 <= inventory_slot <= 8 else inventory_slot
+            client.transport.dispatch(
+                "inventory_click",
+                {"slot": player_slot, "type": "QUICK_MOVE", "button": 0},
+            )
+            deadline = time.time() + 3.0
+            while time.time() < deadline:
+                if get_equipped_armor(client).get(piece) == best_item["id"]:
+                    break
+                time.sleep(0.1)
+        except Exception as exc:
+            logger.warning("Failed to equip %s: %s", best_item.get("id"), exc)
+
+    return len(get_equipped_armor(client))
 
 
 def equip_offhand(client, item_id: str) -> bool:
@@ -232,35 +323,229 @@ def equip_offhand(client, item_id: str) -> bool:
 
 
 
+_PLANK_WOODS = [
+    "oak",
+    "spruce",
+    "birch",
+    "dark_oak",
+    "acacia",
+    "jungle",
+    "mangrove",
+    "cherry",
+    "pale_oak",
+]
+
+
+def _craft_family_count(client, item_id: str) -> int:
+    """Plank requests count all wood types: the bridge crafts from whatever
+    logs are in inventory (asking for oak_planks with birch logs yields
+    birch_planks)."""
+    if item_id.split(":")[-1].endswith("_planks"):
+        return sum(count_item(client, f"minecraft:{w}_planks") for w in _PLANK_WOODS)
+    return count_item(client, item_id)
+
+
+def _craft_log_family_for_planks(log_family: str) -> str:
+    family = log_family.split(":")[-1]
+    if family.endswith("_log"):
+        family = family[:-4]
+    return f"minecraft:{family}_planks"
+
+
+def _first_log_family_with_stock(client, required_logs: int = 1) -> str:
+    """Return the first available log family with at least ``required_logs`` stock."""
+    for wood in _PLANK_WOODS:
+        log_id = f"minecraft:{wood}_log"
+        if count_item(client, log_id) >= required_logs:
+            return log_id
+    return ""
+
+
+def _ensure_planks_for_sticks(client, required_sticks: int) -> bool:
+    """Ensure enough planks are available to craft ``required_sticks``."""
+    required_planks = max(0, required_sticks) * 2
+    current_planks = _craft_family_count(client, "minecraft:oak_planks")
+    if current_planks >= required_planks:
+        return True
+
+    missing_planks = required_planks - current_planks
+    while missing_planks > 0:
+        log_family = _first_log_family_with_stock(client, 1)
+        if not log_family:
+            return False
+        plank_family = _craft_log_family_for_planks(log_family)
+        planks_to_craft = ((missing_planks + 3) // 4) * 4
+        logs_to_use = min(count_item(client, log_family), max(1, (planks_to_craft + 3) // 4))
+        planks_to_craft = max(4, min(planks_to_craft, logs_to_use * 4))
+        if not craft(client, plank_family, planks_to_craft):
+            return False
+        current_planks = _craft_family_count(client, "minecraft:oak_planks")
+        if current_planks >= required_planks:
+            return True
+        missing_planks = required_planks - current_planks
+
+    return True
+
+
+def _wait_craft_result(client, item_id: str, target: int, timeout: float = 6.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _craft_family_count(client, item_id) >= target:
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def ensure_tool_sticks(client, item_id: str, count: int = 1) -> bool:
+    """Craft the stick dependency required by a tool recipe.
+
+    Tool crafting can be entered from several progression paths.  The bridge
+    does not recursively craft recipe ingredients, so asking it for a tool
+    while the player has planks but no sticks silently fails.  Prepare sticks
+    in the player 2x2 grid before any code opens a crafting table.
+    """
+    from . import harness_ops
+
+    parsed = harness_ops.parse_tool_id(item_id)
+    if not parsed:
+        return True
+
+    _material, tool_type = parsed
+    sticks_per_tool = 1 if tool_type == "sword" else 2
+    required = sticks_per_tool * max(1, count)
+    current = count_item(client, "minecraft:stick")
+    if current >= required:
+        return True
+
+    try:
+        client.transport.dispatch("close_screen", {})
+    except Exception as exc:
+        print(f"  [Craft Debug] could not close screen before crafting sticks: {exc}")
+
+    missing = required - current
+    if not _ensure_planks_for_sticks(client, missing):
+        print(f"  [Craft Debug] failed to prepare planks for {item_id}")
+        return False
+    print(f"  [Craft Debug] preparing sticks for {item_id} ({current}/{required})...")
+    if not craft(client, "minecraft:stick", max(4, missing)):
+        return False
+    return count_item(client, "minecraft:stick") >= required
+
+
 def craft(client, item_id: str, count: int = 1) -> bool:
     """
-    Attempt to craft an item.
-    
-    Note: This is a high-level request - full crafting automation
-    requires recipe lookup and slot manipulation.
-    
+    Craft an item, verified by inventory delta (a status=ok reply does not
+    mean anything appeared - the 1.21.4 client has no recipe listing, so
+    crafting silently no-ops in several situations).
+
+    Fallback chain: bridge "craft" -> "auto_craft" -> manual grid clicks via
+    the functional-harness library for recipes it knows (tools, beds, doors,
+    chests).
+
     Args:
         item_id: Item to craft
         count: Number to craft
-        
+
     Returns:
-        True if crafting request was sent
+        True if the items verifiably appeared in inventory
     """
+    from . import harness_ops
+
+    if not ensure_tool_sticks(client, item_id, count):
+        print(f"  [Craft Debug] could not prepare stick dependency for {item_id}")
+        return False
+
+    before = _craft_family_count(client, item_id)
+    target = before + count
+
     try:
-        response = client.transport.dispatch("craft", {
-            "item": item_id,
-            "count": count,
-        })
-        if response.get("status") == "ok":
-            return True
-        
-        # Verbose error logging
-        err = response.get("error", "Unknown error")
-        print(f"  [Craft Debug] Crafting failed: {err}")
-        return False
+        client.transport.dispatch("craft", {"item": item_id, "count": count})
     except Exception as e:
-        print(f"  [Craft Debug] Exception: {e}")
-        return False
+        print(f"  [Craft Debug] craft dispatch failed for {item_id}: {e}")
+    if _wait_craft_result(client, item_id, target):
+        return True
+
+    try:
+        client.transport.dispatch("auto_craft", {"item": item_id, "quantity": count})
+    except Exception as e:
+        print(f"  [Craft Debug] auto_craft dispatch failed for {item_id}: {e}")
+    if _wait_craft_result(client, item_id, target, timeout=8.0):
+        return True
+
+    if harness_ops.available():
+        name = item_id.split(":")[-1]
+        manual = None
+        if harness_ops.parse_tool_id(item_id):
+            manual = lambda: harness_ops.craft_tool_manual(client, item_id)
+        elif harness_ops.parse_armor_id(item_id):
+            manual = lambda: harness_ops.craft_armor_manual(client, item_id)
+        elif name.endswith("_bed"):
+            manual = lambda: harness_ops.craft_bed_manual(client, item_id)
+        elif name.endswith("_door"):
+            manual = lambda: harness_ops.craft_door_manual(client, item_id)
+        elif name == "chest":
+            manual = lambda: harness_ops.craft_chest_manual(client)
+        elif name == "furnace":
+            manual = lambda: harness_ops.craft_furnace_manual(client)
+        elif name == "crafting_table":
+            manual = lambda: harness_ops.craft_crafting_table_manual(client)
+
+        if manual is not None:
+            print(f"  [Craft Debug] falling back to manual grid crafting for {item_id}...")
+            try:
+                if name == "crafting_table":
+                    client.transport.dispatch("close_screen", {})
+                else:
+                    # A generic open GUI is not proof that the 3x3 crafting
+                    # table is open (the player 2x2 screen also has slots).
+                    # When no table is carried, make one before asking the
+                    # placement harness to enumerate candidates. The old
+                    # order spent tens of seconds trying to place a missing
+                    # item at every candidate before reaching this recovery.
+                    table_open = False
+                    if count_item(client, "minecraft:crafting_table") == 0:
+                        nearby = client.transport.dispatch(
+                            "find_blocks",
+                            {
+                                "blocks": ["minecraft:crafting_table"],
+                                "radius": 8,
+                                "limit": 16,
+                            },
+                        )
+                        found_tables = nearby.get("found")
+                        if found_tables:
+                            nearest = min(
+                                found_tables,
+                                key=lambda value: float(value.get("distance", float("inf"))),
+                            )
+                            table_open = harness_ops.ensure_crafting_table_open(
+                                client,
+                                table_pos=(
+                                    int(nearest["x"]),
+                                    int(nearest["y"]),
+                                    int(nearest["z"]),
+                                ),
+                            )
+                        elif found_tables is None:
+                            # Compatibility for transports without block search.
+                            table_open = harness_ops.ensure_crafting_table_open(client)
+
+                        if not table_open:
+                            client.transport.dispatch("close_screen", {})
+                            if craft(client, "minecraft:crafting_table", 1):
+                                table_open = harness_ops.ensure_crafting_table_open(client)
+                    else:
+                        table_open = harness_ops.ensure_crafting_table_open(client)
+                    if not table_open:
+                        print(f"  [Craft Debug] no verified crafting table for {item_id}")
+                        return False
+                if manual():
+                    return True
+            except Exception as e:
+                print(f"  [Craft Debug] manual grid craft failed for {item_id}: {e}")
+
+    print(f"  [Craft Debug] all methods failed for {item_id} (have {_craft_family_count(client, item_id)}, wanted {target})")
+    return False
 
 
 def get_recipes_for(client, item_id: str) -> List[Dict]:
@@ -287,7 +572,138 @@ def get_recipes_for(client, item_id: str) -> List[Dict]:
         return []
 
 
-def dump_to_chest(client, keep_items: List[str]) -> int:
+def _storage_position_from_mapping(value) -> Optional[Tuple[int, int, int]]:
+    """Normalize a storage checkpoint or StateManager location entry."""
+    if not isinstance(value, dict):
+        return None
+    data = value.get("data", value)
+    if not isinstance(data, dict):
+        return None
+    try:
+        return (int(data["x"]), int(data["y"]), int(data["z"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def resolve_storage_location(
+    client,
+    state=None,
+    *,
+    verify: bool = True,
+) -> Optional[Tuple[int, int, int]]:
+    """Resolve the newest usable chest from production or legacy state.
+
+    ``StateManager`` stores landmarks inside
+    ``spawn_to_dragon_checkpoint.json`` while ``WorldState`` stores
+    ``checkpoint_storage.json``. Older code wrote one format and read the
+    other. This compatibility resolver accepts both and, by default, refuses
+    stale coordinates that no longer contain a chest.
+    """
+
+    candidates: List[Tuple[int, int, int]] = []
+
+    if state is not None:
+        try:
+            location_map = state.get_locations("chest")
+            locations = location_map.get("chest", [])
+        except (AttributeError, TypeError):
+            locations = (
+                getattr(state, "custom_data", {})
+                .get("locations", {})
+                .get("chest", [])
+            )
+        for location in reversed(locations):
+            position = _storage_position_from_mapping(location)
+            if position is not None and position not in candidates:
+                candidates.append(position)
+
+    from .state import WorldState
+
+    legacy = WorldState(client).load_checkpoint("storage")
+    legacy_position = _storage_position_from_mapping(legacy)
+    if legacy_position is not None and legacy_position not in candidates:
+        candidates.append(legacy_position)
+
+    for position in candidates:
+        if not verify:
+            return position
+        x, y, z = position
+        try:
+            block_id = client.transport.dispatch(
+                "get_block", {"x": x, "y": y, "z": z}
+            ).get("id", "")
+        except Exception as exc:
+            print(f"STORAGE: could not verify saved chest at {position}: {exc}")
+            continue
+        if "chest" in block_id:
+            return position
+        # The bridge reports void_air for coordinates in an unloaded chunk.
+        # That is not proof that a persisted chest was removed. Return the
+        # landmark so the caller can path there, load the chunk, and perform
+        # the stronger open-container verification.
+        if block_id == "minecraft:void_air":
+            print(f"STORAGE: saved chest at {position} is in an unloaded chunk; retaining landmark")
+            return position
+        print(f"STORAGE: ignoring stale saved location {position} ({block_id or 'unknown'})")
+
+    return None
+
+
+def persist_storage_location(client, chest_pos, state=None) -> bool:
+    """Persist a verified chest to both checkpoint formats.
+
+    The production ``StateManager`` checkpoint is authoritative. The
+    ``WorldState`` checkpoint is maintained for older callers until they are
+    all migrated. When a StateManager is provided, flush it immediately so a
+    crash after placement cannot orphan the physical chest.
+    """
+
+    try:
+        x, y, z = (int(value) for value in chest_pos)
+    except (TypeError, ValueError):
+        return False
+
+    try:
+        block_id = client.transport.dispatch(
+            "get_block", {"x": x, "y": y, "z": z}
+        ).get("id", "")
+    except Exception as exc:
+        print(f"STORAGE: could not verify chest at {(x, y, z)}: {exc}")
+        return False
+    if "chest" not in block_id:
+        print(f"STORAGE: refusing to checkpoint non-chest block at {(x, y, z)}")
+        return False
+
+    saved = False
+    if state is not None and hasattr(state, "add_location"):
+        try:
+            state.add_location(
+                "chest", x, y, z, tags=["storage"], client=client
+            )
+            saved = True
+        except Exception as exc:
+            print(f"STORAGE: failed to update production location: {exc}")
+
+    from .state import WorldState
+
+    try:
+        WorldState(client).save_checkpoint(
+            "storage", {"x": x, "y": y, "z": z}
+        )
+        saved = True
+    except Exception as exc:
+        print(f"STORAGE: failed to write compatibility checkpoint: {exc}")
+
+    if state is not None and hasattr(state, "save_checkpoint"):
+        try:
+            state.save_checkpoint(get_inventory(client))
+        except Exception as exc:
+            print(f"STORAGE: failed to flush production checkpoint: {exc}")
+
+    return saved
+
+
+def dump_to_chest(client, keep_items: List[str], state=None) -> int:
     """
     Dump all items except specified ones to nearby chest.
     
@@ -295,129 +711,268 @@ def dump_to_chest(client, keep_items: List[str]) -> int:
         keep_items: List of item IDs to keep
         
     Returns:
-        Number of items deposited
+        Number of stacks deposited, or ``-1`` when storage was unavailable.
     """
-    from .state import WorldState
-    
-    # 1. Get Storage Location
-    ws = WorldState(client)
-    storage_data = ws.load_checkpoint("storage")
-    
-    if not storage_data:
+    chest_pos = resolve_storage_location(client, state=state, verify=True)
+    if chest_pos is None:
         print("  No storage location saved.")
-        return 0
-        
-    chest_pos = storage_data.get("data", {})
-    cx = chest_pos.get("x")
-    cy = chest_pos.get("y")
-    cz = chest_pos.get("z")
-    
-    if cx is None:
-        print("  Invalid storage checkpoint data.")
-        return 0
-        
-    print(f"STORAGE: Going UP TO chest at {cx}, {cy}, {cz}...")
-    
-    # Do NOT go to the exact chest block (Baritone might mine it to stand there)
-    # Be smarter: find an adjacent spot that is air
-    target_pos = None
-    best_dist = 999
-    
-    # Check 4 cardinal neighbors + diagonals
-    candidates = [
-        (cx+1, cy, cz), (cx-1, cy, cz), 
-        (cx, cy, cz+1), (cx, cy, cz-1),
-        (cx+1, cy, cz+1), (cx-1, cy, cz-1),
-        (cx+1, cy, cz-1), (cx-1, cy, cz+1)
-    ]
-    
-    current_pos = client.transport.dispatch("get_player_pos", {})
-    px, py, pz = current_pos[0], current_pos[1], current_pos[2]
-    
-    for tx, ty, tz in candidates:
-        # Check if safe (air/replaceable)
-        check = client.transport.dispatch('get_block', {'x': tx, 'y': ty, 'z': tz})
-        bid = check.get('id', '')
-        
-        # We prefer air, but will accept standing on something solid if the space ITSELF is air is confusing.
-        # "get_block" returns the block AT that coordinate. We want to stand IN air ON TOP of solid.
-        # Baritone "goto" expects the coordinate of the floor or the target?
-        # Baritone "goto x y z" usually means "stand at x y z" (so x,y,z should be navigable space, i.e. air above solid).
-        
-        # Let's check if the block AT target is passable (air, grass, carpet)
-        is_passable = 'air' in bid or 'grass' in bid or 'carpet' in bid or 'fern' in bid
-        
-        if is_passable:
-            # Check distance to player
-            dist = ((tx-px)**2 + (ty-py)**2 + (tz-pz)**2)**0.5
-            if dist < best_dist:
-                best_dist = dist
-                target_pos = (tx, ty, tz)
-    
-    if target_pos:
-        print(f"  Navigating to adjacent spot {target_pos}...")
-        client.transport.dispatch("goto", {"x": target_pos[0], "y": target_pos[1], "z": target_pos[2]})
-    else:
-        print("  No adjacent clear spot found! Trying generic approach (may break chest)...")
-        client.transport.dispatch("goto", {"x": cx, "y": cy+1, "z": cz}) # Try standing on top?
-    
-    # Wait for arrival (simple heuristic or loop)
-    time.sleep(1)
-    # Check distance?
-    for _ in range(20):
-        pos = client.transport.dispatch("get_player_pos", {})
-        dx = pos[0] - cx
-        dz = pos[2] - cz
-        if (dx*dx + dz*dz)**0.5 < 4:
-            break
-        time.sleep(1)
-        
-    print("STORAGE: Opening chest...")
-    client.transport.dispatch("interact_block", {"x": cx, "y": cy, "z": cz})
-    time.sleep(2.0) # Wait for UI
-    
-    # 2. Dump Items
-    # We need to know what slots to click.
-    # We can get inventory, identify non-keep items, and shift-click them.
-    # Note: Shift-clicking moves to open container.
-    
-    inv = get_inventory(client)
-    deposited = 0
-    
-    # Get raw inventory logic to see slots
+        return -1
+
+    return deposit_excess_to_chest(
+        client,
+        chest_pos,
+        keep_items=set(keep_items),
+    )
+
+
+EARLY_GAME_EXCESS_ITEMS = {
+    "minecraft:birch_door",
+    "minecraft:birch_sapling",
+    "minecraft:bone",
+    "minecraft:pumpkin_seeds",
+    "minecraft:melon_seeds",
+    "minecraft:wheat_seeds",
+    "minecraft:beetroot_seeds",
+    "minecraft:rotten_flesh",
+    "minecraft:spider_eye",
+    "minecraft:poisonous_potato",
+    "minecraft:grass_block",
+    "minecraft:moss_block",
+    "minecraft:cobbled_deepslate",
+    "minecraft:dirt",
+    "minecraft:music_disc_cat",
+    "minecraft:golden_horse_armor",
+    "minecraft:gunpowder",
+    "minecraft:leather",
+    "minecraft:leaf_litter",
+    "minecraft:name_tag",
+    "minecraft:redstone",
+}
+
+
+def deposit_excess_to_chest(
+    client,
+    chest_pos: Tuple[int, int, int],
+    deposit_items=None,
+    keep_items=None,
+) -> int:
+    """Deposit selected player stacks into a verified base chest.
+
+    Returns the number of stacks moved, or ``-1`` when the chest could not be
+    verified/opened.  The allow-list makes this safe at phase boundaries:
+    ores, tools, food, fuel, and future progression materials stay carried.
+    """
+    from . import harness_ops
+    from .navigation import goto
+
+    deposit_items = set(deposit_items or EARLY_GAME_EXCESS_ITEMS)
+    keep_items = None if keep_items is None else set(keep_items)
+    cx, cy, cz = (int(value) for value in chest_pos)
+
     try:
-        raw_inv = client.transport.dispatch("get_inventory", {})
-        items = raw_inv.get("inventory", [])
-        
-        # Sort by slot to avoid messing up order while clicking?
-        # Actually random access for shift-click is fine.
-        
-        for item in items:
-            item_id = item.get("id")
-            slot = item.get("slot")
-            
-            # Skip hotbar? Or allow dumping hotbar?
-            # Typically we keep tools in hotbar.
-            # keep_items should handle this.
-            
-            if item_id and item_id not in keep_items:
-                # Dump it
-                # Protocol 9-35 is main inv, 0-8 is hotbar.
-                # Shift-click sends it to chest.
-                client.transport.dispatch("inventory_click", {
-                    "slot": slot,
-                    "type": "QUICK_MOVE", # Shift-click
-                    "button": 0
-                })
-                deposited += 1
+        client.transport.dispatch("close_screen", {})
+    except Exception:
+        pass
+
+    block = client.transport.dispatch(
+        "get_block", {"x": cx, "y": cy, "z": cz}
+    ).get("id", "")
+    if "chest" not in block:
+        print(f"STORAGE: expected chest is missing at {(cx, cy, cz)}")
+        return -1
+
+    state = client.transport.dispatch("get_state", {})
+    position = state.get("block_position", state.get("position", {}))
+    distance = (
+        (float(position.get("x", 0)) - cx) ** 2
+        + (float(position.get("y", 0)) - cy) ** 2
+        + (float(position.get("z", 0)) - cz) ** 2
+    ) ** 0.5
+    if distance > 4.5 and not harness_ops.move_near(
+        client, cx, cy, cz, timeout=30.0
+    ):
+        print("STORAGE: could not move within interaction range")
+        return -1
+
+    # Movement/pathing must never be allowed to silently remove the target.
+    block = client.transport.dispatch(
+        "get_block", {"x": cx, "y": cy, "z": cz}
+    ).get("id", "")
+    if "chest" not in block:
+        print("STORAGE: chest disappeared during approach")
+        return -1
+
+    # Stand at a real adjacent floor tile.  Merely being within four blocks is
+    # insufficient when the crafting table/furnace blocks the ray trace from
+    # the opposite side of this compact starter house.
+    for sx, sy, sz in (
+        (cx + 1, cy, cz),
+        (cx + 1, cy, cz + 1),
+        (cx, cy, cz + 1),
+        (cx - 1, cy, cz),
+    ):
+        stand_block = client.transport.dispatch(
+            "get_block", {"x": sx, "y": sy, "z": sz}
+        ).get("id", "")
+        floor_block = client.transport.dispatch(
+            "get_block", {"x": sx, "y": sy - 1, "z": sz}
+        ).get("id", "")
+        if "air" not in stand_block or "air" in floor_block:
+            continue
+        goto(
+            client,
+            sx,
+            sy,
+            sz,
+            timeout=20,
+            check_interval=0.25,
+            tolerance=0.5,
+        )
+        break
+
+    screen = {}
+    opened = False
+    try:
+        if harness_ops.available() and harness_ops.open_container(
+            client, (cx, cy, cz), timeout=4.0
+        ):
+            screen = client.transport.dispatch("get_screen", {})
+            data = screen.get("data", screen)
+            total_slots = int(
+                data.get("total_slots") or len(data.get("slots", []))
+            )
+            opened = total_slots in (63, 90)
+    except Exception as exc:
+        print(f"STORAGE: verified chest opener failed ({exc}); retrying natively")
+
+    if not opened:
+        for _attempt in range(3):
+            client.transport.dispatch(
+                "look_at", {"x": cx + 0.5, "y": cy + 0.5, "z": cz + 0.5}
+            )
+            time.sleep(0.2)
+            client.transport.dispatch(
+                "interact_block", {"x": cx, "y": cy, "z": cz}
+            )
+            for _ in range(20):
+                screen = client.transport.dispatch("get_screen", {})
+                data = screen.get("data", screen)
+                total_slots = int(
+                    data.get("total_slots") or len(data.get("slots", []))
+                )
+                if total_slots in (63, 90):
+                    opened = True
+                    break
                 time.sleep(0.1)
-                
-    except Exception as e:
-        print(f"Storage dump error: {e}")
-        
+            if opened:
+                break
+            client.transport.dispatch("close_screen", {})
+    if not opened:
+        client.transport.dispatch("close_screen", {})
+        print("STORAGE: chest screen did not open")
+        return -1
+
+    data = screen.get("data", screen)
+    slots = data.get("slots", [])
+    total_slots = int(data.get("total_slots") or len(slots))
+    container_slots = total_slots - 36
+    if container_slots not in (27, 54):
+        client.transport.dispatch("close_screen", {})
+        print(f"STORAGE: unexpected container layout ({total_slots} slots)")
+        return -1
+
+    sync_id = data.get("sync_id", screen.get("sync_id"))
+    deposited = 0
+    for item in slots:
+        slot = int(item.get("slot", -1))
+        item_id = item.get("id")
+        if slot < container_slots or int(item.get("count", 0)) <= 0:
+            continue
+        if keep_items is not None and item_id in keep_items:
+            continue
+        if keep_items is None and item_id not in deposit_items:
+            continue
+        payload = {"slot": slot, "type": "QUICK_MOVE", "button": 0}
+        if sync_id is not None:
+            payload["sync_id"] = sync_id
+        client.transport.dispatch("inventory_click", payload)
+        deposited += 1
+        time.sleep(0.05)
+
     client.transport.dispatch("close_screen", {})
-    print(f"STORAGE: Deposited {deposited} stacks.")
+    print(f"STORAGE: deposited {deposited} excess stacks at home")
     return deposited
+
+
+def withdraw_required_from_chest(
+    client,
+    chest_pos: Tuple[int, int, int],
+    requirements: Dict[str, int],
+) -> int:
+    """Withdraw only banked stacks needed by the current objective.
+
+    Returns the number of chest stacks moved, ``0`` when the player already
+    carries every requirement, or ``-1`` when the checkpointed chest cannot be
+    verified/opened.  Shift-clicking may retrieve more than the exact shortfall;
+    that is preferable to splitting stacks through bridge-specific GUI packets.
+    """
+    from . import harness_ops
+
+    remaining = {
+        item_id: max(0, int(required) - count_item(client, item_id))
+        for item_id, required in requirements.items()
+    }
+    remaining = {item_id: count for item_id, count in remaining.items() if count}
+    if not remaining:
+        return 0
+
+    cx, cy, cz = (int(value) for value in chest_pos)
+    block = client.transport.dispatch(
+        "get_block", {"x": cx, "y": cy, "z": cz}
+    ).get("id", "")
+    if "chest" not in block:
+        print(f"STORAGE: expected chest is missing at {(cx, cy, cz)}")
+        return -1
+
+    try:
+        client.transport.dispatch("close_screen", {})
+        opened = harness_ops.open_container(client, (cx, cy, cz), timeout=4.0)
+    except Exception as exc:
+        print(f"STORAGE: could not open supply chest ({exc})")
+        return -1
+    if not opened:
+        print("STORAGE: supply chest screen did not open")
+        return -1
+
+    try:
+        screen = client.transport.dispatch("get_screen", {})
+        data = screen.get("data", screen)
+        slots = data.get("slots", [])
+        total_slots = int(data.get("total_slots") or len(slots))
+        container_slots = total_slots - 36
+        if container_slots not in (27, 54):
+            print(f"STORAGE: unexpected container layout ({total_slots} slots)")
+            return -1
+
+        sync_id = data.get("sync_id", screen.get("sync_id"))
+        moved = 0
+        for item in slots:
+            slot = int(item.get("slot", -1))
+            item_id = str(item.get("id", ""))
+            count = int(item.get("count", 0))
+            if slot < 0 or slot >= container_slots or remaining.get(item_id, 0) <= 0:
+                continue
+            payload = {"slot": slot, "type": "QUICK_MOVE", "button": 0}
+            if sync_id is not None:
+                payload["sync_id"] = sync_id
+            client.transport.dispatch("inventory_click", payload)
+            remaining[item_id] = max(0, remaining[item_id] - count)
+            moved += 1
+            time.sleep(0.05)
+        print(f"STORAGE: withdrew {moved} required stacks from home")
+        return moved
+    finally:
+        client.transport.dispatch("close_screen", {})
 
 
 def check_craft(client, output_item: str, count: int = 1) -> Dict:

@@ -344,12 +344,16 @@ class EntityInteractionCommandHandlerTest {
 
         net.minecraft.entity.passive.TameableEntity mockParrot = mock(
                 net.minecraft.entity.passive.TameableEntity.class);
-        when(mockParrot.getPos()).thenReturn(new Vec3d(0, 0, 0));
+        when(mockParrot.getX()).thenReturn(0.0);
+        when(mockParrot.getY()).thenReturn(0.0);
+        when(mockParrot.getZ()).thenReturn(0.0);
         when(mockParrot.isTamed()).thenReturn(false);
         when(mockParrot.getType()).thenReturn((EntityType) EntityType.PARROT);
 
         when(mockClient.world.getEntityById(400)).thenReturn(mockParrot);
-        when(mockClient.player.getPos()).thenReturn(new Vec3d(1, 1, 1));
+        when(mockClient.player.getX()).thenReturn(1.0);
+        when(mockClient.player.getY()).thenReturn(1.0);
+        when(mockClient.player.getZ()).thenReturn(1.0);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);

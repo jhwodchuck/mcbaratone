@@ -213,18 +213,18 @@ public class CommandDispatcherTest {
         // Create a custom dispatcher to manipulate rate limiting
         CommandDispatcher testDispatcher = new CommandDispatcher(mockMissionController, mockLegacyHandler);
 
-        // Make many requests quickly
-        for (int i = 0; i < 501; i++) {
+        // Fill the current window up to the production limit (2000 per 10s)
+        for (int i = 0; i < 2000; i++) {
             testDispatcher.dispatchCommand(createValidRequest("test"), mockSocket, mockClient, mockBaritone);
         }
 
-        // The 101st request should be rate limited
+        // The next request should be rate limited
         CommandResult result = testDispatcher.dispatchCommand(createValidRequest("test"), mockSocket, mockClient, mockBaritone);
 
         assertNotNull(result);
         assertFalse(result.isSuccess());
         assertTrue(result.getErrorMessage().contains("Rate limit exceeded"));
-        assertTrue(result.getErrorMessage().contains("500 requests per 10 seconds"));
+        assertTrue(result.getErrorMessage().contains("2000 requests per 10 seconds"));
     }
 
     @Test
@@ -444,29 +444,27 @@ public class CommandDispatcherTest {
     @Test
     void testEndToEndCommandExecution_AdvancedCraftHandler() {
         // Register the advanced craft handler
-        CommandHandlerFactory.registerHandler("advanced_craft", AdvancedCraftCommandHandler.class);
+        CommandHandlerFactory.registerHandler("craft_advanced", AdvancedCraftCommandHandler.class);
 
-        // Create request for recipe validation
+        // The real handler requires a player; with none mocked, the end-to-end
+        // path through the dispatcher must surface the handler's guard error.
         JsonObject request = new JsonObject();
-        request.addProperty("command", "advanced_craft");
+        request.addProperty("command", "craft_advanced");
         JsonObject params = new JsonObject();
-        params.addProperty("action", "validate_recipe");
         params.addProperty("item", "minecraft:stick");
         request.add("params", params);
 
-        // Execute the command
         CommandResult result = dispatcher.dispatchCommand(request, mockSocket, mockClient, mockBaritone);
 
-        // Verify end-to-end execution
         assertNotNull(result);
-        assertTrue(result.isSuccess() || result.getData().has("validation_errors")); // Either success or validation error is acceptable
-        assertTrue(result.getData().has("valid") || result.getData().has("validation_errors"));
+        assertFalse(result.isSuccess());
+        assertTrue(result.getErrorMessage().contains("Player not available"));
 
-        // Verify metrics were recorded
+        // Verify metrics were recorded for the real command name
         MetricsCollector metrics = dispatcher.getMetricsCollector();
         var commandMetrics = metrics.getCommandMetrics();
-        assertTrue(commandMetrics.containsKey("advanced_craft"));
-        assertEquals(1, commandMetrics.get("advanced_craft").totalExecutions);
+        assertTrue(commandMetrics.containsKey("craft_advanced"));
+        assertEquals(1, commandMetrics.get("craft_advanced").totalExecutions);
     }
 
     @Test
@@ -474,73 +472,71 @@ public class CommandDispatcherTest {
         // Register the entity interaction handler
         CommandHandlerFactory.registerHandler("entity_interact", EntityInteractionCommandHandler.class);
 
-        // Create request for entity interaction
+        // ClientPlayerEntity cannot be instantiated or mocked without
+        // Minecraft bootstrap, so the reachable end-to-end behavior here is
+        // the handler's player guard flowing back through the dispatcher.
         JsonObject request = new JsonObject();
         request.addProperty("command", "entity_interact");
         JsonObject params = new JsonObject();
         params.addProperty("action", "detect");
         request.add("params", params);
 
-        // Execute the command
         CommandResult result = dispatcher.dispatchCommand(request, mockSocket, mockClient, mockBaritone);
 
-        // Verify end-to-end execution
         assertNotNull(result);
-        // Should succeed even with disabled tests due to mocking
-        assertTrue(result.isSuccess());
-        assertTrue(result.getData().has("available_interactions"));
+        assertFalse(result.isSuccess());
+        assertTrue(result.getErrorMessage().contains("Player not available"));
     }
 
     @Test
     void testEndToEndCommandExecution_SequenceHandler() {
-        // Register the sequence handler
+        // Register the sequence handler plus an always-succeeding command so
+        // the sequence can validate and execute for real. The sequence handler
+        // itself is player-agnostic (sub-commands enforce their own guards).
         CommandHandlerFactory.registerHandler("sequence", SequenceCommandHandler.class);
+        CommandHandlerFactory.registerHandler("test_seq_ok", SequenceCommandHandlerTest.AlwaysOkHandler.class);
 
-        // Create request for sequence parsing
         JsonObject request = new JsonObject();
         request.addProperty("command", "sequence");
         JsonObject params = new JsonObject();
-        params.addProperty("sequence", "craft stick ; craft wooden_pickaxe");
+        params.addProperty("sequence", "test_seq_ok ; test_seq_ok");
         request.add("params", params);
 
-        // Execute the command
         CommandResult result = dispatcher.dispatchCommand(request, mockSocket, mockClient, mockBaritone);
 
-        // Verify end-to-end execution
         assertNotNull(result);
-        // Sequence parsing should succeed
         assertTrue(result.isSuccess());
+        assertEquals("completed", result.getData().get("status").getAsString());
+        assertEquals(2, result.getData().get("steps_executed").getAsInt());
     }
 
     @Test
     void testCommandDispatcherPriority_NewAdvancedCommands() {
         // Test that new advanced commands have appropriate priority
-        assertEquals(CommandPriority.NORMAL, dispatcher.determinePriority("advanced_craft"));
+        assertEquals(CommandPriority.NORMAL, dispatcher.determinePriority("craft_advanced"));
         assertEquals(CommandPriority.NORMAL, dispatcher.determinePriority("entity_interact"));
         assertEquals(CommandPriority.NORMAL, dispatcher.determinePriority("sequence"));
     }
 
     @Test
     void testCommandDispatcherErrorHandling_NewHandlers() {
-        // Test error handling with new handlers
-        JsonObject request = new JsonObject();
-        request.addProperty("command", "advanced_craft");
-        JsonObject params = new JsonObject();
-        params.addProperty("action", "invalid_action");
-        request.add("params", params);
+        // A handler error result must flow back through the dispatcher and be
+        // recorded in the error metrics.
+        CommandHandlerFactory.registerHandler("craft_advanced", AdvancedCraftCommandHandler.class);
 
-        // Execute invalid action
+        JsonObject request = new JsonObject();
+        request.addProperty("command", "craft_advanced");
+        request.add("params", new JsonObject());
+
         CommandResult result = dispatcher.dispatchCommand(request, mockSocket, mockClient, mockBaritone);
 
-        // Verify error handling
         assertNotNull(result);
         assertFalse(result.isSuccess());
-        assertTrue(result.getErrorMessage().contains("Unknown action") || result.getData().has("error"));
 
-        // Verify error metrics
+        // Verify the failure was recorded in the error metrics
         MetricsCollector metrics = dispatcher.getMetricsCollector();
         var errorBreakdown = metrics.getErrorTypeBreakdown();
-        assertTrue(errorBreakdown.containsKey("command_error") || errorBreakdown.size() > 0);
+        assertTrue(errorBreakdown.containsKey("command_failure"));
     }
 
     // Test implementation of CommandHandler for registry testing

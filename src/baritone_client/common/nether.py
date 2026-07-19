@@ -10,6 +10,7 @@ import logging
 import time
 from typing import Optional, Tuple, Dict
 
+from .automation_utils import place_block
 from .combat import hunt_mobs, find_entity_by_type
 from .inventory import count_item, find_item_slot
 
@@ -49,36 +50,25 @@ def build_nether_portal(client, x: int, y: int, z: int, obsidian: int = 14) -> b
         # Portal frame is 4 blocks wide (x), 5 blocks tall (y), 1 block deep (z)
         # Interior is 2x3 (bottom 3 rows, middle 2 columns)
 
+        # The bridge's place_block only accepts flat x/y/z and places the
+        # main-hand item, so go through the shared helper which selects the
+        # item first (nested "position" payloads NPE server-side).
+
         # Build the frame bottom (4 blocks wide)
         for dx in range(4):
-            client.transport.dispatch("place_block", {
-                "block": "minecraft:obsidian",
-                "position": {"x": x + dx, "y": y, "z": z}
-            })
+            place_block(client, x + dx, y, z, "minecraft:obsidian")
             time.sleep(0.1)
 
         # Build the frame top (4 blocks wide)
         for dx in range(4):
-            client.transport.dispatch("place_block", {
-                "block": "minecraft:obsidian",
-                "position": {"x": x + dx, "y": y + 4, "z": z}
-            })
+            place_block(client, x + dx, y + 4, z, "minecraft:obsidian")
             time.sleep(0.1)
 
         # Build the frame sides (3 blocks tall on each side)
         for dy in range(1, 4):  # y+1, y+2, y+3
-            # Left side
-            client.transport.dispatch("place_block", {
-                "block": "minecraft:obsidian",
-                "position": {"x": x, "y": y + dy, "z": z}
-            })
+            place_block(client, x, y + dy, z, "minecraft:obsidian")
             time.sleep(0.1)
-
-            # Right side
-            client.transport.dispatch("place_block", {
-                "block": "minecraft:obsidian",
-                "position": {"x": x + 3, "y": y + dy, "z": z}
-            })
+            place_block(client, x + 3, y + dy, z, "minecraft:obsidian")
             time.sleep(0.1)
 
         # Verify the frame is complete by checking block placement
@@ -554,7 +544,13 @@ def hunt_endermen(client, target_count: int = 12, timeout: int = 900) -> int:
                             entity_pos = entity.get("position", {})
 
                             # Look at the Enderman to provoke it (this lures it to attack)
-                            client.transport.dispatch("look_at", {"entity_id": entity_id})
+                            # Bridge look_at requires coordinates, not entity_id
+                            if entity_pos.get("x") is not None:
+                                client.transport.dispatch("look_at", {
+                                    "x": entity_pos.get("x", 0),
+                                    "y": entity_pos.get("y", 0) + 1.5,
+                                    "z": entity_pos.get("z", 0),
+                                })
                             time.sleep(0.5)  # Brief pause between looks
 
                             endermen_found += 1
@@ -733,8 +729,8 @@ def barter_with_piglins(client, gold_ingots_count: int, timeout: int = 300) -> D
         # Wait until close
         time.sleep(2)
         
-        # 3. Look at Piglin
-        client.transport.dispatch("look_at", {"entity_id": piglin["id"]})
+        # 3. Look at Piglin (bridge look_at requires coordinates, not entity_id)
+        client.transport.dispatch("look_at", {"x": px, "y": py + 1.0, "z": pz})
         
         # 4. Drop Gold Ingot
         # Find slot

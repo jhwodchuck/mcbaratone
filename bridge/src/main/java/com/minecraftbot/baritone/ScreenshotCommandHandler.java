@@ -10,12 +10,9 @@ import net.minecraft.entity.player.PlayerEntity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
-import java.io.IOException;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.CompletableFuture;
@@ -29,8 +26,11 @@ import java.util.Set;
 public class ScreenshotCommandHandler extends AsyncCommandHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ScreenshotCommandHandler.class);
-    private static final Set<String> SUPPORTED_FORMATS = Set.of("PNG", "JPEG", "BMP");
+    // The vanilla ScreenshotRecorder only ever writes PNG.
+    private static final Set<String> SUPPORTED_FORMATS = Set.of("PNG");
     private static final String SCREENSHOT_DIR = "screenshots";
+    // Distinguishes screenshots requested within the same wall-clock second.
+    private static final java.util.concurrent.atomic.AtomicLong SEQUENCE = new java.util.concurrent.atomic.AtomicLong();
 
     @Override
     public String getCommandName() {
@@ -47,44 +47,61 @@ public class ScreenshotCommandHandler extends AsyncCommandHandler {
         }
 
         ScreenshotOptions options = parseScreenshotOptions(params);
+        String fileName = generateFileName(options);
 
-        return executeOnMainThread(client, () -> {
-            if (client.player == null || client.world == null) {
-                return CommandResult.error("Player or world not available");
-            }
+        CompletableFuture<CommandResult> future = new CompletableFuture<>();
 
+        executeOnMainThread(client, () -> {
             try {
-                // Take screenshot
-                ScreenshotResult result = captureScreenshot(client, options);
-
-                // Create response
-                JsonObject data = new JsonObject();
-                data.addProperty("saved", result.success);
-                data.addProperty("file_path", result.filePath);
-                data.addProperty("file_name", result.fileName);
-                data.addProperty("format", options.format);
-
-                if (result.success) {
-                    // Add metadata
-                    JsonObject metadata = createMetadata(client, options);
-                    data.add("metadata", metadata);
-
-                    LOGGER.info("Screenshot saved successfully: {}", result.filePath);
-                } else {
-                    data.addProperty("error", result.error);
-                    LOGGER.error("Screenshot failed: {}", result.error);
+                if (client.player == null || client.world == null) {
+                    future.complete(CommandResult.error("Player or world not available"));
+                    return;
                 }
 
-                return CommandResult.success(data);
+                Framebuffer framebuffer = client.getFramebuffer();
+                if (framebuffer == null) {
+                    future.complete(CommandResult.error("No framebuffer available"));
+                    return;
+                }
 
+                // Passing an explicit fileName pins the output to
+                // <runDirectory>/screenshots/<fileName>; the recorder writes on an IO
+                // worker and invokes the message callback when the attempt finishes,
+                // so completion (not this call) is when the file can be verified.
+                Path expected = client.runDirectory.toPath().resolve(SCREENSHOT_DIR).resolve(fileName);
+                ScreenshotRecorder.saveScreenshot(client.runDirectory, fileName, framebuffer, 1, msg -> {
+                    try {
+                        JsonObject data = new JsonObject();
+                        boolean exists = Files.exists(expected);
+                        data.addProperty("saved", exists);
+                        data.addProperty("path", expected.toString());
+                        data.addProperty("file_path", expected.toString());
+                        data.addProperty("file_name", fileName);
+                        data.addProperty("format", "PNG");
+                        if (exists) {
+                            if (options.includeMetadata) {
+                                data.add("metadata", createMetadata(client, options));
+                            }
+                            LOGGER.info("Screenshot saved successfully: {}", expected);
+                        } else {
+                            String detail = msg != null ? msg.getString() : "unknown";
+                            data.addProperty("error", "Screenshot file was not created: " + detail);
+                            LOGGER.error("Screenshot failed: {}", detail);
+                        }
+                        future.complete(CommandResult.success(data));
+                    } catch (Exception e) {
+                        future.complete(CommandResult.error("Screenshot completion failed: " + e.getMessage()));
+                    }
+                });
             } catch (Exception e) {
                 LOGGER.error("Screenshot capture failed", e);
-                JsonObject data = new JsonObject();
-                data.addProperty("saved", false);
-                data.addProperty("error", "Screenshot capture failed: " + e.getMessage());
-                return CommandResult.success(data);
+                future.complete(CommandResult.error("Screenshot capture failed: " + e.getMessage()));
             }
         });
+
+        return future.completeOnTimeout(
+                CommandResult.error("Screenshot timed out waiting for file write"),
+                10, java.util.concurrent.TimeUnit.SECONDS);
     }
 
     /**
@@ -94,7 +111,7 @@ public class ScreenshotCommandHandler extends AsyncCommandHandler {
         if (params.has("format")) {
             String format = params.get("format").getAsString().toUpperCase();
             if (!SUPPORTED_FORMATS.contains(format)) {
-                return CommandResult.error("Unsupported format: " + format + ". Supported: PNG, JPEG, BMP");
+                return CommandResult.error("Unsupported format: " + format + ". Supported: PNG");
             }
         }
 
@@ -113,7 +130,12 @@ public class ScreenshotCommandHandler extends AsyncCommandHandler {
 
         options.format = params.has("format") ? params.get("format").getAsString().toUpperCase() : "PNG";
 
-        options.customName = params.has("custom_name") ? params.get("custom_name").getAsString() : null;
+        // The Python facade sends "filename"; "custom_name" kept for compatibility.
+        if (params.has("filename")) {
+            options.customName = params.get("filename").getAsString();
+        } else if (params.has("custom_name")) {
+            options.customName = params.get("custom_name").getAsString();
+        }
 
         options.includeMetadata = params.has("include_metadata") ? params.get("include_metadata").getAsBoolean() : true;
 
@@ -123,85 +145,9 @@ public class ScreenshotCommandHandler extends AsyncCommandHandler {
     }
 
     /**
-     * Captures screenshot using Minecraft's screenshot API.
-     */
-    private ScreenshotResult captureScreenshot(MinecraftClient client, ScreenshotOptions options) {
-        ScreenshotResult result = new ScreenshotResult();
-
-        try {
-            // Get framebuffer
-            Framebuffer framebuffer = client.getFramebuffer();
-            if (framebuffer == null) {
-                result.success = false;
-                result.error = "No framebuffer available";
-                return result;
-            }
-
-            // Create screenshot directory
-            Path screenshotDir = createScreenshotDirectory(options);
-            if (screenshotDir == null) {
-                result.success = false;
-                result.error = "Failed to create screenshot directory";
-                return result;
-            }
-
-            // Generate filename
-            String fileName = generateFileName(options);
-            Path filePath = screenshotDir.resolve(fileName);
-
-            // Take screenshot using Minecraft API
-            try {
-                ScreenshotRecorder.saveScreenshot(
-                        client.runDirectory,
-                        framebuffer,
-                        msg -> {
-                        });
-
-                // Verify file was created
-                if (Files.exists(filePath)) {
-                    result.success = true;
-                    result.filePath = filePath.toString();
-                    result.fileName = fileName;
-                } else {
-                    result.success = false;
-                    result.error = "Screenshot file was not created";
-                }
-            } catch (Exception e) {
-                result.success = false;
-                result.error = "ScreenshotRecorder exception: " + e.getMessage();
-            }
-
-        } catch (Exception e) {
-            result.success = false;
-            result.error = "Exception during screenshot: " + e.getMessage();
-            LOGGER.error("Screenshot capture exception", e);
-        }
-
-        return result;
-    }
-
-    /**
-     * Creates the screenshot directory structure.
-     */
-    private Path createScreenshotDirectory(ScreenshotOptions options) {
-        try {
-            Path baseDir = Paths.get(SCREENSHOT_DIR);
-
-            if (options.subdirectory != null && !options.subdirectory.trim().isEmpty()) {
-                baseDir = baseDir.resolve(options.subdirectory.trim());
-            }
-
-            Files.createDirectories(baseDir);
-            return baseDir;
-
-        } catch (IOException e) {
-            LOGGER.error("Failed to create screenshot directory", e);
-            return null;
-        }
-    }
-
-    /**
-     * Generates filename with timestamp and custom name if provided.
+     * Generates a unique filename: the vanilla recorder overwrites silently when
+     * given an explicit name, and phase transitions can request several
+     * screenshots within one second.
      */
     private String generateFileName(ScreenshotOptions options) {
         String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss"));
@@ -217,7 +163,7 @@ public class ScreenshotCommandHandler extends AsyncCommandHandler {
             }
         }
 
-        return String.format("%s_%s.%s", baseName, timestamp, options.format.toLowerCase());
+        return String.format("%s_%s_%d.png", baseName, timestamp, SEQUENCE.incrementAndGet());
     }
 
     /**
@@ -278,13 +224,4 @@ public class ScreenshotCommandHandler extends AsyncCommandHandler {
         String subdirectory = null;
     }
 
-    /**
-     * Data class for screenshot results.
-     */
-    private static class ScreenshotResult {
-        boolean success = false;
-        String filePath = null;
-        String fileName = null;
-        String error = null;
-    }
 }

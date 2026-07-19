@@ -29,6 +29,7 @@ from extended_suite_800 import create_extended_suite_800
 from extended_suite_900 import create_extended_suite_900
 from extended_suite_1000 import create_extended_suite_1000
 from extended_suite_1100 import create_extended_suite_1100
+from survival.suite import create_extended_suite_1200
 
 
 def _sanitize_label(value: str) -> str:
@@ -83,6 +84,10 @@ def main():
     parser.add_argument("--fail-fast", action="store_true", help="Stop on first failure")
     parser.add_argument("--json", action="store_true", help="Output JSON report")
     parser.add_argument("--log-file", help="Write test events to a log file")
+    parser.add_argument(
+        "--checkpoint",
+        help="Production checkpoint used by the read-only Survival progression suite",
+    )
     args = parser.parse_args()
 
     log_file = _select_log_file(args)
@@ -112,6 +117,7 @@ def main():
         harness.register_suite(create_extended_suite_900())
         harness.register_suite(create_extended_suite_1000())
         harness.register_suite(create_extended_suite_1100())
+        harness.register_suite(create_extended_suite_1200(args.checkpoint))
         
         # List mode
         if args.list:

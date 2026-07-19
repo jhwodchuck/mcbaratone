@@ -5,6 +5,7 @@ from unittest.mock import patch
 from baritone_client.common.resources import ensure_supplies
 from baritone_client.common.playbook import phase_task
 from baritone_client.common.tasks import TaskResult
+from baritone_client.common import inventory as inventory_module
 
 
 class FakeTransport:
@@ -84,6 +85,75 @@ class CommonHelperTests(unittest.TestCase):
         self.assertEqual(client.transport.inventory["minecraft:crafting_table"], 1)
         self.assertGreaterEqual(len(result.data.get("operations", [])), 1)
 
+    def test_ensure_supplies_accepts_higher_tier_pickaxe_for_stone_requirement(self):
+        client = FakeClient()
+        client.transport.add_item("minecraft:iron_pickaxe", 1)
+
+        with patch("baritone_client.common.resources.time.sleep", lambda _seconds: None):
+            result = ensure_supplies(
+                client,
+                {"minecraft:stone_pickaxe": 1},
+                poll_interval=0,
+                timeout=0,
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(client.transport.commands, [])
+
+    def test_ensure_supplies_does_not_treat_axe_as_pickaxe_requirement(self):
+        client = FakeClient()
+        client.transport.add_item("minecraft:stone_axe", 1)
+        ensured = []
+
+        def craft_stone_pickaxe(_client, shortfall):
+            ensured.append(shortfall)
+            _client.transport.add_item("minecraft:stone_pickaxe", shortfall)
+            return True
+
+        result = ensure_supplies(
+            client,
+            {"minecraft:stone_pickaxe": 1},
+            strategies={"minecraft:stone_pickaxe": craft_stone_pickaxe},
+            poll_interval=0.01,
+            timeout=0.1,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(ensured, [1])
+        self.assertEqual(client.transport.inventory["minecraft:stone_pickaxe"], 1)
+
+    def test_ensure_supplies_higher_tier_not_required_for_superior_pickaxe_requirement(self):
+        client = FakeClient()
+        client.transport.add_item("minecraft:stone_pickaxe", 1)
+
+        with patch("baritone_client.common.resources.time.sleep", lambda _seconds: None):
+            result = ensure_supplies(
+                client,
+                {"minecraft:diamond_pickaxe": 1},
+                strategies={"minecraft:diamond_pickaxe": lambda *_args, **_kwargs: False},
+                poll_interval=0,
+                timeout=0,
+            )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.data.get("missing", {}).get("minecraft:diamond_pickaxe"), 1)
+
+    def test_ensure_supplies_respects_exact_requirements(self):
+        client = FakeClient()
+        client.transport.add_item("minecraft:stone_pickaxe", 1)
+
+        with patch("baritone_client.common.resources.time.sleep", lambda _seconds: None):
+            result = ensure_supplies(
+                client,
+                {"minecraft:stone_pickaxe": 2},
+                strategies={"minecraft:stone_pickaxe": lambda *_args, **_kwargs: False},
+                poll_interval=0,
+                timeout=0,
+            )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.data.get("missing", {}).get("minecraft:stone_pickaxe"), 1)
+
     def test_phase_task_skips_when_requirements_met(self):
         state = FakeState()
         resources = FakeResources(ready=True)
@@ -115,6 +185,96 @@ class CommonHelperTests(unittest.TestCase):
         self.assertIn("phase_payloads", state.custom_data)
         self.assertEqual(state.custom_data["phase_payloads"]["ENDER"]["pearls"], 12)
         self.assertGreaterEqual(len(state.progress_updates), 1)
+
+
+class GetInventoryResilienceTest(unittest.TestCase):
+    def setUp(self):
+        inventory_module._last_inventory = {}
+        patcher = patch("baritone_client.common.inventory.time.sleep", lambda _seconds: None)
+        self.sleep_patcher = patcher
+        self.sleep_patcher.start()
+        self.addCleanup(self.sleep_patcher.stop)
+
+    def tearDown(self):
+        inventory_module._last_inventory = {}
+
+    def test_successful_read(self):
+        class Transport:
+            dispatch_calls = 0
+            def dispatch(self, route, payload):
+                self.dispatch_calls += 1
+                return {
+                    "data": {
+                        "inventory": [
+                            {"id": "minecraft:diamond", "count": 3, "slot": 0},
+                            {"id": "minecraft:oak_planks", "count": 10, "slot": 1},
+                        ],
+                        "armor": [],
+                        "offhand": [],
+                    }
+                }
+        client = type("Client", (), {"transport": Transport()})()
+        result = inventory_module.get_inventory(client)
+        self.assertEqual(result, {"minecraft:diamond": 3, "minecraft:oak_planks": 10})
+        self.assertEqual(
+            inventory_module._last_inventory,
+            {"minecraft:diamond": 3, "minecraft:oak_planks": 10},
+        )
+
+    def test_transient_failure_then_success(self):
+        class Transport:
+            attempt = 0
+            def dispatch(self, route, payload):
+                self.attempt += 1
+                if self.attempt == 1:
+                    raise Exception("transient network error")
+                return {
+                    "data": {
+                        "inventory": [{"id": "minecraft:stick", "count": 4, "slot": 2}],
+                        "armor": [],
+                        "offhand": [],
+                    }
+                }
+        client = type("Client", (), {"transport": Transport()})()
+        result = inventory_module.get_inventory(client)
+        self.assertEqual(result, {"minecraft:stick": 4})
+        self.assertEqual(inventory_module._last_inventory, {"minecraft:stick": 4})
+
+    def test_after_nonempty_cache_fully_failing_returns_cache(self):
+        class Transport:
+            def dispatch(self, route, payload):
+                return {
+                    "data": {
+                        "inventory": [{"id": "minecraft:iron_ingot", "count": 9, "slot": 0}],
+                        "armor": [],
+                        "offhand": [],
+                    }
+                }
+        client = type("Client", (), {"transport": Transport()})()
+        inventory_module.get_inventory(client)
+        self.assertEqual(inventory_module._last_inventory, {"minecraft:iron_ingot": 9})
+        # Now make all future reads fail
+        class FailTransport:
+            attempt = 0
+            def dispatch(self, route, payload):
+                self.attempt += 1
+                raise Exception("still failing")
+        client_fail = type("Client", (), {"transport": FailTransport()})()
+        result = inventory_module.get_inventory(client_fail)
+        # Should return cached non-empty dict, not {}
+        self.assertEqual(result, {"minecraft:iron_ingot": 9})
+        self.assertEqual(inventory_module._last_inventory, {"minecraft:iron_ingot": 9})
+
+    def test_fully_failing_no_prior_success_returns_empty(self):
+        class FailTransport:
+            attempt = 0
+            def dispatch(self, route, payload):
+                self.attempt += 1
+                raise Exception("always fail")
+        client = type("Client", (), {"transport": FailTransport()})()
+        result = inventory_module.get_inventory(client)
+        self.assertEqual(result, {})
+        self.assertEqual(inventory_module._last_inventory, {})
 
 
 if __name__ == "__main__":

@@ -96,6 +96,11 @@ class SequentialTask(Task):
 
     def run(self, client) -> TaskResult:
         for task in self.tasks:
+            # The death screen blocks every command; recover before each step
+            # so one death doesn't cascade into a chain of task failures.
+            from .combat import ensure_alive
+            ensure_alive(client)
+
             result = task.run(client)
             if not result.success:
                 return TaskResult.fail(f"Sequential task failed at {task.name}: {result.reason}")

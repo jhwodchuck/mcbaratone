@@ -5,7 +5,8 @@ Spawn Bootstrap Phase - Explore spawn chunks and prime mission macros.
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
-from ...common import spiral_explore, safe_return, ensure_supplies, explore_until
+from ...common import explore_until
+from ...common.base import wait_for_safe_daylight
 from ...common.tasks import TaskResult, ActionTask, SequentialTask
 
 
@@ -51,6 +52,14 @@ class SpawnBootstrapHandler(PhaseHandler):
         if not setup_result.success:
             return TaskResult.fail(f"Spawn bootstrap setup failed: {setup_result.reason}")
 
+        # A new player has no bed, weapon, armor, or food.  Exploring at night
+        # repeatedly killed the player before INITIAL_GATHERING could begin.
+        # Stay still at spawn and let the world reach daylight first.  This is
+        # slower than cheating the time forward, but keeps the run legitimate
+        # and fully autonomous.
+        if not wait_for_safe_daylight(client):
+            return TaskResult.fail("Spawn bootstrap could not reach safe daylight")
+
         # Scout briefly to load chunks
         print("Scouting spawn area...")
         explore_until(
@@ -64,8 +73,16 @@ class SpawnBootstrapHandler(PhaseHandler):
         # Skip supply gathering due to threading issues in current bridge setup
         supply_result = TaskResult.ok("Supply gathering skipped due to bridge threading constraints")
 
-        safe_return(client, base_coords)
-        return_home = TaskResult.ok("Return home attempted", success=True)
+        # Do not path back to the exact spawn Y coordinate.  This world spawns
+        # the player on top of a tree, and the old safe_return() first tried to
+        # climb even higher before returning.  The exploration endpoint is a
+        # valid place for the gathering phase to start, while spawn_coords are
+        # still recorded as a waypoint in StateManager.
+        client.transport.dispatch("cancel", {})
+        return_home = TaskResult.ok(
+            "Exploration endpoint retained; unsafe tree-top return skipped",
+            origin=base_coords,
+        )
 
         success = all(
             result.success

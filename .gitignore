@@ -444,6 +444,11 @@ downloads/
 !tsconfig.json
 !*.md
 
+# mcbaratone runtime state (never source or acceptance evidence by itself)
+.current_run_log
+spawn_to_dragon_checkpoint.*
+metrics_*.json
+
 # Downloaded Gradle distribution
 bridge/gradle-8.12/
 bridge/gradle-8.12-bin.zip

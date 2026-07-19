@@ -238,9 +238,9 @@ class ActionContract:
 # If not, we rely on the runner setting pythonpath
 # ...
 try:
-    from utils.mc_harness.context import TestContext, SkipTest
+    from tests.utils.mc_harness.context import TestContext, SkipTest
 except ImportError:
-    # Fallback if utils not in path (e.g. running from different dir)
+    # Fallback for direct execution when the repository root is not importable.
     sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
     from utils.mc_harness.context import TestContext, SkipTest
 
@@ -327,10 +327,28 @@ class FunctionalCase:
             
             # Check assertions
             for i, assertion in enumerate(self.assertions):
-                passed, msg = assertion(ctx)
+                _print_status(f"ASSERT {i} START {self.id}")
+                try:
+                    passed, msg = assertion(ctx)
+                except SkipTest as e:
+                    ctx.log_event(f"ASSERT {i} SKIPPED: {e}")
+                    _print_status(f"ASSERT {i} SKIP {self.id}: {e}")
+                    return TestResult.SKIP, str(e), ctx.events
+                except Exception as e:
+                    ctx.snapshot(f"assertion_{i}_error")
+                    ctx.log_event(f"ASSERT {i} ERROR: {e}")
+                    _print_status(f"ASSERT {i} ERROR {self.id}: {e}")
+                    return TestResult.FAIL, f"Assertion {i} error: {e}", ctx.events
+
                 if not passed:
-                    # ...
-                    pass
+                    ctx.snapshot(f"assertion_{i}_failed")
+                    message = msg or f"Assertion {i} returned False"
+                    ctx.log_event(f"ASSERT {i} FAILED: {message}")
+                    _print_status(f"ASSERT {i} FAIL {self.id}: {message}")
+                    return TestResult.FAIL, message, ctx.events
+
+                ctx.log_event(f"ASSERT {i} PASSED: {msg or 'OK'}")
+                _print_status(f"ASSERT {i} OK {self.id}")
             
             _print_status(f"TEST PASS {self.id}")
             return TestResult.PASS, "All steps and assertions passed", ctx.events

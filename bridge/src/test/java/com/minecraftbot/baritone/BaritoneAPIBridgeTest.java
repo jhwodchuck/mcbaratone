@@ -113,6 +113,7 @@ public class BaritoneAPIBridgeTest {
 
     @AfterEach
     void tearDown() throws Exception {
+        System.clearProperty("baritone.bridge.port");
         if (testExecutor != null && !testExecutor.isShutdown()) {
             testExecutor.shutdownNow();
         }
@@ -135,6 +136,22 @@ public class BaritoneAPIBridgeTest {
     @Test
     void testModInitializerImplementation() {
         assertTrue(bridge instanceof ModInitializer, "BaritoneAPIBridge should implement ModInitializer");
+    }
+
+    @Test
+    void testBridgePortCanBeConfiguredPerClient() {
+        assertEquals(5555, BaritoneAPIBridge.configuredBridgePort());
+
+        System.setProperty("baritone.bridge.port", "5601");
+
+        assertEquals(5601, BaritoneAPIBridge.configuredBridgePort());
+    }
+
+    @Test
+    void testBridgePortRejectsInvalidValues() {
+        System.setProperty("baritone.bridge.port", "70000");
+
+        assertThrows(IllegalArgumentException.class, BaritoneAPIBridge::configuredBridgePort);
     }
 
     @Test

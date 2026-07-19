@@ -68,9 +68,13 @@ public class SequenceCommandHandler extends AbstractCommandHandler {
                 return CommandResult.error("No valid commands found in sequence");
             }
 
-            // Validate the entire sequence before execution
+            // Validate the entire sequence before execution. Validation failures
+            // are reported as a success envelope carrying "validation_errors";
+            // nothing may execute in that case (previously this fell through and
+            // ran the valid prefix of an invalid sequence).
             CommandResult validationResult = validateSequence(commands, client, baritone, clientSocket);
-            if (!validationResult.isSuccess()) {
+            if (!validationResult.isSuccess()
+                    || (validationResult.getData() != null && validationResult.getData().has("validation_errors"))) {
                 return validationResult;
             }
 
@@ -86,6 +90,16 @@ public class SequenceCommandHandler extends AbstractCommandHandler {
     @Override
     public String getCommandName() {
         return "sequence";
+    }
+
+    /**
+     * The sequence handler only delegates; each sub-command enforces its own
+     * player requirement. Requiring a player here would also block sequences
+     * of offline-safe commands (settings, get_version, ...).
+     */
+    @Override
+    public boolean requiresPlayer() {
+        return false;
     }
 
     /**

@@ -1,6 +1,7 @@
 """Tests for Phase A of Python Bridge Sync: Minimal Backward-Compatible Updates."""
 
 import pytest
+from unittest.mock import MagicMock
 
 from baritone_client.core.exceptions import CircuitBreakerOpenError, RetryExhaustedError, ValidationError
 from baritone_client.transport.command_dispatcher import CommandResult, CommandDispatcher
