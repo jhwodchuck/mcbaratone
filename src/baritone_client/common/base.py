@@ -2,8 +2,9 @@
 Base building utilities - Shelter, storage, and infrastructure.
 """
 
+import math
 import time
-from typing import Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 from .navigation import goto, find_nearby_block
 from .automation_utils import get_player_pos
 from .inventory import count_item, select_item, craft
@@ -31,51 +32,253 @@ def is_position_safe(client, x: int, y: int, z: int) -> bool:
 
 
 
-def find_flat_ground(client, radius: int = 20) -> Optional[Tuple[int, int, int]]:
+def _surface_y_at(client, x: int, z: int, top: int = 120, bottom: int = 40) -> Optional[int]:
+    """Scan down from the sky for the first solid block; return the y to stand on."""
+    try:
+        for y in range(top, bottom, -1):
+            bid = client.transport.dispatch("get_block", {"x": x, "y": y, "z": z}).get("id", "")
+            if bid and "air" not in bid and "water" not in bid and "lava" not in bid:
+                if any(s in bid for s in ("leaves", "log")):
+                    # Tree canopy - keep scanning to the ground below it
+                    continue
+                return y + 1
+    except Exception:
+        pass
+    return None
+
+
+_NATURAL_GROUND = {
+    "minecraft:grass_block", "minecraft:dirt", "minecraft:coarse_dirt",
+    "minecraft:rooted_dirt", "minecraft:podzol", "minecraft:mycelium",
+    "minecraft:stone", "minecraft:deepslate", "minecraft:sand",
+    "minecraft:red_sand", "minecraft:gravel", "minecraft:clay",
+    "minecraft:snow_block", "minecraft:mud", "minecraft:mud_bricks",
+}
+
+
+def _find_flat_site_in_view(
+    voxels: Iterable[Dict],
+    center: Tuple[int, int, int],
+    radius: int,
+    footprint: int,
+) -> Optional[Tuple[int, int, int]]:
+    """Choose the closest dry, clear footprint from one get_view snapshot."""
+    px, _py, pz = center
+    blocks = {
+        (int(voxel["x"]), int(voxel["y"]), int(voxel["z"])): voxel.get("id", "")
+        for voxel in voxels
+        if all(axis in voxel for axis in ("x", "y", "z"))
+    }
+    ground_by_column = {}
+    liquid_by_column = {}
+    for (x, y, z), block_id in blocks.items():
+        if block_id in _NATURAL_GROUND or block_id.endswith("_terracotta"):
+            ground_by_column[(x, z)] = max(y, ground_by_column.get((x, z), -64))
+        if "water" in block_id or "lava" in block_id:
+            liquid_by_column[(x, z)] = max(y, liquid_by_column.get((x, z), -64))
+
+    max_origin_x = px + radius - footprint + 1
+    max_origin_z = pz + radius - footprint + 1
+    candidates = []
+    for ox in range(px - radius, max_origin_x + 1):
+        for oz in range(pz - radius, max_origin_z + 1):
+            columns = [
+                (ox + dx, oz + dz)
+                for dx in range(footprint)
+                for dz in range(footprint)
+            ]
+            if any(column not in ground_by_column for column in columns):
+                continue
+            standing_heights = [ground_by_column[column] + 1 for column in columns]
+            spread = max(standing_heights) - min(standing_heights)
+            if spread > 1:
+                continue
+            build_y = max(standing_heights)
+            if any(liquid_by_column.get(column, -64) >= build_y - 1 for column in columns):
+                continue
+
+            # The floor may replace grass or snow at build_y, but walls and
+            # headroom must not intersect trees, existing structures, or rock.
+            obstruction_count = 0
+            hard_obstruction = False
+            for column in columns:
+                cx, cz = column
+                for cy in range(build_y + 1, build_y + 5):
+                    block_id = blocks.get((cx, cy, cz), "")
+                    if not block_id:
+                        continue
+                    if "_log" in block_id or "_leaves" in block_id:
+                        obstruction_count += 1
+                    elif not any(
+                        token in block_id
+                        for token in ("grass", "flower", "fern", "snow", "vine")
+                    ):
+                        hard_obstruction = True
+                        break
+                if hard_obstruction:
+                    break
+            if hard_obstruction:
+                continue
+
+            center_x = ox + (footprint - 1) / 2
+            center_z = oz + (footprint - 1) / 2
+            distance = math.hypot(center_x - px, center_z - pz)
+            candidates.append((spread, obstruction_count, distance, ox, build_y, oz))
+
+    if not candidates:
+        return None
+    _spread, _obstructions, _distance, x, y, z = min(candidates)
+    return (x, y, z)
+
+
+def find_flat_ground(
+    client,
+    radius: int = 20,
+    footprint: int = 1,
+) -> Optional[Tuple[int, int, int]]:
     """
-    Find a flat area suitable for building a base.
-    
+    Find an area suitable for building a base. If the player is deep
+    underground (e.g. still in the starter mine), path to the surface first -
+    a base at the bottom of a shaft is useless.
+
     Args:
         client: Baritone client
         radius: Search radius
-        
+
     Returns:
         (x, y, z) of suitable location or None
     """
     try:
         state = client.transport.dispatch("get_state", {})
-        if state.get("status") != "ok":
+        # The bridge returns a flattened state dict without a "status" key;
+        # only treat an explicit error (or a missing position) as failure.
+        if state.get("error"):
             return None
-        
-        pos = state.get("position", {})
+
+        pos = state.get("block_position", state.get("position", {}))
+        if not pos:
+            return None
         px = int(pos.get("x", 0))
         py = int(pos.get("y", 64))
         pz = int(pos.get("z", 0))
-        
-        # Start from current position - simple approach
-        # Could be enhanced to scan for flatness
-        return (px, py, pz)
-        
+
+        surface_y = _surface_y_at(client, px, pz)
+        if surface_y is not None and py < surface_y - 3:
+            print(f"  Underground at y={py} (surface ~y={surface_y}). Pathing to the surface...")
+            from .automation_utils import safe_goto
+            if safe_goto(client, px, surface_y, pz, timeout=180.0):
+                state = client.transport.dispatch("get_state", {})
+                pos = state.get("block_position", state.get("position", {}))
+                px = int(pos.get("x", px))
+                py = int(pos.get("y", surface_y))
+                pz = int(pos.get("z", pz))
+            else:
+                print("  Warning: could not reach the surface; using current position.")
+
+        if footprint <= 1:
+            return (px, py, pz)
+
+        view_radius = max(footprint + 2, min(int(radius), 32))
+        view = client.transport.dispatch("get_view", {"radius": view_radius})
+        site = _find_flat_site_in_view(
+            view.get("voxels", []),
+            (px, py, pz),
+            view_radius,
+            footprint,
+        )
+        if site is not None:
+            print(f"  Found {footprint}x{footprint} building site at {site}")
+            return site
+
+        print(
+            f"  No dry {footprint}x{footprint} site found within {view_radius} blocks"
+        )
+        return None
+
     except Exception:
         return None
 
 
-def safe_place_block(client, x, y, z, max_depth=2) -> bool:
+def robust_place(client, x: int, y: int, z: int, item_id: str) -> bool:
+    """
+    Place item_id at exactly (x, y, z), preferring the functional-harness
+    placement (moves within reach, clears obstructions, retries, verifies).
+    Falls back to select_item + safe_place_block when the harness is
+    unavailable.
+    """
+    from . import harness_ops
+    if harness_ops.available():
+        try:
+            return harness_ops.place_block_exact(client, x, y, z, item_id)
+        except Exception as e:
+            print(f"  harness place failed at {(x, y, z)}: {e}")
+    if not select_item(client, item_id, allow_swap=True):
+        return False
+    return safe_place_block(client, x, y, z)
+
+
+def first_available_item(client, candidates) -> Optional[str]:
+    """Return the first item id from candidates present in inventory."""
+    for item_id in candidates:
+        if count_item(client, item_id) > 0:
+            return item_id
+    return None
+
+
+def _prepare_house_planks(client, required_planks: int) -> bool:
+    """Gather and convert enough mixed-family wood for a house stage."""
+    from .resources import LOG_TO_PLANKS, gather_wood
+
+    total_planks = sum(count_item(client, item_id) for item_id in _ALL_PLANKS)
+    if total_planks >= required_planks:
+        return True
+
+    # gather_wood's count is an absolute log-equivalent target and includes
+    # planks already carried.  Passing only the shortfall makes an inventory
+    # such as 12 planks incorrectly satisfy a request for 18.
+    required_log_equivalents = math.ceil(required_planks / 4)
+    print("Gathering wood for good house...")
+    if not gather_wood(client, count=required_log_equivalents):
+        return False
+
+    client.transport.dispatch("close_screen", {})
+    for log_id, plank_id in LOG_TO_PLANKS.items():
+        total_planks = sum(count_item(client, item_id) for item_id in _ALL_PLANKS)
+        if total_planks >= required_planks:
+            break
+        log_count = count_item(client, log_id)
+        if log_count <= 0:
+            continue
+        missing = required_planks - total_planks
+        craft_output = min(log_count * 4, math.ceil(missing / 4) * 4)
+        if not craft(client, plank_id, craft_output):
+            return False
+
+    return sum(count_item(client, item_id) for item_id in _ALL_PLANKS) >= required_planks
+
+
+def safe_place_block(client, x, y, z, max_depth=2, block_id: str | None = None) -> bool:
     """
     Attempt to place a block, adding support if needed.
     """
     try:
-        client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
+        payload = {"x": x, "y": y, "z": z}
+        if block_id is not None:
+            payload["block"] = block_id
+        client.transport.dispatch("place_block", payload)
         return True
     except Exception as e:
         msg = str(e)
         if "No solid block found to place against" in msg and max_depth > 0:
             print(f"  Placing support block at ({x}, {y-1}, {z})...")
             # Recursive call with depth limit
-            if safe_place_block(client, x, y-1, z, max_depth-1):
+            if safe_place_block(client, x, y - 1, z, max_depth - 1, block_id=block_id):
                 time.sleep(0.2)
                 try:
-                    client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
+                    payload = {"x": x, "y": y, "z": z}
+                    if block_id is not None:
+                        payload["block"] = block_id
+                    client.transport.dispatch("place_block", payload)
                     return True
                 except Exception:
                     pass
@@ -114,43 +317,58 @@ def build_dirt_shelter(
         print(f"  Need 30+ blocks for shelter, have {dirt_count + cobble_count}")
         return False
     
-    # Select building material
-    if cobble_count >= 30:
-        if not select_item(client, "minecraft:cobblestone"):
-            return False
-    elif not select_item(client, "minecraft:dirt"):
-        return False
-    
+    # Pick building material
+    material = "minecraft:cobblestone" if cobble_count >= 30 else "minecraft:dirt"
+
     # Build walls (simplified - 4 walls, 3 high)
     for wall_y in range(3):
         # North wall
         for dx in range(size + 2):
-            safe_place_block(client, x + dx, y + wall_y, z)
-            time.sleep(0.2)
+            robust_place(client, x + dx, y + wall_y, z, material)
+            time.sleep(0.1)
         # South wall
         for dx in range(size + 2):
-            safe_place_block(client, x + dx, y + wall_y, z + size + 1)
-            time.sleep(0.2)
+            robust_place(client, x + dx, y + wall_y, z + size + 1, material)
+            time.sleep(0.1)
         # West wall
         for dz in range(1, size + 1):
-            safe_place_block(client, x, y + wall_y, z + dz)
-            time.sleep(0.2)
+            robust_place(client, x, y + wall_y, z + dz, material)
+            time.sleep(0.1)
         # East wall
         for dz in range(1, size + 1):
-            safe_place_block(client, x + size + 1, y + wall_y, z + dz)
-            time.sleep(0.2)
-    
+            robust_place(client, x + size + 1, y + wall_y, z + dz, material)
+            time.sleep(0.1)
+
     # Build roof
     for dx in range(size + 2):
         for dz in range(size + 2):
-            safe_place_block(client, x + dx, y + 3, z + dz)
-            time.sleep(0.2)
-    
+            robust_place(client, x + dx, y + 3, z + dz, material)
+            time.sleep(0.1)
+
     return True
 
 
-def place_crafting_table(client, x: int, y: int, z: int) -> bool:
-    """Place a crafting table at specified location, reusing an existing one if possible."""
+def place_crafting_table(
+    client,
+    x: int,
+    y: int,
+    z: int,
+    save_as_base: bool = False,
+) -> bool:
+    """Place a crafting table, optionally promoting it to the main base.
+
+    Mining workstations are temporary points of interest.  Treating every
+    table as the main base previously redirected ``#goto base`` into a deep
+    cave and made safe return-home logic impossible.
+    """
+    if _house_block_id(client, x, y, z) == "minecraft:crafting_table":
+        if save_as_base:
+            client.transport.dispatch(
+                "chat",
+                {"message": f"#waypoint save base {x} {y} {z}"},
+            )
+        return True
+
     if count_item(client, "minecraft:crafting_table") < 1:
         # Try to craft one
         plank_types = [
@@ -166,34 +384,12 @@ def place_crafting_table(client, x: int, y: int, z: int) -> bool:
             print("  Need crafting table or 4 planks (any type)")
             return False
     
-    if not select_item(client, "minecraft:crafting_table", allow_swap=True):
-        return False
-    
     if not is_position_safe(client, x, y, z):
         print(f"  Skipping placement at ({x}, {y}, {z}) - Target is liquid")
         return False
 
-    # Attempt to reuse an existing crafting table near the saved base waypoint
-    try:
-        wp = client.transport.dispatch("waypoint", {"name": "base"})
-        if wp:
-            bx, by, bz = wp["x"], wp["y"], wp["z"]
-            nearby = client.transport.dispatch(
-                "find_blocks",
-                {
-                    "blocks": ["minecraft:crafting_table"],
-                    "radius": 3,
-                    "center": {"x": bx, "y": by, "z": bz},
-                },
-            )
-            if nearby:
-                print(f"  Existing crafting table found at {nearby[0]}; reusing.")
-                return True
-    except Exception:
-        pass
-
-    if not safe_place_block(client, x, y, z):
-        print(f"  Placement failed via safe_place_block")
+    if not robust_place(client, x, y, z, "minecraft:crafting_table"):
+        print(f"  Placement failed via robust_place")
         return False
         
     time.sleep(0.5)
@@ -212,14 +408,18 @@ def place_crafting_table(client, x: int, y: int, z: int) -> bool:
     client.transport.dispatch("chat", {"message": "#blacklist minecraft:crafting_table"})
     time.sleep(0.5)
     
-    # Save location as "base"
-    client.transport.dispatch("chat", {"message": f"#waypoint save base {x} {y} {z}"})
-    print(f"  *** BASE LOCATION SET to ({x}, {y}, {z}) ***")
+    if save_as_base:
+        client.transport.dispatch(
+            "chat",
+            {"message": f"#waypoint save base {x} {y} {z}"},
+        )
+        print(f"  *** BASE LOCATION SET to ({x}, {y}, {z}) ***")
     
     # Update world_map.md
     try:
         with open("c:/gh/mcbaratone/world_map.md", "a") as f:
-            f.write(f"\n- **Crafting Table/Base**: ({x}, {y}, {z})")
+            label = "Crafting Table/Base" if save_as_base else "Crafting Table"
+            f.write(f"\n- **{label}**: ({x}, {y}, {z})")
     except Exception as e:
         print(f"  Failed to update world_map.md: {e}")
     
@@ -233,6 +433,11 @@ def place_furnace(client, x: int, y: int, z: int) -> bool:
     Returns:
         True if placed
     """
+    if _house_block_id(client, x, y, z) in {
+        "minecraft:furnace", "minecraft:blast_furnace"
+    }:
+        return True
+
     if count_item(client, "minecraft:furnace") < 1:
         # Try to craft one
         if count_item(client, "minecraft:cobblestone") >= 8:
@@ -242,19 +447,14 @@ def place_furnace(client, x: int, y: int, z: int) -> bool:
             print("  Need furnace or 8 cobblestone")
             return False
     
-    if not select_item(client, "minecraft:furnace", allow_swap=True):
-        return False
-    
     if not is_position_safe(client, x, y, z):
         print(f"  Skipping placement at ({x}, {y}, {z}) - Target is liquid")
         return False
 
-    try:
-        client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
-    except Exception as e:
-        print(f"  Place furnace failed: {e}")
+    if not robust_place(client, x, y, z, "minecraft:furnace"):
+        print(f"  Place furnace failed")
         return False
-        
+
     time.sleep(0.5)
     return True
 
@@ -262,33 +462,67 @@ def place_furnace(client, x: int, y: int, z: int) -> bool:
 def place_chest(client, x: int, y: int, z: int) -> bool:
     """
     Place a chest at specified location.
-    
+
     Returns:
         True if placed
     """
+    existing_block = _house_block_id(client, x, y, z)
+    if existing_block in {
+        "minecraft:chest", "minecraft:trapped_chest"
+    }:
+        try:
+            from .storage_catalog import catalog_for
+
+            dimension = client.transport.dispatch("get_state", {}).get(
+                "dimension", "minecraft:overworld"
+            )
+            catalog_for(client).register_container(
+                (x, y, z),
+                dimension=str(dimension),
+                container_type=existing_block,
+                purpose="base_storage",
+            )
+        except Exception as exc:
+            print(f"  Storage catalog registration deferred: {exc}")
+        return True
+
     if count_item(client, "minecraft:chest") < 1:
-        # Try to craft one
-        if count_item(client, "minecraft:oak_planks") >= 8:
+        # Try to craft one (any plank type works)
+        plank_types = [
+            "minecraft:oak_planks", "minecraft:spruce_planks", "minecraft:birch_planks",
+            "minecraft:jungle_planks", "minecraft:acacia_planks", "minecraft:dark_oak_planks",
+            "minecraft:mangrove_planks", "minecraft:cherry_planks", "minecraft:bamboo_planks",
+        ]
+        if sum(count_item(client, p) for p in plank_types) >= 8:
             craft(client, "minecraft:chest", 1)
             time.sleep(0.5)
         else:
-            print("  Need chest or 8 planks")
+            print("  Need chest or 8 planks (any type)")
             return False
-    
-    if not select_item(client, "minecraft:chest", allow_swap=True):
-        return False
-    
+
     if not is_position_safe(client, x, y, z):
         print(f"  Skipping placement at ({x}, {y}, {z}) - Target is liquid")
         return False
 
-    try:
-        client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
-    except Exception as e:
-        print(f"  Place chest failed: {e}")
+    if not robust_place(client, x, y, z, "minecraft:chest"):
+        print(f"  Place chest failed")
         return False
-        
+
     time.sleep(0.5)
+    try:
+        from .storage_catalog import catalog_for
+
+        dimension = client.transport.dispatch("get_state", {}).get(
+            "dimension", "minecraft:overworld"
+        )
+        catalog_for(client).register_container(
+            (x, y, z),
+            dimension=str(dimension),
+            container_type="minecraft:chest",
+            purpose="base_storage",
+        )
+    except Exception as exc:
+        print(f"  Storage catalog registration deferred: {exc}")
     return True
 
 
@@ -306,27 +540,19 @@ def place_bed(client, x: int, y: int, z: int) -> bool:
         "minecraft:orange_bed", "minecraft:pink_bed", "minecraft:purple_bed",
     ]
     
-    has_bed = False
-    for bed in bed_types:
-        if count_item(client, bed) > 0:
-            if select_item(client, bed, allow_swap=True):
-                has_bed = True
-                break
-    
-    if not has_bed:
+    bed_item = first_available_item(client, bed_types)
+    if bed_item is None:
         print("  Need a bed (craft from wool + planks)")
         return False
-    
+
     if not is_position_safe(client, x, y, z):
         print(f"  Skipping placement at ({x}, {y}, {z}) - Target is liquid")
         return False
 
-    try:
-        client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
-    except Exception as e:
-        print(f"  Place bed failed: {e}")
+    if not robust_place(client, x, y, z, bed_item):
+        print(f"  Place bed failed")
         return False
-        
+
     time.sleep(0.5)
     return True
 
@@ -355,18 +581,24 @@ def setup_base(
     print(f"  Setting up base at ({x}, {y}, {z})")
     
     # Place essential blocks inside base area
-    placed_crafting = place_crafting_table(client, x + 1, y, z + 1)
+    placed_crafting = place_crafting_table(
+        client,
+        x + 1,
+        y,
+        z + 1,
+        True,
+    )
     placed_furnace = place_furnace(client, x + 2, y, z + 1)
     placed_chest = place_chest(client, x + 1, y, z + 2)
     
     # Optional: try to place bed
     placed_bed = place_bed(client, x + 2, y, z + 2)
     
-    if placed_crafting and placed_furnace:
+    if placed_crafting and placed_furnace and placed_chest:
         print("  Base setup complete!")
         return (True, location)
     else:
-        print("  Base setup incomplete - missing crafting table or furnace")
+        print("  Base setup incomplete - missing crafting table, furnace, or chest")
         return (False, location)
 
 
@@ -389,8 +621,21 @@ def open_crafting_table(client, x: Optional[int] = None, y: Optional[int] = None
         return False
     
     tx, ty, tz = table_pos
+
+    # The functional harness verifies both the block and the 46-slot screen,
+    # and—critically—uses an adjacent stand tile.  A direct Baritone goal on
+    # the solid table block repeatedly mined the starter-house workstation and
+    # carried it farther across the room on every manual recipe fallback.
+    try:
+        from . import harness_ops
+        if harness_ops.available() and harness_ops.ensure_crafting_table_open(
+            client, table_pos=(int(tx), int(ty), int(tz))
+        ):
+            return True
+    except Exception as exc:
+        print(f"  Verified crafting-table open failed: {exc}")
     
-    # Walk to it
+    # Native compatibility fallback for installed clients without the harness.
     goto(client, tx, ty, tz, timeout=30, tolerance=2)
     time.sleep(0.3)  # Small delay before interaction
     
@@ -504,8 +749,8 @@ def sleep_through_night(client, timeout: int = 30) -> bool:
         bx, by, bz = x+1, y, z+1 # Simple offset
         
         print(f"Placing bed at {bx}, {by}, {bz}")
-        client.transport.dispatch("place_block", {"x": bx, "y": by, "z": bz}) # This might need specific bed item selection handled by place_bed?
-        # place_bed handles selection!
+        # place_bed selects the bed item and places it - no raw place_block
+        # first (that used to place whatever was in hand at the bed spot).
         if not place_bed(client, bx, by, bz):
             print("Failed to place bed")
             return False
@@ -538,6 +783,396 @@ def sleep_through_night(client, timeout: int = 30) -> bool:
         return False
 
 
+def build_compact_night_shelter(client) -> bool:
+    """Enclose the player with owned blocks without digging or using cheats."""
+    from . import harness_ops
+
+    cobble = count_item(client, "minecraft:cobblestone")
+    dirt = count_item(client, "minecraft:dirt")
+    material = "minecraft:cobblestone" if cobble >= 10 else "minecraft:dirt" if dirt >= 10 else None
+    if material is None or not harness_ops.available():
+        return False
+
+    try:
+        state = client.transport.dispatch("get_state", {})
+        pos = state.get("block_position", state.get("position", {}))
+        x, y, z = int(pos["x"]), int(pos["y"]), int(pos["z"])
+    except Exception as exc:
+        print(f"Night shelter: cannot determine player position: {exc}")
+        return False
+
+    side_columns = [
+        ((x + 1, y, z), (x + 1, y + 1, z)),
+        ((x - 1, y, z), (x - 1, y + 1, z)),
+        ((x, y, z + 1), (x, y + 1, z + 1)),
+        ((x, y, z - 1), (x, y + 1, z - 1)),
+    ]
+    roof = (x, y + 2, z)
+
+    def _block_at(target) -> str:
+        return client.transport.dispatch(
+            "get_block",
+            {"x": target[0], "y": target[1], "z": target[2]},
+        ).get("id", "")
+
+    def _is_wall(block_id: str) -> bool:
+        if block_id == "minecraft:grass_block":
+            return True
+        return bool(block_id) and not any(
+            token in block_id for token in ("air", "water", "lava", "flower", "grass", "fern")
+        )
+
+    def _interrupt_for_threat() -> bool:
+        from .combat import defend_or_flee, scan_for_threats
+        threats = scan_for_threats(client, radius=12)
+        if not threats or threats[0].get("distance", 999) > 10:
+            return False
+        print("Night shelter: hostile approached; interrupting placement")
+        defend_or_flee(client)
+        return True
+
+    print(f"Night shelter: enclosing player at {(x, y, z)} with {material}...")
+    # Uneven terrain and treetops can leave every adjacent wall column hanging
+    # over air. Build outward from the block beneath the player first so each
+    # wall has a legal support face. Existing natural solid blocks are kept.
+    center_support = (x, y - 1, z)
+    if not _is_wall(_block_at(center_support)):
+        try:
+            harness_ops.place_block_exact(
+                client, *center_support, material, allow_break=False
+            )
+        except Exception as exc:
+            print(f"Night shelter: center support failed at {center_support}: {exc}")
+    for column in side_columns:
+        base_target = column[0]
+        foundation = (base_target[0], y - 1, base_target[2])
+        if _is_wall(_block_at(foundation)):
+            continue
+        if _interrupt_for_threat():
+            return False
+        try:
+            harness_ops.place_block_exact(
+                client, *foundation, material, allow_break=False
+            )
+        except Exception as exc:
+            print(f"Night shelter: foundation failed at {foundation}: {exc}")
+
+    for column in side_columns:
+        for target in column:
+            # Exact block placement is comparatively slow.  Abort immediately
+            # if a hostile enters striking range instead of continuing to
+            # build while the player takes damage.
+            if _interrupt_for_threat():
+                return False
+            if _is_wall(_block_at(target)):
+                continue
+            try:
+                harness_ops.place_block_exact(
+                    client,
+                    target[0],
+                    target[1],
+                    target[2],
+                    material,
+                    allow_break=False,
+                )
+            except Exception as exc:
+                print(f"Night shelter: placement failed at {target}: {exc}")
+
+    # The roof center is two blocks above the player and initially has no
+    # adjacent face to place against.  Extend one completed wall column by a
+    # block first, giving the center roof block a legitimate horizontal
+    # support face.
+    if not _is_wall(_block_at(roof)):
+        roof_supports = [
+            (x + 1, y + 2, z),
+            (x - 1, y + 2, z),
+            (x, y + 2, z + 1),
+            (x, y + 2, z - 1),
+        ]
+        for support in roof_supports:
+            below = (support[0], support[1] - 1, support[2])
+            if not _is_wall(_block_at(below)):
+                continue
+            if not _is_wall(_block_at(support)):
+                if _interrupt_for_threat():
+                    return False
+                try:
+                    harness_ops.place_block_exact(
+                        client,
+                        support[0],
+                        support[1],
+                        support[2],
+                        material,
+                        allow_break=False,
+                    )
+                except Exception as exc:
+                    print(f"Night shelter: roof support failed at {support}: {exc}")
+            if _is_wall(_block_at(support)):
+                break
+
+    if not _is_wall(_block_at(roof)):
+        if _interrupt_for_threat():
+            return False
+        try:
+            harness_ops.place_block_exact(
+                client,
+                roof[0],
+                roof[1],
+                roof[2],
+                material,
+                allow_break=False,
+            )
+        except Exception as exc:
+            print(f"Night shelter: roof placement failed: {exc}")
+
+    complete_sides = sum(
+        all(_is_wall(_block_at(target)) for target in column)
+        for column in side_columns
+    )
+    roof_complete = _is_wall(_block_at(roof))
+    sheltered = roof_complete and complete_sides >= 3
+    print(
+        f"Night shelter: {'ready' if sheltered else 'partial'} "
+        f"({complete_sides}/4 sides, roof={roof_complete})."
+    )
+    return sheltered
+
+
+def _has_existing_enclosure(client, state=None, radius: int = 4) -> bool:
+    """Recognize a roofed room so night waiting does not build inside it."""
+    try:
+        state = state or client.transport.dispatch("get_state", {})
+        pos = state.get("block_position", state.get("position", {}))
+        x, y, z = int(pos["x"]), int(pos["y"]), int(pos["z"])
+    except Exception:
+        return False
+
+    def solid(tx, ty, tz) -> bool:
+        block_id = _house_block_id(client, tx, ty, tz)
+        return bool(block_id) and not any(
+            token in block_id
+            for token in (
+                "air", "water", "lava", "grass", "flower", "fern",
+                "torch", "leaf_litter",
+            )
+        )
+
+    roofed = any(solid(x, y + dy, z) for dy in range(2, radius + 1))
+    if not roofed:
+        return False
+
+    enclosed_directions = 0
+    for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        for distance in range(1, radius + 1):
+            tx, tz = x + dx * distance, z + dz * distance
+            if solid(tx, y, tz) and solid(tx, y + 1, tz):
+                enclosed_directions += 1
+                break
+    return enclosed_directions >= 3
+
+
+def wait_for_safe_daylight(
+    client,
+    max_wait: float = 720.0,
+    poll_interval: float = 5.0,
+) -> bool:
+    """Wait in place until daytime, yielding death recovery to the automator.
+
+    This is the no-bed fallback for the first night.  A fresh player has no
+    credible defense, so wandering for wood is much less reliable than
+    cancelling movement and waiting for dawn at the spawn perch.
+    """
+    deadline = time.monotonic() + max_wait
+    next_status = 0.0
+    next_bed_attempt = 0.0
+    next_anti_idle = 0.0
+    anti_idle_yaw = 0.0
+    shelter_attempted = False
+    shelter_complete = False
+
+    try:
+        client.transport.dispatch("close_screen", {})
+        client.transport.dispatch("cancel", {})
+    except Exception as exc:
+        print(f"Daylight safety: could not clear current action: {exc}")
+
+    while time.monotonic() < deadline:
+        try:
+            state = client.transport.dispatch("get_state", {})
+        except Exception as exc:
+            print(f"Daylight safety: state check failed: {exc}")
+            time.sleep(poll_interval)
+            continue
+
+        if state.get("is_dead", False):
+            # Do not respawn here.  The top-level automator must see the death
+            # screen so DeathRecoveryAction can capture the pre-death
+            # inventory and exact coordinates before the bridge clears them.
+            print("Daylight safety: player died; yielding to death recovery")
+            return False
+
+        day_time = int(state.get("world_time", 0)) % 24000
+        if day_time < 12000:
+            print(f"Daylight safety: daylight confirmed (time={day_time}).")
+            return True
+
+        if not shelter_attempted:
+            if _has_existing_enclosure(client, state):
+                shelter_attempted = True
+                shelter_complete = True
+                print("Daylight safety: existing enclosure verified; waiting inside.")
+
+        now = time.monotonic()
+        if (
+            shelter_complete
+            and day_time >= 12542
+            and now >= next_bed_attempt
+        ):
+            if _sleep_in_nearby_bed(client):
+                return True
+            next_bed_attempt = now + 30.0
+
+        if not shelter_attempted:
+            # Only fight when no enclosure exists.  Once the compact shelter
+            # is complete, outside mobs cannot hit the player; leaving it to
+            # engage a detected creeper defeats the shelter and caused a
+            # confirmed survival death.
+            from .combat import defend_or_flee, scan_for_threats
+            threats = scan_for_threats(client, radius=16)
+            if threats and threats[0].get("distance", 999) <= 12:
+                print("Daylight safety: hostile nearby; defending before shelter work")
+                defend_or_flee(client)
+                time.sleep(poll_interval)
+                continue
+            try:
+                # A partial result is still an attempt. Retrying the same
+                # impossible placement every poll produced thousands of log
+                # lines and consumed the entire night without improving it.
+                shelter_attempted = True
+                shelter_complete = bool(build_compact_night_shelter(client))
+            except Exception as exc:
+                print(f"Daylight safety: compact shelter attempt failed: {exc}")
+
+        client.transport.dispatch("cancel", {})
+        now = time.monotonic()
+        if now >= next_anti_idle:
+            # Aternos enforces an idle timeout. A tiny alternating look packet
+            # keeps a safely sheltered bot connected without moving it out of
+            # its enclosure or starting a competing Baritone process.
+            anti_idle_yaw = 1.0 if anti_idle_yaw == 0.0 else 0.0
+            try:
+                client.transport.dispatch(
+                    "look", {"yaw": anti_idle_yaw, "pitch": 0.0}
+                )
+            except Exception as exc:
+                print(f"Daylight safety: anti-idle nudge failed: {exc}")
+            next_anti_idle = now + 20.0
+        if now >= next_status:
+            ticks_until_dawn = 24000 - day_time
+            seconds_until_dawn = max(0, ticks_until_dawn // 20)
+            print(
+                f"Daylight safety: unarmed at night (time={day_time}); "
+                f"waiting about {seconds_until_dawn}s for dawn..."
+            )
+            next_status = now + 30.0
+        time.sleep(poll_interval)
+
+    return False
+
+
+def _sleep_in_nearby_bed(client, timeout: float = 15.0) -> bool:
+    """Use an already-placed bed and prove that the world advanced to day."""
+    bed_blocks = [
+        f"minecraft:{color}_bed"
+        for color in (
+            "white", "orange", "magenta", "light_blue", "yellow", "lime",
+            "pink", "gray", "light_gray", "cyan", "purple", "blue",
+            "brown", "green", "red", "black",
+        )
+    ]
+    bed = find_nearby_block(client, bed_blocks, radius=8)
+    if bed is None:
+        return False
+
+    state = client.transport.dispatch("get_state", {})
+    position = state.get("block_position", state.get("position", {}))
+    distance = sum(
+        (float(position.get(axis, 0)) - float(bed[index])) ** 2
+        for index, axis in enumerate(("x", "y", "z"))
+    ) ** 0.5
+    if distance > 4.5 and not goto(
+        client,
+        bed[0],
+        bed[1],
+        bed[2],
+        timeout=20,
+        tolerance=2.0,
+    ):
+        return False
+
+    print(f"Daylight safety: sleeping in nearby bed at {bed}...")
+    client.transport.dispatch(
+        "look_at",
+        {"x": bed[0] + 0.5, "y": bed[1] + 0.5, "z": bed[2] + 0.5},
+    )
+    client.transport.dispatch(
+        "interact_block",
+        {"x": bed[0], "y": bed[1], "z": bed[2]},
+    )
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        live_state = client.transport.dispatch("get_state", {})
+        if int(live_state.get("world_time", 0)) % 24000 < 12000:
+            print("Daylight safety: bed sleep advanced the world to daylight.")
+            return True
+        if live_state.get("is_dead", False):
+            return False
+    client.transport.dispatch("close_screen", {})
+    return False
+
+
+def _standing_in_liquid(client) -> bool:
+    """Return True if player is standing in water or lava at feet or head."""
+    try:
+        pos = get_player_pos(client)
+        x, y, z = int(pos[0]), int(pos[1]), int(pos[2])
+        feet_id = client.transport.dispatch(
+            "get_block", {"x": x, "y": y, "z": z}
+        ).get("id", "")
+        head_id = client.transport.dispatch(
+            "get_block", {"x": x, "y": y + 1, "z": z}
+        ).get("id", "")
+        for bid in (feet_id, head_id):
+            if "water" in bid or "lava" in bid:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def establish_dry_footing(client, max_lifts: int = 6) -> bool:
+    """Push the player out of any water/lava column, lifting up to max_lifts times."""
+    if not _standing_in_liquid(client):
+        return True
+    # choose material (count_item is imported at module top)
+    if count_item(client, "minecraft:cobblestone") >= 1:
+        material = "minecraft:cobblestone"
+    elif count_item(client, "minecraft:dirt") >= 1:
+        material = "minecraft:dirt"
+    else:
+        return False
+    for _ in range(max_lifts):
+        pos = get_player_pos(client)
+        x, y, z = int(pos[0]), int(pos[1]), int(pos[2])
+        robust_place(client, x, y - 1, z, material)
+        client.transport.dispatch("goto", {"x": x, "y": y + 1, "z": z})
+        time.sleep(0.5)
+        if not _standing_in_liquid(client):
+            return True
+    return False
+
+
 def build_emergency_shelter(client) -> bool:
     """
     Build a quick 1x2x1 hole or dirt hut to survive the night.
@@ -545,6 +1180,8 @@ def build_emergency_shelter(client) -> bool:
     """
     try:
         print("Building EMERGENCY SHELTER!")
+        # Ensure we are not sinking in water
+        establish_dry_footing(client)
         # 1. Dig down 3 blocks
         pos = get_player_pos(client)
         x, y, z = int(pos[0]), int(pos[1]), int(pos[2])
@@ -568,7 +1205,9 @@ def build_emergency_shelter(client) -> bool:
              client.transport.dispatch("goto", {"x": x, "y": y-3, "z": z})
              time.sleep(2)
              # Cover top
-             client.transport.dispatch("place_block", {"x": x, "y": y, "z": z})
+             from .automation_utils import place_block as select_and_place
+             if not select_and_place(client, x, y, z, "minecraft:cobblestone"):
+                 return False
              return True
              
         # Build box
@@ -579,111 +1218,405 @@ def build_emergency_shelter(client) -> bool:
         return False
 
 
+_ALL_PLANKS = [
+    "minecraft:oak_planks", "minecraft:spruce_planks", "minecraft:birch_planks",
+    "minecraft:jungle_planks", "minecraft:acacia_planks", "minecraft:dark_oak_planks",
+    "minecraft:mangrove_planks", "minecraft:cherry_planks", "minecraft:bamboo_planks",
+]
+
+_ALL_DOORS = [
+    "minecraft:oak_door", "minecraft:spruce_door", "minecraft:birch_door",
+    "minecraft:jungle_door", "minecraft:acacia_door", "minecraft:dark_oak_door",
+    "minecraft:crimson_door", "minecraft:warped_door",
+]
+
+
+def _house_block_id(client, x: int, y: int, z: int) -> str:
+    try:
+        return client.transport.dispatch(
+            "get_block", {"x": int(x), "y": int(y), "z": int(z)}
+        ).get("id", "")
+    except Exception:
+        return ""
+
+
+def _house_door_aligned(client, x: int, y: int, z: int) -> bool:
+    """Verify that a north-wall door blocks the north/south passage."""
+    try:
+        block = client.transport.dispatch(
+            "get_block", {"x": int(x), "y": int(y), "z": int(z)}
+        )
+    except Exception:
+        return False
+    if block.get("id", "") not in _ALL_DOORS:
+        return False
+    facing = str(block.get("state", {}).get("facing", "")).lower()
+    # Older/fake bridges expose only the id.  When orientation is available,
+    # reject east/west doors: opening one rotates its collision panel across
+    # this house's one-block north/south doorway.
+    return not facing or facing in ("north", "south")
+
+
+def _place_north_wall_door(client, x: int, y: int, z: int, item_id: str) -> bool:
+    """Place a door from outside the north wall with a north/south facing."""
+    from . import harness_ops
+
+    client.transport.dispatch("close_screen", {})
+    client.transport.dispatch("chat", {"message": "#set allowBreak false"})
+    try:
+        if not harness_ops.move_near(client, x, y, z - 2, timeout=20.0):
+            print("Door placement blocked: could not reach north exterior")
+            return False
+        client.transport.dispatch("cancel", {})
+
+        # A recovered or overlapping build can leave planks in one or both
+        # doorway cells. Minecraft rejects door placement as "target already
+        # occupied", so clear the exact 1x2 opening before selecting the door.
+        air_blocks = {"", "minecraft:air", "minecraft:cave_air", "minecraft:void_air"}
+        client.transport.dispatch("chat", {"message": "#set allowBreak true"})
+        for tool_id in (
+            "minecraft:netherite_axe",
+            "minecraft:diamond_axe",
+            "minecraft:iron_axe",
+            "minecraft:stone_axe",
+            "minecraft:wooden_axe",
+        ):
+            if select_item(client, tool_id, allow_swap=True):
+                break
+        for clear_y in (y, y + 1):
+            block_id = _house_block_id(client, x, clear_y, z)
+            if block_id in _ALL_DOORS or block_id in air_blocks:
+                continue
+            client.transport.dispatch(
+                "break_block", {"x": int(x), "y": int(clear_y), "z": int(z)}
+            )
+            clear_deadline = time.monotonic() + 12.0
+            while time.monotonic() < clear_deadline:
+                if _house_block_id(client, x, clear_y, z) in air_blocks:
+                    break
+                time.sleep(0.2)
+            client.transport.dispatch("cancel", {})
+        doorway_clear = all(
+            _house_block_id(client, x, clear_y, z) in air_blocks
+            for clear_y in (y, y + 1)
+        )
+        client.transport.dispatch("chat", {"message": "#set allowBreak false"})
+        if not doorway_clear:
+            print("Door placement blocked: doorway cells could not be cleared")
+            return False
+
+        if not select_item(client, item_id, allow_swap=True):
+            return False
+
+        # Minecraft derives door orientation from player yaw, not the clicked
+        # face.  Yaw 0 faces south, straight into this north-wall doorway.
+        client.transport.dispatch("look", {"yaw": 0.0, "pitch": 35.0})
+        client.transport.dispatch(
+            "place_block",
+            {"x": int(x), "y": int(y), "z": int(z), "block": item_id},
+        )
+        for _ in range(30):
+            if _house_door_aligned(client, x, y, z):
+                return True
+            time.sleep(0.1)
+        return False
+    except Exception as exc:
+        print(f"Door placement failed: {exc}")
+        return False
+    finally:
+        client.transport.dispatch("cancel", {})
+        client.transport.dispatch("chat", {"message": "#set allowBreak true"})
+
+
+def _good_house_plan(x: int, y: int, z: int, size: int = 7, height: int = 4):
+    """Return the exact starter-house targets as (x, y, z, role)."""
+    targets = []
+    for dx in range(size):
+        for dz in range(size):
+            targets.append((x + dx, y, z + dz, "floor"))
+
+    door_x, door_z = x + size // 2, z
+    for dy in range(1, height):
+        for dx in range(size):
+            if not (x + dx == door_x and dy in (1, 2)):
+                targets.append((x + dx, y + dy, z, "shell"))
+            targets.append((x + dx, y + dy, z + size - 1, "shell"))
+        for dz in range(1, size - 1):
+            targets.append((x, y + dy, z + dz, "shell"))
+            targets.append((x + size - 1, y + dy, z + dz, "shell"))
+
+    for dx in range(size):
+        for dz in range(size):
+            targets.append((x + dx, y + height, z + dz, "roof"))
+    return targets
+
+
+def _matches_house_role(block_id: str, role: str) -> bool:
+    if role == "floor":
+        return block_id == "minecraft:cobblestone"
+    if role == "shell" and block_id == "minecraft:cobblestone":
+        # A solid cobblestone patch is a valid defensive wall.  Replacing it
+        # only for appearance can consume the eight planks reserved for the
+        # supply chest and deadlock an otherwise complete base.
+        return True
+    return block_id in _ALL_PLANKS
+
+
+def _wait_for_build_window(client, latest_start: int = 9000) -> bool:
+    """Do not begin a slow exposed build stage close to sunset."""
+    try:
+        day_time = int(client.transport.dispatch("get_state", {}).get("world_time", 0)) % 24000
+    except Exception:
+        return False
+    if day_time < latest_start:
+        return True
+
+    print(
+        f"Good house: time={day_time} is too late for another exposed stage; "
+        "waiting for the next safe morning..."
+    )
+    deadline = time.monotonic() + 900.0
+    while time.monotonic() < deadline:
+        try:
+            day_time = int(client.transport.dispatch("get_state", {}).get("world_time", 0)) % 24000
+        except Exception:
+            time.sleep(5.0)
+            continue
+        if day_time < latest_start:
+            return True
+        if day_time >= 12000:
+            remaining = max(30.0, deadline - time.monotonic())
+            return wait_for_safe_daylight(client, max_wait=remaining)
+        time.sleep(5.0)
+    return False
+
+
 def build_good_house(client, x: int, y: int, z: int) -> bool:
     """
-    Build a nicer house using planks and cobblestone.
-    Size: 7x7 outer dimensions, 4 high.
-    Materials: Cobble floor, Plank walls, Glass windows if possible.
+    Build a starter house: cobble floor, plank walls, plank roof, a door.
+    Size: 7x7 outer dimensions, 4 high. Uses whatever plank type is in
+    inventory. Placement failures are tolerated per-block; the build counts
+    as successful when the large majority of blocks verifiably landed.
     """
     try:
         size = 7
         height = 4
-        
-        # Needs materials
-        wood_needed = (size * 4 * height) // 4 # Roughly wall blocks
-        cobble_needed = size * size # Floor
-        
-        current_planks = count_item(client, "minecraft:oak_planks")
-        if current_planks < 64:
-             print("Gathering wood for good house...")
-             # Need roughly 20 logs
-             from .resources import gather_wood
-             gather_wood(client, count=32)
-             craft(client, "minecraft:oak_planks", 32)
-             
-        current_cobble = count_item(client, "minecraft:cobblestone")
-        if current_cobble < 64:
-             print("Gathering stone for good house...")
-             from .resources import gather_stone
-             gather_stone(client, count=64)
+        plan = _good_house_plan(x, y, z, size=size, height=height)
+        door_x, door_z = x + size // 2, z
+
+        def plank_material():
+            return first_available_item(client, _ALL_PLANKS)
+
+        # Inspect the world first.  A stopped/retried build must repair the
+        # same shell instead of demanding a second full structure's materials.
+        missing_floor = []
+        missing_shell = []
+        for tx, ty, tz, role in plan:
+            if _matches_house_role(_house_block_id(client, tx, ty, tz), role):
+                continue
+            if role == "floor":
+                missing_floor.append((tx, ty, tz, role))
+            else:
+                missing_shell.append((tx, ty, tz, role))
+
+        door_present = _house_door_aligned(client, door_x, y + 1, door_z)
+        existing_door = _house_block_id(client, door_x, y + 1, door_z)
+        if existing_door in _ALL_DOORS and not door_present:
+            print("Good house: removing misaligned doorway block for replacement")
+            client.transport.dispatch(
+                "look_at", {"x": door_x + 0.5, "y": y + 1.5, "z": door_z + 0.5}
+            )
+            client.transport.dispatch(
+                "break_block", {"x": door_x, "y": y + 1, "z": door_z}
+            )
+            for _ in range(30):
+                if _house_block_id(client, door_x, y + 1, door_z) not in _ALL_DOORS:
+                    break
+                time.sleep(0.1)
+            time.sleep(0.5)
+        print(
+            "Good house survey: "
+            f"floor {49 - len(missing_floor)}/49, "
+            f"shell {119 - len(missing_shell)}/119, "
+            f"door={'yes' if door_present else 'no'}"
+        )
+
+        # A retry can begin with the player standing inside the shell or on
+        # its roof.  If gathering starts from there while Baritone may break
+        # blocks, it can tunnel through the structure we are trying to repair.
+        # Walk out through the north doorway first with breaking disabled.
+        existing_structure_blocks = len(plan) - len(missing_floor) - len(missing_shell)
+        repair_in_progress = existing_structure_blocks and (
+            missing_floor or missing_shell or not door_present
+        )
+        if repair_in_progress:
+            print("Good house repair: staging safely outside before gathering...")
+            client.transport.dispatch("chat", {"message": "#set allowBreak false"})
+            try:
+                from . import harness_ops
+
+                if not harness_ops.move_near(
+                    client, door_x, y + 1, door_z - 2, timeout=20.0
+                ):
+                    print("Good house repair blocked: could not reach the safe exterior")
+                    return False
+            except Exception as exc:
+                print(f"Good house repair exterior staging failed: {exc}")
+                return False
+            finally:
+                client.transport.dispatch("cancel", {})
+                client.transport.dispatch("chat", {"message": "#set allowBreak true"})
+
+        # Keep enough in hand for the missing shell plus a table, door, and
+        # chest.  Cobble reserve covers the furnace after floor repair.
+        required_planks = len(missing_shell) + (18 if not door_present else 8)
+        required_cobblestone = len(missing_floor) + 8
+
+        # Material check (any plank type counts)
+        total_planks = sum(count_item(client, p) for p in _ALL_PLANKS)
+        if total_planks < required_planks:
+            if not _prepare_house_planks(client, required_planks):
+                return False
+            total_planks = sum(count_item(client, p) for p in _ALL_PLANKS)
+        if total_planks < required_planks:
+            print(f"Good house needs {required_planks} planks; only {total_planks} available")
+            return False
+
+        if count_item(client, "minecraft:cobblestone") < required_cobblestone:
+            print("Gathering stone for good house...")
+            from .resources import gather_stone
+            if not gather_stone(client, count=required_cobblestone):
+                return False
+        if count_item(client, "minecraft:cobblestone") < required_cobblestone:
+            print("Good house does not have enough cobblestone after gathering")
+            return False
+
+        # Gathering may have consumed most of the day even though the phase
+        # itself began safely.  The floor and shell are slow, exposed placement
+        # jobs, so re-establish daylight immediately before construction.
+        repair_target_count = len(missing_floor) + len(missing_shell)
+        latest_start = 11500 if repair_target_count <= 12 else 9000
+        if not wait_for_safe_daylight(client) or not _wait_for_build_window(
+            client, latest_start=latest_start
+        ):
+            print("Good house build blocked: safe daylight was not established")
+            return False
+
+        repaired = 0
+        failed = 0
+
+        def guarded_structure_place(px, py, pz, material):
+            """Prevent Baritone's approach from mining the structure itself."""
+            client.transport.dispatch(
+                "chat",
+                {"message": "#set allowBreak false"},
+            )
+            try:
+                return robust_place(client, px, py, pz, material)
+            finally:
+                client.transport.dispatch("cancel", {})
+                client.transport.dispatch(
+                    "chat",
+                    {"message": "#set allowBreak true"},
+                )
+
+        def put(px, py, pz, role, material):
+            nonlocal repaired, failed
+            if _matches_house_role(_house_block_id(client, px, py, pz), role):
+                return
+            if material is None:
+                failed += 1
+                return
+            if guarded_structure_place(px, py, pz, material):
+                repaired += 1
+            else:
+                failed += 1
 
         # 1. Floor (Cobble)
-        # Dig out floor area?? Or just place on top. Assume on top of flat ground.
-        print("Building Good House Floor...")
-        for dx in range(size):
-            for dz in range(size):
-                if not select_item(client, "minecraft:cobblestone"):
-                    break # Failed
-                client.transport.dispatch("place_block", {"x": x+dx, "y": y, "z": z+dz})
-                time.sleep(0.1)
-                
-        # 2. Walls (Planks)
-        # Corners can be logs if we had them? Let's stick to planks.
-        print("Building Good House Walls...")
-        if not select_item(client, "minecraft:oak_planks"):
-             select_item(client, "minecraft:birch_planks") # Try others
-             
-        for dy in range(1, height):
-           # Outer perimeter
-           for dx in range(size):
-               # North/South
-               client.transport.dispatch("place_block", {"x": x+dx, "y": y+dy, "z": z})
-               client.transport.dispatch("place_block", {"x": x+dx, "y": y+dy, "z": z+size-1})
-               # East/West (exclude corners to avoid double place)
-           for dz in range(1, size-1):
-               client.transport.dispatch("place_block", {"x": x, "y": y+dy, "z": z+dz})
-               client.transport.dispatch("place_block", {"x": x+size-1, "y": y+dy, "z": z+dz})
-           time.sleep(0.5)
+        if missing_floor:
+            print(f"Repairing Good House Floor ({len(missing_floor)} targets)...")
+            for tx, ty, tz, role in missing_floor:
+                put(tx, ty, tz, role, "minecraft:cobblestone")
 
-        # 3. Roof (Cobble or Wood)
-        print("Building Roof...")
-        select_item(client, "minecraft:oak_planks")
-        for dx in range(size):
-            for dz in range(size):
-                client.transport.dispatch("place_block", {"x": x+dx, "y": y+height, "z": z+dz})
-                
-        # 4. Door and Torch
-        # Leave a hole for door?
-        # Place door at x+size//2, y, z
-        door_x, door_z = x + size // 2, z
-        
-        # Clear blocks at door pos (if any)
-        client.transport.dispatch("mine", {"x": door_x, "y": y+1, "z": door_z, "quantity": 1})
-        client.transport.dispatch("mine", {"x": door_x, "y": y+2, "z": door_z, "quantity": 1})
-        time.sleep(1)
+        # 2. Walls (Planks) - leave a 1x2 doorway in the north wall
+        wall_targets = [target for target in missing_shell if target[3] == "shell"]
+        roof_targets = [target for target in missing_shell if target[3] == "roof"]
+        if wall_targets:
+            print(f"Repairing Good House Walls ({len(wall_targets)} targets)...")
+            for tx, ty, tz, role in wall_targets:
+                put(tx, ty, tz, role, plank_material())
 
-        # Place Door
-        door_types = [
-            "minecraft:oak_door", "minecraft:spruce_door", "minecraft:birch_door", 
-            "minecraft:jungle_door", "minecraft:acacia_door", "minecraft:dark_oak_door",
-            "minecraft:crimson_door", "minecraft:warped_door"
-        ]
-        
-        has_door = False
-        for door in door_types:
-            if count_item(client, door) > 0:
-                if select_item(client, door):
-                    has_door = True
-                    break
-        
-        if not has_door:
-             # Try craft door
-             if count_item(client, "minecraft:oak_planks") >= 6:
-                 craft(client, "minecraft:oak_door", 3)
-                 select_item(client, "minecraft:oak_door")
-                 has_door = True
-        
-        if has_door:
+        # 3. Roof. Recheck the time between slow stages; a brand-new house can
+        # take most of a Minecraft day even when it starts just after dawn.
+        if roof_targets:
+            roof_latest_start = 11500 if len(roof_targets) <= 12 else 9000
+            if not _wait_for_build_window(client, latest_start=roof_latest_start):
+                return False
+            print(f"Repairing Roof ({len(roof_targets)} targets)...")
+            for tx, ty, tz, role in roof_targets:
+                put(tx, ty, tz, role, plank_material())
+
+        # 4. Door (doorway was left open; no mining needed)
+        door_item = first_available_item(client, _ALL_DOORS) if not door_present else None
+        if door_item is None:
+            plank_counts = sorted(
+                ((count_item(client, item_id), item_id) for item_id in _ALL_PLANKS),
+                reverse=True,
+            )
+            plank_count, planks = plank_counts[0] if plank_counts else (0, None)
+            if not door_present and planks and plank_count >= 6:
+                wood = planks.split(":")[-1].replace("_planks", "")
+                if not craft(client, f"minecraft:{wood}_door", 1):
+                    craft(client, "minecraft:oak_door", 1)
+                door_item = first_available_item(client, _ALL_DOORS)
+
+        door_placed = door_present
+        if door_item:
             print("Placing Door...")
-            # Place bottom half
-            client.transport.dispatch("place_block", {"x": door_x, "y": y+1, "z": door_z})
+            door_placed = _place_north_wall_door(
+                client,
+                door_x,
+                y + 1,
+                door_z,
+                door_item,
+            )
             time.sleep(0.5)
-        else:
-             print("No door available")
+        elif not door_present:
+            print("No door available (doorway left open)")
 
-        print("Good House Complete!")
-        return True
-        
+        # Verify the world, not command return values.  This counts blocks
+        # retained from previous attempts and catches commands that returned
+        # success without putting the requested block at the target.
+        floor_correct = 0
+        shell_correct = 0
+        roof_correct = 0
+        for tx, ty, tz, role in plan:
+            correct = _matches_house_role(_house_block_id(client, tx, ty, tz), role)
+            if role == "floor":
+                floor_correct += int(correct)
+            elif role == "roof":
+                roof_correct += int(correct)
+            else:
+                shell_correct += int(correct)
+        total_correct = floor_correct + shell_correct + roof_correct
+        door_placed = _house_door_aligned(client, door_x, y + 1, door_z)
+        print(
+            f"Good House verified: {total_correct}/{len(plan)} blocks "
+            f"(floor={floor_correct}/49 walls={shell_correct}/70 "
+            f"roof={roof_correct}/49 repairs={repaired} failed={failed} "
+            f"door={'yes' if door_placed else 'no'})"
+        )
+        # A starter house is a survival boundary, not a cosmetic build.  The
+        # old 95% threshold accepted holes in the floor and exterior wall; the
+        # phase checkpoint then permanently skipped the repair path.  Require
+        # the complete world-verified shell before recording completion.
+        return (
+            floor_correct == 49
+            and shell_correct == 70
+            and roof_correct == 49
+            and door_placed
+        )
+
     except Exception as e:
         print(f"Good house build failed: {e}")
         return False
@@ -737,9 +1670,38 @@ def loot_nearby_chests(client, radius: int = 16) -> bool:
         
         if open_chest(client, tx, ty, tz):
             print(f"  Looting chest...")
-            # Chests usually have 27 slots (0-26) or 54 for double (0-53)
-            # We'll try to loot up to 54 slots
-            for slot in range(54):
+            # Only quick-move the container's own slots.  The screen also
+            # exposes the 36 player-inventory slots after them; iterating a
+            # hard-coded 0..53 range on a single chest deposits the player's
+            # tools and cobblestone into that same chest.
+            screen = client.transport.dispatch("get_screen", {})
+            data = screen.get("data", screen)
+            slots = data.get("slots", [])
+            total_slots = int(data.get("total_slots") or len(slots) or 0)
+            container_slots = max(0, total_slots - 36)
+            if container_slots not in (27, 54):
+                print(
+                    f"  Unexpected chest screen size {total_slots}; "
+                    "skipping loot rather than moving player inventory"
+                )
+                client.transport.dispatch("close_screen", {})
+                continue
+
+            container_type = str(c.get("id") or "minecraft:chest")
+            try:
+                from .storage_catalog import observe_open_container
+
+                observe_open_container(
+                    client,
+                    (tx, ty, tz),
+                    screen,
+                    container_type=container_type,
+                    purpose="discovered_loot",
+                )
+            except Exception as exc:
+                print(f"  Initial loot catalog snapshot deferred: {exc}")
+
+            for slot in range(container_slots):
                 # Shift-click all slots to move items to inventory
                 client.transport.dispatch("inventory_click", {
                     "slot": slot,
@@ -749,6 +1711,29 @@ def loot_nearby_chests(client, radius: int = 16) -> bool:
                 # Micro-delay to avoid overwhelming server/bridge
                 # but fast enough to loot quickly
                 if slot % 9 == 0: time.sleep(0.1) 
+
+            try:
+                from .storage_catalog import catalog_for, observe_open_container
+
+                final_screen = client.transport.dispatch("get_screen", {})
+                observe_open_container(
+                    client,
+                    (tx, ty, tz),
+                    final_screen,
+                    container_type=container_type,
+                    purpose="discovered_loot",
+                )
+                dimension = client.transport.dispatch("get_state", {}).get(
+                    "dimension", "minecraft:overworld"
+                )
+                catalog_for(client).record_event(
+                    (tx, ty, tz),
+                    "loot",
+                    dimension=str(dimension),
+                    details={"container_slots": container_slots},
+                )
+            except Exception as exc:
+                print(f"  Post-loot catalog snapshot deferred: {exc}")
             
             # Close screen
             client.transport.dispatch("close_screen", {})

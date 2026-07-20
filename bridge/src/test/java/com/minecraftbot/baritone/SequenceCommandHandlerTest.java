@@ -210,146 +210,111 @@ public class SequenceCommandHandlerTest {
         assertEquals("arg1 arg2", seqCmd.params.get("args").getAsString());
     }
 
-    @Test
-    void testRollbackFunctionality_OnFailure() {
-        // Setup - sequence with a command that will fail
-        String sequence = "craft wooden_pickaxe ; invalid_command arg ; mine stone 5";
-        JsonObject params = new JsonObject();
-        params.addProperty("sequence", sequence);
-        params.addProperty("rollback_on_failure", true);
+    // --- Execution tests use registered test doubles so they exercise the
+    // --- real execute/rollback path without any Minecraft state.
 
-        // Execute
-        var result = handler.execute(params, mockClient, mockBaritone, mockSocket);
+    /** Handler double that always succeeds. Public so the factory can instantiate it. */
+    public static class AlwaysOkHandler implements CommandHandler {
+        @Override
+        public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+            JsonObject data = new JsonObject();
+            data.addProperty("ok", true);
+            return CompletableFuture.completedFuture(CommandResult.success(data));
+        }
 
-        // Verify - sequence should fail and rollback
-        assertFalse(result.isSuccess());
-        assertTrue(result.getData().has("rollback_performed"));
-        assertTrue(result.getData().get("rollback_performed").getAsBoolean());
-        assertTrue(result.getData().has("executed_commands"));
-        assertTrue(result.getData().has("rolled_back_commands"));
+        @Override
+        public String getCommandName() {
+            return "test_seq_ok";
+        }
+    }
+
+    /** Handler double that always fails. Public so the factory can instantiate it. */
+    public static class AlwaysFailHandler implements CommandHandler {
+        @Override
+        public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+            return CompletableFuture.completedFuture(CommandResult.error("intentional test failure"));
+        }
+
+        @Override
+        public String getCommandName() {
+            return "test_seq_fail";
+        }
+    }
+
+    private void registerDoubles() {
+        CommandHandlerFactory.registerHandler("test_seq_ok", AlwaysOkHandler.class);
+        CommandHandlerFactory.registerHandler("test_seq_fail", AlwaysFailHandler.class);
     }
 
     @Test
-    void testAtomicExecution_AllOrNothing_Success() {
-        // Setup - sequence that should succeed atomically
-        String sequence = "craft stick ; craft wooden_pickaxe";
+    void testInvalidCommandDoesNotExecuteValidPrefix() {
+        // A sequence containing an unknown command must fail validation up
+        // front and execute NOTHING - not run the valid prefix first.
+        registerDoubles();
         JsonObject params = new JsonObject();
-        params.addProperty("sequence", sequence);
-        params.addProperty("atomic", true);
+        params.addProperty("sequence", "test_seq_ok ; definitely_unknown_command arg");
 
-        // Execute
         var result = handler.execute(params, mockClient, mockBaritone, mockSocket);
 
-        // Verify - all commands should succeed or none
         assertTrue(result.isSuccess());
-        assertTrue(result.getData().get("atomic_execution").getAsBoolean());
-        assertTrue(result.getData().has("completed_commands"));
+        assertTrue(result.getData().has("validation_errors"));
+        assertFalse(result.getData().has("partial_results"),
+                "No command may execute when validation fails");
     }
 
     @Test
-    void testAtomicExecution_AllOrNothing_Failure() {
-        // Setup - sequence with failure in atomic mode
-        String sequence = "craft stick ; invalid_command ; craft wooden_pickaxe";
+    void testMidSequenceFailure_ReportsStepAndRollsBack() {
+        registerDoubles();
         JsonObject params = new JsonObject();
-        params.addProperty("sequence", sequence);
-        params.addProperty("atomic", true);
+        params.addProperty("sequence", "test_seq_ok ; test_seq_fail ; test_seq_ok");
 
-        // Execute
         var result = handler.execute(params, mockClient, mockBaritone, mockSocket);
 
-        // Verify - should fail atomically, no partial success
-        assertFalse(result.isSuccess());
-        assertTrue(result.getData().get("atomic_execution").getAsBoolean());
-        assertTrue(result.getData().has("failed_at_command"));
-        assertEquals(1, result.getData().get("failed_at_command").getAsInt()); // Second command fails
-        assertTrue(result.getData().get("rollback_performed").getAsBoolean());
-    }
-
-    @Test
-    void testNestedSequenceSupport() {
-        // Setup - sequence with nested sequences
-        String sequence = "craft stick ; (mine stone 5 ; mine coal 3) ; craft furnace";
-        JsonObject params = new JsonObject();
-        params.addProperty("sequence", sequence);
-        params.addProperty("atomic", true);
-
-        // Execute
-        var result = handler.execute(params, mockClient, mockBaritone, mockSocket);
-
-        // Verify
+        // Failure mid-sequence is reported inside a success envelope.
         assertTrue(result.isSuccess());
-        assertTrue(result.getData().has("nested_sequences"));
-        assertTrue(result.getData().get("nested_sequences").getAsJsonArray().size() >= 1);
+        JsonObject data = result.getData();
+        assertEquals(1, data.get("failed_at_step").getAsInt());
+        assertTrue(data.get("rollback_performed").getAsBoolean());
+        assertTrue(data.get("error").getAsString().contains("intentional test failure"));
+        JsonObject partial = data.getAsJsonObject("partial_results");
+        assertTrue(partial.has("step_0"));
+        assertTrue(partial.has("step_1"));
+        assertFalse(partial.has("step_2"), "Commands after the failure must not run");
     }
 
     @Test
-    void testNestedSequenceRollback() {
-        // Setup - nested sequence with failure
-        String sequence = "craft stick ; (mine stone 5 ; invalid_command ; mine coal 3) ; craft furnace";
+    void testMultiCommandExecution_AllSucceed() {
+        registerDoubles();
         JsonObject params = new JsonObject();
-        params.addProperty("sequence", sequence);
-        params.addProperty("atomic", true);
-        params.addProperty("rollback_on_failure", true);
+        params.addProperty("sequence", "test_seq_ok ; test_seq_ok ; test_seq_ok");
 
-        // Execute
         var result = handler.execute(params, mockClient, mockBaritone, mockSocket);
 
-        // Verify - nested failure should trigger rollback
-        assertFalse(result.isSuccess());
-        assertTrue(result.getData().get("rollback_performed").getAsBoolean());
-        assertTrue(result.getData().has("nested_rollback"));
-    }
-
-    @Test
-    void testSequenceExecutionProgress() {
-        // Setup - multi-step sequence
-        String sequence = "craft stick ; craft wooden_pickaxe ; mine stone 10 ; goto 100 200 300";
-        JsonObject params = new JsonObject();
-        params.addProperty("sequence", sequence);
-
-        // Execute
-        var result = handler.execute(params, mockClient, mockBaritone, mockSocket);
-
-        // Verify - should track progress
         assertTrue(result.isSuccess());
-        assertTrue(result.getData().has("execution_progress"));
-        assertTrue(result.getData().get("execution_progress").getAsJsonObject().has("total_commands"));
-        assertTrue(result.getData().get("execution_progress").getAsJsonObject().has("completed_commands"));
-        assertEquals(4, result.getData().get("execution_progress").getAsJsonObject().get("total_commands").getAsInt());
+        JsonObject data = result.getData();
+        assertEquals("completed", data.get("status").getAsString());
+        assertEquals(3, data.get("steps_executed").getAsInt());
+        JsonObject partial = data.getAsJsonObject("partial_results");
+        assertTrue(partial.has("step_0"));
+        assertTrue(partial.has("step_1"));
+        assertTrue(partial.has("step_2"));
     }
 
     @Test
-    void testSequenceTimeoutHandling() {
-        // Setup - sequence that might take too long
-        String sequence = "mine stone 100 ; mine diamond 64 ; goto 1000 1000 1000";
+    void testParenthesesAreNotASupportedSyntax() {
+        // Nested sequences via parentheses are NOT implemented; the parser
+        // treats "(cmd" as an unknown command name and validation rejects it.
+        registerDoubles();
         JsonObject params = new JsonObject();
-        params.addProperty("sequence", sequence);
-        params.addProperty("timeout_seconds", 30);
+        params.addProperty("sequence", "test_seq_ok ; (test_seq_ok ; test_seq_ok)");
 
-        // Execute
         var result = handler.execute(params, mockClient, mockBaritone, mockSocket);
 
-        // Verify - should handle timeout gracefully
-        assertTrue(result.isSuccess() || result.getData().has("timeout_handled"));
-        assertTrue(result.getData().has("execution_time"));
-    }
-
-    @Test
-    void testConditionalSequenceExecution() {
-        // Setup - sequence with conditional logic (if supported)
-        String sequence = "craft stick ; if_inventory_has wooden_planks then craft wooden_pickaxe else mine oak_log";
-        JsonObject params = new JsonObject();
-        params.addProperty("sequence", sequence);
-
-        // Execute
-        var result = handler.execute(params, mockClient, mockBaritone, mockSocket);
-
-        // Verify
         assertTrue(result.isSuccess());
-        assertTrue(result.getData().has("conditional_execution"));
-        assertTrue(result.getData().get("conditional_execution").getAsBoolean());
+        assertTrue(result.getData().has("validation_errors"));
     }
 
-    // Note: Full execution tests are complex due to mocking requirements.
-    // Integration tests would be better for testing actual command execution and rollback.
+    // Note: atomic mode, conditionals, per-sequence timeouts, and nested
+    // sequences are not features of this handler. If they are ever added,
+    // give them real tests here rather than aspirational ones.
 }

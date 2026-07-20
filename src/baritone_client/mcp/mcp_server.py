@@ -38,9 +38,33 @@ from ..core.exceptions import TransportError
 from ..core.facades.goals import GoalFactory
 from ..transport.transport import TcpTransport, WebSocketTransport
 from ..utils.upload_manager import UploadProgress
+from ..build_plans import compile_plan_preview
+from ..mcp.guidance import (
+    BUILD_PLAN_GUIDE_ALIAS,
+    BUILD_PLAN_RESOURCE_URI,
+    BUILDSITE_RESOURCE_URI,
+    WORKFLOW_GUIDE_ALIAS,
+    WORKFLOW_RESOURCE_URI,
+    build_build_plan_prompt,
+    build_buildsite_prompt,
+    build_workflow_prompt,
+    get_agent_guide,
+    get_tool_description,
+)
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
+
+
+def _normalize_guidance_topic(topic: Optional[str]) -> str:
+    """Normalize guidance topic values to a simple hyphenated key."""
+    if topic is None:
+        return WORKFLOW_GUIDE_ALIAS
+
+    normalized = str(topic).strip().lower().replace("_", "-").replace(" ", "-")
+    while "--" in normalized:
+        normalized = normalized.replace("--", "-")
+    return normalized.strip("-")
 
 
 @dataclass
@@ -257,6 +281,42 @@ def create_mcp_server(config: BridgeConfig) -> FastMCP:
         """Return comprehensive analytics report."""
         report = _call_bridge(ctx, "analytics/report", lambda client: client.get_performance_report())
         return _format_json(report.model_dump() if hasattr(report, 'model_dump') else report.__dict__)
+
+    @mcp.resource(WORKFLOW_RESOURCE_URI)
+    def workflow_guidance_resource() -> str:
+        """Return survival-first guidance for agent workflow."""
+        return _format_json({
+            "topic": "workflow",
+            "guidance": get_agent_guide("workflow"),
+        })
+
+    @mcp.resource(BUILD_PLAN_RESOURCE_URI)
+    def build_plan_guidance_resource() -> str:
+        """Return survival-first guidance for build plan execution."""
+        return _format_json({
+            "topic": "build-plan",
+            "guidance": get_agent_guide("build-plan"),
+        })
+
+    @mcp.resource(BUILDSITE_RESOURCE_URI)
+    def buildsite_guidance_resource() -> str:
+        """Return survival-first guidance for build site inspections."""
+        return _format_json({
+            "topic": "buildsite",
+            "guidance": get_agent_guide("buildsite"),
+        })
+
+    if hasattr(FastMCP, "prompt"):
+
+        @mcp.prompt(name=WORKFLOW_GUIDE_ALIAS)
+        def workflow_guidance_prompt(task: Optional[str] = None) -> str:
+            """Return workflow prompt for agent guidance."""
+            return build_workflow_prompt(task)
+
+        @mcp.prompt(name=BUILD_PLAN_GUIDE_ALIAS)
+        def build_plan_guidance_prompt(task: Optional[str] = None) -> str:
+            """Return prompt for build-plan guidance."""
+            return build_build_plan_prompt(task)
 
     #
     # Tools
@@ -746,6 +806,37 @@ def create_mcp_server(config: BridgeConfig) -> FastMCP:
         if query:
             cmd += f" {query}"
         return _call_bridge(ctx, "command/run", lambda client: client.command.run(cmd))
+
+    @mcp.tool()
+    def minecraft_help(
+        topic: str = "workflow",
+        task: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return static, read-only guidance for MCP agents."""
+        normalized = _normalize_guidance_topic(topic)
+        if normalized in {"build-plan", "buildplan", "planner", "build-plan-guidance", "build_planner"}:
+            return {"topic": normalized, "prompt": build_build_plan_prompt(task)}
+        if normalized in {"buildsite", "build-site", "build-site-guidance", "build-site-review"}:
+            return {"topic": normalized, "prompt": build_buildsite_prompt(task)}
+        return {"topic": normalized, "prompt": build_workflow_prompt(task)}
+
+    @mcp.tool()
+    def minecraft_describe_tool(name: str) -> Dict[str, Any]:
+        """Return stable guidance metadata for the selected MCP tool."""
+        return get_tool_description(name)
+
+    @mcp.tool()
+    def inspect_build_site(radius: int, ctx: RequestContext) -> Dict[str, Any]:
+        """Inspect a build site candidate by radius before any mutation."""
+        if radius < 4 or radius > 24:
+            raise ValueError("inspect_build_site radius must be between 4 and 24 blocks.")
+        return _call_bridge(ctx, "inspect_build_site", lambda client: client.command.run(f"inspect_build_site {radius}"))
+
+    @mcp.tool()
+    def preview_build_plan(build_plan: Any) -> Dict[str, Any]:
+        """Generate a deterministic build-plan preview without bridge connection."""
+        preview = compile_plan_preview(build_plan)
+        return preview.model_dump()
 
     @mcp.tool()
     def damn(ctx: RequestContext) -> Dict[str, Any]:

@@ -6,6 +6,8 @@ import asyncio
 from typing import Any, Dict, Optional, List, Tuple
 from collections import deque
 import heapq
+import json
+import threading
 
 from ..core.exceptions import CommandError, TransportError, CircuitBreakerOpenError, RetryExhaustedError
 from .transport import Transport
@@ -113,6 +115,8 @@ class CommandDispatcher:
         max_retry_attempts: int = 3,
         retry_policy: Optional[ClientRetryPolicyHandler] = None,
         analytics_tracker: Optional[CommandAnalyticsTracker] = None,
+        max_inflight_requests: int = 32,
+        observation_cache_ttl: float = 0.25,
     ):
         """
         Initialize the CommandDispatcher.
@@ -139,6 +143,12 @@ class CommandDispatcher:
         self.max_retry_attempts = max_retry_attempts
         self.retry_policy = retry_policy
         self.analytics_tracker = analytics_tracker
+        self.max_inflight_requests = max(1, int(max_inflight_requests))
+        self.observation_cache_ttl = max(0.0, float(observation_cache_ttl))
+        self._admission = threading.BoundedSemaphore(self.max_inflight_requests)
+        self._dedupe_lock = threading.Lock()
+        self._inflight_observations: Dict[str, Dict[str, Any]] = {}
+        self._observation_cache: Dict[str, Tuple[float, CommandResult]] = {}
 
         # Rate limiting state
         self._last_request_times: Dict[str, float] = {}
@@ -157,7 +167,91 @@ class CommandDispatcher:
         # In a real implementation, this could be per-client or per-IP
         self._client_id = "default"
 
+    _OBSERVATION_COMMANDS = frozenset({
+        "get_state", "state", "get_inventory", "get_view", "get_block",
+        "get_entities", "get_dimension", "get_version", "get_events",
+        "get_recipes", "get_screen", "get_death_location", "status",
+        "mission/status", "process/status", "goal/status",
+    })
+
+    def _request_key(self, command: str, params: Optional[Dict[str, Any]]) -> str:
+        canonical = json.dumps(params or {}, sort_keys=True, separators=(",", ":"), default=str)
+        return f"{command}:{canonical}"
+
+    @staticmethod
+    def _deduplicated_result(result: CommandResult) -> CommandResult:
+        data = dict(result.get_data())
+        data["deduplicated"] = True
+        if result.is_success():
+            return CommandResult.success(
+                data,
+                retry_status=result.get_retry_status(),
+                circuit_breaker_state=result.get_circuit_breaker_state(),
+                priority_level=result.get_priority_level(),
+            )
+        return CommandResult.error(
+            result.get_error_message() or "Command failed",
+            retry_status=result.get_retry_status(),
+            circuit_breaker_state=result.get_circuit_breaker_state(),
+            priority_level=result.get_priority_level(),
+        )
+
     def dispatch(
+        self,
+        command: str,
+        params: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> CommandResult:
+        """Dispatch with bounded admission and safe observation coalescing."""
+        is_observation = command in self._OBSERVATION_COMMANDS
+        key = self._request_key(command, params) if is_observation else None
+        owner = True
+        inflight = None
+
+        if is_observation and key is not None:
+            now = time.monotonic()
+            with self._dedupe_lock:
+                cached = self._observation_cache.get(key)
+                if cached and now - cached[0] <= self.observation_cache_ttl:
+                    return self._deduplicated_result(cached[1])
+                inflight = self._inflight_observations.get(key)
+                if inflight is None:
+                    inflight = {"event": threading.Event(), "result": None}
+                    self._inflight_observations[key] = inflight
+                else:
+                    owner = False
+
+            if not owner:
+                wait_timeout = timeout or self.default_timeout or 30.0
+                if not inflight["event"].wait(wait_timeout):
+                    return CommandResult.error("Backpressure timeout waiting for duplicate observation")
+                return self._deduplicated_result(inflight["result"])
+
+        if not self._admission.acquire(blocking=False):
+            if is_observation and key is not None and owner:
+                with self._dedupe_lock:
+                    self._inflight_observations.pop(key, None)
+            return CommandResult.error("Backpressure: dispatcher capacity reached; retry later")
+
+        if not is_observation:
+            with self._dedupe_lock:
+                self._observation_cache.clear()
+
+        result: CommandResult
+        try:
+            result = self._dispatch_uncached(command, params, timeout)
+            return result
+        finally:
+            self._admission.release()
+            if is_observation and key is not None and owner:
+                result = locals().get("result", CommandResult.error("Observation dispatch aborted"))
+                with self._dedupe_lock:
+                    self._observation_cache[key] = (time.monotonic(), result)
+                    completed = self._inflight_observations.pop(key, inflight)
+                    completed["result"] = result
+                    completed["event"].set()
+
+    def _dispatch_uncached(
         self,
         command: str,
         params: Optional[Dict[str, Any]] = None,
@@ -237,6 +331,8 @@ class CommandDispatcher:
                         priority_level=response.get("priority_level")
                     )
 
+        except (CircuitBreakerOpenError, RetryExhaustedError):
+            raise
         except TransportError as e:
             logger.error(f"Transport error dispatching command {command}: {e}")
             success = False

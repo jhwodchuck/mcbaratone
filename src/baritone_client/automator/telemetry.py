@@ -245,7 +245,9 @@ class TelemetrySystem:
             }
         }
         
-        with open(filepath, "w") as f:
+        # utf-8 explicitly: Windows defaults to cp1252, which can't encode
+        # the ✓/✗ status glyphs and crashes the whole shutdown path.
+        with open(filepath, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2)
         
         logger.info(f"Metrics report written to {filepath}")
@@ -286,7 +288,10 @@ class TelemetrySystem:
         lines.append(f"Total tasks: {len(self._task_timings)}")
         lines.append(f"Metrics recorded: {len(self._history)}")
         
-        with open(filepath, "a") as f:
+        # utf-8 explicitly (cp1252 on Windows cannot encode ✓/✗ and raises
+        # UnicodeEncodeError from inside automator.stop(), masking the real
+        # failure that stopped the run).
+        with open(filepath, "a", encoding="utf-8", errors="replace") as f:
             f.write("\n".join(lines) + "\n\n")
         
         logger.info(f"Metrics log written to {filepath}")

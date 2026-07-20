@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 from baritone_client.core.interfaces import ActionContext, ActionResult
 from baritone_client.actions.base import BaseAction
 from baritone_client.actions.inventory import InventoryAction
+from baritone_client.common.combat import entity_position, hunt_mobs
 
 class CombatAction(BaseAction):
     """Handles mob engagement and self-defense."""
@@ -86,12 +87,29 @@ class CombatAction(BaseAction):
                 break
         
         try:
-            self.run_command(context, "look_at", {"entity_id": entity_id})
+            self._look_at_entity(context, entity)
             time.sleep(0.2)
             self.run_command(context, "attack_entity", {"entity_id": entity_id})
             return True
         except Exception as e:
             print(f"Attack error: {e}")
+            return False
+
+    def _look_at_entity(self, context: ActionContext, entity: Dict) -> bool:
+        """
+        Look at an entity by coordinates. The bridge's look_at handler only
+        accepts x/y/z; sending entity_id causes a server-side NPE. Non-fatal
+        on failure.
+        """
+        pos = entity_position(entity)
+        if pos is None:
+            return False
+        x, y, z = pos
+        try:
+            self.run_command(context, "look_at", {"x": x, "y": y + 1.0, "z": z})
+            return True
+        except Exception as e:
+            print(f"  look_at failed (non-fatal): {e}")
             return False
 
     def safe_combat(
@@ -132,9 +150,9 @@ class CombatAction(BaseAction):
             dist = target.get("distance", 999)
             
             if dist < 4.5:
-                self.run_command(context, "look_at", {"entity_id": target_id})
+                self._look_at_entity(context, target)
                 self.run_command(context, "attack_entity", {"entity_id": target_id})
-                
+
                 # Check for pathing (raw state)
                 raw_state = self.run_command(context, "get_state", {})
                 if raw_state.get("is_pathing", False):
@@ -143,10 +161,12 @@ class CombatAction(BaseAction):
                 # Move closer (raw state)
                 raw_state = self.run_command(context, "get_state", {})
                 is_pathing = raw_state.get("is_pathing", False)
-                
+
                 if not is_pathing or (time.time() - last_goto_time > 1.0):
-                    tx, ty, tz = int(target.get("x", 0)), int(target.get("y", 0)), int(target.get("z", 0))
-                    self.run_command(context, "goto", {"x": tx, "y": ty, "z": tz})
+                    tpos = entity_position(target)
+                    if tpos is not None:
+                        tx, ty, tz = int(tpos[0]), int(tpos[1]), int(tpos[2])
+                        self.run_command(context, "goto", {"x": tx, "y": ty, "z": tz})
                     last_goto_time = time.time()
                 
                 if not is_pathing and time.time() - last_goto_time > 3.0:
@@ -156,6 +176,46 @@ class CombatAction(BaseAction):
             time.sleep(0.2)
         
         return False
+
+    def hunt_passive_mobs(
+        self,
+        context: ActionContext,
+        target_mobs: Optional[List[str]] = None,
+        target_count: int = 10,
+        target_loot: Optional[Dict[str, int]] = None,
+        timeout: int = 300,
+    ) -> ActionResult:
+        """
+        Hunt passive mobs for food/loot.
+
+        Callers use several shapes (see initial_gathering / resource_gathering):
+            hunt_passive_mobs(context, target_count=10, timeout=300)
+            hunt_passive_mobs(context, target_mobs=["sheep"], target_count=3, timeout=180)
+            hunt_passive_mobs(context, target_mobs=["cow", "sheep"],
+                              target_loot={"minecraft:leather": 4}, timeout=120)
+
+        Delegates to common.combat.hunt_mobs (which handles exploration,
+        healing, night abort, and loot accounting) and wraps its TaskResult
+        into an ActionResult.
+        """
+        mob_types = target_mobs or ["pig", "cow", "sheep", "chicken"]
+        required_loot = target_loot or {}
+
+        result = hunt_mobs(
+            context.client,
+            mob_types=mob_types,
+            required_loot=required_loot,
+            search_radius=50,
+            timeout=timeout,
+            heal_threshold=5.0,
+            # Only chase a kill count when no loot target was given - otherwise
+            # loot satisfaction is the success condition.
+            target_kills=target_count if not target_loot else None,
+        )
+
+        if result.success:
+            return ActionResult.ok(result.reason, **result.data)
+        return ActionResult.fail(result.reason, **result.data)
 
     def heal_if_needed(self, context: ActionContext, threshold: float = 10.0) -> bool:
         """Eat food if health below threshold."""

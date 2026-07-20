@@ -67,10 +67,10 @@ class ToolProgressionPhase(BaseAction):
 
         if planks < 12:
             needed_planks = 12 - planks
-            logs_to_convert = (needed_planks + 3) // 4
-            print(f"  Need {needed_planks} more planks, converting {logs_to_convert} logs...")
-
-            self.crafting.craft(context, "minecraft:oak_planks", logs_to_convert)
+            print(f"  Need {needed_planks} more planks...")
+            # craft() verifies by plank-family count, so ask for the number of
+            # PLANKS we want (the bridge converts logs of whatever wood it has).
+            self.crafting.craft(context, "minecraft:oak_planks", needed_planks)
 
         planks = sum(self.inventory.count_item(context, f"minecraft:{wood}_planks") for wood in plank_types)
         if planks < 9:
@@ -284,151 +284,6 @@ class SurvivalPhase(BaseAction):
         return ActionResult.ok("Survival phase completed")
 
 
-class StorageSetupPhase(BaseAction):
-    """Handle storage setup: craft/place chest and deposit excess items."""
-
-    def __init__(self):
-        self.crafting = CraftingAction()
-        self.inventory = InventoryAction()
-
-    def execute(self, context: ActionContext) -> ActionResult:
-        """Setup storage and deposit excess items."""
-        client = context.client
-
-        # Setup storage
-        if not self._setup_storage(context):
-            # Non-fatal, continue
-            print("Storage setup failed, continuing...")
-
-        # Deposit excess
-        self._deposit_excess(context)
-
-        return ActionResult.ok("Storage setup completed")
-
-    def _setup_storage(self, context: ActionContext) -> bool:
-        """Craft/Place a chest and remember it."""
-        client = context.client
-        from ..common.state import WorldState
-        from ..common.inventory import count_item, craft, find_item_slot
-
-        ws = WorldState(client)
-        if ws.load_checkpoint("storage"):
-            print("  Storage location already known.")
-            return True
-
-        print("  Setting up storage system...")
-
-        # Ensure planks (8 needed)
-        planks = sum(count_item(client, f"minecraft:{wood}_planks") for wood in ["oak", "spruce", "birch", "dark_oak", "acacia", "jungle", "mangrove", "cherry"])
-        if planks < 8:
-            print("  Not enough planks for chest, converting logs...")
-            # Check if we have logs!
-            logs = sum(count_item(client, block) for block in ["minecraft:oak_log", "minecraft:spruce_log", "minecraft:birch_log", "minecraft:jungle_log", "minecraft:acacia_log", "minecraft:dark_oak_log", "minecraft:mangrove_log", "minecraft:cherry_log"])
-            if logs == 0:
-                print("  No logs to convert to planks!")
-                return False
-
-            self.crafting.craft(context, "minecraft:oak_planks", 2)
-
-            # Force refresh
-            client.transport.dispatch("get_inventory", {})
-
-        # Craft Chest
-        if count_item(client, "minecraft:chest") == 0:
-            if not self.crafting.ensure_crafting_table(context):
-                print("  Warning: Failed to ensure crafting table for storage (Skipping - Non-fatal)")
-                return True
-
-            print("  Crafting chest...")
-            if not self.crafting.craft(context, "minecraft:chest", 1):
-                print("  Warning: Failed to craft chest (Skipping storage - Non-fatal)")
-                client.transport.dispatch("close_screen", {})
-                return True
-            client.transport.dispatch("close_screen", {})
-
-        # Place Chest
-        # Find spot near player
-        state = client.transport.dispatch('get_state', {})
-        pos = state.get('block_position', {})
-        x, y, z = int(pos.get('x', 0)), int(pos.get('y', 0)), int(pos.get('z', 0))
-
-        chest_pos = None
-
-        # Try a few spots
-        for dx, dz in [(1,0), (-1,0), (0,1), (0,-1), (2,0), (-2,0), (0,2), (0,-2)]:
-            tx, ty, tz = x+dx, y, z+dz
-            check = client.transport.dispatch('get_block', {'x': tx, 'y': ty, 'z': tz})
-            bid = check.get('id', '')
-            if 'air' in bid or 'grass' in bid:
-                # Good spot
-                slot = find_item_slot(client, "minecraft:chest")
-                if slot is not None:
-                    if slot >= 9:
-                        client.transport.dispatch('select_slot', {'slot': 0})
-                        client.transport.dispatch('inventory_click', {'slot': slot, 'type': 'PICKUP', 'button': 0})
-                        client.transport.dispatch('inventory_click', {'slot': 36, 'type': 'PICKUP', 'button': 0})
-                        client.transport.dispatch('inventory_click', {'slot': slot, 'type': 'PICKUP', 'button': 0})
-                        client.transport.dispatch('select_slot', {'slot': 0})
-                    else:
-                        client.transport.dispatch('select_slot', {'slot': slot})
-
-                    try:
-                        client.transport.dispatch('place_block', {'x': tx, 'y': ty, 'z': tz})
-                    except Exception as e:
-                        print(f"  Placement error at {tx, ty, tz}: {e}")
-                        continue
-
-                    # Verify
-                    check = client.transport.dispatch('get_block', {'x': tx, 'y': ty, 'z': tz})
-                    if 'chest' in check.get('id', ''):
-                        chest_pos = (tx, ty, tz)
-                        break
-
-        if chest_pos:
-            print(f"  Storage initialized at {chest_pos}")
-            if hasattr(context, "state") and context.state:
-                context.state.add_location("chest", chest_pos[0], chest_pos[1], chest_pos[2], tags=["storage"], client=client)
-
-            # Safeguard: Blacklist chests from mining
-            print("  Safeguard: Blacklisting chests from mining...")
-            client.transport.dispatch("chat", {"message": "#blacklist minecraft:chest"})
-
-            # Step away
-            print("  Stepping back from chest...")
-            px, py, pz = chest_pos
-            client.transport.dispatch("goto", {"x": px+1, "y": py, "z": pz})
-
-            return True
-
-        print("  Warning: Failed to place storage chest (Skipping - Non-fatal)")
-        return True
-
-    def _deposit_excess(self, context: ActionContext) -> bool:
-        """Dump non-essential items to storage."""
-        client = context.client
-        from ..common.inventory import dump_to_chest
-
-        # Keep essentials
-        keep = [
-            # Tools
-            "minecraft:wooden_pickaxe", "minecraft:stone_pickaxe",
-            "minecraft:stone_sword", "minecraft:stone_axe",
-            "minecraft:crafting_table", "minecraft:furnace",
-            # Resources
-            "minecraft:coal", "minecraft:stick", "minecraft:torch",
-            # Wood/Stone (keep some for building/crafting)
-            "minecraft:oak_log", "minecraft:cobblestone",
-            "minecraft:oak_planks",
-            # Food
-            "minecraft:apple", "minecraft:cooked_beef", "minecraft:beef",
-            "minecraft:cooked_porkchop", "minecraft:porkchop",
-            "minecraft:bread", "minecraft:wheat"
-        ]
-
-        print("  Depositing excess items to storage...")
-        dump_to_chest(client, keep_items=keep)
-        return True
-
     def _gather_leather(self, context: ActionContext) -> bool:
         """Gather leather by hunting cows/sheep."""
         client = context.client
@@ -511,3 +366,162 @@ class StorageSetupPhase(BaseAction):
         combat = CombatAction()
         result = combat.hunt_passive_mobs(context, target_count=10, timeout=300)
         return result.success
+
+
+class StorageSetupPhase(BaseAction):
+    """Handle storage setup: craft/place chest and deposit excess items."""
+
+    def __init__(self):
+        self.crafting = CraftingAction()
+        self.inventory = InventoryAction()
+
+    def execute(self, context: ActionContext) -> ActionResult:
+        """Setup storage and deposit excess items."""
+        client = context.client
+
+        # Setup storage
+        if not self._setup_storage(context):
+            return ActionResult.fail("Storage setup failed")
+
+        # Deposit excess
+        if not self._deposit_excess(context):
+            return ActionResult.fail("Storage deposit could not be verified")
+
+        return ActionResult.ok("Storage setup completed")
+
+    def _setup_storage(self, context: ActionContext) -> bool:
+        """Craft/Place a chest and remember it."""
+        client = context.client
+        from ..common.inventory import (
+            count_item,
+            find_item_slot,
+            persist_storage_location,
+            resolve_storage_location,
+        )
+
+        existing = resolve_storage_location(
+            client, state=context.state, verify=True
+        )
+        if existing is not None:
+            persist_storage_location(client, existing, state=context.state)
+            print(f"  Verified existing storage at {existing}.")
+            return True
+
+        print("  Setting up storage system...")
+
+        # Ensure planks (8 needed)
+        planks = sum(count_item(client, f"minecraft:{wood}_planks") for wood in ["oak", "spruce", "birch", "dark_oak", "acacia", "jungle", "mangrove", "cherry"])
+        if planks < 8:
+            print("  Not enough planks for chest, converting logs...")
+            # Check if we have logs!
+            logs = sum(count_item(client, block) for block in ["minecraft:oak_log", "minecraft:spruce_log", "minecraft:birch_log", "minecraft:jungle_log", "minecraft:acacia_log", "minecraft:dark_oak_log", "minecraft:mangrove_log", "minecraft:cherry_log"])
+            if logs == 0:
+                print("  No logs to convert to planks!")
+                return False
+
+            self.crafting.craft(context, "minecraft:oak_planks", 2)
+
+            # Force refresh
+            client.transport.dispatch("get_inventory", {})
+
+        # Craft Chest
+        if count_item(client, "minecraft:chest") == 0:
+            if not self.crafting.ensure_crafting_table(context):
+                print("  Failed to ensure crafting table for storage")
+                return False
+
+            print("  Crafting chest...")
+            if not self.crafting.craft(context, "minecraft:chest", 1):
+                print("  Failed to craft chest")
+                client.transport.dispatch("close_screen", {})
+                return False
+            client.transport.dispatch("close_screen", {})
+
+        # Place Chest
+        # Find spot near player
+        state = client.transport.dispatch('get_state', {})
+        pos = state.get('block_position', {})
+        x, y, z = int(pos.get('x', 0)), int(pos.get('y', 0)), int(pos.get('z', 0))
+
+        chest_pos = None
+
+        # Try a few spots
+        for dx, dz in [(1,0), (-1,0), (0,1), (0,-1), (2,0), (-2,0), (0,2), (0,-2)]:
+            tx, ty, tz = x+dx, y, z+dz
+            check = client.transport.dispatch('get_block', {'x': tx, 'y': ty, 'z': tz})
+            bid = check.get('id', '')
+            if 'air' in bid or 'grass' in bid:
+                # Good spot
+                slot = find_item_slot(client, "minecraft:chest")
+                if slot is not None:
+                    if slot >= 9:
+                        client.transport.dispatch('select_slot', {'slot': 0})
+                        client.transport.dispatch('inventory_click', {'slot': slot, 'type': 'PICKUP', 'button': 0})
+                        client.transport.dispatch('inventory_click', {'slot': 36, 'type': 'PICKUP', 'button': 0})
+                        client.transport.dispatch('inventory_click', {'slot': slot, 'type': 'PICKUP', 'button': 0})
+                        client.transport.dispatch('select_slot', {'slot': 0})
+                    else:
+                        client.transport.dispatch('select_slot', {'slot': slot})
+
+                    try:
+                        client.transport.dispatch(
+                            'place_block',
+                            {'x': tx, 'y': ty, 'z': tz, 'block': 'minecraft:chest'}
+                        )
+                    except Exception as e:
+                        print(f"  Placement error at {tx, ty, tz}: {e}")
+                        continue
+
+                    # Verify
+                    check = client.transport.dispatch('get_block', {'x': tx, 'y': ty, 'z': tz})
+                    if 'chest' in check.get('id', ''):
+                        chest_pos = (tx, ty, tz)
+                        break
+
+        if chest_pos:
+            print(f"  Storage initialized at {chest_pos}")
+            if not persist_storage_location(
+                client, chest_pos, state=context.state
+            ):
+                return False
+
+            # Safeguard: Blacklist chests from mining
+            print("  Safeguard: Blacklisting chests from mining...")
+            client.transport.dispatch("chat", {"message": "#blacklist minecraft:chest"})
+
+            # Step away
+            print("  Stepping back from chest...")
+            px, py, pz = chest_pos
+            client.transport.dispatch("goto", {"x": px+1, "y": py, "z": pz})
+
+            return True
+
+        print("  Failed to place and verify storage chest")
+        return False
+
+    def _deposit_excess(self, context: ActionContext) -> bool:
+        """Dump non-essential items to storage."""
+        client = context.client
+        from ..common.inventory import dump_to_chest
+
+        # Keep essentials
+        keep = [
+            # Tools
+            "minecraft:wooden_pickaxe", "minecraft:stone_pickaxe",
+            "minecraft:stone_sword", "minecraft:stone_axe",
+            "minecraft:crafting_table", "minecraft:furnace",
+            # Resources
+            "minecraft:coal", "minecraft:stick", "minecraft:torch",
+            # Wood/Stone (keep some for building/crafting)
+            "minecraft:oak_log", "minecraft:cobblestone",
+            "minecraft:oak_planks",
+            # Food
+            "minecraft:apple", "minecraft:cooked_beef", "minecraft:beef",
+            "minecraft:cooked_porkchop", "minecraft:porkchop",
+            "minecraft:bread", "minecraft:wheat"
+        ]
+
+        print("  Depositing excess items to storage...")
+        return dump_to_chest(
+            client, keep_items=keep, state=context.state
+        ) >= 0

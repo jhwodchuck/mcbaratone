@@ -41,6 +41,7 @@ public class CommandHandlerFactory {
         // Build commands
         registerHandler("build", BuildCommandHandler.class);
         registerHandler("sel", BuildCommandHandler.class);
+        registerHandler("inspect_build_site", BuildSiteCommandHandler.class);
 
         // Mission commands
         registerHandler("mission", MissionCommandHandler.class);
@@ -95,6 +96,7 @@ public class CommandHandlerFactory {
         registerHandler("smelt_items", SmeltItemsCommandHandler.class);
         registerHandler("click_recipe", ClickRecipeCommandHandler.class);
         registerHandler("place_fire", PlaceFireCommandHandler.class);
+        registerHandler("place_recipe", PlaceRecipeCommandHandler.class);
 
         // Phase 4: Advanced Features
         registerHandler("entity_interact", EntityInteractionCommandHandler.class);

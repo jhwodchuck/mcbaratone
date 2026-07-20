@@ -122,7 +122,13 @@ class TestMigrationManager:
         registry = create_default_checkpoint_migration_registry()
         manager = MigrationManager(registry)
 
-        original_data = {"phase": "BOOT_SEQUENCE", "schema_version": "1.0.0"}
+        # Migration requires phase/position/timestamp, like every real checkpoint
+        original_data = {
+            "phase": "BOOT_SEQUENCE",
+            "position": [0, 64, 0],
+            "timestamp": 1234567890,
+            "schema_version": "1.0.0",
+        }
 
         # Perform migration
         result = manager.migrate_checkpoint(
@@ -170,34 +176,38 @@ class TestMultiFormatSerialization:
 class TestDistributedStorage:
     """Test distributed storage functionality."""
 
-    @pytest.mark.asyncio
-    async def test_filesystem_storage(self):
-        """Test filesystem storage."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            storage = create_filesystem_storage(tmpdir)
+    def test_filesystem_storage(self):
+        """Test filesystem storage (async API driven synchronously via asyncio.run)."""
+        import asyncio
 
-            test_data = b"test data"
-            key = "test_key"
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmpdir:
+                storage = create_filesystem_storage(tmpdir)
 
-            # Store data
-            from baritone_client.automator.storage import StorageMetadata
-            import time
-            metadata = StorageMetadata(
-                key=key,
-                size=len(test_data),
-                checksum="",
-                created_at=time.time(),
-                modified_at=time.time()
-            )
+                test_data = b"test data"
+                key = "test_key"
 
-            await storage.store(key, test_data, metadata)
+                # Store data
+                from baritone_client.automator.storage import StorageMetadata
+                import time
+                metadata = StorageMetadata(
+                    key=key,
+                    size=len(test_data),
+                    checksum="",
+                    created_at=time.time(),
+                    modified_at=time.time()
+                )
 
-            # Retrieve data
-            retrieved = await storage.retrieve(key)
-            assert retrieved == test_data
+                await storage.store(key, test_data, metadata)
 
-            # Check existence
-            assert await storage.exists(key)
+                # Retrieve data
+                retrieved = await storage.retrieve(key)
+                assert retrieved == test_data
+
+                # Check existence
+                assert await storage.exists(key)
+
+        asyncio.run(scenario())
 
 
 class TestStateManagerIntegration:
@@ -235,9 +245,10 @@ class TestStateManagerIntegration:
         with tempfile.TemporaryDirectory() as tmpdir:
             state_manager = StateManager(checkpoint_dir=tmpdir)
 
-            # Modify state
+            # Modify state (don't hardcode the enum order - it grows over time)
             state_manager.advance_phase()
             state_manager.update_progress(0.75)
+            expected_phase = state_manager.get_current_phase()
 
             # Save checkpoint
             inventory = {"diamond": 5, "iron": 20}
@@ -248,32 +259,36 @@ class TestStateManagerIntegration:
             loaded = new_state_manager.load_checkpoint()
 
             assert loaded
-            assert new_state_manager.current_phase == Phase.FOOD_AND_IRON
+            assert new_state_manager.current_phase == expected_phase
             assert new_state_manager.get_progress() == 0.75
 
     def test_checkpoint_validation(self):
         """Test checkpoint validation."""
-        state_manager = StateManager()
+        # Isolated dir: a default StateManager() points at the repo root and
+        # can touch the live bot's checkpoint.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_manager = StateManager(checkpoint_dir=tmpdir)
 
-        # Valid state should pass validation
-        report = state_manager.validate_checkpoint_integrity()
-        assert report['valid']
+            # Valid state should pass validation
+            report = state_manager.validate_checkpoint_integrity()
+            assert report['valid']
 
-        # Test with invalid state
-        state_manager.current_phase = "invalid_phase"  # Invalid type
-        report = state_manager.validate_checkpoint_integrity()
-        assert not report['valid']
-        assert len(report['errors']) > 0
+            # Test with invalid state
+            state_manager.current_phase = "invalid_phase"  # Invalid type
+            report = state_manager.validate_checkpoint_integrity()
+            assert not report['valid']
+            assert len(report['errors']) > 0
 
     def test_checkpoint_info(self):
         """Test checkpoint info retrieval."""
-        state_manager = StateManager()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_manager = StateManager(checkpoint_dir=tmpdir)
 
-        info = state_manager.get_checkpoint_info()
-        assert 'current_phase' in info
-        assert 'schema_version' in info
-        assert 'overall_progress' in info
-        assert 'storage_type' in info
+            info = state_manager.get_checkpoint_info()
+            assert 'current_phase' in info
+            assert 'schema_version' in info
+            assert 'overall_progress' in info
+            assert 'storage_type' in info
 
 
 if __name__ == "__main__":

@@ -1,12 +1,14 @@
 import base64
 import hashlib
 import logging
-import math
 import os
 from typing import Dict, Any, Optional
 
+from ...build_plans import compile_plan_preview
+from ...build_plans.models import BuildPlanPreview
 from ...transport.transport import Transport
 from ...core.exceptions import TransportError
+from ...schematics import ParsedLegacySchematic, parse_legacy_json_schematic
 
 logger = logging.getLogger(__name__)
 
@@ -106,3 +108,34 @@ class SchematicManager:
             "offset": offset,
             "data": data_b64
         })
+
+    def load_legacy_json(
+        self,
+        source: Any,
+        *,
+        strict_non_zero_data: bool = False,
+        max_blocks: int = 100_000,
+    ) -> ParsedLegacySchematic:
+        """Load and validate a historical block-list JSON schematic."""
+        return parse_legacy_json_schematic(
+            source,
+            strict_non_zero_data=strict_non_zero_data,
+            max_blocks=max_blocks,
+        )
+
+    def plan_legacy_json(
+        self,
+        source: Any,
+        *,
+        origin: tuple[int, int, int] = (0, 0, 0),
+        strict_non_zero_data: bool = False,
+    ):
+        """Return a deterministic native placement plan without mutating the world."""
+        schematic = self.load_legacy_json(
+            source, strict_non_zero_data=strict_non_zero_data
+        )
+        return schematic.build_safe_placement_plan(origin=origin)
+
+    def preview_build_plan_v2(self, payload: Any) -> BuildPlanPreview:
+        """Compile a BuildPlanV2 payload into a deterministic read-only preview."""
+        return compile_plan_preview(payload)

@@ -49,7 +49,7 @@ class AdvancedCraftCommandHandlerTest {
 
     @Test
     void testCommandName() {
-        assertEquals("advanced_craft", handler.getCommandName());
+        assertEquals("craft_advanced", handler.getCommandName());
     }
 
     @Test

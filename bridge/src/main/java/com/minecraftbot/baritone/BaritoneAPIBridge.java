@@ -55,6 +55,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
     public static final Logger LOGGER = LoggerFactory.getLogger("baritone-api-bridge");
     private static final int DEFAULT_PORT = 5555;
+    private static final String BRIDGE_PORT_PROPERTY = "baritone.bridge.port";
     private static final int MAX_CONNECTIONS = 10;
     private static final int SOCKET_TIMEOUT_MS = 30000; // 30 seconds
     private static final int UPLOAD_TIMEOUT_MS = 300000; // 5 minutes for uploads
@@ -293,7 +294,25 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             initializeMcpServer();
         });
 
-        LOGGER.info("Baritone API Bridge initialized on port " + DEFAULT_PORT);
+        LOGGER.info("Baritone API Bridge initialized on port " + configuredBridgePort());
+    }
+
+    static int configuredBridgePort() {
+        String configured = System.getProperty(BRIDGE_PORT_PROPERTY);
+        if (configured == null || configured.isBlank()) {
+            return DEFAULT_PORT;
+        }
+        try {
+            int port = Integer.parseInt(configured);
+            if (port < 1 || port > 65535) {
+                throw new IllegalArgumentException(
+                        BRIDGE_PORT_PROPERTY + " must be between 1 and 65535: " + configured);
+            }
+            return port;
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(
+                    BRIDGE_PORT_PROPERTY + " must be an integer: " + configured, e);
+        }
     }
 
     /**
@@ -350,6 +369,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
      * then starts the server on the default port.
      */
     private void initializeNetworkLayer() {
+        int bridgePort = configuredBridgePort();
         // Create the request processor with all necessary dependencies
         requestProcessor = new RequestProcessor(
                 commandDispatcher,
@@ -374,13 +394,13 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                 SOCKET_TIMEOUT_MS);
 
         try {
-            networkServer.start(DEFAULT_PORT, executor);
+            networkServer.start(bridgePort, executor);
             running = true;
         } catch (Exception e) {
             LOGGER.error("Failed to start network server", e);
             // Fall back to legacy server if new one fails
             LOGGER.warn("Falling back to legacy server implementation");
-            startAPIServer();
+            startAPIServer(bridgePort);
         }
     }
 
@@ -389,12 +409,12 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
      *             This method is kept for fallback purposes during migration.
      */
     @Deprecated
-    private void startAPIServer() {
+    private void startAPIServer(int bridgePort) {
         executor.submit(() -> {
             try {
-                serverSocket = new ServerSocket(DEFAULT_PORT);
+                serverSocket = new ServerSocket(bridgePort);
                 running = true;
-                LOGGER.info("Baritone API server listening on port " + DEFAULT_PORT);
+                LOGGER.info("Baritone API server listening on port " + bridgePort);
 
                 while (running) {
                     try {

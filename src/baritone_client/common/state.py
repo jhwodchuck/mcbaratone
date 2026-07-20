@@ -3,6 +3,7 @@ State management - World and player state tracking with persistence.
 """
 
 import json
+import os
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -55,7 +56,15 @@ class WorldState:
             checkpoint_dir: Directory for checkpoint files (default: cwd)
         """
         self.client = client
-        self.checkpoint_dir = Path(checkpoint_dir) if checkpoint_dir else Path.cwd()
+        if checkpoint_dir:
+            self.checkpoint_dir = Path(checkpoint_dir)
+        else:
+            # Parallel controllers must never share compatibility checkpoints
+            # through the repository working directory.  The supervisor gives
+            # every bot an isolated MC_RUN_DIR; direct --run-dir launches set
+            # the same variable in spawn_to_dragon.py.
+            self.checkpoint_dir = Path(os.environ.get("MC_RUN_DIR", Path.cwd()))
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self._last_state: Optional[PlayerState] = None
         self._last_refresh = 0.0
         self._checkpoints: Dict[str, Any] = {}

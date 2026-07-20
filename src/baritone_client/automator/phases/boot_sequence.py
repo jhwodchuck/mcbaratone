@@ -17,8 +17,6 @@ from ...common.combat import hunt_passive_mobs
 from ...actions import (
     SequenceAction,
     ConditionalAction,
-    ResourceGatheringAction,
-    ToolProgressionAction,
     SafetyCheckAction,
     BaseRecoveryAction,
     ConditionalWoodGatheringAction,
@@ -117,12 +115,12 @@ class BootSequenceHandler(PhaseHandler):
         if found_pos:
             try:
                 # Check if already logged (primitive check)
-                with open("c:/gh/mcbaratone/world_map.md", "r") as f:
+                with open("c:/gh/mcbaratone/world_map.md", "r", encoding="utf-8") as f:
                     content = f.read()
                 
                 entry = f"({found_pos[0]}, {found_pos[1]}, {found_pos[2]})"
                 if entry not in content:
-                    with open("c:/gh/mcbaratone/world_map.md", "a") as f:
+                    with open("c:/gh/mcbaratone/world_map.md", "a", encoding="utf-8") as f:
                         f.write(f"\n- **Crafting Table/Base (Recovered)**: {entry}")
                     print("  Updated world_map.md with recovered base location.")
                 else:
@@ -179,11 +177,10 @@ class BootSequenceHandler(PhaseHandler):
             ConditionalWoodGatheringAction(needed_logs=4),
             PlankCraftingAction(),
 
-            # Phase 1c: Basic Crafting
-            ResourceGatheringAction(target_item="minecraft:crafting_table", count=1),
-            ResourceGatheringAction(target_item="minecraft:stick", count=4),
-            ToolProgressionAction(target_tool="wooden_pickaxe"),
-            ResourceGatheringAction(target_item="minecraft:cobblestone", count=17),
+            # Phase 1c: Complete the basic stone tool set.  Earlier phases
+            # already established the crafting table and gathered building
+            # materials; the generic ResourceGatheringAction neither accepts
+            # per-item constructor arguments nor belongs in this sequence.
             StoneToolCraftingAction(),
 
             # Phase 1d: Conditional Bed Acquisition (Day vs Night strategy)
@@ -218,7 +215,7 @@ class BootSequenceHandler(PhaseHandler):
                     "timestamp": time.time()
                 })
 
-            return TaskResult(success=result.success, message=result.message)
+            return TaskResult(success=result.success, reason=result.message)
 
         except Exception as e:
             # Handle errors with checkpoint persistence

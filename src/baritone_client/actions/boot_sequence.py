@@ -13,9 +13,25 @@ from .inventory import InventoryAction
 from ..core.interfaces import ActionContext, ActionResult
 from ..common.inventory import count_item, craft
 from ..common.resources import gather_wood, gather_stone, ensure_supplies
-from ..common.base import setup_base, sleep_through_night
+from ..common.base import setup_base, sleep_through_night, wait_for_safe_daylight
 from ..common.combat import hunt_passive_mobs
-from ..common.navigation import find_nearby_block
+from ..common.navigation import find_nearby_block, goto
+
+
+_BOOT_LOGS = [
+    "minecraft:oak_log", "minecraft:spruce_log", "minecraft:birch_log",
+    "minecraft:jungle_log", "minecraft:acacia_log", "minecraft:dark_oak_log",
+    "minecraft:mangrove_log", "minecraft:cherry_log",
+]
+_BOOT_PLANKS = [
+    "minecraft:oak_planks", "minecraft:spruce_planks", "minecraft:birch_planks",
+    "minecraft:jungle_planks", "minecraft:acacia_planks", "minecraft:dark_oak_planks",
+    "minecraft:mangrove_planks", "minecraft:cherry_planks", "minecraft:bamboo_planks",
+]
+
+
+def _count_family(client, item_ids) -> int:
+    return sum(count_item(client, item_id) for item_id in item_ids)
 
 
 class SafetyCheckAction(BaseAction):
@@ -31,25 +47,18 @@ class SafetyCheckAction(BaseAction):
             # Night time is roughly 13000-23000
             is_night = (world_time % 24000) >= 13000 and (world_time % 24000) <= 23000
 
-            if is_night or health < 10:
-                print("Night time detected - mining underground for safety")
+            if is_night:
+                print("Night time detected - establishing shelter until daylight")
+                if wait_for_safe_daylight(context.client):
+                    return ActionResult.ok("Sheltered safely until daylight")
+                return ActionResult.fail("Could not establish safe daylight")
 
-                # Check what resources we need
-                coal_count = count_item(context.client, "minecraft:coal")
-                iron_count = count_item(context.client, "minecraft:raw_iron")
+            if health < 10:
+                return ActionResult.fail(
+                    f"Daylight health is too low for boot work ({health}/20)"
+                )
 
-                # Mine stone for safety during night
-                if is_night:
-                    print("Mining stone underground during night...")
-                    try:
-                        context.client.transport.dispatch("chat", {"message": "#cancel"})
-                        gather_stone(context.client, count=64, timeout=180)
-                    except Exception as e:
-                        print(f"Stone mining failed: {e}")
-
-                return ActionResult.ok("Safety check and night mining complete")
-            else:
-                return ActionResult.ok("Day time - no safety actions needed")
+            return ActionResult.ok("Day time - no safety actions needed")
 
         except Exception as e:
             print(f"Safety check error: {e}")
@@ -65,16 +74,71 @@ class BaseRecoveryAction(BaseAction):
 
         found_pos = None
 
-        # 1. Check existing waypoint
+        # 1. The checkpointed starter house is authoritative.  Temporary
+        # quarry crafting tables may have overwritten the Baritone `base`
+        # waypoint during early tool crafting.
+        structures = getattr(context.state, "custom_data", {}).get(
+            "structures", {}
+        )
+        house = structures.get("starter_house", {})
+        persisted_table = house.get("crafting_table")
+        if isinstance(persisted_table, (list, tuple)) and len(persisted_table) == 3:
+            candidate = tuple(int(value) for value in persisted_table)
+            block = self.run_command(
+                context,
+                "get_block",
+                {"x": candidate[0], "y": candidate[1], "z": candidate[2]},
+            ).get("id", "")
+            if block == "minecraft:crafting_table":
+                found_pos = candidate
+                print(f"Checkpointed house base verified at {found_pos}")
+                self.run_command(
+                    context,
+                    "chat",
+                    {"message": f"#waypoint save base {found_pos[0]} {found_pos[1]} {found_pos[2]}"},
+                )
+            else:
+                # The table itself is repairable.  If the checkpointed
+                # furnace/chest still prove this is the completed house, keep
+                # its interior coordinate authoritative instead of selecting
+                # a temporary roof or quarry table.
+                verified_anchors = 0
+                for key, accepted in (
+                    ("furnace", {"minecraft:furnace", "minecraft:blast_furnace"}),
+                    ("supply_chest", {"minecraft:chest", "minecraft:trapped_chest"}),
+                ):
+                    position = house.get(key)
+                    if not isinstance(position, (list, tuple)) or len(position) != 3:
+                        continue
+                    anchor_block = self.run_command(
+                        context,
+                        "get_block",
+                        {"x": position[0], "y": position[1], "z": position[2]},
+                    ).get("id", "")
+                    verified_anchors += int(anchor_block in accepted)
+                if verified_anchors >= 2:
+                    found_pos = candidate
+                    print(
+                        f"Checkpointed house anchors verified at {found_pos}; "
+                        "crafting table repair remains pending"
+                    )
+                    self.run_command(
+                        context,
+                        "chat",
+                        {"message": f"#waypoint save base {found_pos[0]} {found_pos[1]} {found_pos[2]}"},
+                    )
+
+        # 2. Check existing waypoint only when no persisted house was verified.
         try:
-            wp = self.run_command(context, "waypoint", {"name": "base"})
-            if wp:
-                found_pos = (wp["x"], wp["y"], wp["z"])
-                print(f"Existing 'base' waypoint found at {found_pos}")
+            if not found_pos:
+                wp = self.run_command(context, "waypoint", {"name": "base"})
+                if wp:
+                    found_pos = (wp["x"], wp["y"], wp["z"])
+                    print(f"Existing 'base' waypoint found at {found_pos}")
         except Exception:
             pass
 
-        # 2. If no waypoint, scan for crafting table
+        # 3. If no waypoint, scan for crafting table
         if not found_pos:
             print("Scanning for crafting table nearby...")
             pos = find_nearby_block(context.client, ["minecraft:crafting_table"], radius=64)
@@ -83,16 +147,16 @@ class BaseRecoveryAction(BaseAction):
                 print(f"Found crafting table at {found_pos}! Saving as base.")
                 self.run_command(context, "chat", {"message": f"#waypoint save base {pos[0]} {pos[1]} {pos[2]}"})
 
-        # 3. Update world_map.md if we have a location
+        # 4. Update world_map.md if we have a location
         if found_pos:
             try:
                 # Check if already logged (primitive check)
-                with open("c:/gh/mcbaratone/world_map.md", "r") as f:
+                with open("c:/gh/mcbaratone/world_map.md", "r", encoding="utf-8") as f:
                     content = f.read()
 
                 entry = f"({found_pos[0]}, {found_pos[1]}, {found_pos[2]})"
                 if entry not in content:
-                    with open("c:/gh/mcbaratone/world_map.md", "a") as f:
+                    with open("c:/gh/mcbaratone/world_map.md", "a", encoding="utf-8") as f:
                         f.write(f"\n- **Crafting Table/Base (Recovered)**: {entry}")
                     print("Updated world_map.md with recovered base location.")
                 else:
@@ -111,11 +175,11 @@ class ConditionalWoodGatheringAction(BaseAction):
 
     def execute(self, context: ActionContext) -> ActionResult:
         """Check inventory and gather wood if needed."""
-        if count_item(context.client, "minecraft:log") >= self.needed_logs:
+        if _count_family(context.client, _BOOT_LOGS) >= self.needed_logs:
             print("Sufficient logs present; skipping wood gathering.")
             return ActionResult.ok("Already have sufficient logs")
 
-        if count_item(context.client, "minecraft:planks") >= self.needed_logs * 4:
+        if _count_family(context.client, _BOOT_PLANKS) >= self.needed_logs * 4:
             print("Sufficient planks present; skipping wood gathering.")
             return ActionResult.ok("Already have sufficient planks")
 
@@ -173,6 +237,20 @@ class StoneToolCraftingAction(BaseAction):
 
     def execute(self, context: ActionContext) -> ActionResult:
         """Craft stone pickaxe, axe, shovel, and sword."""
+        # Full set: pickaxe 3 + axe 3 + shovel 1 + sword 2 = 9 cobble.
+        # The generic requirement strategy only sees the requested finished
+        # tool and otherwise opens the table with no raw material available.
+        required_cobble = 9
+        if count_item(context.client, "minecraft:cobblestone") < required_cobble:
+            if not gather_stone(
+                context.client,
+                count=required_cobble,
+                timeout=180,
+            ):
+                return ActionResult.fail("Failed to gather cobblestone for stone tools")
+        if count_item(context.client, "minecraft:cobblestone") < required_cobble:
+            return ActionResult.fail("Insufficient cobblestone for stone tools")
+
         tools = {
             "minecraft:stone_pickaxe": 1,
             "minecraft:stone_axe": 1,
@@ -206,10 +284,36 @@ class BedAcquisitionAction(BaseAction):
             print("Already have a bed!")
             return ActionResult.ok("Bed already available")
 
+        # Base construction places the carried bed into the starter house.
+        # Treat that verified world block as satisfying the dependency instead
+        # of spending food hunting sheep for an unnecessary duplicate.
+        try:
+            house = context.state.custom_data.get("structures", {}).get(
+                "starter_house", {}
+            )
+            bed_position = house.get("bed")
+            if isinstance(bed_position, (list, tuple)) and len(bed_position) == 3:
+                bx, by, bz = (int(value) for value in bed_position)
+                bed_block = context.client.transport.dispatch(
+                    "get_block", {"x": bx, "y": by, "z": bz}
+                ).get("id", "")
+                if bed_block.endswith("_bed"):
+                    print(f"Checkpointed house bed verified at {(bx, by, bz)}")
+                    return ActionResult.ok("House bed already available")
+        except (AttributeError, TypeError, ValueError):
+            pass
+
         # Check time
         state = self.run_command(context, "get_state", {})
         time_raw = state.get("world_time", 0)
         is_day = (time_raw % 24000) < 13000
+
+        # A bed is optional and a long exploratory sheep search consumes the
+        # last hunger needed to return to the completed house.  FoodAndIron is
+        # the next checkpointed phase and owns deliberate food acquisition.
+        if int(state.get("food_level", 20)) <= 8:
+            print("Hunger is low - deferring optional bed search to preserve return energy.")
+            return ActionResult.ok("Bed search deferred at low hunger")
 
         if not is_day:
             print("It is night - skipping bed hunting.")
@@ -263,13 +367,29 @@ class HuntingAndScoutingAction(BaseAction):
 
     def execute(self, context: ActionContext) -> ActionResult:
         """Hunt passive mobs and collect seeds/sugarcane."""
+        state = self.run_command(context, "get_state", {})
+        day_time = int(state.get("world_time", 0)) % 24000
+        food_level = int(state.get("food_level", 20))
+        if food_level <= 8 or day_time >= 11000:
+            print(
+                "Deferring optional boot hunt "
+                f"(food={food_level}, time={day_time}) to FoodAndIron."
+            )
+            return ActionResult.ok("Boot hunt deferred to FoodAndIron")
+
         print(f"Hunting {self.target_animals} animals while scouting...")
 
-        hunt_passive_mobs(context.client, target_count=self.target_animals)
+        kills = hunt_passive_mobs(
+            context.client, target_count=self.target_animals
+        )
 
         # Could add seed/sugarcane collection here
-        # For now, simplified version
-        return ActionResult.ok(f"Hunted {self.target_animals} animals")
+        if kills < self.target_animals:
+            return ActionResult.ok(
+                f"Boot hunt partial: {kills}/{self.target_animals}; "
+                "FoodAndIron will continue food acquisition"
+            )
+        return ActionResult.ok(f"Hunted {kills} animals")
 
 
 class InfrastructurePlacementAction(BaseAction):
@@ -279,34 +399,93 @@ class InfrastructurePlacementAction(BaseAction):
         """Return to base and set up infrastructure."""
         print("Setting up infrastructure at base...")
 
-        # 1. Return to Base
-        self.run_command(context, "chat", {"message": "#goto base"})
-        print("Traveling to base...")
-        time.sleep(3)
+        # 1. Resolve and return to the checkpointed house directly.  A named
+        # ``base`` waypoint can be overwritten by temporary quarry tables, and
+        # merely seeing ``is_pathing=False`` is not proof of arrival.
+        structures = getattr(context.state, "custom_data", {}).get(
+            "structures", {}
+        )
+        house = structures.get("starter_house", {})
+        house_target = house.get("crafting_table")
+        if not isinstance(house_target, (list, tuple)) or len(house_target) != 3:
+            origin = house.get("origin") or getattr(
+                context.state, "custom_data", {}
+            ).get("base_location")
+            if isinstance(origin, (list, tuple)) and len(origin) == 3:
+                house_target = (int(origin[0]), int(origin[1]) + 1, int(origin[2]))
 
-        # Simple wait loop for arrival
-        for _ in range(60):  # Max 3 mins
-            state = self.run_command(context, "get_state", {})
-            if not state.get("is_pathing", False):
-                break
-            time.sleep(3)
+        if not isinstance(house_target, (list, tuple)) or len(house_target) != 3:
+            return ActionResult.fail("Checkpointed house location is unavailable")
 
-        print("Arrived at base area.")
+        print(f"Traveling to checkpointed house at {tuple(house_target)}...")
+        if not goto(
+            context.client,
+            int(house_target[0]),
+            int(house_target[1]),
+            int(house_target[2]),
+            timeout=300,
+            check_interval=1.0,
+            tolerance=3.0,
+        ):
+            return ActionResult.fail("Could not reach checkpointed house")
+        print("Arrived at checkpointed house.")
 
-        # 2. Setup Base
-        # Ensure we have required materials
-        if count_item(context.client, "minecraft:furnace") == 0:
+        # 2. Reuse the verified infrastructure created by BASE_CONSTRUCTION.
+        # Placed blocks no longer appear in inventory; blindly checking only
+        # inventory here used to craft duplicates and could replace the
+        # existing chest/table.  Probe the persisted coordinates first.
+        expected = (
+            ("crafting_table", house.get("crafting_table"), ("minecraft:crafting_table",)),
+            ("furnace", house.get("furnace"), ("minecraft:furnace", "minecraft:blast_furnace")),
+            ("supply_chest", house.get("supply_chest"), ("minecraft:chest", "minecraft:trapped_chest")),
+        )
+        missing = set()
+        for key, position, block_ids in expected:
+            if not isinstance(position, (list, tuple)) or len(position) != 3:
+                missing.add(key)
+                continue
+            block = self.run_command(
+                context,
+                "get_block",
+                {"x": position[0], "y": position[1], "z": position[2]},
+            ).get("id", "")
+            if block not in block_ids:
+                missing.add(key)
+        if not missing:
+            return ActionResult.ok("Existing base infrastructure verified")
+
+        # 3. Repair missing infrastructure at the persisted house interior.
+        if "crafting_table" in missing and count_item(
+            context.client, "minecraft:crafting_table"
+        ) == 0:
+            print("Need crafting table - crafting...")
+            result = ensure_supplies(context.client, {"minecraft:crafting_table": 1})
+            if not result.success:
+                return ActionResult.fail("Could not craft missing crafting table")
+
+        if "furnace" in missing and count_item(context.client, "minecraft:furnace") == 0:
             print("Need furnace - crafting...")
-            ensure_supplies(context.client, {"minecraft:furnace": 1})
+            result = ensure_supplies(context.client, {"minecraft:furnace": 1})
+            if not result.success:
+                return ActionResult.fail("Could not craft missing furnace")
 
-        if count_item(context.client, "minecraft:chest") == 0:
+        if "supply_chest" in missing and count_item(context.client, "minecraft:chest") == 0:
             print("Need chest - crafting...")
-            ensure_supplies(context.client, {"minecraft:chest": 1})
+            result = ensure_supplies(context.client, {"minecraft:chest": 1})
+            if not result.success:
+                return ActionResult.fail("Could not craft missing chest")
 
-        # Call setup_base
         try:
-            setup_base(context.client)
-            return ActionResult.ok("Infrastructure setup complete")
+            origin = house.get("origin") or getattr(
+                context.state, "custom_data", {}
+            ).get("base_location")
+            location = None
+            if isinstance(origin, (list, tuple)) and len(origin) == 3:
+                location = (int(origin[0]), int(origin[1]) + 1, int(origin[2]))
+            success, _ = setup_base(context.client, location)
+            if success:
+                return ActionResult.ok("Infrastructure setup complete")
+            return ActionResult.fail("Infrastructure setup remained incomplete")
         except Exception as e:
             return ActionResult.fail(f"Infrastructure setup failed: {e}")
 
@@ -349,5 +528,15 @@ class FinalSleepAction(BaseAction):
         success = sleep_through_night(context.client)
         if success:
             return ActionResult.ok("Successfully slept through night")
-        else:
-            return ActionResult.fail("Failed to sleep through night")
+
+        # A bed is useful but not a hard boot dependency.  Sheep may not spawn
+        # close enough on the first day, and treating that random absence as a
+        # phase failure restarts the entire boot sequence.  The completed house
+        # (or the verified underground pocket) is a valid no-bed fallback.
+        state = self.run_command(context, "get_state", {})
+        if int(state.get("world_time", 0)) % 24000 >= 12000:
+            print("No usable bed; waiting safely for daylight instead...")
+            if wait_for_safe_daylight(context.client):
+                return ActionResult.ok("Waited safely for daylight without a bed")
+
+        return ActionResult.fail("Failed to sleep or wait safely through night")

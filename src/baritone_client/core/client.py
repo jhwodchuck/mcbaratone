@@ -14,6 +14,7 @@ from ..transport.transport import Transport
 from ..utils.upload_manager import UploadManager
 from .advanced import CommandAnalyticsTracker, ClientRetryPolicyHandler, BridgeMonitor
 from ..automator.resource_manager import ResourceManager
+from ..chat_control import FollowCommandConfig, FollowController
 
 
 class Client:
@@ -100,6 +101,26 @@ class Client:
         )
         self.cache = CacheManager(transport)
         self.upload = UploadManager(transport)
+
+    def create_follow_controller(
+        self,
+        *,
+        allowed_actors=None,
+        home_provider=None,
+    ) -> FollowController:
+        """Create an allowlisted chat/follow controller for this client.
+
+        WebSocket transports can feed chat events directly to ``handle``. TCP
+        remains polling-only and must be driven by a trusted local caller.
+        """
+        return FollowController(
+            self.transport.dispatch,
+            state_provider=lambda: self.transport.dispatch("get_state", {}),
+            home_provider=home_provider or (lambda: None),
+            allowed_actors=allowed_actors,
+            command_config=FollowCommandConfig(return_home_route="goto"),
+            transport=self.transport,
+        )
 
     def on(self, event: TransportEvent, callback) -> None:
         """

@@ -26,7 +26,8 @@ dependencies = [
 dev = ["pytest>=7.0", "requests>=2.31"]
 
 [project.urls]
-Homepage = "https://example.com/baritone-client"
+Homepage = "https://github.com/jhwodchuck/mcbaratone"
+Repository = "https://github.com/jhwodchuck/mcbaratone"
 
 [project.scripts]
 baritone-mcp-server = "baritone_client.mcp_server:main"

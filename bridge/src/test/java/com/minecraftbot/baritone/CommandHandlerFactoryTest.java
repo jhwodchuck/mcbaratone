@@ -221,12 +221,12 @@ public class CommandHandlerFactoryTest {
     @Test
     void testAdvancedCraftCommandHandlerRegistration() {
         // Test registration of AdvancedCraftCommandHandler
-        CommandHandlerFactory.registerHandler("advanced_craft", AdvancedCraftCommandHandler.class);
-        assertTrue(CommandHandlerFactory.hasHandler("advanced_craft"));
+        CommandHandlerFactory.registerHandler("craft_advanced", AdvancedCraftCommandHandler.class);
+        assertTrue(CommandHandlerFactory.hasHandler("craft_advanced"));
 
-        CommandHandler handler = CommandHandlerFactory.getHandler("advanced_craft");
+        CommandHandler handler = CommandHandlerFactory.getHandler("craft_advanced");
         assertNotNull(handler);
-        assertEquals("advanced_craft", handler.getCommandName());
+        assertEquals("craft_advanced", handler.getCommandName());
         assertInstanceOf(AdvancedCraftCommandHandler.class, handler);
     }
 
@@ -257,12 +257,12 @@ public class CommandHandlerFactoryTest {
     @Test
     void testAllNewHandlersRegistered() {
         // Test that all new advanced command handlers can be registered
-        CommandHandlerFactory.registerHandler("advanced_craft", AdvancedCraftCommandHandler.class);
+        CommandHandlerFactory.registerHandler("craft_advanced", AdvancedCraftCommandHandler.class);
         CommandHandlerFactory.registerHandler("entity_interact", EntityInteractionCommandHandler.class);
         CommandHandlerFactory.registerHandler("sequence", SequenceCommandHandler.class);
 
         String[] registered = CommandHandlerFactory.getRegisteredCommands();
-        assertTrue(java.util.Arrays.asList(registered).contains("advanced_craft"));
+        assertTrue(java.util.Arrays.asList(registered).contains("craft_advanced"));
         assertTrue(java.util.Arrays.asList(registered).contains("entity_interact"));
         assertTrue(java.util.Arrays.asList(registered).contains("sequence"));
 
@@ -272,11 +272,11 @@ public class CommandHandlerFactoryTest {
     @Test
     void testHandlerSingletonPerCommand() {
         // Test that each command gets its own singleton instance
-        CommandHandlerFactory.registerHandler("advanced_craft", AdvancedCraftCommandHandler.class);
+        CommandHandlerFactory.registerHandler("craft_advanced", AdvancedCraftCommandHandler.class);
         CommandHandlerFactory.registerHandler("entity_interact", EntityInteractionCommandHandler.class);
 
-        CommandHandler craft1 = CommandHandlerFactory.getHandler("advanced_craft");
-        CommandHandler craft2 = CommandHandlerFactory.getHandler("advanced_craft");
+        CommandHandler craft1 = CommandHandlerFactory.getHandler("craft_advanced");
+        CommandHandler craft2 = CommandHandlerFactory.getHandler("craft_advanced");
         CommandHandler entity1 = CommandHandlerFactory.getHandler("entity_interact");
 
         assertSame(craft1, craft2); // Same command, same instance

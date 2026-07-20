@@ -154,7 +154,49 @@ class TcpTransport(Transport):
 
         return {"command": mapped_route, "params": params}
 
+    # Read-only routes are safe to re-send verbatim: a duplicated query cannot
+    # mutate the world, unlike goto/mine/place/craft commands, which must
+    # never be silently replayed. One transient bridge stall (server lag,
+    # chunk generation) previously burned a whole phase retry.
+    _READ_ONLY_RETRY_ROUTES = {
+        "get_state",
+        "get_block",
+        "get_view",
+        "get_entities",
+        "get_screen",
+        "get_dimension",
+        "get_version",
+        "get_events",
+        "get_death_location",
+        "find_blocks",
+    }
+    _READ_RETRY_ATTEMPTS = 3
+    _READ_RETRY_PAUSE_SECONDS = 0.5
+
     def dispatch(self, route: str, payload: Dict[str, Any], timeout: Optional[float] = None) -> Dict[str, Any]:
+        attempts = (
+            self._READ_RETRY_ATTEMPTS
+            if route in self._READ_ONLY_RETRY_ROUTES
+            else 1
+        )
+        last_error: Optional[TransportError] = None
+        for attempt in range(attempts):
+            try:
+                return self._dispatch_once(route, payload, timeout)
+            except TransportError as exc:
+                last_error = exc
+                if attempt + 1 < attempts:
+                    logger.warning(
+                        "Read route %s timed out (attempt %d/%d); retrying",
+                        route,
+                        attempt + 1,
+                        attempts,
+                    )
+                    time.sleep(self._READ_RETRY_PAUSE_SECONDS)
+        assert last_error is not None
+        raise last_error
+
+    def _dispatch_once(self, route: str, payload: Dict[str, Any], timeout: Optional[float] = None) -> Dict[str, Any]:
         req_id = str(uuid.uuid4())
         with self._lock:
             self._seq += 1

@@ -1,0 +1,497 @@
+/* Dashboard Core Layout */
+.dashboard-root {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.dashboard-navbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 28px;
+}
+
+.navbar-brand {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.brand-glow {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  background: linear-gradient(135deg, #a78bfa, #06b6d4);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 20px rgba(167, 139, 250, 0.2);
+}
+
+.brand-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  font-weight: 600;
+}
+
+.navbar-status {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.status-connection {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: var(--danger);
+  box-shadow: 0 0 10px var(--danger-glow);
+  transition: var(--transition-smooth);
+}
+
+.status-dot.active {
+  background-color: var(--success);
+  box-shadow: 0 0 10px var(--success-glow);
+}
+
+.status-text {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.status-port-info {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.neon-value {
+  font-family: 'Fira Code', monospace;
+  font-weight: 600;
+  color: var(--secondary);
+}
+
+/* Grid System */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 320px 1fr 400px;
+  gap: 24px;
+  align-items: start;
+}
+
+.dashboard-column {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.card-header {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.font-glow {
+  text-shadow: 0 0 12px rgba(167, 139, 250, 0.35);
+}
+
+/* Telemetry Card Details */
+.telemetry-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.stat-progress-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bar-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.bar-container {
+  height: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+}
+
+.bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: var(--transition-smooth);
+}
+
+.fill-red {
+  background: linear-gradient(90deg, #ef4444, #f87171);
+  box-shadow: 0 0 8px var(--danger-glow);
+}
+
+.fill-orange {
+  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.25);
+}
+
+.font-red { color: #f87171; }
+.font-orange { color: #fbbf24; }
+.font-cyan { color: #22d3ee; }
+
+.telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.grid-item {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-color);
+  padding: 12px;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.item-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.item-val {
+  font-size: 15px;
+  font-weight: 700;
+  font-family: 'Fira Code', monospace;
+}
+
+.goal-status-box {
+  background: rgba(6, 182, 212, 0.03);
+  border: 1px dashed rgba(6, 182, 212, 0.2);
+  padding: 16px;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.goal-active {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.goal-inactive {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.telemetry-fallback {
+  text-align: center;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 40px 0;
+}
+
+/* Quick Actions Card */
+.actions-buttons-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.actions-buttons-grid button {
+  justify-content: center;
+}
+
+/* Inventory Card */
+.inventory-grid-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.inventory-header {
+  font-size: 16px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 8px;
+}
+
+.grid-slots-wrapper {
+  background: rgba(0, 0, 0, 0.2);
+  border: 2px solid var(--border-color);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inventory-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hotbar-row {
+  margin-top: 12px;
+  border-top: 2px dashed var(--border-color);
+  padding-top: 12px;
+}
+
+.inventory-slot {
+  width: 44px;
+  height: 44px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  transition: var(--transition-smooth);
+}
+
+.inventory-slot:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.25);
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.1);
+  transform: scale(1.05);
+}
+
+.inventory-slot.has-item {
+  background: rgba(139, 92, 246, 0.05);
+  border-color: rgba(139, 92, 246, 0.25);
+  cursor: pointer;
+}
+
+.inventory-slot.has-item:hover {
+  background: rgba(139, 92, 246, 0.1);
+  border-color: var(--primary);
+  box-shadow: 0 0 12px var(--primary-glow);
+}
+
+.slot-item-content {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.item-emoji {
+  font-size: 20px;
+}
+
+.item-count {
+  position: absolute;
+  bottom: 2px;
+  right: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000;
+}
+
+.slot-number-muted {
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.15);
+  position: absolute;
+  top: 2px;
+  left: 3px;
+}
+
+.durability-bar {
+  position: absolute;
+  bottom: 2px;
+  left: 4px;
+  right: 4px;
+  height: 3px;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.durability-fill {
+  height: 100%;
+}
+
+/* Crafting Card */
+.crafting-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.crafting-count-selector {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.crafting-count-selector input {
+  width: 60px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border-color);
+  color: #fff;
+  border-radius: 6px;
+  padding: 6px;
+  text-align: center;
+  font-family: 'Fira Code', monospace;
+  font-weight: 600;
+}
+
+.crafting-status-alert {
+  font-size: 13px;
+  font-weight: 600;
+  animation: pulse 1.5s infinite;
+}
+
+.crafting-recipes-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.crafting-recipes-grid button {
+  justify-content: center;
+  text-align: center;
+  font-size: 13px;
+  padding: 12px;
+}
+
+/* Terminal Console Card */
+.terminal-card {
+  display: flex;
+  flex-direction: column;
+  height: 320px;
+}
+
+.terminal-display {
+  flex-grow: 1;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-family: 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.terminal-line {
+  word-break: break-all;
+}
+
+.line-system { color: var(--text-muted); }
+.line-input { color: var(--secondary); font-weight: 600; }
+.line-output { color: var(--text-primary); }
+.line-error { color: var(--danger); font-weight: 600; }
+
+.terminal-form {
+  margin-top: 12px;
+  display: flex;
+  gap: 10px;
+}
+
+.terminal-form input {
+  flex-grow: 1;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border-color);
+  color: #fff;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  transition: var(--transition-smooth);
+}
+
+.terminal-form input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 8px var(--primary-glow);
+}
+
+/* Logs Streamer Card */
+.logs-card {
+  display: flex;
+  flex-direction: column;
+  height: 380px;
+}
+
+.logs-display {
+  flex-grow: 1;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: 'Fira Code', monospace;
+  font-size: 11px;
+  color: #a7f3d0; /* Soft green */
+}
+
+.log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+  padding-bottom: 4px;
+}
+
+.log-line-muted {
+  text-align: center;
+  color: var(--text-muted);
+  font-style: italic;
+  padding-top: 40px;
+}
+
+/* Animations */
+@keyframes pulse {
+  0% { opacity: 0.6; }
+  50% { opacity: 1; }
+  100% { opacity: 0.6; }
+}
+
+/* Responsive */
+@media (max-width: 1200px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}

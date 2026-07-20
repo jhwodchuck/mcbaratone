@@ -15,6 +15,7 @@ from ..actions.death_recovery_action import DeathRecoveryAction
 from ..core.interfaces import ActionContext, ActionResult
 from ..actions.base import BaseAction
 from ..actions.suites import SUITES
+from ..world_identity import WorldIdentity
 
 
 class EndGameAutomator:
@@ -46,6 +47,7 @@ class EndGameAutomator:
         checkpoint_dir: Optional[str] = None,
         auto_checkpoint: bool = True,
         checkpoint_interval: float = 60.0,
+        screenshot_enabled: bool = True,
     ):
         """
         Initialize the automator.
@@ -55,6 +57,7 @@ class EndGameAutomator:
             checkpoint_dir: Directory for checkpoint files
             auto_checkpoint: Whether to auto-save checkpoints
             checkpoint_interval: Seconds between auto-checkpoints
+            screenshot_enabled: Capture screenshots on phase transitions
         """
         self.client = client
         self.state = StateManager(checkpoint_dir)
@@ -65,7 +68,13 @@ class EndGameAutomator:
             HungerSystem(client, self.coordination, resources=self.resources),
             MappingSystem(client, self.coordination, resources=self.resources, state_manager=self.state)
         ]
-        self.executor = PhaseExecutor(client, self.resources, self.state, self.coordination)
+        self.executor = PhaseExecutor(
+            client,
+            self.resources,
+            self.state,
+            self.coordination,
+            screenshot_enabled=screenshot_enabled,
+        )
         self.telemetry = TelemetrySystem(checkpoint_dir)
         
         self.auto_checkpoint = auto_checkpoint
@@ -87,6 +96,9 @@ class EndGameAutomator:
         """Register all default phase handlers."""
         from .phases import (
             BridgeCheckHandler,
+            SpawnBootstrapHandler,
+            InitialGatheringHandler,
+            BaseConstructionHandler,
             BootSequenceHandler,
             FoodAndIronHandler,
             EnchantingPipelineHandler,
@@ -100,6 +112,9 @@ class EndGameAutomator:
         )
         
         self.register_handler(Phase.BRIDGE_CHECK, BridgeCheckHandler())
+        self.register_handler(Phase.SPAWN_BOOTSTRAP, SpawnBootstrapHandler())
+        self.register_handler(Phase.INITIAL_GATHERING, InitialGatheringHandler())
+        self.register_handler(Phase.BASE_CONSTRUCTION, BaseConstructionHandler())
         self.register_handler(Phase.BOOT_SEQUENCE, BootSequenceHandler())
         self.register_handler(Phase.FOOD_AND_IRON, FoodAndIronHandler())
         self.register_handler(Phase.ENCHANTING_PIPELINE, EnchantingPipelineHandler())
@@ -111,13 +126,25 @@ class EndGameAutomator:
         self.register_handler(Phase.WORLD_UNLOCK, WorldUnlockHandler())
         self.register_handler(Phase.MEGABASE_INIT, MegabaseInitHandler())
         
-    def _get_current_seed(self) -> Optional[int]:
-        """Fetch current world seed from bridge."""
+    def _get_current_world_identity(self) -> Optional[WorldIdentity]:
+        """Fetch stable world identity from bridge state telemetry."""
         try:
             state = self.client.transport.dispatch("get_state", {})
-            return state.get("world_seed")
+            transport = self.client.transport
+            server_address = None
+            host = getattr(transport, "host", None)
+            port = getattr(transport, "port", None)
+            if host:
+                server_address = f"{host}:{port}" if port is not None else str(host)
+            identity = WorldIdentity.from_state(state, server_address=server_address)
+            return identity if identity.available else None
         except Exception:
             return None
+
+    def _get_current_seed(self) -> Optional[int]:
+        """Backward-compatible seed accessor."""
+        identity = self._get_current_world_identity()
+        return identity.seed if identity else None
     
     
     def configure_baritone(self):
@@ -148,13 +175,27 @@ class EndGameAutomator:
         Returns:
             Starting phase
         """
-        seed = self._get_current_seed()
-        if self.state.load_checkpoint(current_seed=seed):
+        identity = self._get_current_world_identity()
+        self.state.bind_world_identity(identity)
+        seed = identity.seed if identity else None
+        if self.state.load_checkpoint(
+            current_seed=seed,
+            current_world_identity=identity,
+        ):
             print(f"Resumed from checkpoint: {self.state.get_current_phase().name}")
             if seed:
                 print(f"  World seed: {seed}")
         else:
             print("Starting fresh automation")
+
+        try:
+            from ..common.storage_catalog import seed_from_state
+
+            seeded = seed_from_state(self.client, self.state)
+            if seeded:
+                print(f"Storage catalog loaded {seeded} checkpointed container landmark(s)")
+        except Exception as exc:
+            print(f"Storage catalog seed deferred: {exc}")
         
         return self.state.get_current_phase()
 
@@ -174,8 +215,10 @@ class EndGameAutomator:
         if resume:
             self.load_or_start()
             
-        # Configure Baritone settings
-        self.configure_baritone()
+        # Baritone settings are applied by the spawn-bootstrap phase before
+        # pathing starts.  Reapplying them here from the bridge worker can race
+        # Baritone's tick thread (and has caused ConcurrentModificationException
+        # crashes), especially when resuming directly into a later phase.
             
         # Initialize dynamic resources
         self.resources.initialize_recipes()
@@ -279,7 +322,9 @@ class EndGameAutomator:
         print(f"\n>>> Starting Suite: {suite_name} ({action.__class__.__name__})")
         
         self._running = True
-        self.configure_baritone()
+        # Suites that need non-default Baritone settings should apply them as a
+        # phase action before beginning pathing, rather than mutating settings
+        # here while the Baritone tick thread may already be active.
         self.resources.initialize_recipes()
         
         # Start background systems
@@ -336,12 +381,15 @@ class EndGameAutomator:
         """Save current state to checkpoint."""
         self.resources.refresh_inventory()
         inventory = self.resources.cached_inventory
-        seed = self._get_current_seed()
-        path = self.state.save_checkpoint(inventory, world_seed=seed)
+        identity = self._get_current_world_identity()
+        seed = identity.seed if identity else None
+        path = self.state.save_checkpoint(
+            inventory, world_seed=seed, world_identity=identity
+        )
         print(f"Checkpoint saved: {path}")
     
     def _handle_death_recovery(self) -> bool:
-        """Handle player death and recovery. Returns True if recovery was needed."""
+        """Handle death and stop the run if recovery cannot be proven safe."""
         # Use modular death recovery action
         context = ActionContext(
             client=self.client,
@@ -352,8 +400,21 @@ class EndGameAutomator:
         action = DeathRecoveryAction()
         result = action.execute(context)
 
-        # Return True if recovery was needed (success or failure, as long as it was attempted)
-        return not result.success or result.data.get("reset_phase", False)
+        if result.success and result.message == "No death detected":
+            return False
+
+        if not result.success:
+            # Previously this returned True, causing one loop iteration to be
+            # skipped; on the following iteration the alive player resumed the
+            # phase with a partial inventory.  A failed recovery is a hard
+            # terminal condition for this supervised run.
+            print(f"Death recovery failed: {result.message}. Stopping automation.")
+            self._running = False
+            return True
+
+        # A successful recovery still skips the interrupted phase iteration so
+        # every phase starts from a fresh state/inventory snapshot.
+        return True
 
     def get_status(self) -> dict:
         """Get current automation status."""

@@ -8,6 +8,14 @@ import sys
 import os
 import time
 
+# Progress prints must reach redirected logs immediately; the default block
+# buffering hides hours of output when stdout is not a terminal.
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except AttributeError:
+    pass
+
 # Add src to sys.path to allow imports when run from root
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
@@ -24,9 +32,31 @@ def main():
     parser.add_argument("--host", default="localhost", help="Bridge host")
     parser.add_argument("--port", type=int, default=5555, help="Bridge port")
     parser.add_argument("--timeout", type=float, default=15.0, help="Transport timeout in seconds (for bridge responses)")
-    parser.add_argument("--resume", action="store_true", default=True, help="Resume from checkpoint")
+    parser.add_argument(
+        "--run-dir",
+        default=None,
+        help="Isolated directory for checkpoints and telemetry (default: current directory)",
+    )
+    parser.add_argument("--resume", action="store_true", default=True, help="Resume from checkpoint (default; kept for compatibility)")
+    parser.add_argument("--fresh", action="store_true", help="Ignore any existing checkpoint and start from scratch")
     parser.add_argument("--suite", type=str, help="Run specific test suite (e.g. T900, T901). Overrides normal automation.")
+    parser.add_argument(
+        "--no-background-systems",
+        action="store_true",
+        help="Disable bridge-polling monitor threads for low-contention bootstrap runs.",
+    )
+    parser.add_argument(
+        "--no-screenshots",
+        action="store_true",
+        help="Disable phase-transition screenshots (recommended for headless CI workers).",
+    )
     args = parser.parse_args()
+
+    # Keep legacy WorldState checkpoint files in the same isolated directory
+    # as the production StateManager checkpoint.  Without this, parallel bots
+    # all read/write checkpoint_storage.json in the repository root.
+    if args.run_dir:
+        os.environ["MC_RUN_DIR"] = os.path.abspath(args.run_dir)
 
     print(f"Connecting to Baritone Bridge at {args.host}:{args.port}...")
     
@@ -57,8 +87,14 @@ def main():
         print("Connected successfully!")
         
         # Initialize automator
-        automator = EndGameAutomator(client)
+        automator = EndGameAutomator(
+            client,
+            checkpoint_dir=args.run_dir,
+            screenshot_enabled=not args.no_screenshots,
+        )
         automator.register_default_handlers()
+        if args.no_background_systems:
+            automator.systems = []
         
         # Define callbacks for logging
         def on_phase_start(phase):
@@ -84,7 +120,7 @@ def main():
         if args.suite:
             success = automator.run_suite(args.suite)
         else:
-            success = automator.run(resume=args.resume)
+            success = automator.run(resume=not args.fresh)
         
         if success:
             print("\nMISSION ACCOMPLISHED!")

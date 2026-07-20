@@ -9,7 +9,9 @@ from unittest.mock import Mock, MagicMock, patch
 from baritone_client import TransportError, CommandResult, CacheStats
 from baritone_client.mcp.mcp_server import BridgeConfig, BridgeSession, BridgeLifespanContext, create_mcp_server, _call_bridge, _format_json, _session_from_context
 from baritone_client.utils.upload_manager import UploadProgress
+from baritone_client.mcp.guidance import BUILD_PLAN_RESOURCE_URI, BUILDSITE_RESOURCE_URI, WORKFLOW_RESOURCE_URI, BUILD_PLAN_GUIDE_ALIAS, WORKFLOW_GUIDE_ALIAS
 from typing import List
+from mcp.server.fastmcp import FastMCP
 
 
 @pytest.fixture
@@ -121,6 +123,53 @@ def test_create_mcp_server_initialization():
     server = create_mcp_server(config)
     assert server.name == "mcbaratone-bridge"
     assert "Baritone bridge controls" in server.instructions
+
+
+def test_mcp_server_registers_guidance_resources() -> None:
+    server = create_mcp_server(BridgeConfig())
+    resources = {str(resource.uri) for resource in server._resource_manager._resources.values()}
+    assert WORKFLOW_RESOURCE_URI in resources
+    assert BUILD_PLAN_RESOURCE_URI in resources
+    assert BUILDSITE_RESOURCE_URI in resources
+
+
+def test_mcp_server_registers_guidance_prompts() -> None:
+    if not hasattr(FastMCP, "prompt"):
+        pytest.skip("FastMCP prompt decorator is not available")
+
+    server = create_mcp_server(BridgeConfig())
+    prompt_names = {prompt.name for prompt in server._prompt_manager.list_prompts()}
+    assert WORKFLOW_GUIDE_ALIAS in prompt_names
+    assert BUILD_PLAN_GUIDE_ALIAS in prompt_names
+
+
+def test_mcp_server_registers_read_only_tools() -> None:
+    server = create_mcp_server(BridgeConfig())
+    tool_names = set(server._tool_manager._tools.keys())
+    assert "minecraft_help" in tool_names
+    assert "minecraft_describe_tool" in tool_names
+    assert "inspect_build_site" in tool_names
+    assert "preview_build_plan" in tool_names
+
+
+def test_preview_build_plan_tool_is_pure_and_serializable() -> None:
+    server = create_mcp_server(BridgeConfig())
+    preview_tool = server._tool_manager._tools["preview_build_plan"]
+    build_plan = {
+        "version": 2,
+            "cuboids": [
+                {
+                    "name": "platform",
+                    "from": {"x": 0, "y": 0, "z": 0},
+                    "to": {"x": 0, "y": 0, "z": 0},
+                    "block": "minecraft:stone",
+                }
+            ],
+        }
+    preview = preview_tool.fn(build_plan)
+    assert isinstance(preview, dict)
+    assert preview["valid"] is True
+    assert isinstance(preview["commands"], list)
 
 
 

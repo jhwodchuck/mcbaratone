@@ -119,13 +119,26 @@ class MockTransport:
         self.calls.append((route, payload))
         if route in self.responses:
             return self.responses[route]
+        # Simulate crafting actually producing the item (production code
+        # verifies crafts by inventory delta, not by the status reply).
+        if route == "craft":
+            item = payload.get("item")
+            if item:
+                self.add_inventory_item(item, payload.get("count", 1))
         return self.default_responses.get(route, {"status": "ok"})
-    
+
     def set_response(self, route: str, response: Any) -> None:
         self.responses[route] = response
-    
+
     def add_inventory_item(self, item_id: str, count: int, slot: int = 0) -> None:
         inv = self.default_responses["get_inventory"]["data"]["inventory"]
+        for entry in inv:
+            if entry.get("id") == item_id:
+                entry["count"] = entry.get("count", 0) + count
+                return
+        used = {e.get("slot") for e in inv}
+        while slot in used:
+            slot += 1
         inv.append({"id": item_id, "count": count, "slot": slot})
 
 
@@ -383,21 +396,22 @@ class TestWoodCollectionPhase:
         from baritone_client.actions.initial_gathering import WoodCollectionPhase
         action = WoodCollectionPhase()
 
-        # Mock gather_wood to fail on first call
-        import baritone_client.common as common
+        # Mock gather_wood to fail on first call - patch the action module's
+        # binding (it imports gather_wood directly), like the success test.
+        import baritone_client.actions.initial_gathering as ig
         call_count = [0]
         def mock_gather_wood(client, count):
             call_count[0] += 1
             return call_count[0] > 1  # Fail first, succeed second
 
-        original_gather_wood = common.gather_wood
-        common.gather_wood = mock_gather_wood
+        original_gather_wood = ig.gather_wood
+        ig.gather_wood = mock_gather_wood
 
         try:
             result = action.execute(mock_context)
             assert result.success is False
         finally:
-            common.gather_wood = original_gather_wood
+            ig.gather_wood = original_gather_wood
 
 
 class TestToolProgressionPhase:

@@ -165,6 +165,100 @@ def safe_inventory_click(ctx, slot: int, action: str, button: int = 0) -> None:
     time.sleep(0.1)  # Small delay for UI synchronization
 
 
+_CRAFTING_SPACE_DISCARD_PRIORITY = (
+    "minecraft:rotten_flesh",
+    "minecraft:poisonous_potato",
+    "minecraft:spider_eye",
+    "minecraft:leaf_litter",
+    "minecraft:beetroot_seeds",
+    "minecraft:melon_seeds",
+    "minecraft:pumpkin_seeds",
+    "minecraft:wheat_seeds",
+    "minecraft:birch_sapling",
+    "minecraft:oak_sapling",
+    "minecraft:spruce_sapling",
+    "minecraft:grass_block",
+    "minecraft:moss_block",
+    "minecraft:dirt",
+)
+
+
+def ensure_player_crafting_output_space(ctx, screen=None) -> bool:
+    """Ensure the 2x2 player-crafting result has one inventory destination.
+
+    Minecraft cannot quick-move a crafted result into a completely full
+    inventory. Early autonomous runs reached that state before attempting the
+    first crafting table, leaving a valid table in result slot 0 forever. We
+    only discard a deliberately low-value stack; valuable items are never
+    selected implicitly.
+    """
+
+    screen = screen or ctx.client.transport.dispatch("get_screen", {})
+    data = screen.get("data", screen)
+    slots = data.get("slots", [])
+    screen_type = data.get("type", "")
+    if screen_type not in {"class_1723", "PlayerScreenHandler"}:
+        ctx.log_event(
+            f"Cannot reserve 2x2 crafting output space from screen {screen_type}"
+        )
+        return False
+
+    # PlayerScreenHandler: 0=result, 1-4=grid, 5-8=armor, 9-44=main
+    # inventory/hotbar, 45=offhand.
+    player_slots = [
+        slot
+        for slot in slots
+        if 9 <= int(slot.get("slot", -1)) <= 44
+    ]
+    if any(
+        not slot.get("id")
+        or slot.get("id") == "minecraft:air"
+        or int(slot.get("count", 0)) <= 0
+        for slot in player_slots
+    ):
+        return True
+
+    for item_id in _CRAFTING_SPACE_DISCARD_PRIORITY:
+        candidate = next(
+            (slot for slot in player_slots if slot.get("id") == item_id),
+            None,
+        )
+        if candidate is None:
+            continue
+        slot_id = int(candidate["slot"])
+        count = int(candidate.get("count", 0))
+        ctx.log_event(
+            f"Inventory full; dropping low-value stack {item_id} x{count} "
+            "to make room for crafting output"
+        )
+        safe_inventory_click(ctx, slot_id, "THROW", 1)
+        for _ in range(20):
+            refreshed = ctx.client.transport.dispatch("get_screen", {})
+            refreshed_data = refreshed.get("data", refreshed)
+            refreshed_slot = next(
+                (
+                    slot
+                    for slot in refreshed_data.get("slots", [])
+                    if int(slot.get("slot", -1)) == slot_id
+                ),
+                None,
+            )
+            if (
+                refreshed_slot is None
+                or refreshed_slot.get("id") == "minecraft:air"
+                or int(refreshed_slot.get("count", 0)) <= 0
+            ):
+                return True
+            time.sleep(0.1)
+        return False
+
+    ctx.log_event(
+        "Inventory is full and contains no approved low-value stack to drop; "
+        "crafting output cannot be collected safely"
+    )
+    return False
+
+
 def do_open_container(ctx, pos: Tuple[int, int, int], timeout: float = 3.0) -> bool:
     """
     Open container at specified position.
@@ -428,6 +522,9 @@ def smelt_in_furnace(ctx, furnace_pos: Tuple[int, int, int], input_id: str, fuel
         ...                            "minecraft:coal", "minecraft:iron_ingot", 8)
         >>> assert success
     """
+    starting_output_count = ctx.count_item(output_id)
+    target_output_count = starting_output_count + output_count
+
     if "furnace" not in block_id_at(ctx, furnace_pos[0], furnace_pos[1], furnace_pos[2]):
         if not bot_place_block(ctx, furnace_pos[0], furnace_pos[1], furnace_pos[2], "minecraft:furnace"):
             ctx.log_event("Failed to place furnace for smelting")
@@ -463,13 +560,42 @@ def smelt_in_furnace(ctx, furnace_pos: Tuple[int, int, int], input_id: str, fuel
     safe_inventory_click(ctx, input_slot_idx, "QUICK_MOVE")
     time.sleep(0.3)
 
-    time.sleep(max(12.0, output_count * wait_per_item))
+    # Keep the bridge connection active while the furnace runs.  A single long
+    # sleep can leave the TCP session idle long enough for the next inventory
+    # click to time out, even though the smelting itself completed in-game.
+    deadline = time.monotonic() + max(12.0, output_count * wait_per_item + 15.0)
+    while time.monotonic() < deadline:
+        # If an earlier click completed despite a client-side timeout, accept
+        # the verified player inventory instead of clicking the empty output.
+        if ctx.count_item(output_id) >= target_output_count:
+            do_close_container(ctx)
+            return True
+
+        screen = ctx.client.transport.dispatch("get_screen", {})
+        screen_slots = get_inv_slots(screen.get("data", screen))
+        output_slot = next(
+            (item for item in screen_slots if item and item.get("slot") == 2),
+            screen_slots[2] if len(screen_slots) > 2 else None,
+        )
+        if (
+            output_slot
+            and output_slot.get("id") == output_id
+            and output_slot.get("count", 0) >= output_count
+        ):
+            break
+        time.sleep(1.0)
+    else:
+        ctx.log_event(
+            f"Timed out waiting for {output_count} {output_id} in furnace output"
+        )
+        do_close_container(ctx)
+        return False
 
     safe_inventory_click(ctx, 2, "QUICK_MOVE")
     time.sleep(0.3)
 
     do_close_container(ctx)
-    return ctx.has_item(output_id, output_count)
+    return ctx.count_item(output_id) >= target_output_count
 
 
 def craft_bed_manual(ctx, bed_id: str = "minecraft:white_bed") -> bool:
@@ -568,6 +694,19 @@ def craft_door_manual(ctx, door_id: str = "minecraft:oak_door") -> bool:
     if not slots:
         ctx.log_event("Door craft failed: no slots in screen")
         return False
+
+    # Clear stale ingredients from the 3x3 grid.  Interrupted native/auto
+    # craft attempts can leave planks in arbitrary cells; adding the door
+    # recipe on top of those cells produces an empty result slot.
+    for grid_slot in range(1, 10):
+        slot_info = next((s for s in slots if s.get("slot") == grid_slot), None)
+        if slot_info and slot_info.get("id") not in ("minecraft:air", None) and slot_info.get("count", 0) > 0:
+            safe_inventory_click(ctx, grid_slot, "QUICK_MOVE")
+            time.sleep(0.05)
+
+    screen = ctx.client.transport.dispatch("get_screen", {})
+    data = screen.get("data", screen)
+    slots = data.get("slots", [])
     
     # Debug: log all plank slots found
     plank_slots_found = []
@@ -650,12 +789,56 @@ def ensure_crafting_table_open(ctx, table_pos: Optional[Tuple[int, int, int]] = 
     """
     px, py, pz = ctx.get_position()
     if table_pos is None:
-        from tests.functional.shared.block_ops import find_place_pos_near
-        table_pos = find_place_pos_near(ctx, int(px) + 1, int(py), int(pz))
+        # Prefer a real nearby table before choosing a placement candidate.
+        # The house builder deliberately places one at an exact interior
+        # coordinate; blindly selecting a new candidate wastes four planks
+        # and can starve the following chest recipe.
+        found = []
+        try:
+            response = ctx.client.transport.dispatch(
+                "find_blocks",
+                {"blocks": ["minecraft:crafting_table"], "radius": 8, "limit": 64},
+            )
+            found = response.get("found", [])
+        except Exception as exc:
+            ctx.log_event(f"Crafting table scan failed: {exc}")
+
+        if found:
+            nearest = min(
+                found,
+                key=lambda value: float(value.get("distance", float("inf"))),
+            )
+            table_pos = (
+                int(nearest["x"]),
+                int(nearest["y"]),
+                int(nearest["z"]),
+            )
+            ctx.log_event(f"Found existing crafting table at {table_pos}")
+        else:
+            from tests.functional.shared.block_ops import find_place_pos_near
+            table_pos = find_place_pos_near(ctx, int(px) + 1, int(py), int(pz))
     elif isinstance(table_pos, dict):
         table_pos = (table_pos.get("x", int(px)), table_pos.get("y", int(py)), table_pos.get("z", int(pz)))
 
     ctx.log_event(f"Crafting table target position: {table_pos}")
+
+    # A known table that is already within reach should be opened from the
+    # current safe tile.  The generic stand-position search optimizes for a
+    # radius around the block; inside a compact house that can select a tile
+    # outside the wall and expose the player during a slow manual craft.
+    current_block = block_id_at(ctx, *table_pos)
+    px, py, pz = ctx.get_position()
+    distance = (
+        (px - table_pos[0]) ** 2
+        + (py - table_pos[1]) ** 2
+        + (pz - table_pos[2]) ** 2
+    ) ** 0.5
+    if "crafting_table" in current_block and distance <= 4.5:
+        if do_open_container(ctx, table_pos, timeout=3.0):
+            if suite_state is not None:
+                suite_state["crafting_table_pos"] = table_pos
+            return True
+
     candidates = [table_pos]
     candidates.append((table_pos[0] + 1, table_pos[1], table_pos[2]))
     candidates.append((table_pos[0] - 1, table_pos[1], table_pos[2]))
@@ -1132,6 +1315,14 @@ def craft_chest_manual(ctx) -> bool:
     screen = ctx.client.transport.dispatch("get_screen", {})
     data = screen.get("data", screen)
     screen_slots = data.get("slots", [])
+    for grid_slot in range(1, 10):
+        slot_info = next((s for s in screen_slots if s.get("slot") == grid_slot), None)
+        if slot_info and slot_info.get("id") not in ("minecraft:air", None) and slot_info.get("count", 0) > 0:
+            safe_inventory_click(ctx, grid_slot, "QUICK_MOVE", 0)
+            time.sleep(0.05)
+    screen = ctx.client.transport.dispatch("get_screen", {})
+    data = screen.get("data", screen)
+    screen_slots = data.get("slots", [])
     plank_slots = []
     total_planks = 0
     for s in screen_slots:
@@ -1199,6 +1390,62 @@ def craft_chest_manual(ctx) -> bool:
     
     ctx.log_event("ERROR: Chest not in inventory after crafting sequence")
     return False
+
+
+def craft_furnace_manual(ctx) -> bool:
+    """Craft a furnace in the verified 3x3 table grid."""
+    ctx.log_event("Starting manual furnace click sequence...")
+    safe_inventory_click(ctx, 0, "QUICK_MOVE", 0)
+    time.sleep(0.2)
+
+    screen = ctx.client.transport.dispatch("get_screen", {})
+    data = screen.get("data", screen)
+    screen_slots = data.get("slots", [])
+    for grid_slot in range(1, 10):
+        slot_info = next((s for s in screen_slots if s.get("slot") == grid_slot), None)
+        if slot_info and slot_info.get("id") not in ("minecraft:air", None) and slot_info.get("count", 0) > 0:
+            safe_inventory_click(ctx, grid_slot, "QUICK_MOVE", 0)
+            time.sleep(0.05)
+
+    screen = ctx.client.transport.dispatch("get_screen", {})
+    data = screen.get("data", screen)
+    screen_slots = data.get("slots", [])
+    cobble_slots = [
+        (slot.get("slot"), slot.get("count", 0))
+        for slot in screen_slots
+        if slot.get("slot", -1) >= 10
+        and slot.get("id") == "minecraft:cobblestone"
+        and slot.get("count", 0) > 0
+    ]
+    if sum(count for _slot, count in cobble_slots) < 8:
+        ctx.log_event(f"Furnace craft failed: need 8 cobblestone, found {cobble_slots}")
+        return False
+
+    remaining_targets = [1, 2, 3, 4, 6, 7, 8, 9]
+    for source_slot, source_count in cobble_slots:
+        if not remaining_targets:
+            break
+        safe_inventory_click(ctx, source_slot, "PICKUP", 0)
+        time.sleep(0.05)
+        for _ in range(min(source_count, len(remaining_targets))):
+            safe_inventory_click(ctx, remaining_targets.pop(0), "PICKUP", 1)
+            time.sleep(0.05)
+        safe_inventory_click(ctx, source_slot, "PICKUP", 0)
+        time.sleep(0.05)
+
+    result_screen = ctx.client.transport.dispatch("get_screen", {})
+    result_data = result_screen.get("data", result_screen)
+    result_slot = next(
+        (slot for slot in result_data.get("slots", []) if slot.get("slot") == 0),
+        None,
+    )
+    ctx.log_event(f"Furnace result slot before taking: {result_slot}")
+    if not result_slot or result_slot.get("id") != "minecraft:furnace":
+        return False
+
+    safe_inventory_click(ctx, 0, "QUICK_MOVE", 0)
+    time.sleep(0.3)
+    return ctx.has_item("minecraft:furnace")
 
 # --- Generic Manual Crafting Helpers ---
 
@@ -1285,6 +1532,222 @@ def _craft_tool_manual_generic(ctx, material_id_or_tag: str, tool_type: str, res
     do_close_container(ctx)
     time.sleep(0.2)
 
+    return ctx.has_item(result_id)
+
+
+def craft_recipe_manual(
+    ctx,
+    result_id: str,
+    placements: List[Tuple[str, int]],
+    crafts: int = 1,
+    output_per_recipe: int = 1,
+) -> bool:
+    """Craft a bounded shaped/shapeless recipe through verified grid clicks.
+
+    ``placements`` contains ``(ingredient_selector, grid_slot)`` pairs.  An
+    exact item id selects that item; ``#planks`` accepts any plank variant.
+    The crafting-table GUI must already be open.  This is intentionally small
+    and deterministic for progression recipes unavailable through recipe
+    listing on the live 1.21.x client.
+
+    Tries the bridge-native ``place_recipe`` command first (single TCP
+    round-trip).  Falls back to per-click Python choreography if the bridge
+    doesn't support the command or returns an error.
+    """
+    if crafts <= 0:
+        return True
+
+    # --- Bridge-native fast path (single round-trip) ---
+    try:
+        payload = {
+            "placements": [
+                {"selector": sel, "grid_slot": slot}
+                for sel, slot in placements
+            ],
+            "expected_output": result_id,
+            "expected_count": output_per_recipe,
+            "crafts": crafts,
+        }
+        resp = ctx.client.transport.dispatch("place_recipe", payload)
+        data = resp.get("data", resp) if isinstance(resp, dict) else {}
+        if data.get("crafted"):
+            return True
+        # Bridge returned a structured error — fall through to Python path.
+    except Exception:
+        # Command not recognised by older bridge, transport error, etc.
+        pass
+
+
+    def matches(selector: str, item_id: str) -> bool:
+        if selector == "#planks":
+            return item_id.endswith("_planks")
+        return item_id == selector
+
+    def read_slots():
+        screen = ctx.client.transport.dispatch("get_screen", {})
+        data = screen.get("data", screen)
+        slots = data.get("slots", [])
+        screen_type = data.get("type", "")
+        if len(slots) < 46 or screen_type not in {
+            "class_1714",
+            "CraftingScreenHandler",
+        }:
+            ctx.log_event(
+                f"Manual recipe failed: expected crafting table, got "
+                f"{screen_type} ({len(slots)} slots)"
+            )
+            return None
+        return slots
+
+    slots = read_slots()
+    if slots is None:
+        return False
+    for grid_slot in range(1, 10):
+        slot_info = next(
+            (slot for slot in slots if slot.get("slot") == grid_slot), None
+        )
+        if slot_info and int(slot_info.get("count", 0)) > 0:
+            safe_inventory_click(ctx, grid_slot, "QUICK_MOVE", 0)
+            time.sleep(0.05)
+
+    before = ctx.count_item(result_id)
+    for craft_index in range(crafts):
+        for selector, grid_slot in placements:
+            slots = read_slots()
+            if slots is None:
+                do_close_container(ctx)
+                return False
+            source = next(
+                (
+                    slot
+                    for slot in slots
+                    if int(slot.get("slot", -1)) >= 10
+                    and int(slot.get("count", 0)) > 0
+                    and matches(selector, str(slot.get("id", "")))
+                ),
+                None,
+            )
+            if source is None:
+                ctx.log_event(
+                    f"Manual {result_id} missing {selector} at craft "
+                    f"{craft_index + 1}/{crafts}"
+                )
+                do_close_container(ctx)
+                return False
+            source_slot = int(source["slot"])
+            safe_inventory_click(ctx, source_slot, "PICKUP", 0)
+            time.sleep(0.04)
+            safe_inventory_click(ctx, grid_slot, "PICKUP", 1)
+            time.sleep(0.04)
+            safe_inventory_click(ctx, source_slot, "PICKUP", 0)
+            time.sleep(0.04)
+
+        output_ready = False
+        for _ in range(10):
+            slots = read_slots()
+            if slots is None:
+                break
+            output = next(
+                (slot for slot in slots if int(slot.get("slot", -1)) == 0),
+                None,
+            )
+            if (
+                output
+                and output.get("id") == result_id
+                and int(output.get("count", 0)) >= output_per_recipe
+            ):
+                output_ready = True
+                break
+            time.sleep(0.05)
+        if not output_ready:
+            ctx.log_event(
+                f"Manual {result_id} produced no verified output at craft "
+                f"{craft_index + 1}/{crafts}"
+            )
+            do_close_container(ctx)
+            return False
+        safe_inventory_click(ctx, 0, "QUICK_MOVE", 0)
+        time.sleep(0.08)
+
+    target = before + crafts * output_per_recipe
+    complete = ctx.count_item(result_id) >= target
+    do_close_container(ctx)
+    return complete
+
+
+def _craft_armor_manual_generic(
+    ctx,
+    material_id: str,
+    armor_type: str,
+    result_id: str,
+) -> bool:
+    """Craft one armor piece in an already-open 3x3 crafting table."""
+    armor_recipes = {
+        "helmet": [1, 2, 3, 4, 6],
+        "chestplate": [1, 3, 4, 5, 6, 7, 8, 9],
+        "leggings": [1, 2, 3, 4, 6, 7, 9],
+        "boots": [4, 6, 7, 9],
+    }
+    targets = armor_recipes.get(armor_type)
+    if targets is None:
+        ctx.log_event(f"Unknown armor type: {armor_type}")
+        return False
+
+    # Clear stale recipe ingredients before reading source slots.
+    safe_inventory_click(ctx, 0, "QUICK_MOVE", 0)
+    for grid_slot in range(1, 10):
+        screen = ctx.client.transport.dispatch("get_screen", {})
+        data = screen.get("data", screen)
+        slot = next(
+            (value for value in data.get("slots", []) if value.get("slot") == grid_slot),
+            None,
+        )
+        if slot and slot.get("count", 0) > 0:
+            safe_inventory_click(ctx, grid_slot, "QUICK_MOVE", 0)
+            time.sleep(0.05)
+
+    screen = ctx.client.transport.dispatch("get_screen", {})
+    data = screen.get("data", screen)
+    material_slots = [
+        (slot.get("slot"), int(slot.get("count", 0)))
+        for slot in data.get("slots", [])
+        if slot.get("slot", -1) >= 10
+        and slot.get("id") == material_id
+        and int(slot.get("count", 0)) > 0
+    ]
+    if sum(count for _slot, count in material_slots) < len(targets):
+        ctx.log_event(
+            f"Manual {armor_type}: need {len(targets)} {material_id}, "
+            f"found {material_slots}"
+        )
+        return False
+
+    remaining_targets = list(targets)
+    for source_slot, source_count in material_slots:
+        if not remaining_targets:
+            break
+        safe_inventory_click(ctx, source_slot, "PICKUP", 0)
+        time.sleep(0.05)
+        for _ in range(min(source_count, len(remaining_targets))):
+            safe_inventory_click(ctx, remaining_targets.pop(0), "PICKUP", 1)
+            time.sleep(0.05)
+        safe_inventory_click(ctx, source_slot, "PICKUP", 0)
+        time.sleep(0.05)
+
+    result_screen = ctx.client.transport.dispatch("get_screen", {})
+    result_data = result_screen.get("data", result_screen)
+    result_slot = next(
+        (slot for slot in result_data.get("slots", []) if slot.get("slot") == 0),
+        None,
+    )
+    ctx.log_event(f"Armor result slot before taking: {result_slot}")
+    if not result_slot or result_slot.get("id") != result_id:
+        return False
+
+    safe_inventory_click(ctx, 0, "QUICK_MOVE", 0)
+    time.sleep(0.3)
+    do_close_container(ctx)
+    time.sleep(0.2)
     return ctx.has_item(result_id)
 
 def craft_stone_axe_manual(ctx) -> bool:
@@ -1456,9 +1919,174 @@ def craft_sticks_manual(ctx) -> bool:
     """Craft sticks using robust crafting wrapper."""
     return robust_craft(ctx, "minecraft:stick", 1)
 
+def craft_planks_manual(ctx, plank_id: str, output_count: int = 4) -> bool:
+    """Craft one wood family's planks in the verified player 2x2 grid.
+
+    Tries the bridge-native ``place_recipe`` command first. Falls back
+    to manual grid clicks if unavailable or fails.
+    """
+    log_id = plank_id.replace("_planks", "_log")
+    if not log_id.startswith("minecraft:"):
+        log_id = "minecraft:" + log_id
+    before = ctx.count_item(plank_id)
+    target = before + max(1, int(output_count))
+    crafts_needed = (max(1, int(output_count)) + 3) // 4
+
+    # --- Bridge-native fast path ---
+    try:
+        payload = {
+            "placements": [
+                {"selector": log_id, "grid_slot": 1}
+            ],
+            "expected_output": plank_id,
+            "expected_count": 4,
+            "crafts": crafts_needed,
+        }
+        resp = ctx.client.transport.dispatch("place_recipe", payload)
+        data = resp.get("data", resp) if isinstance(resp, dict) else {}
+        if data.get("crafted"):
+            return ctx.count_item(plank_id) >= target
+    except Exception:
+        pass
+
+    # --- Python fallback per-click sequence ---
+    for _ in range(crafts_needed):
+        do_close_container(ctx)
+        time.sleep(0.05)
+        screen = ctx.client.transport.dispatch("get_screen", {})
+        data = screen.get("data", screen)
+        slots = data.get("slots", [])
+        screen_type = data.get("type", "")
+        if len(slots) < 46 or screen_type not in {"class_1723", "PlayerScreenHandler"}:
+            ctx.log_event(
+                f"Manual plank craft expected player 2x2 screen, got {screen_type} ({len(slots)} slots)"
+            )
+            return False
+
+        # Clear residue from failed native recipes before using one grid cell.
+        for grid_slot in (1, 2, 3, 4):
+            slot_info = next((slot for slot in slots if slot.get("slot") == grid_slot), None)
+            if slot_info and slot_info.get("count", 0) > 0:
+                safe_inventory_click(ctx, grid_slot, "QUICK_MOVE", 0)
+                time.sleep(0.05)
+
+        # Find log in inventory (slots >= 9)
+        screen = ctx.client.transport.dispatch("get_screen", {})
+        data = screen.get("data", screen)
+        slots = data.get("slots", [])
+        log_slot = None
+        for slot in slots:
+            if slot.get("slot", -1) >= 9 and slot.get("id") == log_id and slot.get("count", 0) > 0:
+                log_slot = slot.get("slot")
+                break
+        if log_slot is None:
+            ctx.log_event(f"Manual plank craft: no logs found for {log_id}")
+            return False
+
+        # Click log slot to pick up, click grid slot 1 (right click to place 1), put log back to source
+        safe_inventory_click(ctx, log_slot, "PICKUP", 0)
+        time.sleep(0.05)
+        safe_inventory_click(ctx, 1, "PICKUP", 1)  # right-click to place 1
+        time.sleep(0.05)
+        safe_inventory_click(ctx, log_slot, "PICKUP", 0)
+        time.sleep(0.05)
+
+        # Wait for output in slot 0
+        output_ready = False
+        for _ in range(10):
+            screen = ctx.client.transport.dispatch("get_screen", {})
+            data = screen.get("data", screen)
+            output = next((s for s in data.get("slots", []) if s.get("slot") == 0), None)
+            if output and output.get("id") == plank_id and output.get("count", 0) >= 4:
+                output_ready = True
+                break
+            time.sleep(0.05)
+        if not output_ready:
+            ctx.log_event("Manual plank craft: output not ready")
+            return False
+
+        # Shift click output
+        safe_inventory_click(ctx, 0, "QUICK_MOVE", 0)
+        time.sleep(0.05)
+
+    return ctx.count_item(plank_id) >= target
+
+
 def craft_crafting_table_manual(ctx) -> bool:
-    """Craft crafting table using robust crafting wrapper."""
-    return robust_craft(ctx, "minecraft:crafting_table", 1)
+    """Craft a table directly in the player's 2x2 grid.
+
+    The 1.21.8 bridge recipe handler can leave the plank stack on the cursor
+    while filling this recipe, which makes the fourth ingredient lookup fail.
+    Drive the four player-grid slots explicitly instead.
+    """
+    ctx.log_event("Starting manual 2x2 crafting-table sequence...")
+    do_close_container(ctx)
+    time.sleep(0.1)
+
+    screen = ctx.client.transport.dispatch("get_screen", {})
+    data = screen.get("data", screen)
+    slots = data.get("slots", [])
+    screen_type = data.get("type", "")
+    if len(slots) < 46 or screen_type not in {"class_1723", "PlayerScreenHandler"}:
+        ctx.log_event(
+            f"Manual crafting table failed: expected player 2x2 screen, got {screen_type} ({len(slots)} slots)"
+        )
+        return False
+
+    for grid_slot in (1, 2, 3, 4):
+        slot_info = next((slot for slot in slots if slot.get("slot") == grid_slot), None)
+        if slot_info and slot_info.get("count", 0) > 0:
+            safe_inventory_click(ctx, grid_slot, "QUICK_MOVE", 0)
+            time.sleep(0.05)
+
+    screen = ctx.client.transport.dispatch("get_screen", {})
+    data = screen.get("data", screen)
+    slots = data.get("slots", [])
+    if not ensure_player_crafting_output_space(ctx, screen):
+        return False
+
+    plank_slots = [
+        (slot.get("slot"), slot.get("count", 0))
+        for slot in slots
+        if slot.get("slot", -1) >= 9
+        and slot.get("id", "").endswith("_planks")
+        and slot.get("count", 0) > 0
+    ]
+    if sum(count for _slot, count in plank_slots) < 4:
+        ctx.log_event(f"Manual crafting table failed: need 4 planks, found {plank_slots}")
+        return False
+
+    remaining_grid = [1, 2, 3, 4]
+    for source_slot, source_count in plank_slots:
+        if not remaining_grid:
+            break
+        safe_inventory_click(ctx, source_slot, "PICKUP", 0)
+        time.sleep(0.05)
+        place_count = min(source_count, len(remaining_grid))
+        for _ in range(place_count):
+            target_slot = remaining_grid.pop(0)
+            safe_inventory_click(ctx, target_slot, "PICKUP", 1)
+            time.sleep(0.05)
+        # Return any unused cursor stack to its source slot.
+        safe_inventory_click(ctx, source_slot, "PICKUP", 0)
+        time.sleep(0.05)
+
+    result_screen = ctx.client.transport.dispatch("get_screen", {})
+    result_data = result_screen.get("data", result_screen)
+    result_slot = next(
+        (slot for slot in result_data.get("slots", []) if slot.get("slot") == 0),
+        None,
+    )
+    ctx.log_event(f"Manual crafting table result slot: {result_slot}")
+    if not result_slot or result_slot.get("id") != "minecraft:crafting_table":
+        return False
+
+    safe_inventory_click(ctx, 0, "QUICK_MOVE", 0)
+    success = ctx.wait_for_item("minecraft:crafting_table", 1, timeout=3.0)
+    ctx.log_event(
+        "Manual crafting table successful!" if success else "Manual crafting table missing after result click"
+    )
+    return success
 
 
 # --- Status and Counting Helpers ---

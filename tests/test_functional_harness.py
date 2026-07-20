@@ -1,0 +1,433 @@
+from tests.functional.test_base import FunctionalCase, FunctionalResult
+from tests.functional.shared import inventory_ops
+
+
+class MinimalContext:
+    def __init__(self):
+        self.events = []
+        self.snapshots = []
+        self.start_time = 0.0
+
+    def log_event(self, event):
+        self.events.append(event)
+
+    def snapshot(self, label):
+        self.snapshots.append(label)
+
+    def get_state(self):
+        return {"health": 20, "is_dead": False}
+
+
+def test_failed_assertion_fails_functional_case():
+    case = FunctionalCase(
+        id="T_ASSERT_FAIL",
+        name="Assertion failure regression",
+        description="A false assertion must not be reported as PASS",
+        assertions=[lambda ctx: (False, "expected failure")],
+    )
+    result, message, events = case.run(MinimalContext())
+    assert result is FunctionalResult.FAIL
+    assert message == "expected failure"
+    assert any("ASSERT 0 FAILED" in event for event in events)
+
+
+def test_successful_assertion_passes_functional_case():
+    case = FunctionalCase(
+        id="T_ASSERT_PASS",
+        name="Assertion success regression",
+        description="A true assertion is reported as PASS",
+        assertions=[lambda ctx: (True, "verified")],
+    )
+    result, message, events = case.run(MinimalContext())
+    assert result is FunctionalResult.PASS
+    assert message == "All steps and assertions passed"
+    assert any("ASSERT 0 PASSED" in event for event in events)
+
+
+def test_crafting_table_open_reuses_nearby_existing_table(monkeypatch):
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "find_blocks":
+                return {
+                    "found": [
+                        {"x": -8, "y": 79, "z": -121, "distance": 2.0}
+                    ]
+                }
+            return {}
+
+    class Context:
+        client = type("Client", (), {"transport": Transport()})()
+
+        def get_position(self):
+            return (-7, 79, -120)
+
+        def log_event(self, _event):
+            return None
+
+    monkeypatch.setattr(
+        inventory_ops,
+        "move_near",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("an in-range table must open from the current safe tile")
+        ),
+    )
+    monkeypatch.setattr(
+        inventory_ops,
+        "block_id_at",
+        lambda _ctx, x, y, z: (
+            "minecraft:crafting_table"
+            if (x, y, z) == (-8, 79, -121)
+            else "minecraft:air"
+        ),
+    )
+    monkeypatch.setattr(
+        inventory_ops, "do_open_container", lambda _ctx, pos, timeout: pos == (-8, 79, -121)
+    )
+    monkeypatch.setattr(
+        inventory_ops,
+        "bot_place_block",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("existing table must be reused")
+        ),
+    )
+
+    assert inventory_ops.ensure_crafting_table_open(Context())
+
+
+def test_smelt_polls_furnace_instead_of_sleeping_through_bridge_idle(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.screen_reads = 0
+
+        def dispatch(self, route, _payload):
+            if route == "get_screen":
+                self.screen_reads += 1
+                return {
+                    "slots": [
+                        {"slot": 0, "id": "minecraft:air", "count": 0},
+                        {"slot": 1, "id": "minecraft:coal", "count": 1},
+                        {"slot": 2, "id": "minecraft:iron_ingot", "count": 2},
+                        {"slot": 3, "id": "minecraft:raw_iron", "count": 2},
+                        {"slot": 4, "id": "minecraft:coal", "count": 1},
+                    ]
+                }
+            return {}
+
+    class Context:
+        def __init__(self):
+            self.client = type("Client", (), {"transport": Transport()})()
+            self.ingots = 0
+
+        def count_item(self, item_id):
+            return self.ingots if item_id == "minecraft:iron_ingot" else 0
+
+        def log_event(self, _event):
+            return None
+
+    ctx = Context()
+    sleeps = []
+
+    monkeypatch.setattr(inventory_ops, "block_id_at", lambda *_args: "minecraft:furnace")
+    monkeypatch.setattr(inventory_ops, "do_open_container", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(inventory_ops, "do_close_container", lambda *_args: None)
+    monkeypatch.setattr(inventory_ops.time, "sleep", sleeps.append)
+
+    def click(_ctx, slot, _action, _button=0):
+        if slot == 2:
+            ctx.ingots = 2
+
+    monkeypatch.setattr(inventory_ops, "safe_inventory_click", click)
+
+    assert inventory_ops.smelt_in_furnace(
+        ctx,
+        (1, 2, 3),
+        "minecraft:raw_iron",
+        "minecraft:coal",
+        "minecraft:iron_ingot",
+        2,
+    )
+    assert ctx.client.transport.screen_reads >= 2
+    assert max(sleeps) <= 0.3
+
+
+def test_manual_iron_chestplate_uses_verified_eight_ingot_pattern(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.screen_reads = 0
+
+        def dispatch(self, route, _payload):
+            if route != "get_screen":
+                return {}
+            self.screen_reads += 1
+            output = (
+                "minecraft:iron_chestplate"
+                if self.screen_reads >= 11
+                else "minecraft:air"
+            )
+            return {
+                "slots": [
+                    {"slot": 0, "id": output, "count": int(output != "minecraft:air")},
+                    *[
+                        {"slot": slot, "id": "minecraft:air", "count": 0}
+                        for slot in range(1, 10)
+                    ],
+                    {
+                        "slot": 10,
+                        "id": "minecraft:iron_ingot",
+                        "count": 8,
+                    },
+                ]
+            }
+
+    class Context:
+        def __init__(self):
+            self.client = type("Client", (), {"transport": Transport()})()
+            self.events = []
+
+        def log_event(self, event):
+            self.events.append(event)
+
+        def has_item(self, item_id):
+            return item_id == "minecraft:iron_chestplate"
+
+    ctx = Context()
+    clicks = []
+    monkeypatch.setattr(
+        inventory_ops,
+        "safe_inventory_click",
+        lambda _ctx, slot, action, button=0: clicks.append((slot, action, button)),
+    )
+    monkeypatch.setattr(inventory_ops, "do_close_container", lambda _ctx: None)
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _seconds: None)
+
+    assert inventory_ops._craft_armor_manual_generic(
+        ctx,
+        "minecraft:iron_ingot",
+        "chestplate",
+        "minecraft:iron_chestplate",
+    )
+    placed_slots = [
+        slot
+        for slot, action, button in clicks
+        if action == "PICKUP" and button == 1
+    ]
+    assert placed_slots == [1, 3, 4, 5, 6, 7, 8, 9]
+    assert (0, "QUICK_MOVE", 0) in clicks
+
+
+def test_generic_manual_recipe_places_each_ingredient_and_verifies_output(monkeypatch):
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route != "get_screen":
+                return {}
+            return {
+                "type": "class_1714",
+                "slots": [
+                    {
+                        "slot": 0,
+                        "id": "minecraft:book",
+                        "count": 1,
+                    },
+                    *[
+                        {"slot": slot, "id": "minecraft:air", "count": 0}
+                        for slot in range(1, 10)
+                    ],
+                    {
+                        "slot": 10,
+                        "id": "minecraft:paper",
+                        "count": 3,
+                    },
+                    {
+                        "slot": 11,
+                        "id": "minecraft:leather",
+                        "count": 1,
+                    },
+                    *[
+                        {"slot": slot, "id": "minecraft:air", "count": 0}
+                        for slot in range(12, 46)
+                    ],
+                ],
+            }
+
+    class Context:
+        def __init__(self):
+            self.client = type("Client", (), {"transport": Transport()})()
+            self.books = 0
+
+        def log_event(self, _event):
+            return None
+
+        def count_item(self, item_id):
+            return self.books if item_id == "minecraft:book" else 0
+
+    ctx = Context()
+    clicks = []
+
+    def click(_ctx, slot, action, button=0):
+        clicks.append((slot, action, button))
+        if slot == 0 and action == "QUICK_MOVE":
+            ctx.books = 1
+
+    monkeypatch.setattr(inventory_ops, "safe_inventory_click", click)
+    monkeypatch.setattr(inventory_ops, "do_close_container", lambda _ctx: None)
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _seconds: None)
+
+    assert inventory_ops.craft_recipe_manual(
+        ctx,
+        "minecraft:book",
+        [
+            ("minecraft:paper", 1),
+            ("minecraft:paper", 2),
+            ("minecraft:paper", 3),
+            ("minecraft:leather", 4),
+        ],
+    )
+    right_click_targets = [
+        slot
+        for slot, action, button in clicks
+        if action == "PICKUP" and button == 1
+    ]
+    assert right_click_targets == [1, 2, 3, 4]
+    assert (0, "QUICK_MOVE", 0) in clicks
+
+
+def test_full_inventory_discards_only_approved_stack_for_crafting_output(monkeypatch):
+    slots = [
+        {"slot": slot, "id": "minecraft:cobblestone", "count": 64}
+        for slot in range(46)
+    ]
+    slots[0] = {"slot": 0, "id": "minecraft:air", "count": 0}
+    slots[9] = {"slot": 9, "id": "minecraft:dirt", "count": 64}
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_screen":
+                return {"type": "PlayerScreenHandler", "slots": slots}
+            if route == "inventory_click":
+                assert payload == {
+                    "slot": 9,
+                    "type": "THROW",
+                    "button": 1,
+                }
+                slots[9] = {"slot": 9, "id": "minecraft:air", "count": 0}
+            return {}
+
+    class Context:
+        client = type("Client", (), {"transport": Transport()})()
+
+        def __init__(self):
+            self.events = []
+
+        def log_event(self, event):
+            self.events.append(event)
+
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _seconds: None)
+    ctx = Context()
+
+    assert inventory_ops.ensure_player_crafting_output_space(ctx)
+    assert any("dropping low-value stack minecraft:dirt" in event for event in ctx.events)
+
+
+def test_full_valuable_inventory_refuses_to_discard_for_crafting(monkeypatch):
+    slots = [
+        {"slot": slot, "id": "minecraft:diamond", "count": 64}
+        for slot in range(46)
+    ]
+    slots[0] = {"slot": 0, "id": "minecraft:air", "count": 0}
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_screen":
+                return {"type": "PlayerScreenHandler", "slots": slots}
+            if route == "inventory_click":
+                raise AssertionError("valuable inventory must not be discarded")
+            return {}
+
+    class Context:
+        client = type("Client", (), {"transport": Transport()})()
+
+        def __init__(self):
+            self.events = []
+
+        def log_event(self, event):
+            self.events.append(event)
+
+    ctx = Context()
+
+    assert not inventory_ops.ensure_player_crafting_output_space(ctx)
+    assert any("no approved low-value stack" in event for event in ctx.events)
+
+
+def test_manual_crafting_table_recovers_from_full_inventory(monkeypatch):
+    slots = [
+        {"slot": slot, "id": "minecraft:diamond", "count": 64}
+        for slot in range(46)
+    ]
+    slots[0] = {"slot": 0, "id": "minecraft:air", "count": 0}
+    for slot in range(1, 9):
+        slots[slot] = {"slot": slot, "id": "minecraft:air", "count": 0}
+    slots[9] = {"slot": 9, "id": "minecraft:dirt", "count": 64}
+    slots[10] = {
+        "slot": 10,
+        "id": "minecraft:oak_planks",
+        "count": 4,
+    }
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_screen":
+                return {"type": "PlayerScreenHandler", "slots": slots}
+            return {}
+
+    class Context:
+        client = type("Client", (), {"transport": Transport()})()
+
+        def __init__(self):
+            self.events = []
+
+        def log_event(self, event):
+            self.events.append(event)
+
+        def has_item(self, item_id):
+            return any(
+                slot.get("id") == item_id and slot.get("count", 0) > 0
+                for slot in slots[9:45]
+            )
+
+        def wait_for_item(self, item_id, _count, timeout):
+            _ = timeout
+            return self.has_item(item_id)
+
+    clicks = []
+
+    def click(_ctx, slot, action, button=0):
+        clicks.append((slot, action, button))
+        if (slot, action, button) == (9, "THROW", 1):
+            slots[9] = {"slot": 9, "id": "minecraft:air", "count": 0}
+        elif slot in (1, 2, 3, 4) and action == "PICKUP" and button == 1:
+            slots[slot] = {
+                "slot": slot,
+                "id": "minecraft:oak_planks",
+                "count": 1,
+            }
+            if all(slots[index]["id"].endswith("_planks") for index in range(1, 5)):
+                slots[0] = {
+                    "slot": 0,
+                    "id": "minecraft:crafting_table",
+                    "count": 1,
+                }
+        elif (slot, action, button) == (0, "QUICK_MOVE", 0):
+            slots[0] = {"slot": 0, "id": "minecraft:air", "count": 0}
+            slots[9] = {
+                "slot": 9,
+                "id": "minecraft:crafting_table",
+                "count": 1,
+            }
+
+    monkeypatch.setattr(inventory_ops, "safe_inventory_click", click)
+    monkeypatch.setattr(inventory_ops, "do_close_container", lambda _ctx: None)
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _seconds: None)
+
+    assert inventory_ops.craft_crafting_table_manual(Context())
+    assert (9, "THROW", 1) in clicks
+    assert (0, "QUICK_MOVE", 0) in clicks

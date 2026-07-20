@@ -123,7 +123,7 @@ class PhaseExecutor:
         """Report progress via callback if set."""
         if self.progress_callback:
             self.progress_callback(phase, progress, message)
-        self.state.update_progress(progress)
+        self.state.update_progress(progress, phase=phase)
     
     def _take_screenshot(self, reason: str, phase: Optional[Phase] = None) -> None:
         """Take a screenshot if enabled.

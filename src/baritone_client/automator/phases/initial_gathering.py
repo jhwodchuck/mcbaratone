@@ -2,16 +2,28 @@
 Initial Gathering Phase - Wood, stone, food, basic tools.
 """
 
+import time
+
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
 from ...common import gather_wood, gather_stone, find_item_slot, count_item, equip_best_weapon
-from ...common.base import build_emergency_shelter, sleep_through_night
-from ...common.combat import hunt_passive_mobs, hunt_mobs
+from ...common.resources import LOG_BLOCKS, PLANK_ITEMS
+from ...common.base import build_emergency_shelter, sleep_through_night, wait_for_safe_daylight
+from ...common.combat import (
+    acquire_emergency_food,
+    hunt_passive_mobs,
+    hunt_mobs,
+    recover_health,
+)
 from ...common.tasks import TaskResult, SequentialTask, ActionTask
 
 # Modular Action Imports
 from ...actions import (
+    CombatAction,
+    CraftingAction,
+    InventoryAction,
+    MovementAction,
     SequenceAction,
     WoodCollectionPhase,
     ToolProgressionPhase,
@@ -23,7 +35,7 @@ from ...actions import (
 from ...core.interfaces import ActionContext
 
 
-def gather_wool(client) -> bool:
+def gather_wool(client, timeout: int = 90) -> bool:
     """Gather 3 wool of the SAME color efficiently."""
     print("Action: Gathering wool (Hunting sheep for bed)...")
     from ...common.inventory import count_item
@@ -62,8 +74,27 @@ def gather_wool(client) -> bool:
         mob_types=["sheep"],
         required_loot={f"minecraft:{best_color}_wool": 3},
         search_radius=120,
-        timeout=180,
+        timeout=timeout,
     )
+
+    if not result.success and "Night detected" in result.reason:
+        print("  Night detected. Waiting safely for dawn before resuming the sheep hunt...")
+        client.transport.dispatch("cancel", {})
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            state = client.transport.dispatch("get_state", {})
+            day_time = state.get("world_time", 0) % 24000
+            if day_time < 12000:
+                print("  Dawn reached. Resuming sheep hunt...")
+                result = hunt_mobs(
+                    client,
+                    mob_types=["sheep"],
+                    required_loot={f"minecraft:{best_color}_wool": 3},
+                    search_radius=120,
+                    timeout=timeout,
+                )
+                break
+            time.sleep(5)
     
     # Re-check all colors in case we got a different set of 3
     for color in wool_colors:
@@ -76,68 +107,32 @@ def gather_wool(client) -> bool:
 
 
 def gather_leather(client) -> bool:
-    """Gather leather by hunting cows/sheep."""
-    print("Action: Gathering leather (Hunting cows/sheep)...")
-    from ...common.combat import hunt_mobs
-    from ...common.base import build_emergency_shelter, sleep_through_night
+    """Defer optional leather until the starter shelter is established."""
+    print("Action: Checking optional starter leather...")
     from ...common.inventory import count_item
-    import time
-    
-    # Check if we already have enough leather (4 is enough for boots, our minimum goal)
+
     existing_leather = count_item(client, "minecraft:leather")
-    if existing_leather >= 4:
+    if existing_leather >= 24:
         print(f"  Already have {existing_leather} leather, skipping hunt")
         return True
-    
-    # Shorter timeout, only need 4 leather for basic armor
-    max_attempts = 2
-    for attempt in range(max_attempts):
-        print(f"  Hunt attempt {attempt+1}/{max_attempts}...")
-        result = hunt_mobs(
-            client,
-            mob_types=["cow", "sheep"],
-            required_loot={"minecraft:leather": 4},  # Reduced from 16 to 4 - just need boots
-            search_radius=50,
-            timeout=120,  # Reduced from 300 to 120
-            heal_threshold=5.0,
-        )
-        
-        if result.success:
-            print(f"  Leather hunt successful! Kills: {result.data.get('kills', 0)}")
-            return True
-            
-        if "Night detected" in result.reason:
-            print("Action: Night detected during hunt! Surviving night...")
-            if not sleep_through_night(client):
-                print("No bed or sleep failed. Building emergency shelter...")
-                build_emergency_shelter(client)
-                time.sleep(10)
-                
-            print("Waiting for morning...")
-            for _ in range(30):  # Wait up to 300s (reduced from 600)
-                state = client.transport.dispatch("get_state", {})
-                if state.get("world_time", 0) % 24000 < 1000:
-                    print("Morning has broken!")
-                    break
-                time.sleep(10)
-            continue
-        
-        # Check if we got some leather even if not full count
-        current_leather = count_item(client, "minecraft:leather")
-        if current_leather >= 4:
-            print(f"  Have {current_leather} leather, good enough!")
-            return True
-            
-        print(f"  Hunt failed: {result.reason}")
-        
-    # Even if we failed, don't block the whole phase
-    current_leather = count_item(client, "minecraft:leather")
-    print(f"  Final leather count: {current_leather}")
-    return True # Always return True to avoid progression loops
+
+    # Initial gathering's job is to establish safe storage and shelter. Iron
+    # armor replaces leather shortly afterward, while this optional hunt has
+    # repeatedly pulled the player away from the new home. Defer it once the
+    # survival essentials exist instead of creating another expedition.
+    print(f"  Deferring leather armor ({existing_leather}/24 leather); shelter comes first.")
+    return True
 
 
 def craft_leather_armor(client) -> bool:
     """Craft leather armor pieces."""
+    from ...common.inventory import count_item
+
+    leather = count_item(client, "minecraft:leather")
+    if leather < 24:
+        print(f"  Deferring leather armor: only {leather}/24 leather available.")
+        return True
+
     armor_pieces = [
         "minecraft:leather_helmet",
         "minecraft:leather_chestplate",
@@ -176,36 +171,45 @@ class InitialGatheringHandler(PhaseHandler):
         
         # Initialize Context
         self.context = ActionContext(client=client, state=state)
+        self._storage_deposit_verified = False
         
-        # Ensure settings are applied (especially autoTool)
-        settings = {
-            "allowSprint": "true",
-            "allowParkour": "true",
-            "allowBreak": "true",
-            "allowPlace": "true",
-            "autoTool": "true",
-        }
-        client.mission.macro("bootstrap", {"settings": settings})
-
         print("DEBUG: Checking phase_ready_result...")
         ready = resources.phase_ready_result(Phase.INITIAL_GATHERING, "Initial gathering already satisfied")
         if ready:
             print("DEBUG: Phase already ready, returning early")
             return ready
 
+        # A paused inventory/menu screen prevents time, hunger, and health
+        # recovery from advancing in single-player. Clear it before the safety
+        # preflight and refuse gathering/building work while one hit from death.
+        try:
+            client.transport.dispatch("close_screen", {})
+        except Exception:
+            pass
+        if not recover_health(client, minimum_health=12.0):
+            if not acquire_emergency_food(client, minimum_health=12.0):
+                return TaskResult.fail(
+                    "Initial gathering blocked: health recovery or emergency food required"
+                )
+
         print("DEBUG: Checking sleep_through_night...")
         # 0. Safety Check
         if not sleep_through_night(client):
-             print("DEBUG: Sleep failed, checking time...")
-             # (Keeping existing night logic for now, using self.combat action where possible)
-             pass
+             print("DEBUG: Sleep failed; holding position until safe daylight...")
+             if not wait_for_safe_daylight(client):
+                 return TaskResult.fail("Initial gathering could not reach safe daylight")
 
         print("DEBUG: Creating task list (Optimized Progression using Actions)...")
 
         # Define subtasks with optimized order
         tasks = [
             # 1. Start small: Get just enough wood for a pickaxe (4 logs = 16 planks -> table(4) + sticks(4) + pick(3))
-            ActionTask("Gather minimal wood", gather_wood, count=4),
+            # Wood is an input to the early tools, not a reason to strand the
+            # player indefinitely.  Recovered runs may already have working
+            # stone tools and enough planks for a table/chest while no nearby
+            # tree is reachable.  In that case continue to storage/base work
+            # and let the base phase gather more wood opportunistically.
+            ActionTask("Gather minimal wood", self._gather_minimal_wood),
             ActionTask("Craft wooden tools", self._craft_wooden_tools),
             
             # 2. Upgrade ASAP: Get just enough stone for stone pickaxe (3 cobble)
@@ -213,26 +217,36 @@ class InitialGatheringHandler(PhaseHandler):
             ActionTask("Craft stone pickaxe", self._craft_stone_pickaxe_only),
             
             # 3. Bulk Gather Stone (Fast with Stone Pick)
-            ActionTask("Mine bulk stone", gather_stone, count=64),
+            # Thirty-two cobblestone is the concrete phase gate and is enough
+            # for the starter shelter.  Mining to 64 here needlessly drove a
+            # proven-good run back into a flooded shaft after the gate was met.
+            ActionTask("Mine bulk stone", gather_stone, count=32),
             
             # 4. Get remaining tools (Axe for wood, Sword for food)
             ActionTask("Craft remaining stone tools", self._craft_remaining_stone_tools),
             
-            # 5. Safety Priority: Bed (Gather wool early)
-            ActionTask("Gather wool for bed", gather_wool),
-            ActionTask("Craft bed", self._craft_bed),
+            # 5. Bulk Gather Wood (Fast with Stone Axe). This also gets us out
+            # of a starter mine before we look for surface animals.
+            ActionTask("Gather bulk wood", self._gather_bulk_wood),
 
-            # 6. Bulk Gather Wood (Fast with Stone Axe)
-            ActionTask("Gather bulk wood", gather_wood, count=16),
-            
-            # 7. Setup Storage
+            # 6. Establish storage before optional exploration.  A live run
+            # carried the entire starter inventory hundreds of blocks looking
+            # for sheep before it had any chest or home landmark.
             ActionTask("Setup storage", self._setup_storage),
             ActionTask("Deposit excess", self._deposit_excess),
+
+            # 7. A bed is useful but not an endgame progression gate. If this
+            # biome has no reachable sheep yet, defer it instead of retrying the
+            # entire phase indefinitely.
+            ActionTask("Gather wool for bed", self._gather_wool_optional),
+            ActionTask("Craft bed", self._craft_bed_optional),
             
             # 8. Armor & Food
             ActionTask("Gather leather", gather_leather),
             ActionTask("Craft leather armor", craft_leather_armor),
-            ActionTask("Hunt food", lambda c: self.combat.hunt_passive_mobs(self.context, target_count=10, timeout=300)),
+            # .success: ActionTask coerces non-bool/non-TaskResult returns to
+            # success, so pass the boolean through explicitly.
+            ActionTask("Hunt food", self._hunt_food_optional),
         ]
 
         # Execute sequentially
@@ -243,9 +257,135 @@ class InitialGatheringHandler(PhaseHandler):
             resources.refresh_inventory()
             summary = resources.get_summary()
             return TaskResult.ok("Initial gathering complete", inventory=summary["inventory"])
-        else:
-            missing = resources.check_phase_requirements(Phase.INITIAL_GATHERING)
-            return TaskResult.fail(f"Initial gathering failed: {result.reason}", missing=missing)
+
+        # The task list is a means, not the goal. PHASE_REQUIREMENTS for this
+        # phase is empty, so `missing` is always {} - previously we still
+        # failed the phase over non-essential stragglers (e.g. the 16th log
+        # while defense logic kept interrupting). If the core goals of this
+        # phase are demonstrably met, advance instead of looping forever.
+        missing = resources.check_phase_requirements(Phase.INITIAL_GATHERING)
+        if not missing and self._core_goals_met(client):
+            resources.refresh_inventory()
+            summary = resources.get_summary()
+            return TaskResult.ok(
+                f"Initial gathering complete (core goals met; optional task incomplete: {result.reason})",
+                inventory=summary["inventory"],
+                partial=True,
+            )
+
+        return TaskResult.fail(f"Initial gathering failed: {result.reason}", missing=missing)
+
+    def _core_goals_met(self, client) -> bool:
+        """
+        Concrete definition of "initial gathering is done enough to move on":
+        stone-tier tools, a workable wood buffer, bulk cobblestone, and a
+        verified storage chest that was opened for deposit during this run.
+        """
+        from ...common.inventory import resolve_storage_location
+
+        log_blocks = sum(count_item(client, log) for log in LOG_BLOCKS)
+        plank_total = sum(count_item(client, plank) for plank in PLANK_ITEMS)
+        total_logs = log_blocks + (plank_total // 4)
+        cobble = count_item(client, "minecraft:cobblestone")
+        has_pickaxe = (
+            count_item(client, "minecraft:stone_pickaxe") > 0
+            or count_item(client, "minecraft:iron_pickaxe") > 0
+        )
+        has_cutter = (
+            count_item(client, "minecraft:stone_axe") > 0
+            or count_item(client, "minecraft:stone_sword") > 0
+        )
+
+        storage_pos = resolve_storage_location(
+            client, state=getattr(self, "state", None), verify=True
+        )
+        deposit_verified = bool(
+            getattr(self, "_storage_deposit_verified", False)
+        )
+        storage_ready = (
+            storage_pos is not None
+            and deposit_verified
+        )
+        # Once tools, cobble, and verified storage exist, the base phase can
+        # gather additional planks from a better location.  Requiring eight
+        # carried log-equivalents here caused an endless retry loop after a
+        # restart, even when the player already had enough material to build a
+        # starter base.
+        wood_ready = total_logs >= 4 or plank_total >= 8 or storage_ready
+        met = (
+            has_pickaxe
+            and has_cutter
+            and wood_ready
+            and cobble >= 32
+            and storage_ready
+        )
+        print(
+            f"  Core goal check: pickaxe={has_pickaxe} cutter={has_cutter} "
+            f"logs={total_logs}/8 cobble={cobble}/32 "
+            f"storage={storage_pos} deposit_verified={deposit_verified} "
+            f"-> {'MET' if met else 'NOT MET'}"
+        )
+        return met
+
+    def _gather_minimal_wood(self, client) -> bool:
+        """Gather tool wood, but do not block on unreachable trees."""
+        planks = sum(count_item(client, item_id) for item_id in PLANK_ITEMS)
+        has_tooling = any(
+            count_item(client, item_id) > 0
+            for item_id in (
+                "minecraft:stone_pickaxe",
+                "minecraft:iron_pickaxe",
+                "minecraft:stone_axe",
+                "minecraft:iron_axe",
+            )
+        )
+        if has_tooling and planks >= 8:
+            print(
+                f"  Minimal wood already covered by tooling/materials "
+                f"({planks} planks); skipping unreachable-tree hunt."
+            )
+            return True
+        return gather_wood(client, count=4)
+
+    def _gather_bulk_wood(self, client) -> bool:
+        """Try to build a wood buffer, but let base construction recover."""
+        if gather_wood(client, count=8):
+            return True
+        planks = sum(count_item(client, item_id) for item_id in PLANK_ITEMS)
+        if planks >= 8:
+            print(
+                f"  Bulk wood hunt could not reach a tree; continuing with "
+                f"{planks} planks so storage/base construction can proceed."
+            )
+            return True
+        return False
+
+    def _hunt_food_optional(self, client) -> bool:
+        """Keep progression moving once a safe starter food buffer exists."""
+        food_items = (
+            "minecraft:apple", "minecraft:beef", "minecraft:cooked_beef",
+            "minecraft:porkchop", "minecraft:cooked_porkchop",
+            "minecraft:chicken", "minecraft:cooked_chicken",
+            "minecraft:mutton", "minecraft:cooked_mutton",
+            "minecraft:rabbit", "minecraft:cooked_rabbit",
+            "minecraft:cod", "minecraft:cooked_cod",
+            "minecraft:salmon", "minecraft:cooked_salmon",
+            "minecraft:bread",
+        )
+        food_count = sum(count_item(client, item) for item in food_items)
+        if food_count >= 6:
+            print(f"  Starter food buffer ready ({food_count} items); returning home.")
+            return True
+
+        needed = max(1, 6 - food_count)
+        result = self.combat.hunt_passive_mobs(
+            self.context,
+            target_count=needed,
+            timeout=60,
+        )
+        if not result.success:
+            print(f"  Optional food hunt ended: {result.reason}")
+        return True
 
     def _ensure_crafting_table(self, client) -> bool:
         """Finds or places a crafting table and opens it (Using CraftingAction)."""
@@ -254,26 +394,34 @@ class InitialGatheringHandler(PhaseHandler):
     def _craft_wooden_tools(self, client) -> bool:
         """Craft wooden tools using Actions."""
         import time
+
+        # Recovered bots can already have stone/iron tooling while carrying
+        # only a small plank buffer.  Wooden tools are then unnecessary, and
+        # attempting to craft them forces a pointless log hunt.
+        if (
+            self.inventory.count_item(self.context, "minecraft:stone_pickaxe") > 0
+            or self.inventory.count_item(self.context, "minecraft:iron_pickaxe") > 0
+        ):
+            print("  Stone-tier tooling already present; skipping wooden tools.")
+            return True
         
         if self.inventory.count_item(self.context, "minecraft:wooden_pickaxe") > 0:
             print("  Already have wooden pickaxe!")
             return True
         
         # Check existing planks
-        plank_types = ["oak", "spruce", "birch", "dark_oak", "acacia", "jungle", "mangrove", "cherry"]
-        planks = sum(self.inventory.count_item(self.context, f"minecraft:{wood}_planks") for wood in plank_types)
+        planks = sum(self.inventory.count_item(self.context, p) for p in PLANK_ITEMS)
         print(f"  Existing planks: {planks}")
         
         if planks < 12:
             needed_planks = 12 - planks
-            logs_to_convert = (needed_planks + 3) // 4
-            print(f"  Need {needed_planks} more planks, converting {logs_to_convert} logs...")
-            
-            self.crafting.craft(self.context, "minecraft:oak_planks", logs_to_convert)
-            self.crafting.craft(self.context, "minecraft:spruce_planks", logs_to_convert)
+            print(f"  Need {needed_planks} more planks...")
+            # craft() verifies by plank-family count, so ask for the number of
+            # PLANKS we want (the bridge converts logs of whatever wood it has).
+            self.crafting.craft(self.context, "minecraft:oak_planks", needed_planks)
             time.sleep(0.3)
         
-        planks = sum(self.inventory.count_item(self.context, f"minecraft:{wood}_planks") for wood in plank_types)
+        planks = sum(self.inventory.count_item(self.context, p) for p in PLANK_ITEMS)
         if planks < 9:
              print(f"  Still not enough planks ({planks})")
              return False
@@ -334,6 +482,37 @@ class InitialGatheringHandler(PhaseHandler):
                         return True
         return False
 
+    def _gather_wool_optional(self, client) -> bool:
+        """Try one bounded sheep hunt, then continue progression without a bed."""
+        bed_ids = (
+            "minecraft:white_bed", "minecraft:black_bed",
+            "minecraft:gray_bed", "minecraft:light_gray_bed",
+            "minecraft:brown_bed", "minecraft:red_bed",
+            "minecraft:orange_bed", "minecraft:yellow_bed",
+            "minecraft:lime_bed", "minecraft:green_bed",
+            "minecraft:cyan_bed", "minecraft:light_blue_bed",
+            "minecraft:blue_bed", "minecraft:purple_bed",
+            "minecraft:magenta_bed", "minecraft:pink_bed",
+        )
+        existing = next(
+            (bed for bed in bed_ids if count_item(client, bed) > 0),
+            None,
+        )
+        if existing:
+            print(f"  Bed already ready ({existing}); skipping wool hunt.")
+            return True
+        if gather_wool(client, timeout=30):
+            return True
+        print("  No reachable matching sheep yet; deferring the optional bed.")
+        return True
+
+    def _craft_bed_optional(self, client) -> bool:
+        """Craft a bed when wool is available without making it a phase gate."""
+        if self._craft_bed(client):
+            return True
+        print("  Bed materials are not ready; continuing without a bed for now.")
+        return True
+
     def _craft_remaining_stone_tools(self, client) -> bool:
         """Craft remaining stone tools using Actions."""
         import time
@@ -349,8 +528,7 @@ class InitialGatheringHandler(PhaseHandler):
         if current_sticks < needed_sticks:
              print(f"  Not enough sticks (Have {current_sticks})")
              # Check planks
-             plank_types = ["oak", "spruce", "birch", "dark_oak", "acacia", "jungle", "mangrove", "cherry"]
-             planks = sum(self.inventory.count_item(self.context, f"minecraft:{wood}_planks") for wood in plank_types)
+             planks = sum(self.inventory.count_item(self.context, p) for p in PLANK_ITEMS)
              
              if planks < 2:
                  self.crafting.craft(self.context, "minecraft:oak_planks", 1)
@@ -380,44 +558,63 @@ class InitialGatheringHandler(PhaseHandler):
 
     def _setup_storage(self, client) -> bool:
         """Craft/Place a chest and remember it."""
-        from ...common.state import WorldState
-        from ...common.inventory import count_item, craft, find_item_slot
+        from ...common.inventory import (
+            count_item,
+            craft,
+            find_item_slot,
+            persist_storage_location,
+            resolve_storage_location,
+        )
         import time
-        
-        ws = WorldState(client)
-        if ws.load_checkpoint("storage"):
-            print("  Storage location already known.")
+
+        existing = resolve_storage_location(
+            client, state=getattr(self, "state", None), verify=True
+        )
+        if existing is not None:
+            persist_storage_location(
+                client, existing, state=getattr(self, "state", None)
+            )
+            print(f"  Verified existing storage at {existing}.")
             return True
             
         print("  Setting up storage system...")
         
         # Ensure planks (8 needed)
-        planks = sum(count_item(client, f"minecraft:{wood}_planks") for wood in ["oak", "spruce", "birch", "dark_oak", "acacia", "jungle", "mangrove", "cherry"])
+        planks = sum(count_item(client, p) for p in PLANK_ITEMS)
         if planks < 8:
             print("  Not enough planks for chest, converting logs...")
             # Check if we have logs!
-            logs = sum(count_item(client, block) for block in ["minecraft:oak_log", "minecraft:spruce_log", "minecraft:birch_log", "minecraft:jungle_log", "minecraft:acacia_log", "minecraft:dark_oak_log", "minecraft:mangrove_log", "minecraft:cherry_log"])
+            logs = sum(count_item(client, block) for block in LOG_BLOCKS)
             if logs == 0:
                  print("  No logs to convert to planks!")
                  return False
             
-            craft(client, "minecraft:oak_planks", 2)
+            # ``craft`` takes the desired output-item total, not the number of
+            # input logs.  Asking for 2 stopped as soon as four planks existed
+            # and left chest crafting permanently short of its eight planks.
+            if not craft(client, "minecraft:oak_planks", 8):
+                print("  Failed to prepare eight planks for chest")
+                return False
             time.sleep(1.0)
             # Force refresh to ensure client knows about planks
             client.transport.dispatch("get_inventory", {})
             time.sleep(0.5)
+            planks = sum(count_item(client, p) for p in PLANK_ITEMS)
+            if planks < 8:
+                print(f"  Chest preparation produced only {planks}/8 planks")
+                return False
             
         # Craft Chest
         if count_item(client, "minecraft:chest") == 0:
             if not self._ensure_crafting_table(client):
-                print("  Warning: Failed to ensure crafting table for storage (Skipping - Non-fatal)")
-                return True
+                print("  Failed to ensure crafting table for storage")
+                return False
             
             print("  Crafting chest...")
             if not craft(client, "minecraft:chest", 1):
-                print("  Warning: Failed to craft chest (Skipping storage - Non-fatal)")
+                print("  Failed to craft chest")
                 client.transport.dispatch("close_screen", {})
-                return True
+                return False
             client.transport.dispatch("close_screen", {})
             time.sleep(0.5)
 
@@ -426,15 +623,36 @@ class InitialGatheringHandler(PhaseHandler):
         state = client.transport.dispatch('get_state', {})
         pos = state.get('block_position', {})
         x, y, z = int(pos.get('x', 0)), int(pos.get('y', 0)), int(pos.get('z', 0))
-        
+
         chest_pos = None
-        
-        # Try a few spots
-        for dx, dz in [(1,0), (-1,0), (0,1), (0,-1), (2,0), (-2,0), (0,2), (0,-2)]:
+
+        # Preferred: harness placement (repositioning + retries + verification)
+        from ...common import harness_ops
+        if harness_ops.available():
+            try:
+                target = harness_ops.find_place_pos_near(client, x + 1, y, z)
+                if target:
+                    above = client.transport.dispatch(
+                        'get_block',
+                        {'x': target[0], 'y': target[1] + 1, 'z': target[2]},
+                    ).get('id', '')
+                    if above not in {'minecraft:air', 'minecraft:cave_air'}:
+                        print(f"  Rejecting chest spot {target}: lid blocked by {above}")
+                        target = None
+                if target and harness_ops.place_block(client, target[0], target[1], target[2], "minecraft:chest"):
+                    check = client.transport.dispatch('get_block', {'x': target[0], 'y': target[1], 'z': target[2]})
+                    if 'chest' in check.get('id', ''):
+                        chest_pos = tuple(target)
+            except Exception as e:
+                print(f"  Harness chest placement failed (falling back): {e}")
+
+        # Native fallback: try a few spots
+        for dx, dz in [] if chest_pos else [(1,0), (-1,0), (0,1), (0,-1), (2,0), (-2,0), (0,2), (0,-2)]:
             tx, ty, tz = x+dx, y, z
             check = client.transport.dispatch('get_block', {'x': tx, 'y': ty, 'z': tz})
             bid = check.get('id', '')
-            if 'air' in bid or 'grass' in bid:
+            above = client.transport.dispatch('get_block', {'x': tx, 'y': ty + 1, 'z': tz}).get('id', '')
+            if ('air' in bid or 'grass' in bid) and ('air' in above):
                 # Good spot
                 slot = find_item_slot(client, "minecraft:chest")
                 if slot is not None:
@@ -451,7 +669,7 @@ class InitialGatheringHandler(PhaseHandler):
                         
                     time.sleep(0.3)
                     try:
-                        client.transport.dispatch('place_block', {'x': tx, 'y': ty, 'z': tz})
+                        client.transport.dispatch('place_block', {'x': tx, 'y': ty, 'z': tz, 'block': 'minecraft:chest'})
                     except Exception as e:
                         print(f"  Placement error at {tx, ty, tz}: {e}")
                         continue
@@ -464,8 +682,11 @@ class InitialGatheringHandler(PhaseHandler):
         
         if chest_pos:
             print(f"  Storage initialized at {chest_pos}")
-            if hasattr(self, "state"):
-                self.state.add_location("chest", chest_pos[0], chest_pos[1], chest_pos[2], tags=["storage"], client=client)
+            if not persist_storage_location(
+                client, chest_pos, state=getattr(self, "state", None)
+            ):
+                print("  Failed to persist verified storage location")
+                return False
             
             # CRITICAL SAFETY: Blacklist chest so Baritone NEVER breaks it
             print("  Safeguard: Blacklisting chests from mining...")
@@ -481,30 +702,57 @@ class InitialGatheringHandler(PhaseHandler):
             
             return True
             
-        print("  Warning: Failed to place storage chest (Skipping - Non-fatal)")
-        return True
+        print("  Failed to place and verify storage chest")
+        return False
 
     def _deposit_excess(self, client) -> bool:
         """Dump non-essential items to storage."""
         from ...common.inventory import dump_to_chest
         
-        # Keep essentials
+        # Keep essentials. Wood must cover EVERY family: in a non-oak biome an
+        # oak-only list dumps the logs this phase just gathered, and the
+        # phase's own core-goal check (>=8 log-equivalents in inventory) then
+        # fails forever - this looped an entire run in a birch biome.
+        wool_colors = [
+            "white", "black", "gray", "light_gray", "brown",
+            "red", "orange", "yellow", "lime", "green",
+            "cyan", "light_blue", "blue", "purple", "magenta", "pink",
+        ]
         keep = [
             # Tools
-            "minecraft:wooden_pickaxe", "minecraft:stone_pickaxe", 
+            "minecraft:wooden_pickaxe", "minecraft:stone_pickaxe",
             "minecraft:stone_sword", "minecraft:stone_axe",
             "minecraft:crafting_table", "minecraft:furnace",
             # Resources
             "minecraft:coal", "minecraft:stick", "minecraft:torch",
-            # Wood/Stone (keep some for building/crafting)
-            "minecraft:oak_log", "minecraft:cobblestone", 
-            "minecraft:oak_planks",
+            # Wood of every family (logs and planks), stone
+            *LOG_BLOCKS,
+            *PLANK_ITEMS,
+            "minecraft:cobblestone",
+            # Bed and bed materials (bed is crafted right before this deposit;
+            # wool may be waiting for a deferred bed craft)
+            *[f"minecraft:{color}_bed" for color in wool_colors],
+            *[f"minecraft:{color}_wool" for color in wool_colors],
             # Food
-            "minecraft:apple", "minecraft:cooked_beef", "minecraft:beef", 
-            "minecraft:cooked_porkchop", "minecraft:porkchop", 
+            "minecraft:apple", "minecraft:cooked_beef", "minecraft:beef",
+            "minecraft:cooked_porkchop", "minecraft:porkchop",
+            "minecraft:cooked_chicken", "minecraft:chicken",
+            "minecraft:cooked_mutton", "minecraft:mutton",
+            "minecraft:cooked_rabbit", "minecraft:rabbit",
+            "minecraft:cooked_salmon", "minecraft:salmon",
+            "minecraft:cooked_cod", "minecraft:cod",
             "minecraft:bread", "minecraft:wheat"
         ]
         
         print("  Depositing excess items to storage...")
-        dump_to_chest(client, keep_items=keep)
+        deposited = dump_to_chest(
+            client,
+            keep_items=keep,
+            state=getattr(self, "state", None),
+        )
+        self._storage_deposit_verified = deposited >= 0
+        if deposited < 0:
+            print("  Storage deposit could not be verified")
+            return False
+        print(f"  Storage deposit verified ({deposited} stacks moved)")
         return True

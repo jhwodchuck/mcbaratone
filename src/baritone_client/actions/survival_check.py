@@ -7,7 +7,14 @@ from .base import BaseAction
 from ..core.interfaces import ActionContext, ActionResult
 from .crafting import CraftingAction
 from .inventory import InventoryAction
-from ..common.inventory import count_item, craft, find_item_slot, dump_to_chest
+from ..common.inventory import (
+    count_item,
+    craft,
+    find_item_slot,
+    dump_to_chest,
+    persist_storage_location,
+    resolve_storage_location,
+)
 
 
 class SurvivalCheckAction(BaseAction):
@@ -35,11 +42,12 @@ class SurvivalCheckAction(BaseAction):
         if not self._has_storage(context):
             print("  Setting up storage...")
             if not self._setup_storage(context):
-                print("  Storage setup failed, continuing...")
+                return ActionResult.fail("Storage setup failed")
 
         # 3. Deposit excess items to storage
         print("  Depositing excess items...")
-        self._deposit_excess(context)
+        if not self._deposit_excess(context):
+            return ActionResult.fail("Storage deposit could not be verified")
 
         # Health and hunger checks could be added here if needed
         # For now, the resource gathering and night survival handle the main threats
@@ -54,11 +62,9 @@ class SurvivalCheckAction(BaseAction):
 
     def _has_storage(self, context: ActionContext) -> bool:
         """Check if storage system is already set up."""
-        # Check if we have knowledge of storage location
-        if hasattr(context.state, 'load_checkpoint'):
-            storage_data = context.state.load_checkpoint("storage")
-            return storage_data is not None
-        return False
+        return resolve_storage_location(
+            context.client, state=context.state, verify=True
+        ) is not None
 
     def _craft_leather_armor(self, context: ActionContext) -> bool:
         """Craft leather armor pieces."""
@@ -146,7 +152,10 @@ class SurvivalCheckAction(BaseAction):
 
                     time.sleep(0.3)
                     try:
-                        context.client.transport.dispatch('place_block', {'x': tx, 'y': ty, 'z': tz})
+                        context.client.transport.dispatch(
+                            'place_block',
+                            {'x': tx, 'y': ty, 'z': tz, 'block': 'minecraft:chest'}
+                        )
                     except Exception as e:
                         continue
 
@@ -158,8 +167,10 @@ class SurvivalCheckAction(BaseAction):
 
         if chest_pos:
             print(f"    Storage initialized at {chest_pos}")
-            if hasattr(context.state, 'add_location'):
-                context.state.add_location("chest", chest_pos[0], chest_pos[1], chest_pos[2], tags=["storage"], client=context.client)
+            if not persist_storage_location(
+                context.client, chest_pos, state=context.state
+            ):
+                return False
 
             # Blacklist chest from mining
             context.client.transport.dispatch("chat", {"message": "#blacklist minecraft:chest"})
@@ -199,5 +210,8 @@ class SurvivalCheckAction(BaseAction):
         ]
 
         print("    Depositing excess items to storage...")
-        dump_to_chest(context.client, keep_items=keep_items)
-        return True
+        return dump_to_chest(
+            context.client,
+            keep_items=keep_items,
+            state=context.state,
+        ) >= 0

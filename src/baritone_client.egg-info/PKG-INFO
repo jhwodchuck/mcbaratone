@@ -3,7 +3,8 @@ Name: baritone-client
 Version: 0.1.0
 Summary: Python facade for controlling Baritone via a lightweight transport layer
 Author: OpenAI Agent
-Project-URL: Homepage, https://example.com/baritone-client
+Project-URL: Homepage, https://github.com/jhwodchuck/mcbaratone
+Project-URL: Repository, https://github.com/jhwodchuck/mcbaratone
 Classifier: Programming Language :: Python :: 3
 Classifier: License :: OSI Approved :: MIT License
 Classifier: Operating System :: OS Independent
@@ -20,236 +21,140 @@ Requires-Dist: requests>=2.31; extra == "dev"
 
 # mcbaratone
 
-A comprehensive Python library for Minecraft automation through the Baritone pathfinding mod. This project provides a transport-agnostic client with a Java bridge, enabling complex automation tasks like resource gathering, base building, and mission completion.
+`mcbaratone` is a Python automation client and Fabric bridge for controlling
+Minecraft through Baritone. The project goal is a bot that can start in a real
+Survival world, reach and defeat the Ender Dragon, unlock post-End resources,
+and then build and terraform without player input.
 
-## Table of Contents
+This is an active work in progress. Bridge communication, checkpointing, and
+early-game automation exist; the complete no-cheat spawn-to-endgame run is not
+yet proven. The read-only Survival acceptance suite defines what “working”
+means at every milestone.
 
-- [Project Overview](#project-overview)
-- [Architecture Summary](#architecture-summary)
-- [Major Components](#major-components)
-- [Getting Started](#getting-started)
-- [Examples](#examples)
-- [Contribution Guidelines](#contribution-guidelines)
+## Start here
 
-## Project Overview
+| Need | Document or entry point |
+| --- | --- |
+| Resume current live development work | [Current handoff](docs/current-handoff.md) |
+| Install, launch, resume, and monitor the bot | [Operator guide](docs/operator-guide.md) |
+| Understand the code and runtime flow | [Architecture map](docs/architecture_map.md) |
+| See the intended repository organization | [Repository layout](docs/repository-layout.md) |
+| Find current documentation | [Documentation index](docs/README.md) |
+| Understand tests and their world-safety level | [Functional test guide](tests/functional/README.md) |
+| See the endgame acceptance gates | [Survival progression suite](tests/functional/survival/README.md) |
+| Run the autonomous controller | [`spawn_to_dragon.py`](spawn_to_dragon.py) |
 
-The mcbaratone project bridges Python scripting with Minecraft's Baritone pathfinding mod, offering a clean, high-level API for automation. Key features include:
+## Quick start on Windows
 
-- **Transport Agnostic**: Support for TCP, HTTP, WebSocket, and Py4J transports
-- **Facade Pattern**: Intuitive API organization through dedicated facades (commands, processes, goals, etc.)
-- **Advanced Automation**: Multi-phase automation system with resource management and state persistence
-- **Mission System**: Pre-built mission templates for complex game progression
-- **MCP Integration**: Model Context Protocol support for AI agent interaction
-- **Extensive Documentation**: Comprehensive API docs and architecture guides
+From the repository root:
 
-This repository includes both the Python client library and a Java bridge (Fabric mod) that exposes Baritone's API over network protocols.
-
-## Architecture Summary
-
-The system follows a layered architecture designed for reliability and extensibility:
-
-### Transport Layer
-Abstract transport implementations handle communication with the Java bridge, supporting multiple protocols with a common dispatch interface. Transports include TCP (basic dispatch), WebSocket (full event support), HTTP, and Py4J.
-
-### Facade Layer
-High-level facades provide organized access to Baritone functionality:
-- CommandFacade: Chat commands and direct execution
-- ProcessFacade: Mining, building, and exploration processes
-- GoalsFacade: Navigation targets and waypoints
-- SettingsFacade: Configuration management
-- MissionFacade: High-level mission orchestration
-
-### Automation Layer
-Advanced automation capabilities with:
-- ResourceManager: Inventory tracking and requirement analysis
-- PhaseExecutor: Sequential phase management with checkpointing
-- StateManager: Persistent state across sessions
-- Common utilities: Pre-built automation recipes
-
-### Java Bridge
-A Fabric mod that exposes Baritone's `IBaritone` interface over TCP (port 5555), serving as the communication bridge between Python and Minecraft.
-
-For detailed architecture information, see [`docs/architecture.md`](docs/architecture.md).
-
-## Major Components
-
-### Core Client Library
-- **[`client.py`](src/baritone_client/core/client.py)**: Main Client class providing facade access
-- **[`transport.py`](src/baritone_client/transport/transport.py)**: Transport abstractions and implementations
-- **[`serialization.py`](src/baritone_client/transport/serialization.py)**: Data validation and enum handling
-- **[`models.py`](src/baritone_client/core/models.py)**: Pydantic data models
-
-### Facades
-- **[Command Facade](docs/command_facade.md)**: Execute Baritone commands and chat interactions
-- **[Process Facade](docs/process_facade.md)**: Control mining, building, and exploration processes
-- **[Goals Facade](docs/goals_facade.md)**: Set navigation targets and waypoints
-- **[Settings Facade](docs/settings_facade.md)**: Configure Baritone behavior and preferences
-- **[Mission Facade](docs/automation_system.md)**: High-level mission orchestration and automation
-
-### Automation System
-- **[Automator](src/baritone_client/automator/automator.py)**: Multi-phase automation engine
-- **[Resource Manager](src/baritone_client/automator/resource_manager.py)**: Inventory and resource tracking
-- **[Phase Executor](src/baritone_client/automator/phase_executor.py)**: Sequential phase management
-- **[State Manager](src/baritone_client/automator/state_manager.py)**: Checkpoint and state persistence
-- **[Common Utilities](docs/common_utilities.md)**: Pre-built automation recipes and helpers
-
-### MCP Server
-- **[MCP Server](docs/mcp_server.md)**: Model Context Protocol integration for AI agents
-
-### Java Bridge
-- **[Bridge](bridge/)**: Fabric mod providing network access to Baritone's API
-
-### Documentation
-- **[API Surface](docs/api_surface.md)**: Complete Baritone API mapping
-- **[Package Summary](docs/package-summary.md)**: Javadoc-extracted reference
-- **[Event System](docs/event_system.md)**: Event handling and telemetry
-- **[Architecture Map](docs/architecture_map.md)**: System architecture visualization
-
-## Getting Started
-
-### Prerequisites
-- Python 3.9+
-- Java 21 (for building the Java bridge)
-- Minecraft 1.15+ with Fabric loader
-- Baritone mod installed
-
-### Installation
-
-1. **Install Python Dependencies**:
-   ```bash
-   python -m pip install -e .[dev]
-   ```
-
-2. **Build the Java Bridge**:
-   ```bash
-   cd bridge
-   # Copy baritone-api-fabric-1.15.0.jar to bridge/libs/ (required for build)
-   ./gradlew build
-   # Install the resulting JAR file to your Minecraft mods folder
-   ```
-
-3. **Setup Minecraft**:
-   - Install Fabric loader for Minecraft 1.15+
-   - Install Baritone mod
-   - Place the built bridge JAR in the mods folder
-
-### Basic Usage
-
-```python
-from baritone_client.core.client import Client
-from baritone_client.transport import HttpTransport
-from baritone_client.core.facades.goals import GoalFactory
-
-# Create transport (adjust URL/port as needed)
-transport = HttpTransport("http://localhost:25600/api")
-client = Client(transport)
-
-# Navigate to coordinates
-goal = GoalFactory.goal_block(10, 65, -20)
-client.goals.apply(goal)
-
-# Execute commands
-client.command.run("goto 10 65 -20")
-
-# Start mining process
-client.process.mine.start(target_block="diamond_ore")
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 ```
 
-### Testing
-Run the unit tests to verify your setup:
-```bash
-python -m pytest
+Launch a compatible Fabric Minecraft instance containing Baritone and the
+bridge mod, enter a world, and verify that TCP port `5555` is open:
+
+```powershell
+Test-NetConnection localhost -Port 5555
 ```
 
-For detailed setup instructions, see [`docs/architecture.md`](docs/architecture.md).
+Disable pause-on-lost-focus in Minecraft with `F3+P`, then start or resume the
+controller:
 
-## Examples
-
-### Mission Automation
-Automate complex game progression with pre-built mission templates:
-
-```python
-from baritone_client.core.client import Client
-from baritone_client.transport import TcpTransport
-from baritone_client.scripts.endgame import EndGameMission
-
-client = Client(TcpTransport())
-mission = EndGameMission(client)
-
-# Run complete endgame mission
-mission.run_full_mission()
-
-# Or execute individual phases
-mission.bootstrap_world()
-mission.establish_base()
-mission.resource_pipeline()
-
-# Check progress
-status = mission.synchronize()
-print(f"Phase: {status.phase}, Health: {status.telemetry.health}")
+```powershell
+.\.venv\Scripts\python.exe spawn_to_dragon.py `
+  --host localhost `
+  --port 5555 `
+  --resume `
+  --no-background-systems
 ```
 
-### Base Building
-Use common utilities for automated infrastructure:
+The Windows wrapper `run_autonomous.bat` performs the same launch and writes
+timestamped output under `Logs/`.
 
-```python
-from baritone_client.common.base import setup_base, build_good_house
-from baritone_client.common.inventory import loot_nearby_chests
+## Production progression
 
-# Establish base infrastructure
-success, coords = setup_base(client)
-if success:
-    # Build a house around the base
-    build_good_house(client, coords[0], coords[1], coords[2])
-    # Loot nearby resources
-    loot_nearby_chests(client, radius=32)
+The production phase enum lives in
+`src/baritone_client/automator/state_manager.py`; handlers live in
+`src/baritone_client/automator/phases/`.
+
+| Phase group | Required outcome |
+| --- | --- |
+| Bridge and bootstrap | Connected, healthy player, durable world checkpoint |
+| Initial gathering | Wood, cobblestone, and replaceable stone tools |
+| Base construction | Verified house, crafting table, furnace, chest, and food source |
+| Food, iron, and enchanting | Renewable food, defensive iron gear, level-30 enchanting |
+| Nether and blaze | Persistent portal, fortress location, and blaze rods |
+| World unlock | Eyes, stronghold, End portal, explicit Dragon defeat evidence |
+| Post-End and megabase | Elytra, shulker boxes, beacon, and terraform plan |
+
+Do not treat a handler returning `True` as proof by itself. Each milestone must
+also satisfy its corresponding Suite 1200 acceptance gate and survive a
+checkpoint reload.
+
+## Tests: choose the right type
+
+| Test type | Location | Safe for the real autonomous world? |
+| --- | --- | --- |
+| Unit and contract tests | `tests/test_*.py` | Yes; mocked/offline |
+| Survival acceptance gates | `tests/functional/survival/` | Read-only, but run when the mutating driver is idle unless concurrent clients are proven safe |
+| Legacy functional arenas | `tests/functional/extended_suite_100.py` through `extended_suite_1000.py` | **No**; many use teleport, `/give`, `/setblock`, world clearing, or destructive teardown |
+| Persistent farming prototype | `tests/functional/extended_suite_1100.py` | Mutates a live world; run only in an isolated test world |
+
+Run the fast, verified progression regression set:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q `
+  tests\test_full_automation.py `
+  tests\test_survival_progression.py `
+  tests\test_functional_harness.py `
+  tests\test_endgame_script.py `
+  tests\test_default_handlers.py
 ```
 
-### MCP Server
-Enable AI agent integration:
+The full offline collection currently contains 259 tests and includes slow
+retry-path coverage. Run `python -m pytest -q` when a longer verification pass
+is appropriate.
 
-```bash
-# Stdio mode for Claude Desktop
-python -m baritone_client.mcp_server --host localhost --port 5555
+List functional tests without connecting to Minecraft:
 
-# HTTP mode for MCP Inspector
-python -m baritone_client.mcp_server --transport streamable-http --http-host 127.0.0.1 --http-port 8000
+```powershell
+.\.venv\Scripts\python.exe tests\functional\run_tests.py --list
 ```
 
-See [`examples/`](examples/) for more sample scripts and [`docs/mcp_server.md`](docs/mcp_server.md) for MCP integration details.
+Never run the unfiltered functional runner against a world you care about.
 
-## Contribution Guidelines
+## Repository map
 
-We welcome contributions to improve mcbaratone! Please follow these guidelines:
+```text
+bridge/                         Fabric bridge mod; do not modify casually
+docs/                           Operator, architecture, and API documentation
+artifacts/                      Archived generated reports and captured output
+plans/                          Forward-looking designs, not capability claims
+scripts/                        Debug, maintenance, adapter, and manual-test tools
+src/baritone_client/            Installable Python package
+  automator/                    Phase orchestration and checkpoint state
+  automator/phases/             Production progression handlers
+  common/                       Reusable gameplay capabilities
+tests/                          Offline unit and contract tests
+tests/functional/               Live Minecraft harness and legacy suites
+tests/functional/survival/      Read-only endgame acceptance gates
+spawn_to_dragon.py              Primary autonomous runner
+run_autonomous.bat              Windows launcher with timestamped logs
+```
 
-### Development Setup
-1. Fork the repository and create a feature branch
-2. Set up your development environment:
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # Windows: .venv\Scripts\activate
-   pip install -e .[dev]
-   ```
-3. Run tests: `python -m pytest`
-4. Format code: `black src/ tests/ && isort src/ tests/`
+Generated logs, metrics, checkpoints, debug output, and historical reviews are
+not production entry points. See [Repository layout](docs/repository-layout.md)
+before moving them because several older documents and scripts still reference
+root-level paths.
 
-### Code Standards
-- **Python Style**: Follow PEP8 with type hints
-- **Documentation**: Add docstrings to all public functions/classes
-- **Testing**: Write unit tests for new features using mocked transports
-- **Bridge Rules**: Never modify `bridge/` directory directly (see [`AGENTS.md`](AGENTS.md))
+## Contribution rules
 
-### Pull Request Process
-1. Update relevant documentation for any API changes
-2. Ensure all tests pass
-3. Provide clear PR description with rationale
-4. Reference any related issues
-
-### Areas for Contribution
-- New automation phases or mission templates
-- Additional transport implementations
-- Performance optimizations
-- Bug fixes and documentation improvements
-- Common utility recipes
-
-For detailed development information, see [`AGENTS.md`](AGENTS.md) and [`docs/architecture.md`](docs/architecture.md).
+- Read [`AGENTS.md`](AGENTS.md) before changing the bridge or automation model.
+- Put reusable behavior under `src/baritone_client/`; tests should call
+  production behavior rather than maintain a separate implementation.
+- Preserve unrelated dirty-worktree changes and the active checkpoint.
+- Add an offline test and a Survival acceptance gate for each new capability.
+- Do not modify `bridge/` unless the task explicitly targets the Fabric bridge.

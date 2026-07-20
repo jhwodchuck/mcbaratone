@@ -444,6 +444,19 @@ downloads/
 !tsconfig.json
 !*.md
 
+# mcbaratone runtime state (never source or acceptance evidence by itself)
+.current_run_log
+.current_run_pid
+spawn_to_dragon_checkpoint.*
+metrics_*.json
+storage_catalog.sqlite3
+storage_catalog.sqlite3-shm
+storage_catalog.sqlite3-wal
+
+# Local headless Minecraft installation and generated run state
+HeadlessMC/
+runs/
+
 # Downloaded Gradle distribution
 bridge/gradle-8.12/
 bridge/gradle-8.12-bin.zip

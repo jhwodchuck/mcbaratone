@@ -60,7 +60,9 @@ def craft_item_simple(client, resources, item_id: str, recipe_map: Dict[int, str
 
 def safe_goto(client, x: int, y: int, z: int, timeout: float = 120.0):
     """Navigate to coordinates and wait for arrival or failure."""
-    client.command.run(f"#goto {x} {y} {z}")
+    # Use the bridge's goto handler directly - the chat-command facade
+    # misparses the bridge reply and raises even when pathing starts.
+    client.transport.dispatch("goto", {"x": x, "y": y, "z": z})
     start_time = time.time()
     while time.time() - start_time < timeout:
         response = client.transport.dispatch("get_state", {})
@@ -86,14 +88,29 @@ def get_player_pos(client) -> tuple[float, float, float]:
 
 
 def place_block(client, x: int, y: int, z: int, item_id: str) -> bool:
-    """Place a block at specified coordinates."""
-    # First select the item
-    client.transport.dispatch("select_slot", {"item_id": item_id})
+    """
+    Place a block at specified coordinates.
+
+    The bridge places whatever is in the main hand, so the item must be
+    selected first. (select_slot only accepts a hotbar slot index - passing
+    item_id to it is silently invalid, which used to make this a no-op.)
+    """
+    from .inventory import select_item
+
+    if not select_item(client, item_id, allow_swap=True):
+        print(f"  place_block: '{item_id}' not available to select")
+        return False
     time.sleep(0.2)
-    
+
     response = client.transport.dispatch("place_block", {
         "x": x,
         "y": y,
-        "z": z
+        "z": z,
+        "block": item_id,
     })
-    return response.get("status") == "ok" and response.get("data", {}).get("placed", False)
+    data = response.get("data", response)
+    placed = bool(data.get("placed", False))
+    if not placed and response.get("status") == "ok":
+        # Some bridge builds report success without the placed flag
+        placed = True
+    return placed

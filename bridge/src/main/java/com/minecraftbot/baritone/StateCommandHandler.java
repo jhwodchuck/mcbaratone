@@ -137,14 +137,25 @@ public class StateCommandHandler extends AbstractCommandHandler {
             data.addProperty("dimension", client.world.getRegistryKey().getValue().toString());
             data.addProperty("world_time", client.world.getTimeOfDay());
 
+            JsonObject worldIdentity = new JsonObject();
+            worldIdentity.addProperty("version", 1);
+            worldIdentity.addProperty("dimension_context", client.world.getRegistryKey().getValue().toString());
+
             // Add world seed for reset detection (only available on integrated server)
             if (client.getServer() != null) {
                 IntegratedServer server = client.getServer();
                 ServerWorld world = server.getOverworld();
                 if (world != null) {
                     data.addProperty("world_seed", world.getSeed());
+                    worldIdentity.addProperty("seed", world.getSeed());
                 }
+                worldIdentity.addProperty("world_name", server.getSaveProperties().getLevelName());
+                worldIdentity.addProperty("scope", "singleplayer");
+            } else if (client.getCurrentServerEntry() != null) {
+                worldIdentity.addProperty("server_address", client.getCurrentServerEntry().address);
+                worldIdentity.addProperty("scope", "multiplayer");
             }
+            data.add("world_identity", worldIdentity);
 
             // Screen info - may be slightly stale but acceptable
             if (client.currentScreen != null) {
