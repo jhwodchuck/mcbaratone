@@ -7,6 +7,7 @@ from typing import Optional, Callable, Any
 from .state_manager import StateManager, Phase
 from .resource_manager import ResourceManager
 from .phase_executor import PhaseExecutor, PhaseHandler
+from .objective import ObjectivePlanner, default_objectives
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
 from .systems import SafetySystem, HungerSystem, MappingSystem
 from .telemetry import TelemetrySystem
@@ -76,7 +77,11 @@ class EndGameAutomator:
             screenshot_enabled=screenshot_enabled,
         )
         self.telemetry = TelemetrySystem(checkpoint_dir)
-        
+
+        # Goal-graph scheduler.  Replaces the linear phase walk; reconstructed
+        # from the checkpoint in run().
+        self.planner = ObjectivePlanner(default_objectives())
+
         self.auto_checkpoint = auto_checkpoint
         self.checkpoint_interval = checkpoint_interval
         self._last_checkpoint = 0.0
@@ -185,6 +190,7 @@ class EndGameAutomator:
             print(f"Resumed from checkpoint: {self.state.get_current_phase().name}")
             if seed:
                 print(f"  World seed: {seed}")
+            self._restore_planner()
         else:
             print("Starting fresh automation")
 
@@ -243,63 +249,94 @@ class EndGameAutomator:
         print(f"{'#'*60}\n")
         
         try:
-            while self._running and self.state.get_current_phase() != Phase.COMPLETE:
-                phase = self.state.get_current_phase()
-
-                # Check for death and handle recovery
+            while self._running and not self.planner.is_complete():
+                # Check for death and handle recovery before choosing a goal.
                 if self._handle_death_recovery():
-                    continue  # Skip to next phase after recovery
+                    continue
 
-                # Notify phase start
+                # Choose the highest-value runnable objective.  Runnability is
+                # decided by graph prerequisites only: in this codebase
+                # PHASE_REQUIREMENTS are a phase's *outputs* (completion criteria the
+                # handler produces), not preconditions -- gating on is_phase_ready
+                # here would deadlock a phase behind items it is meant to create.
+                ready = self.planner.runnable()
+                obj = self.planner.select(ready)
+                if obj is None:
+                    # Nothing runnable and not won: a genuine stall (every remaining
+                    # objective is abandoned, or its prerequisites are unmet).  End
+                    # the run gracefully rather than spinning.
+                    self._report_stall()
+                    return False
+
+                phase = obj.phase
+                self.planner.mark_active(obj)
+                self.state.set_phase(phase)  # keeps checkpoint / Suite 1200 current_phase meaningful
+
                 if self.on_phase_start:
                     self.on_phase_start(phase)
-                
-                # Start timing
+
                 self.telemetry.start_timer(f"phase_{phase.name}")
-                
-                # Execute phase
                 success = self.executor.execute_phase(phase)
-                
-                # Stop timing
                 self.telemetry.stop_timer(f"phase_{phase.name}", success=success)
-                
+
                 if success:
+                    self.planner.mark_done(obj)
                     if self.on_phase_complete:
                         self.on_phase_complete(phase)
-                    
-                    # Advance to next phase
+
                     payload = self.state.get_phase_payload(phase)
                     if payload:
                         print(f"Phase {phase.name} data: {payload}")
-                    self.state.advance_phase()
-                    
-                    # Auto checkpoint
+
+                    self._persist_objective_progress()
                     self._maybe_checkpoint()
-                    
                 else:
                     if self.on_phase_fail:
                         self.on_phase_fail(phase)
-                    
-                    print(f"\nPhase {phase.name} failed. Stopping automation.")
-                    self._running = False
-                    return False
-            
-            if self.state.get_current_phase() == Phase.COMPLETE:
+
+                    # Non-fatal: re-queue for a later pass, or abandon and move on to
+                    # other objectives instead of killing the whole run.
+                    requeued = self.planner.mark_failed(obj)
+                    if requeued:
+                        print(f"\nPhase {phase.name} failed (attempt {obj.attempts}/"
+                              f"{obj.max_attempts}); will retry after other objectives.")
+                    else:
+                        print(f"\nPhase {phase.name} abandoned after {obj.attempts} "
+                              f"attempts; continuing with remaining objectives.")
+
+            if self.planner.is_complete():
+                self.state.set_phase(Phase.COMPLETE)
                 print("\n" + "="*60)
                 print("  🐉 ENDER DRAGON DEFEATED! 🎉")
                 print("  EndGame Automation Complete!")
                 print("="*60 + "\n")
-                
+
                 if self.on_complete:
                     self.on_complete()
-                
+
                 self.state.clear_checkpoint()
                 return True
-            
+
             return False
 
         finally:
              self.stop()
+
+    def _report_stall(self) -> None:
+        """Print a diagnostic when the run stalls with no runnable objective."""
+        from .objective import ObjStatus
+
+        abandoned = [o.phase.name for o in self.planner.objectives
+                     if o.status is ObjStatus.ABANDONED]
+        pending = [o.phase.name for o in self.planner.objectives
+                   if o.status in (ObjStatus.PENDING, ObjStatus.BLOCKED)]
+        print("\n" + "="*60)
+        print("  Automation stalled: no runnable objective remains.")
+        if abandoned:
+            print(f"  Abandoned: {', '.join(abandoned)}")
+        if pending:
+            print(f"  Still pending (prerequisites unmet): {', '.join(pending)}")
+        print("="*60 + "\n")
 
 
     def run_suite(self, suite_name: str) -> bool:
@@ -387,6 +424,31 @@ class EndGameAutomator:
             inventory, world_seed=seed, world_identity=identity
         )
         print(f"Checkpoint saved: {path}")
+
+    def _restore_planner(self) -> None:
+        """Rebuild objective statuses from the resumed checkpoint.
+
+        Prefers the explicit completed-objective set (correct even when objectives
+        finished out of enum order); falls back to a linear reconstruction for old
+        checkpoints that only persisted ``current_phase``.
+        """
+        names = self.state.custom_data.get("completed_objectives")
+        if names:
+            completed = []
+            for name in names:
+                try:
+                    completed.append(Phase[name])
+                except KeyError:
+                    continue  # phase renamed/removed across versions -> ignore
+            self.planner.restore(completed)
+        else:
+            self.planner.restore_linear(self.state.get_current_phase())
+
+    def _persist_objective_progress(self) -> None:
+        """Record completed objectives into custom_data so they survive a restart."""
+        self.state.custom_data["completed_objectives"] = [
+            p.name for p in self.planner.completed_phases()
+        ]
     
     def _handle_death_recovery(self) -> bool:
         """Handle death and stop the run if recovery cannot be proven safe."""

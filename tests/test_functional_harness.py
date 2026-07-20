@@ -215,6 +215,42 @@ def test_manual_iron_chestplate_uses_verified_eight_ingot_pattern(monkeypatch):
     assert (0, "QUICK_MOVE", 0) in clicks
 
 
+def test_manual_stone_axe_prefers_atomic_place_recipe(monkeypatch):
+    calls = []
+
+    class Transport:
+        def dispatch(self, route, payload):
+            calls.append((route, payload))
+            if route == "place_recipe":
+                return {"data": {"crafted": True}}
+            raise AssertionError(f"unexpected fallback route: {route}")
+
+    class Context:
+        client = type("Client", (), {"transport": Transport()})()
+
+        def log_event(self, _event):
+            return None
+
+    assert inventory_ops.craft_stone_axe_manual(Context())
+    assert calls == [
+        (
+            "place_recipe",
+            {
+                "placements": [
+                    {"selector": "minecraft:cobblestone", "grid_slot": 1},
+                    {"selector": "minecraft:cobblestone", "grid_slot": 2},
+                    {"selector": "minecraft:cobblestone", "grid_slot": 4},
+                    {"selector": "minecraft:stick", "grid_slot": 5},
+                    {"selector": "minecraft:stick", "grid_slot": 8},
+                ],
+                "expected_output": "minecraft:stone_axe",
+                "expected_count": 1,
+                "crafts": 1,
+            },
+        )
+    ]
+
+
 def test_generic_manual_recipe_places_each_ingredient_and_verifies_output(monkeypatch):
     class Transport:
         def dispatch(self, route, _payload):

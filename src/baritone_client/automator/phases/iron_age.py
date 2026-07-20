@@ -234,10 +234,14 @@ class FoodAndIronHandler(PhaseHandler):
             door_block = client.transport.dispatch(
                 "get_block", {"x": door[0], "y": door[1], "z": door[2]}
             )
-            if "door" not in door_block.get("id", ""):
-                print(f"  Starter-house door is missing at {door}.")
-                return False
-            if str(door_block.get("state", {}).get("open", "false")).lower() != "true":
+            door_present = "door" in door_block.get("id", "")
+            if not door_present:
+                # A missing door is an OPEN doorway, not a blocker. Walk
+                # straight in to smelt instead of failing the whole return: a
+                # griefed or never-completed door previously dead-ended
+                # FOOD_AND_IRON permanently ("no runnable objective remains").
+                print(f"  No door at {door}; entering through the open doorway.")
+            elif str(door_block.get("state", {}).get("open", "false")).lower() != "true":
                 client.transport.dispatch(
                     "look_at",
                     {"x": door[0] + 0.5, "y": door[1] + 0.5, "z": door[2] + 0.5},
@@ -493,7 +497,13 @@ class FoodAndIronHandler(PhaseHandler):
             "minecraft:diamond_pickaxe",
             "minecraft:netherite_pickaxe",
         ]
-        minimum_durability = 350
+        # A fresh iron pickaxe is 250 durability, so a 350 reserve was
+        # unsatisfiable by a single pick and forced crafting a SECOND iron
+        # pickaxe every run - which then dead-locked on stick preparation and
+        # trapped the phase. One working iron pickaxe (plus the stone backup
+        # and the bucket) is enough to begin the descent; the bulk-mining step
+        # crafts more picks from mined iron. Require a usable single pick.
+        minimum_durability = 200
         if not self._ensure_mining_workstation(client):
             return False
 

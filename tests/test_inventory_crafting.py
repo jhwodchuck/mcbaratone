@@ -523,6 +523,56 @@ def test_deposit_loads_persisted_chest_chunk_before_rejecting_it(monkeypatch):
     assert moves == [(1, 65, 1)]
 
 
+def test_deposit_resumes_long_chest_return_after_progress_timeout(monkeypatch):
+    class DistantChestTransport:
+        def __init__(self):
+            self.loaded = False
+            self.position = {"x": 600, "y": 65, "z": 1}
+
+        def dispatch(self, route, _payload):
+            if route == "get_block":
+                return {
+                    "id": (
+                        "minecraft:chest"
+                        if self.loaded else "minecraft:void_air"
+                    )
+                }
+            if route == "get_state":
+                return {"block_position": dict(self.position)}
+            if route == "get_screen":
+                return {
+                    "sync_id": 9,
+                    "total_slots": 63,
+                    "slots": [
+                        {"slot": index, "id": "minecraft:air", "count": 0}
+                        for index in range(63)
+                    ],
+                }
+            return {}
+
+    transport = DistantChestTransport()
+    client = DummyClient(transport)
+    moves = []
+
+    def load_chunk(_client, x, y, z, **_kwargs):
+        moves.append((x, y, z))
+        if len(moves) == 1:
+            transport.position = {"x": 200, "y": 65, "z": 1}
+            return False
+        transport.position = {"x": 1, "y": 65, "z": 1}
+        transport.loaded = True
+        return True
+
+    monkeypatch.setattr("baritone_client.common.navigation.goto", load_chunk)
+    monkeypatch.setattr(harness_ops, "available", lambda: True)
+    monkeypatch.setattr(
+        harness_ops, "open_container", lambda *_args, **_kwargs: True
+    )
+
+    assert inventory.deposit_excess_to_chest(client, (1, 65, 1)) == 0
+    assert moves == [(1, 65, 1), (1, 65, 1)]
+
+
 def test_storage_location_resolves_from_production_checkpoint_state(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
 
@@ -901,3 +951,35 @@ def test_craft_recipe_manual_bridge_fallback(monkeypatch):
     assert "get_screen" in routes
     assert "inventory_click" in routes
 
+
+def test_plank_requirement_uses_batch_yield_not_one_per_stick(monkeypatch):
+    # 2 planks -> 4 sticks. 3 sticks needs 2 planks (one batch), NOT 6.
+    # Regression for the FOOD_AND_IRON deep-mining-prep deadlock: with 5 planks
+    # and no logs, the old `sticks*2` formula demanded 6 and failed to gather
+    # a log it did not need.
+    client = DummyClient(DummyTransport())
+    gathered = []
+    monkeypatch.setattr(inventory, "_craft_family_count", lambda _c, _item: 5)
+    monkeypatch.setattr(
+        inventory,
+        "_first_log_family_with_stock",
+        lambda _c, _n=1: gathered.append("looked_for_log") or "",
+    )
+
+    # 5 planks already cover 3 sticks (needs 2) -> returns True, never touches logs
+    assert inventory._ensure_planks_for_sticks(client, required_sticks=3)
+    assert gathered == [], "must not look for logs when planks already suffice"
+
+
+def test_plank_requirement_batches_round_up(monkeypatch):
+    # 5 sticks -> 2 batches -> 4 planks required.
+    seen = {}
+    client = DummyClient(DummyTransport())
+    monkeypatch.setattr(inventory, "_craft_family_count", lambda _c, _item: 4)
+    monkeypatch.setattr(
+        inventory,
+        "_first_log_family_with_stock",
+        lambda _c, _n=1: seen.setdefault("looked", True) or "",
+    )
+    assert inventory._ensure_planks_for_sticks(client, required_sticks=5)
+    assert "looked" not in seen  # 4 planks exactly cover 2 batches

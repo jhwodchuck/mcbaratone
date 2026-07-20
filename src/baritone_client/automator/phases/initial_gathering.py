@@ -565,6 +565,7 @@ class InitialGatheringHandler(PhaseHandler):
             persist_storage_location,
             resolve_storage_location,
         )
+        from ...common.resources import LOG_TO_PLANKS
         import time
 
         existing = resolve_storage_location(
@@ -579,35 +580,79 @@ class InitialGatheringHandler(PhaseHandler):
             
         print("  Setting up storage system...")
         
-        # Ensure planks (8 needed)
+        def prepare_planks(required: int) -> bool:
+            """Convert any carried log families until the shared target is met."""
+            current = sum(count_item(client, item) for item in PLANK_ITEMS)
+            while current < required:
+                progressed = False
+                for log_id, plank_id in LOG_TO_PLANKS.items():
+                    log_count = count_item(client, log_id)
+                    if log_count <= 0:
+                        continue
+                    target = min(required, current + log_count * 4)
+                    craft(client, plank_id, target)
+                    refreshed = sum(
+                        count_item(client, item) for item in PLANK_ITEMS
+                    )
+                    if refreshed > current:
+                        current = refreshed
+                        progressed = True
+                    if current >= required:
+                        return True
+                if not progressed:
+                    return False
+            return True
+
+        # A chest needs eight planks.  If no table item is carried, reserve an
+        # additional four because ensure_crafting_table may have to craft one
+        # before the chest recipe can run.  Previously the phase prepared
+        # exactly eight, spent four on a table, then failed forever with five
+        # mixed-family planks.  Select the actual carried log family rather
+        # than hard-coding oak so recovered jungle/birch inventories work.
         planks = sum(count_item(client, p) for p in PLANK_ITEMS)
-        if planks < 8:
-            print("  Not enough planks for chest, converting logs...")
+        plank_budget = 8 + (
+            0 if count_item(client, "minecraft:crafting_table") > 0 else 4
+        )
+        if planks < plank_budget:
+            print(
+                "  Not enough planks for chest/table "
+                f"({planks}/{plank_budget}), converting logs..."
+            )
             # Check if we have logs!
             logs = sum(count_item(client, block) for block in LOG_BLOCKS)
             if logs == 0:
                  print("  No logs to convert to planks!")
                  return False
-            
-            # ``craft`` takes the desired output-item total, not the number of
-            # input logs.  Asking for 2 stopped as soon as four planks existed
-            # and left chest crafting permanently short of its eight planks.
-            if not craft(client, "minecraft:oak_planks", 8):
-                print("  Failed to prepare eight planks for chest")
+
+            if not prepare_planks(plank_budget):
+                print(
+                    f"  Failed to prepare {plank_budget} planks for storage"
+                )
                 return False
             time.sleep(1.0)
             # Force refresh to ensure client knows about planks
             client.transport.dispatch("get_inventory", {})
             time.sleep(0.5)
             planks = sum(count_item(client, p) for p in PLANK_ITEMS)
-            if planks < 8:
-                print(f"  Chest preparation produced only {planks}/8 planks")
+            if planks < plank_budget:
+                print(
+                    "  Storage preparation produced only "
+                    f"{planks}/{plank_budget} planks"
+                )
                 return False
             
         # Craft Chest
         if count_item(client, "minecraft:chest") == 0:
             if not self._ensure_crafting_table(client):
                 print("  Failed to ensure crafting table for storage")
+                return False
+
+            # A nearby table may have been reused, or four planks may have
+            # been consumed to make one.  Verify the chest's own budget after
+            # that operation and top it up from any remaining log family.
+            planks = sum(count_item(client, p) for p in PLANK_ITEMS)
+            if planks < 8 and not prepare_planks(8):
+                print(f"  Only {planks}/8 planks remain after table setup")
                 return False
             
             print("  Crafting chest...")

@@ -378,6 +378,36 @@ def test_ensure_supplies_never_loots_owned_surface_storage(monkeypatch):
     assert not looted
 
 
+def test_deep_mining_prep_passes_with_one_usable_iron_pickaxe(monkeypatch):
+    # The live FOOD_AND_IRON deadlock: an iron+stone kit at 318 durability was
+    # rejected by the old 350 gate and forced crafting a SECOND iron pickaxe,
+    # which then failed on stick prep and trapped the phase. One usable pick
+    # (>=200) plus a bucket must pass with NO crafting.
+    client = SimpleNamespace()
+    crafted = []
+    item_counts = {
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:iron_pickaxe": 1,
+        "minecraft:bucket": 1,
+    }
+    handler = iron_age.FoodAndIronHandler()
+    monkeypatch.setattr(
+        iron_age, "count_item", lambda _client, item_id: item_counts.get(item_id, 0)
+    )
+    monkeypatch.setattr(
+        iron_age, "remaining_pickaxe_durability", lambda *_a, **_k: 318
+    )
+    monkeypatch.setattr(handler, "_ensure_mining_workstation", lambda _client: True)
+    monkeypatch.setattr(
+        iron_age,
+        "_craft_with_table",
+        lambda _client, item_id, target: crafted.append((item_id, target)) or True,
+    )
+
+    assert handler._craft_essential_iron(client)
+    assert crafted == [], "a usable iron pickaxe + bucket must not craft a spare"
+
+
 def test_deep_mining_prep_replaces_nearly_broken_pickaxes(monkeypatch):
     client = SimpleNamespace()
     crafted = []
@@ -409,10 +439,9 @@ def test_deep_mining_prep_replaces_nearly_broken_pickaxes(monkeypatch):
     )
 
     assert handler._craft_essential_iron(client)
-    assert crafted == [
-        ("minecraft:iron_pickaxe", 2),
-        ("minecraft:iron_pickaxe", 3),
-    ]
+    # 40 durability is below the 200 bar, so it crafts one replacement; 290
+    # then clears the bar and it stops (the old 350 bar needed a second craft).
+    assert crafted == [("minecraft:iron_pickaxe", 2)]
 
 
 def test_craft_essential_iron_reuses_stone_pickaxe_durability_for_reconnect(monkeypatch):
@@ -790,3 +819,40 @@ def test_forced_smelt_uses_verified_nearby_furnace_without_crafting_furnace(monk
         force=True,
     )
     assert smelt_calls == [("minecraft:iron_ingot", 37, furnace_pos)]
+
+
+def test_return_to_base_enters_through_missing_door_instead_of_failing(monkeypatch):
+    # A griefed/never-built door is an open doorway, not a hard blocker. It must
+    # not dead-end the smelting return (Bot07 hit "Starter-house door is missing"
+    # every attempt and permanently gave up on FOOD_AND_IRON).
+    origin = (-9, 78, -122)
+    # Interior target is (origin.x+3, origin.y+1, origin.z+3); door defaults to
+    # (origin.x+3, origin.y+1, origin.z). goto reports the outside first, then
+    # the interior once traversal is issued.
+    calls = {"goto": 0}
+    interior = (origin[0] + 3, origin[1] + 1, origin[2] + 3)
+
+    def fake_goto(_client, x, y, z, **_kwargs):
+        calls["goto"] += 1
+        return True
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                # Before any goto: far away. After the interior goto: inside.
+                if calls["goto"] >= 2:
+                    return {"block_position": {"x": interior[0], "y": interior[1], "z": interior[2]}}
+                return {"block_position": {"x": 999, "y": 5, "z": 999}}
+            if route == "get_block":
+                return {"id": "minecraft:air", "state": {}}  # NO door present
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    state = SimpleNamespace(
+        custom_data={"structures": {"starter_house": {"origin": list(origin)}}}
+    )
+    monkeypatch.setattr(iron_age, "goto", fake_goto)
+    monkeypatch.setattr(iron_age.time, "sleep", lambda _s: None)
+
+    assert iron_age.FoodAndIronHandler()._return_to_base(client, state)
+    assert calls["goto"] == 2  # walked to the doorway, then into the interior

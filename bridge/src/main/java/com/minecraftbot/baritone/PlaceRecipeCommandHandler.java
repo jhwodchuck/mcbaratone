@@ -18,6 +18,7 @@ import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Bridge primitive that executes a full recipe click choreography in-process.
@@ -42,9 +43,6 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
     /** Maximum crafts per single command to avoid runaway timeouts. */
     private static final int MAX_CRAFTS = 64;
 
-    /** Delay between individual slot clicks for server sync (ms). */
-    private static final int CLICK_DELAY_MS = 20;
-
     /** Delay between craft iterations (ms). */
     private static final int CRAFT_ITER_DELAY_MS = 80;
 
@@ -65,6 +63,42 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
         Placement(String selector, int gridSlot) {
             this.selector = selector;
             this.gridSlot = gridSlot;
+        }
+    }
+
+    /** Mutable state for one non-blocking recipe command. */
+    private static class RecipeExecution {
+        final MinecraftClient client;
+        final ScreenHandler handler;
+        final int syncId;
+        final int gridStart;
+        final int gridEnd;
+        final int invStart;
+        final int invEnd;
+        final List<Placement> placements;
+        final String expectedOutput;
+        final int expectedCount;
+        final int crafts;
+        final CompletableFuture<CommandResult> future;
+        int craftsCompleted;
+        int outputPolls;
+
+        RecipeExecution(MinecraftClient client, ScreenHandler handler,
+                        int gridEnd, int invStart, List<Placement> placements,
+                        String expectedOutput, int expectedCount, int crafts,
+                        CompletableFuture<CommandResult> future) {
+            this.client = client;
+            this.handler = handler;
+            this.syncId = handler.syncId;
+            this.gridStart = 1;
+            this.gridEnd = gridEnd;
+            this.invStart = invStart;
+            this.invEnd = handler.slots.size();
+            this.placements = placements;
+            this.expectedOutput = expectedOutput;
+            this.expectedCount = expectedCount;
+            this.crafts = crafts;
+            this.future = future;
         }
     }
 
@@ -123,143 +157,191 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
                     CommandResult.error("'crafts' must be between 1 and " + MAX_CRAFTS));
         }
 
-        // ---- Execute on main thread ----
-
-        return executeOnMainThread(client, () -> {
-            if (client.player == null || client.interactionManager == null) {
-                return CommandResult.error("Player or interaction manager not available");
-            }
-
-            ScreenHandler handler = client.player.currentScreenHandler;
-            if (handler == null) {
-                return CommandResult.error("No screen handler open");
-            }
-
-            boolean isTable = handler instanceof CraftingScreenHandler;
-            boolean isPlayer = handler instanceof PlayerScreenHandler;
-            if (!isTable && !isPlayer) {
-                return CommandResult.error(
-                        "Expected crafting screen, got " + handler.getClass().getSimpleName());
-            }
-
-            int syncId = handler.syncId;
-            int gridStart = 1;
-            int gridEnd = isTable ? 10 : 5;   // exclusive: slots 1-9 for table, 1-4 for player
-            int invStart = isTable ? 10 : 9;   // first inventory slot in the screen
-            int invEnd = handler.slots.size();
-
-            // ---- Clear stale grid ----
-            for (int slot = gridStart; slot < gridEnd; slot++) {
-                ItemStack gridStack = handler.getSlot(slot).getStack();
-                if (!gridStack.isEmpty()) {
-                    client.interactionManager.clickSlot(
-                            syncId, slot, 0, SlotActionType.QUICK_MOVE, client.player);
-                    sleep(CLICK_DELAY_MS);
-                }
-            }
-
-            int craftsCompleted = 0;
-
-            for (int craftIdx = 0; craftIdx < crafts; craftIdx++) {
-                // ---- Place each ingredient ----
-                boolean placementOk = true;
-                for (Placement p : placements) {
-                    int sourceSlot = findSource(handler, p.selector, invStart, invEnd);
-                    if (sourceSlot == -1) {
-                        // Also search grid slots that might have leftovers from a
-                        // previous ingredient placement (shouldn't happen after clear,
-                        // but defensive)
-                        JsonObject errData = new JsonObject();
-                        errData.addProperty("error", "missing_ingredient");
-                        errData.addProperty("selector", p.selector);
-                        errData.addProperty("grid_slot", p.gridSlot);
-                        errData.addProperty("crafts_completed", craftsCompleted);
-                        return CommandResult.error(
-                                "Missing ingredient '" + p.selector + "' for grid slot " + p.gridSlot);
-                    }
-
-                    // Pick up source stack
-                    client.interactionManager.clickSlot(
-                            syncId, sourceSlot, 0, SlotActionType.PICKUP, client.player);
-                    sleep(CLICK_DELAY_MS);
-
-                    // Right-click place 1 item into grid slot
-                    client.interactionManager.clickSlot(
-                            syncId, p.gridSlot, 1, SlotActionType.PICKUP, client.player);
-                    sleep(CLICK_DELAY_MS);
-
-                    // Return remainder to source
-                    client.interactionManager.clickSlot(
-                            syncId, sourceSlot, 0, SlotActionType.PICKUP, client.player);
-                    sleep(CLICK_DELAY_MS);
+        // Slot updates from a multiplayer server arrive on the Minecraft main
+        // thread.  Never sleep or poll while holding that thread: doing so
+        // prevents the recipe output packet from being applied and makes every
+        // otherwise-valid craft appear to produce air.
+        CompletableFuture<CommandResult> result = new CompletableFuture<>();
+        client.execute(() -> {
+            try {
+                if (client.player == null || client.interactionManager == null) {
+                    result.complete(CommandResult.error(
+                            "Player or interaction manager not available"));
+                    return;
                 }
 
-                // ---- Verify output ----
-                boolean outputReady = false;
-                String actualOutputId = "minecraft:air";
-                int actualOutputCount = 0;
-
-                for (int poll = 0; poll < OUTPUT_POLL_MAX; poll++) {
-                    ItemStack outputStack = handler.getSlot(0).getStack();
-                    if (!outputStack.isEmpty()) {
-                        actualOutputId = Registries.ITEM.getId(outputStack.getItem()).toString();
-                        actualOutputCount = outputStack.getCount();
-
-                        if (expectedOutput.isEmpty()) {
-                            // No expected output specified — any non-empty output is OK
-                            outputReady = true;
-                            break;
-                        }
-                        if (actualOutputId.equals(expectedOutput)
-                                && actualOutputCount >= expectedCount) {
-                            outputReady = true;
-                            break;
-                        }
-                    }
-                    sleep(OUTPUT_POLL_DELAY_MS);
+                ScreenHandler handler = client.player.currentScreenHandler;
+                if (handler == null) {
+                    result.complete(CommandResult.error("No screen handler open"));
+                    return;
                 }
 
-                if (!outputReady) {
-                    JsonObject errData = new JsonObject();
-                    errData.addProperty("error", "no_output");
-                    errData.addProperty("expected_output", expectedOutput);
-                    errData.addProperty("expected_count", expectedCount);
-                    errData.addProperty("actual_output", actualOutputId);
-                    errData.addProperty("actual_count", actualOutputCount);
-                    errData.addProperty("crafts_completed", craftsCompleted);
-                    LOGGER.warn("place_recipe: output verification failed at craft {}/{}: expected {}x{}, got {}x{}",
-                            craftIdx + 1, crafts, expectedOutput, expectedCount,
-                            actualOutputId, actualOutputCount);
-                    return CommandResult.success(errData);
+                boolean isTable = handler instanceof CraftingScreenHandler;
+                boolean isPlayer = handler instanceof PlayerScreenHandler;
+                if (!isTable && !isPlayer) {
+                    result.complete(CommandResult.error(
+                            "Expected crafting screen, got "
+                                    + handler.getClass().getSimpleName()));
+                    return;
                 }
 
-                // ---- Collect output ----
-                client.interactionManager.clickSlot(
-                        syncId, 0, 0, SlotActionType.QUICK_MOVE, client.player);
-                sleep(CRAFT_ITER_DELAY_MS);
-                craftsCompleted++;
-
-                // Clear grid between craft iterations (residual phantom items)
-                if (craftIdx < crafts - 1) {
-                    for (int slot = gridStart; slot < gridEnd; slot++) {
-                        ItemStack gridStack = handler.getSlot(slot).getStack();
-                        if (!gridStack.isEmpty()) {
-                            client.interactionManager.clickSlot(
-                                    syncId, slot, 0, SlotActionType.QUICK_MOVE, client.player);
-                            sleep(CLICK_DELAY_MS);
-                        }
-                    }
-                }
+                RecipeExecution execution = new RecipeExecution(
+                        client,
+                        handler,
+                        isTable ? 10 : 5,
+                        isTable ? 10 : 9,
+                        placements,
+                        expectedOutput,
+                        expectedCount,
+                        crafts,
+                        result);
+                startCraft(execution);
+            } catch (Exception e) {
+                result.completeExceptionally(e);
             }
-
-            // ---- Build success response ----
-            JsonObject data = new JsonObject();
-            data.addProperty("crafted", true);
-            data.addProperty("crafts_completed", craftsCompleted);
-            data.addProperty("item", expectedOutput.isEmpty() ? "unknown" : expectedOutput);
-            data.addProperty("count", craftsCompleted * expectedCount);
-            return CommandResult.success(data);
         });
+        return result;
+    }
+
+    /** Clear the grid, place one recipe, then yield for server output sync. */
+    private void startCraft(RecipeExecution execution) {
+        if (execution.future.isDone()) return;
+        if (!screenStillOpen(execution)) {
+            execution.future.complete(CommandResult.error(
+                    "Crafting screen changed while placing recipe"));
+            return;
+        }
+
+        for (int slot = execution.gridStart; slot < execution.gridEnd; slot++) {
+            ItemStack gridStack = execution.handler.getSlot(slot).getStack();
+            if (!gridStack.isEmpty()) {
+                execution.client.interactionManager.clickSlot(
+                        execution.syncId, slot, 0, SlotActionType.QUICK_MOVE,
+                        execution.client.player);
+            }
+        }
+
+        for (Placement placement : execution.placements) {
+            int sourceSlot = findSource(
+                    execution.handler,
+                    placement.selector,
+                    execution.invStart,
+                    execution.invEnd);
+            if (sourceSlot == -1) {
+                execution.future.complete(CommandResult.error(
+                        "Missing ingredient '" + placement.selector
+                                + "' for grid slot " + placement.gridSlot));
+                return;
+            }
+
+            execution.client.interactionManager.clickSlot(
+                    execution.syncId, sourceSlot, 0, SlotActionType.PICKUP,
+                    execution.client.player);
+            execution.client.interactionManager.clickSlot(
+                    execution.syncId, placement.gridSlot, 1, SlotActionType.PICKUP,
+                    execution.client.player);
+            execution.client.interactionManager.clickSlot(
+                    execution.syncId, sourceSlot, 0, SlotActionType.PICKUP,
+                    execution.client.player);
+        }
+
+        execution.outputPolls = 0;
+        scheduleOnMainThread(execution, () -> pollOutput(execution),
+                OUTPUT_POLL_DELAY_MS);
+    }
+
+    /** Poll once, yielding the main thread again when the server has not replied. */
+    private void pollOutput(RecipeExecution execution) {
+        if (execution.future.isDone()) return;
+        if (!screenStillOpen(execution)) {
+            execution.future.complete(CommandResult.error(
+                    "Crafting screen changed while waiting for recipe output"));
+            return;
+        }
+
+        ItemStack outputStack = execution.handler.getSlot(0).getStack();
+        String actualOutputId = outputStack.isEmpty()
+                ? "minecraft:air"
+                : Registries.ITEM.getId(outputStack.getItem()).toString();
+        int actualOutputCount = outputStack.isEmpty() ? 0 : outputStack.getCount();
+        boolean outputReady = !outputStack.isEmpty()
+                && (execution.expectedOutput.isEmpty()
+                    || (actualOutputId.equals(execution.expectedOutput)
+                        && actualOutputCount >= execution.expectedCount));
+
+        if (outputReady) {
+            execution.client.interactionManager.clickSlot(
+                    execution.syncId, 0, 0, SlotActionType.QUICK_MOVE,
+                    execution.client.player);
+            execution.craftsCompleted++;
+            if (execution.craftsCompleted < execution.crafts) {
+                scheduleOnMainThread(execution, () -> startCraft(execution),
+                        CRAFT_ITER_DELAY_MS);
+            } else {
+                scheduleOnMainThread(execution, () -> completeSuccess(execution),
+                        CRAFT_ITER_DELAY_MS);
+            }
+            return;
+        }
+
+        execution.outputPolls++;
+        if (execution.outputPolls < OUTPUT_POLL_MAX) {
+            scheduleOnMainThread(execution, () -> pollOutput(execution),
+                    OUTPUT_POLL_DELAY_MS);
+            return;
+        }
+
+        JsonObject errData = new JsonObject();
+        errData.addProperty("error", "no_output");
+        errData.addProperty("expected_output", execution.expectedOutput);
+        errData.addProperty("expected_count", execution.expectedCount);
+        errData.addProperty("actual_output", actualOutputId);
+        errData.addProperty("actual_count", actualOutputCount);
+        errData.addProperty("crafts_completed", execution.craftsCompleted);
+        LOGGER.warn(
+                "place_recipe: output verification failed at craft {}/{}: expected {}x{}, got {}x{}",
+                execution.craftsCompleted + 1,
+                execution.crafts,
+                execution.expectedOutput,
+                execution.expectedCount,
+                actualOutputId,
+                actualOutputCount);
+        execution.future.complete(CommandResult.success(errData));
+    }
+
+    private void completeSuccess(RecipeExecution execution) {
+        JsonObject data = new JsonObject();
+        data.addProperty("crafted", true);
+        data.addProperty("crafts_completed", execution.craftsCompleted);
+        data.addProperty(
+                "item",
+                execution.expectedOutput.isEmpty()
+                        ? "unknown" : execution.expectedOutput);
+        data.addProperty(
+                "count",
+                execution.craftsCompleted * execution.expectedCount);
+        execution.future.complete(CommandResult.success(data));
+    }
+
+    private boolean screenStillOpen(RecipeExecution execution) {
+        return execution.client.player != null
+                && execution.client.interactionManager != null
+                && execution.client.player.currentScreenHandler == execution.handler
+                && execution.handler.syncId == execution.syncId;
+    }
+
+    /** Run a later step on the Minecraft main thread without blocking it. */
+    private void scheduleOnMainThread(
+            RecipeExecution execution, Runnable task, int delayMs) {
+        CompletableFuture.delayedExecutor(delayMs, TimeUnit.MILLISECONDS)
+                .execute(() -> execution.client.execute(() -> {
+                    if (execution.future.isDone()) return;
+                    try {
+                        task.run();
+                    } catch (Exception e) {
+                        execution.future.completeExceptionally(e);
+                    }
+                }));
     }
 
     // ---------------------------------------------------------------
@@ -313,15 +395,4 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
         return -1;
     }
 
-    // ---------------------------------------------------------------
-    // Utility
-    // ---------------------------------------------------------------
-
-    private static void sleep(int ms) {
-        try {
-            Thread.sleep(ms);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
 }

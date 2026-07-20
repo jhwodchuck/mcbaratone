@@ -130,8 +130,8 @@ def test_storage_setup_does_not_report_missing_table_as_success(monkeypatch):
     assert not handler._setup_storage(MagicMock())
 
 
-def test_storage_setup_requests_eight_planks_for_chest(monkeypatch):
-    counts = {"minecraft:oak_log": 8, "minecraft:oak_planks": 4}
+def test_storage_setup_budgets_table_and_uses_available_log_family(monkeypatch):
+    counts = {"minecraft:jungle_log": 3, "minecraft:jungle_planks": 0}
     craft_calls = []
 
     monkeypatch.setattr(
@@ -147,8 +147,8 @@ def test_storage_setup_requests_eight_planks_for_chest(monkeypatch):
 
     def fake_craft(_client, item_id, count):
         craft_calls.append((item_id, count))
-        if item_id == "minecraft:oak_planks":
-            counts[item_id] = 8
+        if item_id == "minecraft:jungle_planks":
+            counts[item_id] = count
             return True
         return False
 
@@ -160,7 +160,7 @@ def test_storage_setup_requests_eight_planks_for_chest(monkeypatch):
     client = MagicMock()
 
     assert not handler._setup_storage(client)
-    assert ("minecraft:oak_planks", 8) in craft_calls
+    assert ("minecraft:jungle_planks", 12) in craft_calls
 
 
 def test_initial_gathering_refuses_work_while_critically_wounded(monkeypatch):

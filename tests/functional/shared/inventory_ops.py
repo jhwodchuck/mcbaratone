@@ -1475,6 +1475,26 @@ def _craft_tool_manual_generic(ctx, material_id_or_tag: str, tool_type: str, res
         ctx.log_event(f"Unknown tool type: {tool_type}")
         return False
 
+    # Prefer the bridge-native atomic recipe primitive.  The older per-click
+    # choreography can be interrupted between grid placements and repeatedly
+    # left Bot02 with no output despite valid ingredients.  craft_recipe_manual
+    # retains the verified click fallback for older bridge jars.
+    placements = [
+        (material_id_or_tag, grid_slot)
+        for grid_slot in recipe["material"]
+    ] + [
+        ("minecraft:stick", grid_slot)
+        for grid_slot in recipe["stick"]
+    ]
+    if craft_recipe_manual(
+        ctx,
+        result_id,
+        placements,
+        crafts=1,
+        output_per_recipe=1,
+    ):
+        return True
+
     screen = ctx.client.transport.dispatch("get_screen", {})
     data = screen.get("data", screen)
     slots = data.get("slots", [])

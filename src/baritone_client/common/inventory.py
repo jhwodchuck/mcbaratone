@@ -362,8 +362,18 @@ def _first_log_family_with_stock(client, required_logs: int = 1) -> str:
 
 
 def _ensure_planks_for_sticks(client, required_sticks: int) -> bool:
-    """Ensure enough planks are available to craft ``required_sticks``."""
-    required_planks = max(0, required_sticks) * 2
+    """Ensure enough planks are available to craft ``required_sticks``.
+
+    The stick recipe yields FOUR sticks from TWO planks, so the plank cost is
+    ``ceil(sticks / 4) * 2`` - two planks make a full batch. The old formula
+    (``sticks * 2``) demanded 6 planks for 3 sticks when 2 suffice, which
+    dead-locked FOOD_AND_IRON's deep-mining prep: with 5 planks and no logs it
+    thought it was one plank short and failed trying to gather a log it did
+    not need.
+    """
+    required_sticks = max(0, required_sticks)
+    batches = (required_sticks + 3) // 4  # 4 sticks per craft batch
+    required_planks = batches * 2
     current_planks = _craft_family_count(client, "minecraft:oak_planks")
     if current_planks >= required_planks:
         return True
@@ -968,16 +978,58 @@ def deposit_excess_to_chest(
     if block == "minecraft:void_air":
         # A persisted home outside render distance is not missing. Path close
         # enough to load its chunk before deciding whether the chest survived.
+        # Long returns can legitimately exceed one navigation timeout, so keep
+        # issuing bounded legs while each leg makes meaningful progress.  This
+        # avoids both abandoning a real distant base and waiting forever on an
+        # unreachable target.
         print(f"STORAGE: loading saved chest chunk at {(cx, cy, cz)}")
-        if not goto(
-            client,
-            cx,
-            cy,
-            cz,
-            timeout=120,
-            check_interval=0.5,
-            tolerance=3.0,
-        ):
+        position = client.transport.dispatch("get_state", {}).get(
+            "block_position", {}
+        )
+        remaining = (
+            (float(position.get("x", 0)) - cx) ** 2
+            + (float(position.get("y", 0)) - cy) ** 2
+            + (float(position.get("z", 0)) - cz) ** 2
+        ) ** 0.5
+        reached = remaining <= 3.0
+        for leg in range(1, 9):
+            if reached:
+                break
+            leg_timeout = max(30, min(120, int(remaining / 2.0) + 20))
+            if goto(
+                client,
+                cx,
+                cy,
+                cz,
+                timeout=leg_timeout,
+                check_interval=0.5,
+                tolerance=3.0,
+            ):
+                reached = True
+                break
+
+            position = client.transport.dispatch("get_state", {}).get(
+                "block_position", {}
+            )
+            next_remaining = (
+                (float(position.get("x", 0)) - cx) ** 2
+                + (float(position.get("y", 0)) - cy) ** 2
+                + (float(position.get("z", 0)) - cz) ** 2
+            ) ** 0.5
+            progress = remaining - next_remaining
+            print(
+                "STORAGE: chest return leg "
+                f"{leg} moved {progress:.1f} blocks; "
+                f"{next_remaining:.1f} remain"
+            )
+            if next_remaining <= 3.0:
+                reached = True
+                break
+            if progress < 4.0:
+                break
+            remaining = next_remaining
+
+        if not reached:
             print("STORAGE: could not reach saved chest chunk")
             return -1
         block = client.transport.dispatch(
