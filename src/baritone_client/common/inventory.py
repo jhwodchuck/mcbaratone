@@ -423,6 +423,18 @@ def _ensure_planks_for_sticks(client, required_sticks: int) -> bool:
 # bookshelf, enchanting table), nether line (flint and steel, blaze powder,
 # eye of ender), and dragon-fight ranged gear (bow, arrow) plus ladders.
 _MANUAL_GRID_RECIPES: Dict[str, Dict] = {
+    # Two planks stacked vertically -> four sticks. Sticks are otherwise
+    # auto_craft-only, so a dirty/left-open crafting-table grid (e.g. right
+    # after a manual bucket craft) made "all methods failed for minecraft:stick"
+    # dead-end FOOD_AND_IRON's iron-pickaxe preparation. The manual driver
+    # clears the grid before placing, so this fallback recovers cleanly.
+    "minecraft:stick": {
+        "placements": [
+            ("#planks", 1),
+            ("#planks", 4),
+        ],
+        "output": 4,
+    },
     "minecraft:bucket": {
         "placements": [
             ("minecraft:iron_ingot", 1),
@@ -618,8 +630,14 @@ def craft(client, item_id: str, count: int = 1) -> bool:
         harness_ops.available()
         and harness_ops.parse_tool_id(item_id) is not None
     )
+    # Sticks remain on the bridge's small reliable auto-craft slice and are
+    # needed before a table is open. Other explicit progression recipes should
+    # skip the known-broken native lookup and go straight to the verified grid.
+    manual_recipe = manual_tool or (
+        item_id in _MANUAL_GRID_RECIPES and item_id != "minecraft:stick"
+    )
 
-    if not manual_tool:
+    if not manual_recipe:
         try:
             client.transport.dispatch("craft", {"item": item_id, "count": count})
         except Exception as e:
@@ -776,6 +794,17 @@ def resolve_storage_location(
     candidates: List[Tuple[int, int, int]] = []
 
     if state is not None:
+        custom_data = getattr(state, "custom_data", {})
+        supply_chest = (
+            custom_data.get("structures", {})
+            .get("starter_house", {})
+            .get("supply_chest")
+        )
+        if isinstance(supply_chest, (list, tuple)) and len(supply_chest) == 3:
+            try:
+                candidates.append(tuple(int(value) for value in supply_chest))
+            except (TypeError, ValueError):
+                pass
         try:
             location_map = state.get_locations("chest")
             locations = location_map.get("chest", [])
@@ -935,8 +964,18 @@ EARLY_GAME_EXCESS_ITEMS = {
     "minecraft:poisonous_potato",
     "minecraft:grass_block",
     "minecraft:moss_block",
+    "minecraft:wildflowers",
+    "minecraft:oak_leaves",
+    "minecraft:birch_leaves",
+    "minecraft:spruce_leaves",
     "minecraft:cobbled_deepslate",
     "minecraft:dirt",
+    "minecraft:gravel",
+    "minecraft:diorite",
+    "minecraft:andesite",
+    "minecraft:granite",
+    "minecraft:tuff",
+    "minecraft:dripstone_block",
     "minecraft:music_disc_cat",
     "minecraft:golden_horse_armor",
     "minecraft:gunpowder",
@@ -1363,7 +1402,35 @@ def is_full(client) -> bool:
     except Exception:
         return False
 
-def drop_items(client, item_ids: List[str]) -> int:
+
+def free_inventory_slots(client) -> int:
+    """Return the number of empty slots in the 36-slot carried inventory."""
+    try:
+        raw_inv = client.transport.dispatch("get_inventory", {})
+        data = raw_inv.get("data", raw_inv)
+        occupied = {
+            int(item.get("slot", -1))
+            for item in data.get("inventory", [])
+            if 0 <= int(item.get("slot", -1)) < 36
+            and item.get("id") not in (None, "", "minecraft:air")
+            and int(item.get("count", 0)) > 0
+        }
+        return max(0, 36 - len(occupied))
+    except Exception:
+        return 0
+
+
+def _player_handler_slot(inventory_slot: int) -> int:
+    """Map PlayerInventory indices to PlayerScreenHandler slot ids."""
+    return 36 + inventory_slot if 0 <= inventory_slot <= 8 else inventory_slot
+
+
+def drop_items(
+    client,
+    item_ids: List[str],
+    max_stacks: Optional[int] = None,
+    retain_counts: Optional[Dict[str, int]] = None,
+) -> int:
     """
     Drop specified items from inventory to clear space.
     
@@ -1374,27 +1441,87 @@ def drop_items(client, item_ids: List[str]) -> int:
         Number of stacks/slots dropped
     """
     dropped = 0
+    retain_counts = {
+        item_id: max(0, int(count))
+        for item_id, count in (retain_counts or {}).items()
+    }
     try:
+        # InventoryClickCommandHandler addresses the active screen handler, not
+        # PlayerInventory's logical 0-35 indices.  Close containers so the
+        # stable PlayerScreenHandler mapping applies before translating hotbar
+        # indices 0-8 to handler slots 36-44.
+        client.transport.dispatch("close_screen", {})
+        time.sleep(0.1)
         raw_inv = client.transport.dispatch("get_inventory", {})
-        items = raw_inv.get("inventory", [])
+        data = raw_inv.get("data", raw_inv)
+        items = data.get("inventory", [])
+        carried_totals: Dict[str, int] = {}
+        for carried in items:
+            carried_id = carried.get("id")
+            if carried_id:
+                carried_totals[carried_id] = carried_totals.get(carried_id, 0) + int(
+                    carried.get("count", 0)
+                )
         
         for item in items:
+            if max_stacks is not None and dropped >= max_stacks:
+                break
             item_id = item.get("id")
-            slot = item.get("slot")
+            inventory_slot = int(item.get("slot", -1))
+            stack_count = int(item.get("count", 0))
             
-            if item_id in item_ids:
+            if item_id in item_ids and 0 <= inventory_slot < 36:
+                reserve = retain_counts.get(item_id, 0)
+                if carried_totals.get(item_id, 0) - stack_count < reserve:
+                    continue
                 # Drop item using Drop Key (Q) or throwing from inventory
                 # throwing from inventory (Ctrl+Q equivalent or clicking outside)
                 # Using 'THROW' action on the slot
+                handler_slot = _player_handler_slot(inventory_slot)
+                free_before = free_inventory_slots(client)
                 client.transport.dispatch("inventory_click", {
-                    "slot": slot,
+                    "slot": handler_slot,
                     "type": "THROW",
                     "button": 1 # 1 = Drop stack, 0 = Drop single?
                 })
-                dropped += 1
-                time.sleep(0.1)
-                
+                deadline = time.time() + 2.0
+                slot_cleared = False
+                while time.time() < deadline:
+                    refreshed = client.transport.dispatch("get_inventory", {})
+                    refreshed_data = refreshed.get("data", refreshed)
+                    slot_entry = next(
+                        (
+                            value
+                            for value in refreshed_data.get("inventory", [])
+                            if int(value.get("slot", -1)) == inventory_slot
+                        ),
+                        None,
+                    )
+                    if (
+                        slot_entry is None
+                        or slot_entry.get("id") in (None, "", "minecraft:air")
+                        or int(slot_entry.get("count", 0)) <= 0
+                    ):
+                        slot_cleared = True
+                        break
+                    time.sleep(0.1)
+
+                if not slot_cleared:
+                    continue
+
+                # A player-thrown stack is temporarily ineligible for pickup.
+                # Verify after that window so a stationary bot cannot report
+                # success and then refill the slot before its crafting GUI
+                # opens. The item may return in a different inventory slot, so
+                # compare total free capacity rather than only the source slot.
+                time.sleep(2.25)
+                if free_inventory_slots(client) > free_before:
+                    dropped += 1
+                    carried_totals[item_id] = max(
+                        0, carried_totals.get(item_id, 0) - stack_count
+                    )
+
     except Exception as e:
         print(f"Drop items error: {e}")
-        
+
     return dropped

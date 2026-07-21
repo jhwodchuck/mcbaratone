@@ -153,7 +153,20 @@ class BaseConstructionHandler(PhaseHandler):
         # partial shell is resumable, while the fallback corrupts its floor
         # and walls and makes the next retry harder.
         repair_attempt = int(state.custom_data.get("base_construction_repair_attempts", 0))
-        house_built = build_good_house(client, x, y, z)
+        house_built = False
+        if repair_attempt >= 3:
+            existing_progress = self._summarize_starter_house_progress(client, x, y, z)
+            if self._should_continue_from_recovered_house(
+                existing_progress, repair_attempt
+            ):
+                print(
+                    "  Existing starter shell is already recoverable; "
+                    "skipping another material-gather/build loop."
+                )
+                house_built = self._ensure_starter_house_entryway(client, x, y, z)
+
+        if not house_built:
+            house_built = build_good_house(client, x, y, z)
         if not house_built:
             repair_attempt += 1
             state.custom_data["base_construction_repair_attempts"] = repair_attempt
@@ -262,6 +275,16 @@ class BaseConstructionHandler(PhaseHandler):
 
         # On a retry after a reconnect, allow completion even when the final roof
         # layer is not yet in place, but require a largely intact footprint.
+        # Very old partial builds can have floor gaps below otherwise complete
+        # walls/roof (for example after the player reconnects underneath it).
+        # At that point the shell is safe enough for setup_base to establish the
+        # functional interior and stop rebuilding the same house indefinitely.
+        if attempt >= 3:
+            return (
+                progress["floor"] >= 30
+                and progress["shell"] >= 63
+                and progress["roof"] >= 35
+            )
         return (
             progress["floor"] >= 45
             and progress["shell"] >= 56

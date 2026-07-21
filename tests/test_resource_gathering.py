@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from baritone_client.common import resources
+from baritone_client.common import inventory, resources
 
 
 class RecordingTransport:
@@ -180,19 +180,25 @@ def test_craft_with_table_repairs_locally_without_following_saved_waypoint(monke
 
     client = SimpleNamespace(transport=RecordingTransport())
     opens = iter((False, True))
+    counts = {
+        "minecraft:crafting_table": 1,
+        # A stone axe cannot be crafted from thin air; carry its recipe stone
+        # so the stone-material gate (a later fix) passes as it would live.
+        "minecraft:cobblestone": 3,
+    }
+
+    def fake_craft(_client, item_id, count):
+        counts[item_id] = counts.get(item_id, 0) + count
+        return True
+
     monkeypatch.setattr(
         resources,
         "count_item",
-        lambda _client, item_id: {
-            "minecraft:crafting_table": 1,
-            # A stone axe cannot be crafted from thin air; carry its recipe stone
-            # so the stone-material gate (a later fix) passes as it would live.
-            "minecraft:cobblestone": 3,
-        }.get(item_id, 0),
+        lambda _client, item_id: counts.get(item_id, 0),
     )
     monkeypatch.setattr(resources, "ensure_tool_sticks", lambda *_args: True)
     monkeypatch.setattr(resources, "_wait_for_path_completion", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(resources, "craft", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(resources, "craft", fake_craft)
     monkeypatch.setattr(base, "open_crafting_table", lambda *_args, **_kwargs: next(opens))
     placements = []
     monkeypatch.setattr(
@@ -423,6 +429,32 @@ def test_safe_smelting_fuel_gathers_wood_and_crafts_planks(monkeypatch):
     assert resources._prepare_safe_furnace_fuel(client, 32) == "minecraft:birch_planks"
     assert gathered == [(6, 300)]
     assert crafted == [("minecraft:birch_planks", 22)]
+
+
+def test_safe_smelting_consolidates_split_plank_families(monkeypatch):
+    counts = {
+        "minecraft:birch_planks": 6,
+        "minecraft:jungle_planks": 8,
+        "minecraft:jungle_log": 2,
+    }
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda *_args, **_kwargs: {})
+    )
+    monkeypatch.setattr(
+        resources, "count_item", lambda _client, item: counts.get(item, 0)
+    )
+    monkeypatch.setattr(resources, "manage_inventory", lambda _client: True)
+    monkeypatch.setattr(resources, "gather_wood", lambda *_args, **_kwargs: True)
+
+    def craft(_client, item_id, count):
+        counts[item_id] = counts.get(item_id, 0) + count
+        return True
+
+    monkeypatch.setattr(resources, "craft", craft)
+
+    assert resources._prepare_safe_furnace_fuel(client, 15) == (
+        "minecraft:jungle_planks"
+    )
 
 
 def test_smelter_prepares_fuel_before_locating_furnace(monkeypatch):
@@ -793,3 +825,63 @@ def test_every_manual_grid_recipe_has_an_ensure_supplies_strategy():
         if item_id not in resources.DEFAULT_REQUIREMENT_STRATEGIES
     ]
     assert missing == []
+
+
+def test_gathering_capacity_guard_requests_three_free_slots(monkeypatch):
+    requested = []
+    monkeypatch.setattr(resources, "free_inventory_slots", lambda _client: 0)
+    monkeypatch.setattr(
+        resources,
+        "manage_inventory",
+        lambda _client, minimum_free_slots: requested.append(minimum_free_slots) or True,
+    )
+
+    assert resources._reserve_gathering_inventory(object())
+    assert requested == [3]
+
+
+def test_gathering_capacity_prefers_checkpointed_storage(monkeypatch):
+    slots = {"free": 0}
+    state = SimpleNamespace(custom_data={})
+    client = SimpleNamespace(transport=RecordingTransport(), _automation_state=state)
+    monkeypatch.setattr(
+        resources, "free_inventory_slots", lambda _client: slots["free"]
+    )
+    monkeypatch.setattr(
+        inventory,
+        "resolve_storage_location",
+        lambda _client, state=None, verify=True: (1, 65, 1),
+    )
+
+    def deposit(_client, _pos, state=None):
+        slots["free"] = 5
+        return 4
+
+    monkeypatch.setattr(inventory, "deposit_excess_to_chest", deposit)
+    monkeypatch.setattr(
+        resources,
+        "manage_inventory",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("durable storage should run before ground disposal")
+        ),
+    )
+
+    assert resources._reserve_gathering_inventory(client)
+
+
+def test_satisfied_stone_target_does_not_discard_inventory(monkeypatch):
+    client = SimpleNamespace(transport=RecordingTransport())
+    monkeypatch.setattr(
+        resources,
+        "count_item",
+        lambda _client, item_id: 32 if item_id == "minecraft:cobblestone" else 0,
+    )
+    monkeypatch.setattr(
+        resources,
+        "_reserve_gathering_inventory",
+        lambda _client: (_ for _ in ()).throw(
+            AssertionError("already-satisfied gathering must not clean inventory")
+        ),
+    )
+
+    assert resources.gather_stone(client, count=32)

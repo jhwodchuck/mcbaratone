@@ -1,3 +1,4 @@
+import inspect
 from types import SimpleNamespace
 
 from baritone_client.automator.phases import iron_age
@@ -110,7 +111,9 @@ def test_y_descent_uses_small_goals_and_disables_fatal_fall_settings(monkeypatch
     assert resources.go_to_y_level(client, 26, timeout=10)
     messages = [payload["message"] for route, payload in transport.calls if route == "chat"]
     assert "#set allowParkour false" in messages
+    assert "#set allowDownward true" in messages
     assert "#set allowDownward false" in messages
+    assert messages[-1] == "#set allowDownward false"
     assert "#set maxFallHeightNoWater 3" in messages
     goto_payloads = [payload for route, payload in transport.calls if route == "goto"]
     assert goto_payloads[0] == {"x": 11, "y": 29, "z": 5}
@@ -198,6 +201,9 @@ def test_iron_phase_resume_accepts_already_crafted_essentials(monkeypatch):
     )
 
     handler = iron_age.FoodAndIronHandler()
+    monkeypatch.setattr(
+        handler, "_reserve_inventory_space", lambda *_args, **_kwargs: True
+    )
     assert handler._mine_initial_iron(client)
     assert handler._smelt_iron(client)
     assert gathered == [("iron", 4)]
@@ -411,7 +417,8 @@ def test_deep_mining_prep_passes_with_one_usable_iron_pickaxe(monkeypatch):
 def test_deep_mining_prep_replaces_nearly_broken_pickaxes(monkeypatch):
     client = SimpleNamespace()
     crafted = []
-    durability = iter((40, 290, 540))
+    def remaining_durability(*_args, **_kwargs):
+        return 290 if crafted else 40
 
     def item_count(_client, item_id):
         if item_id == "minecraft:bucket":
@@ -425,7 +432,7 @@ def test_deep_mining_prep_replaces_nearly_broken_pickaxes(monkeypatch):
     monkeypatch.setattr(
         iron_age,
         "remaining_pickaxe_durability",
-        lambda *_args, **_kwargs: next(durability),
+        remaining_durability,
     )
     monkeypatch.setattr(
         handler,
@@ -446,7 +453,10 @@ def test_deep_mining_prep_replaces_nearly_broken_pickaxes(monkeypatch):
 
 def test_craft_essential_iron_reuses_stone_pickaxe_durability_for_reconnect(monkeypatch):
     client = SimpleNamespace()
-    durability = iter((180, 370))
+    crafted = []
+
+    def remaining_durability(*_args, **_kwargs):
+        return 370 if crafted else 180
 
     item_counts = {
         "minecraft:stone_pickaxe": 2,
@@ -465,7 +475,7 @@ def test_craft_essential_iron_reuses_stone_pickaxe_durability_for_reconnect(monk
     monkeypatch.setattr(
         iron_age,
         "remaining_pickaxe_durability",
-        lambda *_args, **_kwargs: next(durability),
+        remaining_durability,
     )
     monkeypatch.setattr(
         handler,
@@ -473,7 +483,6 @@ def test_craft_essential_iron_reuses_stone_pickaxe_durability_for_reconnect(monk
         lambda _client: True,
     )
 
-    crafted = []
     monkeypatch.setattr(
         iron_age,
         "_craft_with_table",
@@ -481,7 +490,116 @@ def test_craft_essential_iron_reuses_stone_pickaxe_durability_for_reconnect(monk
     )
 
     assert handler._craft_essential_iron(client)
-    assert crafted == [("minecraft:iron_pickaxe", 4)]
+    assert crafted == [("minecraft:iron_pickaxe", 2)]
+
+
+def test_ready_deep_mining_kit_skips_unreachable_workstation(monkeypatch):
+    """Bot07 already had a fresh iron pick and bucket eight blocks below its table."""
+    handler = iron_age.FoodAndIronHandler()
+    counts = {
+        "minecraft:iron_pickaxe": 1,
+        "minecraft:bucket": 1,
+    }
+    monkeypatch.setattr(
+        iron_age,
+        "count_item",
+        lambda _client, item_id: counts.get(item_id, 0),
+    )
+    monkeypatch.setattr(
+        iron_age,
+        "remaining_pickaxe_durability",
+        lambda *_args, **_kwargs: 250,
+    )
+    monkeypatch.setattr(
+        handler,
+        "_ensure_mining_workstation",
+        lambda _client: (_ for _ in ()).throw(
+            AssertionError("completed kit must not touch a workstation")
+        ),
+    )
+
+    assert handler._craft_essential_iron(SimpleNamespace())
+
+
+def test_mining_workstation_banks_excess_before_ground_disposal(monkeypatch):
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = SimpleNamespace(custom_data={})
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda *_args, **_kwargs: {})
+    )
+    free_slots = {"count": 0}
+    deposits = []
+
+    monkeypatch.setattr(
+        iron_age,
+        "free_inventory_slots",
+        lambda _client: free_slots["count"],
+    )
+    monkeypatch.setattr(
+        handler,
+        "_resolve_initial_iron_supply_chest",
+        lambda _client: (-92, 70, 41),
+    )
+
+    def deposit(_client, chest_pos, state=None):
+        deposits.append((chest_pos, state))
+        free_slots["count"] = 3
+        return 4
+
+    monkeypatch.setattr(iron_age, "deposit_excess_to_chest", deposit)
+    monkeypatch.setattr(
+        iron_age,
+        "manage_inventory",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("persistent storage should satisfy the request")
+        ),
+    )
+    monkeypatch.setattr(
+        iron_age,
+        "find_nearby_block",
+        lambda *_args, **_kwargs: (-92, 70, 40),
+    )
+    monkeypatch.setattr(iron_age.harness_ops, "available", lambda: True)
+    monkeypatch.setattr(
+        iron_age.harness_ops,
+        "ensure_crafting_table_open",
+        lambda *_args, **_kwargs: True,
+    )
+
+    assert handler._ensure_mining_workstation(client)
+    assert deposits == [((-92, 70, 41), handler.state)]
+
+
+def test_craft_with_table_converts_absolute_target_to_missing_count(monkeypatch):
+    counts = {"minecraft:iron_pickaxe": 1}
+    crafted = []
+    client = SimpleNamespace()
+
+    def fake_craft(_client, item_id, count):
+        crafted.append((item_id, count))
+        counts[item_id] = counts.get(item_id, 0) + count
+        return True
+
+    monkeypatch.setattr(
+        resources,
+        "count_item",
+        lambda _client, item_id: counts.get(item_id, 0),
+    )
+    monkeypatch.setattr(resources, "ensure_tool_sticks", lambda *_args: True)
+    monkeypatch.setattr(resources, "ensure_stone_material", lambda *_args: True)
+    monkeypatch.setattr(
+        resources,
+        "craft",
+        fake_craft,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.base.open_crafting_table",
+        lambda _client: True,
+    )
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources._craft_with_table(client, "minecraft:iron_pickaxe", 2)
+    assert crafted == [("minecraft:iron_pickaxe", 1)]
 
 
 def test_stone_only_pickaxes_do_not_pass_essential_iron_check(monkeypatch):
@@ -685,6 +803,184 @@ def test_return_to_base_uses_checkpointed_house_not_mutable_waypoint(monkeypatch
     assert destinations == [(-6, 79, -124), (-6, 79, -121)]
 
 
+def test_y_descent_falls_back_to_vertical_when_all_diagonals_blocked(monkeypatch):
+    # Cliff edge / cave mouth: every diagonal neighbour has an air floor, so the
+    # staircase stalled and stranded the bot mid-descent. A straight-down step is
+    # safe here because there is solid ground to land on one block below.
+    from baritone_client.common import resources
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.vcol = 0  # call count for the vertical break column (10,29,5)
+            self.states = iter((
+                {"block_position": {"x": 10, "y": 30, "z": 5}, "health": 20, "food_level": 20},
+                {"block_position": {"x": 10, "y": 29, "z": 5}, "health": 20, "food_level": 20},
+                {"block_position": {"x": 10, "y": 29, "z": 5}, "health": 20, "food_level": 20},
+            ))
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return next(self.states)
+            if route == "get_block":
+                x, yy, z = payload["x"], payload["y"], payload["z"]
+                if x == 10 and z == 5 and yy == 29:
+                    # floor under our feet: solid, then air once broken
+                    self.vcol += 1
+                    return {"id": "minecraft:air" if self.vcol >= 3 else "minecraft:stone"}
+                if x == 10 and z == 5 and yy == 28:
+                    return {"id": "minecraft:stone"}  # verified solid landing
+                return {"id": "minecraft:air"}  # every diagonal floor is air
+            if route == "break_block":
+                return {"started": True}
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _client: True)
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources.go_to_y_level(client, 26, timeout=10)
+    gotos = [payload for route, payload in transport.calls if route == "goto"]
+    # It stepped straight DOWN (same x/z), not diagonally.
+    assert gotos and gotos[0] == {"x": 10, "y": 29, "z": 5}
+    assert "Y navigation stalled" not in "".join(
+        str(p) for _r, p in transport.calls if _r == "chat"
+    )
+
+
+def test_y_descent_delegates_verified_deepslate_when_exact_break_fails(monkeypatch):
+    """Bot07 must let guarded goto mine deepslate left by exact break_block."""
+    from baritone_client.common import resources
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.moved = False
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                y = 2 if self.moved else 3
+                return {
+                    "block_position": {"x": 0 if not self.moved else 1, "y": y, "z": 0},
+                    "health": 20,
+                    "food_level": 20,
+                }
+            if route == "get_block":
+                pos = (payload["x"], payload["y"], payload["z"])
+                if pos == (1, 1, 0):
+                    return {"id": "minecraft:stone"}
+                if pos in {(1, 2, 0), (1, 3, 0)}:
+                    return {"id": "minecraft:deepslate"}
+                return {"id": "minecraft:bedrock"}
+            if route == "break_block":
+                # This is the live Bot07 failure: the exact builder cannot clear
+                # the block, while normal Baritone path excavation still can.
+                return {"error": "exact builder made no progress"}
+            if route == "goto" and payload == {"x": 1, "y": 2, "z": 0}:
+                self.moved = True
+                return {"started": True}
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _client: True)
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources.go_to_y_level(client, -1, timeout=10)
+    assert ("goto", {"x": 1, "y": 2, "z": 0}) in transport.calls
+    assert not any(route == "break_block" for route, _payload in transport.calls)
+
+
+def test_y_descent_prefers_verified_vertical_step_in_dense_deepslate(monkeypatch):
+    """Do not wait on four diagonal goals before the working vertical route."""
+    from baritone_client.common import resources
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.moved = False
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "block_position": {"x": 0, "y": 2 if self.moved else 3, "z": 0},
+                    "health": 20,
+                    "food_level": 20,
+                }
+            if route == "get_block":
+                pos = (payload["x"], payload["y"], payload["z"])
+                if pos == (0, 3, 0):
+                    return {"id": "minecraft:air"}
+                if pos == (0, 2, 0):
+                    return {"id": "minecraft:deepslate"}
+                if pos == (0, 1, 0):
+                    return {"id": "minecraft:stone"}
+                return {"id": "minecraft:bedrock"}
+            if route == "goto" and payload == {"x": 0, "y": 2, "z": 0}:
+                self.moved = True
+                return {"started": True}
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _client: True)
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources.go_to_y_level(client, -1, timeout=10)
+    gotos = [payload for route, payload in transport.calls if route == "goto"]
+    assert gotos[0] == {"x": 0, "y": 2, "z": 0}
+
+
+def test_y_descent_relocates_out_of_gravel_collar(monkeypatch):
+    """Bot08 must tunnel sideways to stable support, never dig down through gravel."""
+    from baritone_client.common import resources
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.at_anchor = False
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                if self.at_anchor:
+                    return {
+                        "block_position": {"x": 2, "y": 65, "z": 0},
+                        "health": 20,
+                        "food_level": 20,
+                    }
+                return {
+                    "block_position": {"x": 0, "y": 66, "z": 0},
+                    "health": 20,
+                    "food_level": 20,
+                }
+            if route == "get_block":
+                pos = (payload["x"], payload["y"], payload["z"])
+                stable_anchor = {
+                    (2, 64, 0): "minecraft:stone",
+                    (2, 65, 0): "minecraft:stone",
+                    (2, 66, 0): "minecraft:air",
+                    (2, 67, 0): "minecraft:air",
+                }
+                return {"id": stable_anchor.get(pos, "minecraft:gravel")}
+            if route == "goto" and payload == {"x": 2, "y": 66, "z": 0}:
+                self.at_anchor = True
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources.go_to_y_level(client, 62, timeout=10)
+    gotos = [payload for route, payload in transport.calls if route == "goto"]
+    assert {"x": 2, "y": 66, "z": 0} in gotos
+    assert not any(route == "break_block" for route, _payload in transport.calls)
+
+
 def test_armor_phase_fails_closed_until_full_set_is_equipped(monkeypatch):
     client = SimpleNamespace()
     monkeypatch.setattr(iron_age, "equip_best_armor", lambda _client: 3)
@@ -856,3 +1152,95 @@ def test_return_to_base_enters_through_missing_door_instead_of_failing(monkeypat
 
     assert iron_age.FoodAndIronHandler()._return_to_base(client, state)
     assert calls["goto"] == 2  # walked to the doorway, then into the interior
+
+
+def test_y_descent_survives_transient_bridge_timeouts(monkeypatch):
+    # Under fleet load the bridge stalls: a single get_state/get_block timeout
+    # used to raise out and abandon a partly-dug staircase. It must now skip the
+    # bad read and keep descending.
+    from baritone_client.common import resources
+    from baritone_client.core.exceptions import TransportError
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.state_calls = 0
+            self.vcol = 0
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                self.state_calls += 1
+                if self.state_calls == 1:
+                    raise TransportError("Timeout (route: get_state)")
+                if self.state_calls <= 3:
+                    return {"block_position": {"x": 10, "y": 30, "z": 5}, "health": 20, "food_level": 20}
+                return {"block_position": {"x": 10, "y": 29, "z": 5}, "health": 20, "food_level": 20}
+            if route == "get_block":
+                x, yy, z = payload["x"], payload["y"], payload["z"]
+                if x == 10 and z == 5 and yy == 29:
+                    self.vcol += 1
+                    if self.vcol == 1:
+                        raise TransportError("Timeout (route: get_block)")
+                    return {"id": "minecraft:air" if self.vcol >= 4 else "minecraft:stone"}
+                if x == 10 and z == 5 and yy == 28:
+                    return {"id": "minecraft:stone"}
+                return {"id": "minecraft:air"}
+            if route == "break_block":
+                return {"started": True}
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _client: True)
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources.go_to_y_level(client, 26, timeout=10)
+
+
+def test_protected_smelting_return_skips_once_essentials_exist(monkeypatch):
+    # A descent (or any late) failure re-runs FOOD_AND_IRON from the top; the
+    # "return to base for protected smelting" step must NOT drag the bot back to
+    # the surface once the iron pickaxe + bucket already exist, or the descent
+    # restarts from scratch every retry and never reaches Y-58.
+    handler = iron_age.FoodAndIronHandler()
+    returned = []
+    monkeypatch.setattr(handler, "_return_to_base", lambda _c, _s: returned.append(True) or True)
+
+    counts = {"minecraft:iron_pickaxe": 1, "minecraft:bucket": 1}
+    monkeypatch.setattr(iron_age, "count_item", lambda _c, item: counts.get(item, 0))
+
+    assert handler._return_to_base_for_initial_smelting(object(), object())
+    assert returned == [], "must not return to base when the starter kit is forged"
+
+
+def test_protected_smelting_return_still_runs_before_kit_exists(monkeypatch):
+    # Before the pickaxe/bucket exist, the return-to-base is genuinely needed to
+    # reach the furnace and forge them.
+    handler = iron_age.FoodAndIronHandler()
+    returned = []
+    monkeypatch.setattr(handler, "_return_to_base", lambda _c, _s: returned.append(True) or True)
+    monkeypatch.setattr(iron_age, "count_item", lambda _c, _item: 0)
+
+    assert handler._return_to_base_for_initial_smelting(object(), object())
+    assert returned == [True], "must return to base to forge the starter kit"
+
+
+def test_protected_smelting_return_skips_after_pick_breaks_on_deep_haul(monkeypatch):
+    handler = iron_age.FoodAndIronHandler()
+    returned = []
+    monkeypatch.setattr(handler, "_return_to_base", lambda _c, _s: returned.append(True) or True)
+    counts = {"minecraft:diamond": 5, "minecraft:bucket": 1}
+    monkeypatch.setattr(iron_age, "count_item", lambda _c, item: counts.get(item, 0))
+
+    assert handler._return_to_base_for_initial_smelting(object(), object())
+    assert returned == []
+
+
+def test_food_and_iron_banks_excess_before_first_smelting():
+    handler = iron_age.FoodAndIronHandler()
+    source = inspect.getsource(handler.execute)
+
+    assert source.index("Deposit bulky excess before smelting") < source.index(
+        'ActionTask("Smelt iron ingots"'
+    )

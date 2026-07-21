@@ -56,7 +56,14 @@ def test_leather_objective_withdraws_bank_then_hunts_only_cattle_and_returns(mon
         {"minecraft:leather": 46},
     )
     hunt_call = next(call for call in calls if call[0] == "hunt")
-    assert hunt_call[1]["mob_types"] == ["cow", "mooshroom"]
+    assert hunt_call[1]["mob_types"] == [
+        "cow",
+        "mooshroom",
+        "horse",
+        "donkey",
+        "mule",
+        "llama",
+    ]
     assert hunt_call[1]["required_loot"] == {"minecraft:leather": 44}
     assert hunt_call[1]["abort_on_other_hostiles"] is True
     assert hunt_call[1]["latest_world_time"] == 9000
@@ -482,6 +489,33 @@ def test_late_day_wait_stages_away_from_door(monkeypatch):
 
     assert handler._wait_for_daylight(client, state, timeout=1)
     assert staged == [True]
+
+
+def test_night_wait_accepts_adjacent_safe_interior_tile(monkeypatch):
+    origin = [-145, 79, -96]
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_block":
+                return {"id": "minecraft:air"}
+            if route == "get_state":
+                return {"block_position": {"x": -141, "y": 80, "z": -92}}
+            return {}
+
+    monkeypatch.setattr(
+        enchanting,
+        "goto",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("already-safe adjacent interior position must not path")
+        ),
+    )
+    state = SimpleNamespace(
+        custom_data={"structures": {"starter_house": {"origin": origin}}}
+    )
+
+    assert enchanting.EnchantingPipelineHandler()._stage_inside_house(
+        SimpleNamespace(transport=Transport()), state
+    )
 
 
 def test_obsidian_mining_refuses_to_start_without_diamond_pick(monkeypatch):

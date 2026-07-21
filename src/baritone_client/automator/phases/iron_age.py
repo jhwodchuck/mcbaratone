@@ -26,6 +26,7 @@ from ...common.inventory import (
     craft,
     deposit_excess_to_chest,
     equip_best_armor,
+    free_inventory_slots,
     has_full_armor,
     resolve_storage_location,
     withdraw_required_from_chest,
@@ -59,7 +60,14 @@ class FoodAndIronHandler(PhaseHandler):
             ActionTask("Mine initial iron (15)", self._mine_initial_iron),  # Creates tunnels naturally!
             ActionTask(
                 "Return to base for protected smelting",
-                lambda c: self._return_to_base(c, state),
+                lambda c: self._return_to_base_for_initial_smelting(c, state),
+            ),
+            # Smelting and table crafting both need output slots.  Bank the
+            # conservative excess allowlist while the bot is already beside
+            # its checkpointed home chest instead of dropping stacks later.
+            ActionTask(
+                "Deposit bulky excess before smelting",
+                lambda c: self._deposit_excess_at_home(c, state),
             ),
             ActionTask("Smelt iron ingots", self._smelt_iron),
             ActionTask("Prepare deep-mining tools + bucket", self._craft_essential_iron),
@@ -181,6 +189,34 @@ class FoodAndIronHandler(PhaseHandler):
         return has_full_armor(client, minimum_material="iron") and all(
             count_item(client, item_id) >= 1 for item_id in required_gear
         )
+
+    def _return_to_base_for_initial_smelting(self, client, state: StateManager) -> bool:
+        """Return to base to smelt the FIRST iron into the pickaxe + bucket.
+
+        This step exists only to reach the furnace and forge the starter kit.
+        Once that kit exists, a later failure (most often the Y-58 descent)
+        must NOT re-run this step and drag the bot all the way back to the
+        surface, restarting the descent from scratch. It is skipped in that
+        case so the phase resumes deep mining from wherever the bot already is.
+        Any iron mined afterwards is smelted by the later "Smelt mined iron"
+        step at the base, not by dragging the bot home mid-descent.
+        """
+        essentials_ready = (
+            count_item(client, "minecraft:iron_pickaxe") >= 1
+            and count_item(client, "minecraft:bucket") >= 1
+        )
+        # A pick can legitimately break during the diamond haul.  On the next
+        # phase retry that must not make the controller replay the *initial*
+        # smelting return forever.  Diamonds are durable evidence that the
+        # starter kit existed and the deep-mining leg already ran.
+        deep_haul_reached = count_item(client, "minecraft:diamond") >= 5
+        if essentials_ready or deep_haul_reached:
+            print(
+                "  Deep-mining kit/haul already reached; skipping the "
+                "protected-smelting return so the descent can resume in place."
+            )
+            return True
+        return self._return_to_base(client, state)
 
     def _return_to_base(self, client, state: StateManager) -> bool:
         """Return to the checkpointed starter-house interior."""
@@ -399,6 +435,9 @@ class FoodAndIronHandler(PhaseHandler):
                 f"({ingots} ingots + {raw_iron} raw)."
             )
             return True
+        if not self._reserve_inventory_space(client, minimum_free_slots=3):
+            print("  Initial iron mining paused because safe inventory space is unavailable.")
+            return False
         print(f"  Mining initial iron (need {shortfall} more raw ore)...")
         if gather_ores(client, "iron", count=shortfall, timeout=300):
             return True
@@ -504,14 +543,8 @@ class FoodAndIronHandler(PhaseHandler):
         # and the bucket) is enough to begin the descent; the bulk-mining step
         # crafts more picks from mined iron. Require a usable single pick.
         minimum_durability = 200
-        if not self._ensure_mining_workstation(client):
-            return False
 
-        if count_item(client, "minecraft:bucket") < 1:
-            if not _craft_with_table(client, "minecraft:bucket", 1):
-                return False
-
-        for _attempt in range(3):
+        def kit_ready() -> tuple[bool, int]:
             high_tier_picks = sum(
                 count_item(client, pickaxe)
                 for pickaxe in (
@@ -521,17 +554,37 @@ class FoodAndIronHandler(PhaseHandler):
                 )
             )
             durability = remaining_pickaxe_durability(client, mining_pickaxes)
-            if (
+            ready = (
                 durability >= minimum_durability
                 and count_item(client, "minecraft:bucket") >= 1
-                and (high_tier_picks > 0 or count_item(client, "minecraft:stone_pickaxe") == 0)
-            ):
+                and (
+                    high_tier_picks > 0
+                    or count_item(client, "minecraft:stone_pickaxe") == 0
+                )
+            )
+            return ready, durability
+
+        # Reconnects often resume beside an old workstation after the bucket
+        # and fresh iron pickaxe have already been forged.  Do not make a
+        # completed kit reach an inaccessible table merely to prove it is done.
+        ready, durability = kit_ready()
+        if ready:
+            print(f"  Deep-mining tools ready ({durability} durability).")
+            return True
+
+        if not self._ensure_mining_workstation(client):
+            return False
+
+        if count_item(client, "minecraft:bucket") < 1:
+            if not _craft_with_table(client, "minecraft:bucket", 1):
+                return False
+
+        for _attempt in range(3):
+            ready, durability = kit_ready()
+            if ready:
                 print(f"  Deep-mining tools ready ({durability} durability).")
                 return True
 
-            current_mining_picks = sum(
-                count_item(client, pickaxe) for pickaxe in mining_pickaxes
-            )
             print(
                 f"  Preparing deep-mining reserve "
                 f"({durability}/{minimum_durability} durability)..."
@@ -543,48 +596,69 @@ class FoodAndIronHandler(PhaseHandler):
             if not _craft_with_table(
                 client,
                 "minecraft:iron_pickaxe",
-                max(1, current_mining_picks) + 1,
+                count_item(client, "minecraft:iron_pickaxe") + 1,
             ):
                 return False
 
-        durability = remaining_pickaxe_durability(client, mining_pickaxes)
-        return (
-            durability >= minimum_durability
-            and count_item(client, "minecraft:bucket") >= 1
-            and (
-                sum(
-                    count_item(client, pickaxe)
-                    for pickaxe in (
-                        "minecraft:iron_pickaxe",
-                        "minecraft:diamond_pickaxe",
-                        "minecraft:netherite_pickaxe",
-                    )
-                )
-                > 0
-                or count_item(client, "minecraft:stone_pickaxe") == 0
-            )
-        )
+        return kit_ready()[0]
 
     def _ensure_mining_workstation(self, client) -> bool:
         """Create a nearby survival crafting table without leaving the mine."""
-        manage_inventory(client)
+        if not self._reserve_inventory_space(client, minimum_free_slots=2):
+            return False
         nearby = find_nearby_block(
             client,
             ["minecraft:crafting_table"],
             radius=8,
         )
-        if nearby is None and count_item(client, "minecraft:crafting_table") < 1:
+        if not harness_ops.available():
+            print("  Functional crafting-table harness is unavailable.")
+            return False
+
+        if nearby is not None:
+            if harness_ops.ensure_crafting_table_open(client, table_pos=nearby):
+                client.transport.dispatch("close_screen", {})
+                return True
+            print(f"  Nearby crafting table at {nearby} is unreachable; replacing it locally.")
+            nearby = None
+
+        if count_item(client, "minecraft:crafting_table") < 1:
             print("  Crafting a local deep-mining workstation...")
             if not craft(client, "minecraft:crafting_table", 1):
                 return False
 
-        if not harness_ops.available():
-            print("  Functional crafting-table harness is unavailable.")
-            return False
-        if not harness_ops.ensure_crafting_table_open(client, table_pos=nearby):
+        if not harness_ops.ensure_crafting_table_open(client):
             return False
         client.transport.dispatch("close_screen", {})
         return True
+
+    def _reserve_inventory_space(self, client, minimum_free_slots: int) -> bool:
+        """Prefer persistent base storage over throwing stacks at our feet.
+
+        Player-dropped items become collectible again after a short delay. A
+        stationary bot in its compact house was picking the discarded stack
+        back up while the crafting table opened, making the result slot full
+        again.  When the checkpointed supply chest is available, bank excess
+        there first and use ground disposal only as a last resort.
+        """
+        required = max(0, int(minimum_free_slots))
+        if free_inventory_slots(client) >= required:
+            return True
+
+        chest_pos = self._resolve_initial_iron_supply_chest(client)
+        if chest_pos is not None:
+            deposited = deposit_excess_to_chest(
+                client,
+                chest_pos,
+                state=self.state,
+            )
+            if deposited >= 0 and free_inventory_slots(client) >= required:
+                print(
+                    f"  Reserved {required} crafting slot(s) in home storage."
+                )
+                return True
+
+        return manage_inventory(client, minimum_free_slots=required)
 
     def _bulk_mine(self, client) -> bool:
         """Mine remaining resources with iron pickaxe."""
@@ -612,7 +686,8 @@ class FoodAndIronHandler(PhaseHandler):
 
     def _craft_iron_armor(self, client) -> bool:
         """Craft full iron armor set."""
-        manage_inventory(client)
+        if not self._reserve_inventory_space(client, minimum_free_slots=2):
+            return False
         return ensure_supplies(client, {
             "minecraft:iron_helmet": 1,
             "minecraft:iron_chestplate": 1,

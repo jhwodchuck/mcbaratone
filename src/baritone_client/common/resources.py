@@ -5,10 +5,17 @@ Resource gathering utilities - Wood, stone, ores, and materials.
 import math
 import time
 from typing import Any, Callable, Dict, Optional, Set
-from .inventory import count_item, craft, ensure_tool_sticks, select_item
+from .inventory import (
+    count_item,
+    craft,
+    ensure_tool_sticks,
+    free_inventory_slots,
+    select_item,
+)
 from .tasks import TaskResult
 from .combat import hunt_mobs
 from .navigation import find_nearby_block, goto
+from ..core.exceptions import TransportError
 
 # Log block types (full IDs)
 LOG_BLOCKS = [
@@ -417,6 +424,8 @@ def gather_wood(
     print(f"DEBUG: Need {needed} more logs (have {total_logs} logs, {total_planks} planks)")
     
     try:
+        if not _reserve_gathering_inventory(client):
+            return False
         # Check the safety boundary before creating a path.  Starting the mine
         # process first gave Baritone enough time to walk out of the starter
         # house at night before the first loop iteration could cancel it.
@@ -444,6 +453,11 @@ def gather_wood(
         failed_log_positions: Set[tuple[int, int, int]] = set()
         
         while time.time() - start < timeout:
+            if free_inventory_slots(client) < 2:
+                client.transport.dispatch("cancel", {})
+                if not _reserve_gathering_inventory(client):
+                    return False
+                _start_mine_process(client, LOG_BLOCKS, needed + 4)
             state = client.transport.dispatch("get_state", {})
             day_time = int(state.get("world_time", 0)) % 24000
             if latest_world_time is not None and day_time >= int(
@@ -672,6 +686,8 @@ def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
         if current_total >= count:
             print(f"DEBUG: gather_stone success! total={current_total}")
             return True
+        if not _reserve_gathering_inventory(client):
+            return False
 
         # Check for pickaxe - cannot mine stone with hand
         if not _ensure_mining_pickaxe(client):
@@ -689,6 +705,13 @@ def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
         direct_failures = 0
         
         while time.time() - start < timeout:
+            if free_inventory_slots(client) < 2:
+                client.transport.dispatch("cancel", {})
+                if not _reserve_gathering_inventory(client):
+                    return False
+                client.transport.dispatch(
+                    "mine", {"blocks": STONE_BLOCKS, "quantity": count + 10}
+                )
             # INTEGRATE DEFENSE
             from .combat import defend_or_flee
             if defend_or_flee(client):
@@ -782,6 +805,8 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
         current_total = count_item(client, drop_item)
         if current_total >= count:
             return True
+        if not _reserve_gathering_inventory(client):
+            return False
 
         # Initial check for pickaxe - preventing infinite loops after tool wear.
         # Diamond ore specifically requires iron tier or better.
@@ -814,6 +839,16 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
         failed_targets: set[tuple[int, int, int]] = set()
         
         while time.time() - start < timeout:
+            if free_inventory_slots(client) < 2:
+                _serialized_dispatch(
+                    client,
+                    "cancel",
+                    {},
+                    post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
+                )
+                if not _reserve_gathering_inventory(client):
+                    return False
+                _start_mine_process(client, ORES[ore_type], count + 2)
             # INTEGRATE DEFENSE
             from .combat import defend_or_flee
             if defend_or_flee(client):
@@ -918,6 +953,7 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
 
 def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
     """Carve and walk a verified one-block-at-a-time staircase."""
+    downward_enabled = False
     try:
         settings = [
             "#set allowBreak true",
@@ -925,32 +961,62 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
             "#set allowParkour false",
             "#set allowParkourAscend false",
             "#set allowParkourPlace false",
-            "#set allowDownward false",
+            # The controller verifies and excavates a supported one-block step
+            # before issuing each goal. Baritone still refuses to enter that
+            # lower block when allowDownward is disabled, even for a completed
+            # staircase. Enable it only for this guarded descent and restore it
+            # in the function's finally block.
+            "#set allowDownward true",
             "#set allowWaterBucketFall false",
             "#set maxFallHeightNoWater 3",
             "#set maxFallHeightBucket 3",
         ]
         for s in settings:
             _serialized_dispatch(client, "chat", {"message": s}, post_delay_seconds=0.1)
+            if s == "#set allowDownward true":
+                downward_enabled = True
         
         overall_start = time.time()
         preferred_direction = 0
+        unreadable_retries = 0
         directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
         air_blocks = {"", "minecraft:air", "minecraft:cave_air", "minecraft:void_air"}
+        # A block we could not read (bridge stalled under fleet load) is treated
+        # as unsafe so we never dig or step toward an unknown, but a single
+        # unreadable block no longer raises out and abandons the whole descent.
+        UNREADABLE = "__unreadable__"
         unsafe_blocks = {
             "minecraft:water", "minecraft:lava", "minecraft:bedrock",
             "minecraft:gravel", "minecraft:sand", "minecraft:red_sand",
             "minecraft:magma_block", "minecraft:pointed_dripstone",
             "minecraft:spawner", "minecraft:chest", "minecraft:trapped_chest",
             "minecraft:barrel", "minecraft:furnace", "minecraft:crafting_table",
+            UNREADABLE,
         }
+        # The bridge's exact builder has repeatedly reported success without
+        # changing deepslate. Normal Baritone path excavation handles it, so do
+        # not spend twelve seconds per block waiting on the broken primitive.
+        baritone_excavation_blocks = {"minecraft:deepslate"}
+
+        read_flags = {"unreadable": False}
+        attempted_descent_anchors = set()
+        anchor_relocations = 0
+        lowest_y_seen = None
 
         def block_id(x: int, by: int, z: int) -> str:
-            return str(
-                client.transport.dispatch(
-                    "get_block", {"x": x, "y": by, "z": z}
-                ).get("id", "")
-            )
+            try:
+                return str(
+                    client.transport.dispatch(
+                        "get_block", {"x": x, "y": by, "z": z}
+                    ).get("id", "")
+                )
+            except TransportError:
+                # Transient bridge timeout: report unreadable (unsafe) so the
+                # step is skipped this pass rather than crashing the descent,
+                # and flag it so a stall caused by a timeout is retried rather
+                # than mistaken for genuinely impassable terrain.
+                read_flags["unreadable"] = True
+                return UNREADABLE
 
         def break_for_step(x: int, by: int, z: int) -> bool:
             current = block_id(x, by, z)
@@ -996,10 +1062,135 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
             )
             return False
 
+        def safe_anchor_candidates(px: int, current_y: int, pz: int):
+            """Yield nearby same-level columns with two stable support blocks."""
+            rays = (
+                (1, 0),
+                (-1, 0),
+                (0, 1),
+                (0, -1),
+                (1, 1),
+                (1, -1),
+                (-1, 1),
+                (-1, -1),
+            )
+            for radius in range(2, 9):
+                for dx, dz in rays:
+                    candidate = (
+                        px + dx * radius,
+                        current_y,
+                        pz + dz * radius,
+                    )
+                    if candidate in attempted_descent_anchors:
+                        continue
+                    cx, cy, cz = candidate
+                    floor_id = block_id(cx, cy - 1, cz)
+                    support_id = block_id(cx, cy - 2, cz)
+                    foot_id = block_id(cx, cy, cz)
+                    head_id = block_id(cx, cy + 1, cz)
+                    if (
+                        floor_id in air_blocks
+                        or floor_id in unsafe_blocks
+                        or support_id in air_blocks
+                        or support_id in unsafe_blocks
+                        or foot_id in unsafe_blocks
+                        or head_id in unsafe_blocks
+                    ):
+                        continue
+                    yield candidate
+
+        def walk_to_cleared_step(
+            target_x: int,
+            target_y: int,
+            target_z: int,
+            current_y: int,
+            state: dict,
+            *,
+            label: str,
+        ) -> str:
+            """Ask Baritone to enter one verified step and classify the result."""
+            response = _serialized_dispatch(
+                client,
+                "goto",
+                {"x": target_x, "y": target_y, "z": target_z},
+                post_delay_seconds=_BARITONE_MINE_SETUP_SECONDS,
+            )
+            if response.get("error"):
+                print(f"Y navigation: {label} goto rejected: {response['error']}")
+                return "stalled"
+
+            # Fleet-loaded clients can remain actively pathing for longer than
+            # eight seconds while calculating and mining deepslate. Cancelling
+            # that healthy work recreated Bot07's stall at every lower step.
+            move_deadline = time.monotonic() + 30.0
+            starting_health = float(state.get("health", 20) or 0)
+            last_position = (target_x, current_y, target_z)
+            while time.monotonic() < move_deadline:
+                moved = client.transport.dispatch("get_state", {})
+                moved_pos = moved.get(
+                    "block_position", moved.get("position", {})
+                )
+                moved_x = int(moved_pos.get("x", target_x))
+                moved_y = int(moved_pos.get("y", current_y))
+                moved_z = int(moved_pos.get("z", target_z))
+                last_position = (moved_x, moved_y, moved_z)
+                moved_health = float(moved.get("health", starting_health) or 0)
+                if (
+                    moved.get("is_dead", False)
+                    or moved_health <= 0
+                    or moved_health < starting_health - 4
+                    or moved_y < target_y - 1
+                ):
+                    _serialized_dispatch(
+                        client,
+                        "cancel",
+                        {},
+                        post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
+                    )
+                    print(f"Y navigation safety abort during {label}")
+                    return "unsafe"
+                if moved_y <= target_y:
+                    _serialized_dispatch(
+                        client,
+                        "cancel",
+                        {},
+                        post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
+                    )
+                    return "moved"
+                time.sleep(0.25)
+
+            _serialized_dispatch(
+                client,
+                "cancel",
+                {},
+                post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
+            )
+            print(
+                f"Y navigation: {label} goto made no downward progress; "
+                f"target=({target_x}, {target_y}, {target_z}) "
+                f"last_position={last_position}"
+            )
+            return "stalled"
+
         while time.time() - overall_start < timeout:
-            state = client.transport.dispatch("get_state", {})
+            try:
+                state = client.transport.dispatch("get_state", {})
+            except TransportError:
+                # Transient bridge stall under fleet load: pause and retry the
+                # iteration instead of throwing away a partly-dug staircase.
+                print("Y navigation: transient get_state timeout; resuming descent")
+                time.sleep(1.0)
+                continue
             pos = state.get("block_position", state.get("position", {}))
             px, current_y, pz = int(pos.get("x", 0)), int(pos.get("y", 64)), int(pos.get("z", 0))
+
+            # Relocation is a bounded recovery at one elevation, not a budget
+            # for the whole surface-to-deepslate journey. Bot07 exhausted the
+            # old global allowance near Y=3 even after making real progress.
+            if lowest_y_seen is None or current_y < lowest_y_seen:
+                lowest_y_seen = current_y
+                anchor_relocations = 0
+                attempted_descent_anchors.clear()
 
             if state.get("is_dead", False) or float(state.get("health", 20) or 0) <= 0:
                 print("Y navigation aborted: player is dead")
@@ -1018,10 +1209,23 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                 client.transport.dispatch("cancel", {})
                 return True
 
+            read_flags["unreadable"] = False
             step_succeeded = False
-            for offset in range(len(directions)):
-                direction_index = (preferred_direction + offset) % len(directions)
-                dx, dz = directions[direction_index]
+            ordered_directions = [
+                (
+                    directions[(preferred_direction + offset) % len(directions)][0],
+                    directions[(preferred_direction + offset) % len(directions)][1],
+                    (preferred_direction + offset) % len(directions),
+                )
+                for offset in range(len(directions))
+            ]
+            # In dense deepslate, the exact builder is known not to work and a
+            # guarded vertical Baritone step is the recovery that actually
+            # moved Bot07. Try it before burning four 30-second diagonal goals.
+            if block_id(px, current_y - 1, pz) in baritone_excavation_blocks:
+                ordered_directions.insert(0, (0, 0, None))
+
+            for dx, dz, direction_index in ordered_directions:
                 target_x, target_y, target_z = px + dx, current_y - 1, pz + dz
                 floor_id = block_id(target_x, target_y - 1, target_z)
                 head_id = block_id(target_x, target_y + 1, target_z)
@@ -1041,53 +1245,195 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                 )
                 # Clear head space before the foot block so falling gravel or
                 # a newly exposed cavity cannot push the player down early.
-                if not break_for_step(target_x, target_y + 1, target_z):
-                    continue
-                if not break_for_step(target_x, target_y, target_z):
-                    continue
-                if block_id(target_x, target_y - 1, target_z) in air_blocks:
-                    continue
-
-                _serialized_dispatch(
-                    client,
-                    "goto",
-                    {"x": target_x, "y": target_y, "z": target_z},
-                    post_delay_seconds=_BARITONE_MINE_SETUP_SECONDS,
+                # The exact-block builder can report completion without mining
+                # deepslate. If that happens, retain the verified solid floor
+                # and let the guarded one-block Baritone goal excavate the two
+                # already-vetted, ordinary mineable blocks.
+                head_cleared = (
+                    head_id in air_blocks
+                    or (
+                        head_id not in baritone_excavation_blocks
+                        and break_for_step(target_x, target_y + 1, target_z)
+                    )
                 )
-                move_deadline = time.monotonic() + 8.0
-                starting_health = float(state.get("health", 20) or 0)
-                while time.monotonic() < move_deadline:
-                    moved = client.transport.dispatch("get_state", {})
-                    moved_pos = moved.get("block_position", moved.get("position", {}))
-                    moved_y = int(moved_pos.get("y", current_y))
-                    moved_health = float(moved.get("health", starting_health) or 0)
-                    if (
-                        moved.get("is_dead", False)
-                        or moved_health <= 0
-                        or moved_health < starting_health - 4
-                        or moved_y < target_y - 1
-                    ):
-                        _serialized_dispatch(
-                            client,
-                            "cancel",
-                            {},
-                            post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
-                        )
-                        print("Y navigation safety abort during one-block step")
-                        return False
-                    if moved_y <= target_y:
-                        _serialized_dispatch(
-                            client,
-                            "cancel",
-                            {},
-                            post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
-                        )
+                foot_cleared = (
+                    foot_id in air_blocks
+                    or (
+                        foot_id not in baritone_excavation_blocks
+                        and break_for_step(target_x, target_y, target_z)
+                    )
+                )
+                head_after = block_id(target_x, target_y + 1, target_z)
+                foot_after = block_id(target_x, target_y, target_z)
+                floor_after = block_id(target_x, target_y - 1, target_z)
+                if head_after in unsafe_blocks or foot_after in unsafe_blocks:
+                    continue
+                if floor_after in air_blocks or floor_after in unsafe_blocks:
+                    continue
+                if (
+                    (not head_cleared and head_after not in air_blocks)
+                    or (not foot_cleared and foot_after not in air_blocks)
+                ):
+                    if not _ensure_mining_pickaxe(client):
+                        continue
+                    print(
+                        "Y navigation: exact break left mineable blocks; "
+                        "delegating this verified step to Baritone"
+                    )
+
+                move_result = walk_to_cleared_step(
+                    target_x,
+                    target_y,
+                    target_z,
+                    current_y,
+                    state,
+                    label="one-block step",
+                )
+                if move_result == "unsafe":
+                    return False
+                if move_result == "moved":
+                    if direction_index is not None:
                         preferred_direction = direction_index
-                        step_succeeded = True
-                        break
-                    time.sleep(0.25)
+                    step_succeeded = True
                 if step_succeeded:
                     break
+
+            if not step_succeeded:
+                # Straight-down fallback. The diagonal staircase cannot proceed
+                # when all four neighbours lack a solid floor (cliff edge, cave
+                # mouth, sand/gravel field), which stranded bots mid-descent and
+                # blocked every FOOD_AND_IRON diamond run. A vertical step is
+                # safe ONLY when we land on verified solid, non-hazard ground one
+                # block below the floor we break: no free-fall, and we refuse to
+                # break a liquid, gravel/sand, or a base block (all in
+                # unsafe_blocks). Each success lowers current_y by one, so the
+                # outer loop still converges on the target.
+                break_y = current_y - 1  # solid floor under our feet
+                land_y = current_y - 2   # where we land after dropping one block
+                break_id = block_id(px, break_y, pz)
+                land_id = block_id(px, land_y, pz)
+                if (
+                    break_id not in air_blocks
+                    and break_id not in unsafe_blocks
+                    and land_id not in air_blocks
+                    and land_id not in unsafe_blocks
+                ):
+                    print(
+                        f"DEBUG: Vertical step Y={current_y}->{break_y} at "
+                        f"({px}, {break_y}, {pz})"
+                    )
+                    block_cleared = (
+                        break_id in air_blocks
+                        or (
+                            break_id not in baritone_excavation_blocks
+                            and break_for_step(px, break_y, pz)
+                        )
+                    )
+                    break_after = block_id(px, break_y, pz)
+                    land_after = block_id(px, land_y, pz)
+                    if (
+                        break_after not in unsafe_blocks
+                        and land_after not in air_blocks
+                        and land_after not in unsafe_blocks
+                    ):
+                        if not block_cleared and break_after not in air_blocks:
+                            if not _ensure_mining_pickaxe(client):
+                                continue
+                            print(
+                                "Y navigation: exact vertical break left a "
+                                "mineable block; delegating the verified step "
+                                "to Baritone"
+                            )
+                        move_result = walk_to_cleared_step(
+                            px,
+                            break_y,
+                            pz,
+                            current_y,
+                            state,
+                            label="vertical step",
+                        )
+                        if move_result == "unsafe":
+                            return False
+                        step_succeeded = move_result == "moved"
+
+            if not step_succeeded and anchor_relocations < 3:
+                # A gravel/sand collar can make every immediate step unsafe
+                # even though stable stone is only a few blocks away.  Never
+                # dig downward through falling material.  Instead, tunnel at
+                # the current Y to a verified column with two stable supports,
+                # then let the next loop resume the ordinary staircase.
+                relocation_attempts = 0
+                for anchor in safe_anchor_candidates(px, current_y, pz):
+                    relocation_attempts += 1
+                    if relocation_attempts > 4:
+                        break
+                    attempted_descent_anchors.add(anchor)
+                    ax, ay, az = anchor
+                    print(
+                        f"Y navigation: relocating to stable descent anchor "
+                        f"({ax}, {ay}, {az})"
+                    )
+                    _serialized_dispatch(
+                        client,
+                        "goto",
+                        {"x": ax, "y": ay, "z": az},
+                        post_delay_seconds=_BARITONE_MINE_SETUP_SECONDS,
+                    )
+                    move_deadline = time.monotonic() + 15.0
+                    starting_health = float(state.get("health", 20) or 0)
+                    while time.monotonic() < move_deadline:
+                        moved = client.transport.dispatch("get_state", {})
+                        moved_pos = moved.get(
+                            "block_position", moved.get("position", {})
+                        )
+                        moved_x = int(moved_pos.get("x", px))
+                        moved_y = int(moved_pos.get("y", current_y))
+                        moved_z = int(moved_pos.get("z", pz))
+                        moved_health = float(
+                            moved.get("health", starting_health) or 0
+                        )
+                        if (
+                            moved.get("is_dead", False)
+                            or moved_health <= 0
+                            or moved_health < starting_health - 4
+                            or moved_y < current_y - 1
+                        ):
+                            _serialized_dispatch(
+                                client,
+                                "cancel",
+                                {},
+                                post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
+                            )
+                            print("Y navigation safety abort during anchor relocation")
+                            return False
+                        if (
+                            abs(moved_x - ax) <= 1
+                            and abs(moved_y - ay) <= 1
+                            and abs(moved_z - az) <= 1
+                        ):
+                            _serialized_dispatch(
+                                client,
+                                "cancel",
+                                {},
+                                post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
+                            )
+                            anchor_relocations += 1
+                            preferred_direction = 0
+                            step_succeeded = True
+                            break
+                        time.sleep(0.25)
+                    if step_succeeded:
+                        break
+                    _serialized_dispatch(
+                        client,
+                        "cancel",
+                        {},
+                        post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
+                    )
+
+                if step_succeeded:
+                    time.sleep(0.25)
+                    continue
 
             if not step_succeeded:
                 _serialized_dispatch(
@@ -1096,9 +1442,21 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                     {},
                     post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
                 )
+                # If any block this pass was unreadable (bridge timeout), the
+                # stall may be spurious - retry a bounded number of times before
+                # concluding the terrain is genuinely impassable.
+                if read_flags["unreadable"] and unreadable_retries < 5:
+                    unreadable_retries += 1
+                    print(
+                        f"Y navigation: unreadable blocks under load "
+                        f"({unreadable_retries}/5); re-scanning descent"
+                    )
+                    time.sleep(1.0)
+                    continue
                 print(f"Y navigation stalled: no safe staircase step from Y={current_y}")
                 return False
 
+            unreadable_retries = 0
             time.sleep(0.25)
         
         client.transport.dispatch("cancel", {})
@@ -1106,6 +1464,20 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
     except Exception as exc:
         print(f"Y level navigation error: {exc}")
         return False
+    finally:
+        if downward_enabled:
+            try:
+                _serialized_dispatch(
+                    client,
+                    "chat",
+                    {"message": "#set allowDownward false"},
+                    post_delay_seconds=0.1,
+                )
+            except Exception:
+                # A game restart also restores the configured default. Never
+                # mask the descent result merely because cleanup hit a bridge
+                # timeout.
+                pass
 
 
 
@@ -1237,13 +1609,15 @@ def ensure_stone_material(client, item_id: str, qty: int = 1) -> bool:
 
 
 def _craft_with_table(client, item_id: str, qty: int) -> bool:
-    """Craft with crafting table - opens table first if needed."""
+    """Craft until the absolute carried target ``qty`` is satisfied."""
     from .base import open_crafting_table, place_crafting_table
     from .automation_utils import get_player_pos
 
     # Early exit if we already have the item
-    if count_item(client, item_id) >= qty:
+    current = count_item(client, item_id)
+    if current >= qty:
         return True
+    missing = qty - current
 
     # Tool recipes depend on sticks, which are made in the player 2x2 grid.
     # Prepare them before opening the crafting table; otherwise the manual
@@ -1409,9 +1783,9 @@ def _craft_with_table(client, item_id: str, qty: int) -> bool:
     
     # Now craft
     try:
-        result = craft(client, item_id, qty)
+        result = craft(client, item_id, missing)
         time.sleep(0.3)
-        return result
+        return result and count_item(client, item_id) >= qty
     except Exception as e:
         print(f"  Crafting failed for {item_id}: {e}")
         return False
@@ -1475,23 +1849,126 @@ DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
 }
 
 
-def manage_inventory(client):
-    """Check if inventory is full and drop junk items if needed."""
-    from .inventory import is_full, drop_items
-    if not is_full(client):
-        return
+def _reserve_gathering_inventory(client, minimum_free_slots: int = 3) -> bool:
+    """Maintain headroom before and during any resource collection loop."""
+    required = max(1, int(minimum_free_slots))
+    if free_inventory_slots(client) >= required:
+        return True
+    print(f"  Gathering paused to reserve {required} inventory slots...")
 
-    print("  Inventory full! Clearing junk...")
-    # Items to drop (keep cobble/deepslate if < 64? simplied: just drop non-essential)
-    # Always drop purely junk blocks
-    junk = ["minecraft:dirt", "minecraft:gravel", "minecraft:diorite", "minecraft:andesite", "minecraft:granite", "minecraft:tuff"]
-    drop_items(client, junk)
-    
-    # If still full, drop excess stone/deepslate but try to keep some?
-    # For now, if really full, just drop them. We can always mine more.
-    if is_full(client):
-         print("  Still full, dropping stone/deepslate...")
-         drop_items(client, ["minecraft:cobblestone", "minecraft:deepslate", "minecraft:cobbled_deepslate"])
+    # Ground drops are temporary and can be collected again as soon as the bot
+    # walks away. Prefer a durable trip to checkpointed home storage whenever
+    # the phase executor supplied state, even if the chest chunk is unloaded.
+    try:
+        from .inventory import deposit_excess_to_chest, resolve_storage_location
+
+        automation_state = getattr(client, "_automation_state", None)
+        chest_pos = None
+        if automation_state is not None:
+            chest_pos = resolve_storage_location(
+                client,
+                state=automation_state,
+                verify=False,
+            )
+        if chest_pos is not None:
+            deposited = deposit_excess_to_chest(
+                client,
+                chest_pos,
+                state=automation_state,
+            )
+            if deposited >= 0 and free_inventory_slots(client) >= required:
+                print(
+                    f"  Reserved {required} gathering slots in persistent home storage."
+                )
+                return True
+    except Exception as exc:
+        print(f"  Gathering storage cleanup unavailable ({exc}); using bounded disposal")
+
+    return manage_inventory(client, minimum_free_slots=required)
+
+
+def manage_inventory(client, minimum_free_slots: int = 1) -> bool:
+    """Reserve carried slots for progression outputs by dropping bounded junk.
+
+    ``drop_items`` now verifies the PlayerInventory-to-screen slot mapping, so
+    this returns success only when the requested space really exists.  The
+    bounded order avoids throwing every building stack merely because one
+    bucket needs a destination.
+    """
+    from .inventory import drop_items, free_inventory_slots
+
+    required = max(0, int(minimum_free_slots))
+    if free_inventory_slots(client) >= required:
+        return True
+
+    print(
+        f"  Inventory needs {required} free slot(s); clearing verified "
+        "low-value stacks..."
+    )
+    discard_tiers = (
+        [
+            "minecraft:rotten_flesh",
+            "minecraft:poisonous_potato",
+            "minecraft:spider_eye",
+            "minecraft:wildflowers",
+            "minecraft:leaf_litter",
+            "minecraft:wheat_seeds",
+            "minecraft:beetroot_seeds",
+            "minecraft:melon_seeds",
+            "minecraft:pumpkin_seeds",
+            "minecraft:birch_sapling",
+            "minecraft:oak_sapling",
+            "minecraft:spruce_sapling",
+            "minecraft:oak_leaves",
+            "minecraft:birch_leaves",
+            "minecraft:spruce_leaves",
+            "minecraft:feather",
+            "minecraft:moss_carpet",
+            "minecraft:mangrove_roots",
+            "minecraft:pointed_dripstone",
+            "minecraft:dripstone_block",
+            "minecraft:smooth_basalt",
+            "minecraft:calcite",
+            "minecraft:jungle_pressure_plate",
+            "minecraft:shears",
+            "minecraft:dirt",
+            "minecraft:gravel",
+            "minecraft:diorite",
+            "minecraft:andesite",
+            "minecraft:granite",
+            "minecraft:tuff",
+        ],
+        [
+            "minecraft:cobblestone",
+            "minecraft:deepslate",
+            "minecraft:cobbled_deepslate",
+        ],
+    )
+    retain_counts = {
+        "minecraft:shears": 1,
+        "minecraft:dirt": 32,
+        "minecraft:cobblestone": 128,
+        "minecraft:cobbled_deepslate": 64,
+        "minecraft:deepslate": 64,
+    }
+    for candidates in discard_tiers:
+        while free_inventory_slots(client) < required:
+            needed = required - free_inventory_slots(client)
+            if drop_items(
+                client,
+                candidates,
+                max_stacks=needed,
+                retain_counts=retain_counts,
+            ) <= 0:
+                break
+        if free_inventory_slots(client) >= required:
+            return True
+
+    print(
+        f"  Inventory cleanup failed: only {free_inventory_slots(client)}/"
+        f"{required} required slots are free"
+    )
+    return False
 
 
 def _select_furnace_fuel(client, smelt_count: int) -> Optional[str]:
@@ -1545,25 +2022,34 @@ def _prepare_safe_furnace_fuel(client, smelt_count: int) -> Optional[str]:
         return None
 
     client.transport.dispatch("close_screen", {})
-    for log_id, plank_id in LOG_TO_PLANKS.items():
-        if sum(count_item(client, item_id) for item_id in PLANK_ITEMS) >= required_planks:
-            break
+    # A furnace fuel slot accepts one item id at a time. Aggregate plank totals
+    # can therefore look sufficient while being split across wood families.
+    # Consolidate one family by crafting its matching logs until that single
+    # stack can complete the batch.
+    candidates = sorted(
+        LOG_TO_PLANKS.items(),
+        key=lambda pair: (
+            count_item(client, pair[1]) + 4 * count_item(client, pair[0])
+        ),
+        reverse=True,
+    )
+    consolidated = False
+    for log_id, plank_id in candidates:
+        plank_count = count_item(client, plank_id)
         log_count = count_item(client, log_id)
-        if log_count <= 0:
+        if plank_count + log_count * 4 < required_planks:
             continue
-        missing_planks = required_planks - sum(
-            count_item(client, item_id) for item_id in PLANK_ITEMS
-        )
-        # Ask for an output count.  The verified craft wrapper accepts recipe
-        # batches and succeeds once the plank-family inventory reaches it.
-        craft_output = min(log_count * 4, missing_planks)
-        if not craft(client, plank_id, craft_output):
-            print(f"  Could not convert {log_id} into furnace fuel.")
+        missing_planks = max(0, required_planks - plank_count)
+        if missing_planks and not craft(client, plank_id, missing_planks):
+            print(f"  Could not consolidate {log_id} into furnace fuel.")
             return None
+        consolidated = True
+        break
 
     fuel_id = _select_furnace_fuel(client, smelt_count)
     if fuel_id is None:
-        print("  Wood fuel preparation finished below the required burn time.")
+        detail = "split wood families" if not consolidated else "insufficient burn time"
+        print(f"  Wood fuel preparation failed after consolidation ({detail}).")
     return fuel_id
 
 

@@ -249,6 +249,22 @@ def test_recovered_house_progress_can_complete_base_without_rebuild(monkeypatch)
     assert "base_build_origin" not in state.custom_data
 
 
+def test_old_house_with_strong_shell_and_roof_skips_endless_floor_repair():
+    progress = {
+        "floor": 33,
+        "shell": 67,
+        "roof": 47,
+        "floor_total": 49,
+        "shell_total": 70,
+        "roof_total": 49,
+        "door_present": False,
+    }
+
+    assert BaseConstructionHandler._should_continue_from_recovered_house(
+        progress, attempt=201
+    )
+
+
 def test_unrecoverable_house_returns_retry_required(monkeypatch):
     resources = SimpleNamespace(
         phase_ready_result=lambda *_args, **_kwargs: None,

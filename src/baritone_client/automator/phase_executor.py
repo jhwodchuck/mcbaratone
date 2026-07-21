@@ -83,6 +83,9 @@ class PhaseExecutor:
         self.client = client
         self.resources = resources
         self.state = state
+        # Shared gathering helpers need access to checkpointed home storage
+        # when inventory pressure occurs between phase boundaries.
+        setattr(self.client, "_automation_state", state)
         self.coordination = coordination_hub
         self.max_retries = max_retries
         self.retry_delay = retry_delay

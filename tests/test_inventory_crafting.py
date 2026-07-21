@@ -765,6 +765,7 @@ def test_stick_plank_prep_still_fails_closed_when_no_wood_exists(monkeypatch):
 def test_manual_grid_recipe_shapes_match_vanilla():
     # Ingredient totals per vanilla; a wrong shape silently crafts nothing.
     expected_counts = {
+        "minecraft:stick": {"#planks": 2},
         "minecraft:bucket": {"minecraft:iron_ingot": 3},
         "minecraft:shield": {"#planks": 6, "minecraft:iron_ingot": 1},
         "minecraft:flint_and_steel": {"minecraft:iron_ingot": 1, "minecraft:flint": 1},
@@ -952,6 +953,47 @@ def test_craft_recipe_manual_bridge_fallback(monkeypatch):
     assert "inventory_click" in routes
 
 
+def test_harness_fallback_does_not_submit_atomic_recipe_twice(monkeypatch):
+    calls = []
+
+    class DummyTransport:
+        def dispatch(self, route, payload):
+            calls.append((route, payload))
+            if route == "place_recipe":
+                return {"data": {"crafted": False, "error": "output_not_collected"}}
+            return {}
+
+    client = DummyClient(DummyTransport())
+    fallback_args = {}
+
+    monkeypatch.setattr(
+        harness_ops,
+        "_load",
+        lambda: {
+            "ensure_crafting_output_space": lambda _ctx: True,
+            "craft_recipe_manual": lambda _ctx, result_id, placements, **kwargs: (
+                fallback_args.update(
+                    result_id=result_id,
+                    placements=placements,
+                    **kwargs,
+                )
+                or True
+            ),
+            "TestContext": lambda client: type(
+                "Context", (), {"client": client, "log_event": lambda *_args: None}
+            )(),
+        },
+    )
+
+    assert harness_ops.craft_recipe_manual(
+        client,
+        "minecraft:bucket",
+        [("minecraft:iron_ingot", 1), ("minecraft:iron_ingot", 3), ("minecraft:iron_ingot", 5)],
+    )
+    assert [route for route, _payload in calls].count("place_recipe") == 1
+    assert fallback_args["try_bridge"] is False
+
+
 def test_plank_requirement_uses_batch_yield_not_one_per_stick(monkeypatch):
     # 2 planks -> 4 sticks. 3 sticks needs 2 planks (one batch), NOT 6.
     # Regression for the FOOD_AND_IRON deep-mining-prep deadlock: with 5 planks
@@ -983,3 +1025,68 @@ def test_plank_requirement_batches_round_up(monkeypatch):
     )
     assert inventory._ensure_planks_for_sticks(client, required_sticks=5)
     assert "looked" not in seen  # 4 planks exactly cover 2 batches
+
+
+def test_drop_items_maps_hotbar_inventory_index_to_player_handler(monkeypatch):
+    items = [{"slot": 0, "id": "minecraft:dirt", "count": 64}]
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_inventory":
+                return {"data": {"inventory": list(items)}}
+            if route == "inventory_click":
+                assert payload == {"slot": 36, "type": "THROW", "button": 1}
+                items.clear()
+            return {}
+
+    transport = Transport()
+    monkeypatch.setattr(inventory.time, "sleep", lambda _seconds: None)
+
+    assert inventory.drop_items(
+        DummyClient(transport), ["minecraft:dirt"], max_stacks=1
+    ) == 1
+    assert any(route == "close_screen" for route, _payload in transport.calls)
+
+
+def test_drop_items_can_remove_duplicate_tool_while_retaining_one(monkeypatch):
+    items = [
+        {"slot": 0, "id": "minecraft:shears", "count": 1},
+        {"slot": 1, "id": "minecraft:shears", "count": 1},
+    ]
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_inventory":
+                return {"data": {"inventory": list(items)}}
+            if route == "inventory_click":
+                inventory_slot = int(payload["slot"]) - 36
+                items[:] = [item for item in items if item["slot"] != inventory_slot]
+            return {}
+
+    monkeypatch.setattr(inventory.time, "sleep", lambda _seconds: None)
+    client = DummyClient(Transport())
+
+    assert inventory.drop_items(
+        client,
+        ["minecraft:shears"],
+        max_stacks=1,
+        retain_counts={"minecraft:shears": 1},
+    ) == 1
+    assert sum(item["count"] for item in items) == 1
+
+
+def test_storage_resolver_reads_starter_house_supply_chest(monkeypatch):
+    state = SimpleNamespace(
+        custom_data={
+            "structures": {
+                "starter_house": {"supply_chest": [12, 70, -4]}
+            }
+        }
+    )
+    assert inventory.resolve_storage_location(
+        DummyClient(DummyTransport()), state=state, verify=False
+    ) == (12, 70, -4)

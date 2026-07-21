@@ -47,10 +47,21 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
     private static final int CRAFT_ITER_DELAY_MS = 80;
 
     /** Maximum polls when waiting for the output slot to populate. */
-    private static final int OUTPUT_POLL_MAX = 10;
+    private static final int OUTPUT_POLL_MAX = 40;
+
+    /**
+     * Minimum output polls before collecting a locally visible result.
+     * Multiplayer clients can predict the recipe output before the server has
+     * acknowledged the ingredient clicks.  Shift-clicking that prediction too
+     * early is rejected by the server and the ingredients later roll back.
+     */
+    private static final int OUTPUT_SETTLE_POLL_MIN = 5;
 
     /** Delay between output polls (ms). */
     private static final int OUTPUT_POLL_DELAY_MS = 50;
+
+    /** Maximum polls while verifying QUICK_MOVE actually reached inventory. */
+    private static final int COLLECTION_POLL_MAX = 40;
 
     // ---------------------------------------------------------------
     // Parsed placement instruction
@@ -82,6 +93,8 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
         final CompletableFuture<CommandResult> future;
         int craftsCompleted;
         int outputPolls;
+        int collectionPolls;
+        int inventoryBefore;
 
         RecipeExecution(MinecraftClient client, ScreenHandler handler,
                         int gridEnd, int invStart, List<Placement> placements,
@@ -195,6 +208,8 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
                         expectedCount,
                         crafts,
                         result);
+                execution.inventoryBefore = countInventoryItem(
+                        client, expectedOutput);
                 startCraft(execution);
             } catch (Exception e) {
                 result.completeExceptionally(e);
@@ -269,18 +284,13 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
                     || (actualOutputId.equals(execution.expectedOutput)
                         && actualOutputCount >= execution.expectedCount));
 
-        if (outputReady) {
+        if (outputReady && execution.outputPolls >= OUTPUT_SETTLE_POLL_MIN) {
             execution.client.interactionManager.clickSlot(
                     execution.syncId, 0, 0, SlotActionType.QUICK_MOVE,
                     execution.client.player);
-            execution.craftsCompleted++;
-            if (execution.craftsCompleted < execution.crafts) {
-                scheduleOnMainThread(execution, () -> startCraft(execution),
-                        CRAFT_ITER_DELAY_MS);
-            } else {
-                scheduleOnMainThread(execution, () -> completeSuccess(execution),
-                        CRAFT_ITER_DELAY_MS);
-            }
+            execution.collectionPolls = 0;
+            scheduleOnMainThread(execution, () -> verifyCollection(execution),
+                    CRAFT_ITER_DELAY_MS);
             return;
         }
 
@@ -309,6 +319,60 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
         execution.future.complete(CommandResult.success(errData));
     }
 
+    /** Verify the crafted result left slot zero and entered PlayerInventory. */
+    private void verifyCollection(RecipeExecution execution) {
+        if (execution.future.isDone()) return;
+        if (!screenStillOpen(execution)) {
+            execution.future.complete(CommandResult.error(
+                    "Crafting screen changed while collecting recipe output"));
+            return;
+        }
+
+        ItemStack outputStack = execution.handler.getSlot(0).getStack();
+        int expectedInventoryCount = execution.inventoryBefore
+                + (execution.craftsCompleted + 1) * execution.expectedCount;
+        int actualInventoryCount = countInventoryItem(
+                execution.client, execution.expectedOutput);
+        boolean outputCleared = outputStack.isEmpty();
+        boolean inventoryAdvanced = execution.expectedOutput.isEmpty()
+                ? outputCleared
+                : actualInventoryCount >= expectedInventoryCount;
+
+        if (outputCleared && inventoryAdvanced) {
+            execution.craftsCompleted++;
+            if (execution.craftsCompleted < execution.crafts) {
+                scheduleOnMainThread(execution, () -> startCraft(execution),
+                        CRAFT_ITER_DELAY_MS);
+            } else {
+                completeSuccess(execution);
+            }
+            return;
+        }
+
+        execution.collectionPolls++;
+        if (execution.collectionPolls < COLLECTION_POLL_MAX) {
+            scheduleOnMainThread(execution, () -> verifyCollection(execution),
+                    OUTPUT_POLL_DELAY_MS);
+            return;
+        }
+
+        JsonObject data = new JsonObject();
+        data.addProperty("crafted", false);
+        data.addProperty("error", "output_not_collected");
+        data.addProperty("expected_output", execution.expectedOutput);
+        data.addProperty("expected_inventory_count", expectedInventoryCount);
+        data.addProperty("actual_inventory_count", actualInventoryCount);
+        data.addProperty("output_slot_empty", outputCleared);
+        data.addProperty("crafts_completed", execution.craftsCompleted);
+        LOGGER.warn(
+                "place_recipe: output could not enter inventory: expected {} count {}, got {}; output empty={}",
+                execution.expectedOutput,
+                expectedInventoryCount,
+                actualInventoryCount,
+                outputCleared);
+        execution.future.complete(CommandResult.success(data));
+    }
+
     private void completeSuccess(RecipeExecution execution) {
         JsonObject data = new JsonObject();
         data.addProperty("crafted", true);
@@ -321,6 +385,22 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
                 "count",
                 execution.craftsCompleted * execution.expectedCount);
         execution.future.complete(CommandResult.success(data));
+    }
+
+    private int countInventoryItem(MinecraftClient client, String itemId) {
+        if (client.player == null || itemId == null || itemId.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        for (int i = 0; i < client.player.getInventory().size(); i++) {
+            ItemStack stack = client.player.getInventory().getStack(i);
+            if (stack.isEmpty()) continue;
+            String stackId = Registries.ITEM.getId(stack.getItem()).toString();
+            if (itemId.equals(stackId)) {
+                count += stack.getCount();
+            }
+        }
+        return count;
     }
 
     private boolean screenStillOpen(RecipeExecution execution) {

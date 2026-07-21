@@ -1458,8 +1458,18 @@ def build_good_house(client, x: int, y: int, z: int) -> bool:
                 if not harness_ops.move_near(
                     client, door_x, y + 1, door_z - 2, timeout=20.0
                 ):
-                    print("Good house repair blocked: could not reach the safe exterior")
-                    return False
+                    # Reconnects can leave the player below a partially built
+                    # floor.  A no-break route then has no legal exit and the
+                    # house retries forever.  Permit one bounded escape route;
+                    # final house verification will repair any block Baritone
+                    # had to remove.
+                    print("Good house repair: no-break exit failed; carving a bounded escape")
+                    client.transport.dispatch("chat", {"message": "#set allowBreak true"})
+                    if not harness_ops.move_near(
+                        client, door_x, y + 1, door_z - 2, timeout=45.0
+                    ):
+                        print("Good house repair blocked: could not reach the safe exterior")
+                        return False
             except Exception as exc:
                 print(f"Good house repair exterior staging failed: {exc}")
                 return False

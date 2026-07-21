@@ -364,7 +364,17 @@ class EnchantingPipelineHandler(PhaseHandler):
         try:
             result = hunt_mobs(
                 client,
-                mob_types=["cow", "mooshroom"],
+                # All passive overworld mobs that directly drop leather. This
+                # prevents a valid enchanting run from depending exclusively
+                # on finding cows in one explored region.
+                mob_types=[
+                    "cow",
+                    "mooshroom",
+                    "horse",
+                    "donkey",
+                    "mule",
+                    "llama",
+                ],
                 required_loot={"minecraft:leather": missing},
                 search_radius=64,
                 timeout=600,
@@ -491,8 +501,9 @@ class EnchantingPipelineHandler(PhaseHandler):
         live_state = client.transport.dispatch("get_state", {})
         position = live_state.get("block_position", live_state.get("position", {}))
         if (
-            abs(float(position.get("x", 0)) - target[0]) <= 0.75
-            and abs(float(position.get("z", 0)) - target[2]) <= 0.75
+            abs(float(position.get("x", 0)) - target[0]) <= 1.5
+            and abs(float(position.get("y", target[1])) - target[1]) <= 0.75
+            and abs(float(position.get("z", 0)) - target[2]) <= 1.5
         ):
             return True
         client.transport.dispatch("chat", {"message": "#set allowBreak false"})

@@ -58,6 +58,7 @@ def _load():
             "craft_crafting_table_manual": inv_ops.craft_crafting_table_manual,
             "craft_planks_manual": inv_ops.craft_planks_manual,
             "craft_recipe_manual": inv_ops.craft_recipe_manual,
+            "ensure_crafting_output_space": inv_ops.ensure_crafting_output_space,
             "smelt_in_furnace": inv_ops.smelt_in_furnace,
             "open_container": inv_ops.do_open_container,
             "count_any_planks": inv_ops.count_any_planks,
@@ -241,6 +242,9 @@ def craft_recipe_manual(
     """
     placements_list = list(placements)
 
+    if not _load()["ensure_crafting_output_space"](make_ctx(client)):
+        return False
+
     # --- Bridge-native fast path ---
     if _try_bridge_place_recipe(client, result_id, placements_list,
                                 crafts, output_per_recipe):
@@ -254,6 +258,7 @@ def craft_recipe_manual(
             placements_list,
             crafts=crafts,
             output_per_recipe=output_per_recipe,
+            try_bridge=False,
         )
     )
 
@@ -284,9 +289,17 @@ def _try_bridge_place_recipe(
             return True
         # Bridge returned a structured error (e.g. missing_ingredient,
         # no_output) — fall through to Python path.
+        detail = data.get("error") or (
+            resp.get("error") if isinstance(resp, dict) else None
+        )
+        print(
+            f"  [Craft Debug] place_recipe did not craft {result_id}: "
+            f"{detail or data or resp}"
+        )
         return False
-    except Exception:
+    except Exception as exc:
         # Command not recognised by older bridge, transport error, etc.
+        print(f"  [Craft Debug] place_recipe failed for {result_id}: {exc}")
         return False
 
 
@@ -327,4 +340,3 @@ def count_any_planks(client) -> int:
 
 def count_all_logs(client) -> int:
     return _load()["count_all_logs"](make_ctx(client))
-

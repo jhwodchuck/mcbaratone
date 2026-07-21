@@ -174,6 +174,7 @@ _CRAFTING_SPACE_DISCARD_PRIORITY = (
     "minecraft:melon_seeds",
     "minecraft:pumpkin_seeds",
     "minecraft:wheat_seeds",
+    "minecraft:wildflowers",
     "minecraft:birch_sapling",
     "minecraft:oak_sapling",
     "minecraft:spruce_sapling",
@@ -183,8 +184,8 @@ _CRAFTING_SPACE_DISCARD_PRIORITY = (
 )
 
 
-def ensure_player_crafting_output_space(ctx, screen=None) -> bool:
-    """Ensure the 2x2 player-crafting result has one inventory destination.
+def ensure_crafting_output_space(ctx, screen=None) -> bool:
+    """Ensure the active player/table crafting result has a destination.
 
     Minecraft cannot quick-move a crafted result into a completely full
     inventory. Early autonomous runs reached that state before attempting the
@@ -197,18 +198,23 @@ def ensure_player_crafting_output_space(ctx, screen=None) -> bool:
     data = screen.get("data", screen)
     slots = data.get("slots", [])
     screen_type = data.get("type", "")
-    if screen_type not in {"class_1723", "PlayerScreenHandler"}:
+    if screen_type in {"class_1723", "PlayerScreenHandler"}:
+        player_slot_range = range(9, 45)
+    elif screen_type in {"class_1714", "CraftingScreenHandler"}:
+        player_slot_range = range(10, 46)
+    else:
         ctx.log_event(
-            f"Cannot reserve 2x2 crafting output space from screen {screen_type}"
+            f"Cannot reserve crafting output space from screen {screen_type}"
         )
         return False
 
-    # PlayerScreenHandler: 0=result, 1-4=grid, 5-8=armor, 9-44=main
-    # inventory/hotbar, 45=offhand.
+    # PlayerScreenHandler: 9-44. CraftingScreenHandler: 10-45. Use the
+    # already-open handler's slot ids directly so hotbar translation cannot
+    # accidentally target a crafting-grid or armor slot.
     player_slots = [
         slot
         for slot in slots
-        if 9 <= int(slot.get("slot", -1)) <= 44
+        if int(slot.get("slot", -1)) in player_slot_range
     ]
     if any(
         not slot.get("id")
@@ -252,11 +258,59 @@ def ensure_player_crafting_output_space(ctx, screen=None) -> bool:
             time.sleep(0.1)
         return False
 
+    # Mining commonly fills every remaining slot with cobblestone before the
+    # first furnace craft.  If several stacks exist, sacrifice the smallest
+    # one while retaining at least one recipe's eight blocks.  This is bounded
+    # and does not broaden the discard policy to tools, ores, food, or unique
+    # building materials.
+    cobble_slots = [
+        slot for slot in player_slots
+        if slot.get("id") == "minecraft:cobblestone"
+        and int(slot.get("count", 0)) > 0
+    ]
+    cobble_total = sum(int(slot.get("count", 0)) for slot in cobble_slots)
+    candidates = [
+        slot for slot in cobble_slots
+        if cobble_total - int(slot.get("count", 0)) >= 8
+    ]
+    if candidates:
+        candidate = min(candidates, key=lambda slot: int(slot.get("count", 0)))
+        slot_id = int(candidate["slot"])
+        count = int(candidate.get("count", 0))
+        ctx.log_event(
+            f"Inventory full; dropping redundant cobblestone stack x{count} "
+            f"(retaining {cobble_total - count}) to make room for crafting output"
+        )
+        safe_inventory_click(ctx, slot_id, "THROW", 1)
+        for _ in range(20):
+            refreshed = ctx.client.transport.dispatch("get_screen", {})
+            refreshed_data = refreshed.get("data", refreshed)
+            refreshed_slot = next(
+                (
+                    slot for slot in refreshed_data.get("slots", [])
+                    if int(slot.get("slot", -1)) == slot_id
+                ),
+                None,
+            )
+            if (
+                refreshed_slot is None
+                or refreshed_slot.get("id") == "minecraft:air"
+                or int(refreshed_slot.get("count", 0)) <= 0
+            ):
+                return True
+            time.sleep(0.1)
+        return False
+
     ctx.log_event(
         "Inventory is full and contains no approved low-value stack to drop; "
         "crafting output cannot be collected safely"
     )
     return False
+
+
+def ensure_player_crafting_output_space(ctx, screen=None) -> bool:
+    """Backward-compatible wrapper for player 2x2 crafting callers."""
+    return ensure_crafting_output_space(ctx, screen=screen)
 
 
 def do_open_container(ctx, pos: Tuple[int, int, int], timeout: float = 3.0) -> bool:
@@ -1395,6 +1449,18 @@ def craft_chest_manual(ctx) -> bool:
 def craft_furnace_manual(ctx) -> bool:
     """Craft a furnace in the verified 3x3 table grid."""
     ctx.log_event("Starting manual furnace click sequence...")
+    # Use the same atomic bridge primitive and verified output-space handling
+    # as the other progression recipes.  The legacy path below remains the
+    # fallback inside craft_recipe_manual for older bridge jars.
+    return craft_recipe_manual(
+        ctx,
+        "minecraft:furnace",
+        [("minecraft:cobblestone", slot) for slot in (1, 2, 3, 4, 6, 7, 8, 9)],
+    )
+
+
+def _craft_furnace_manual_legacy(ctx) -> bool:
+    """Legacy furnace click choreography retained for diagnostic comparison."""
     safe_inventory_click(ctx, 0, "QUICK_MOVE", 0)
     time.sleep(0.2)
 
@@ -1561,6 +1627,7 @@ def craft_recipe_manual(
     placements: List[Tuple[str, int]],
     crafts: int = 1,
     output_per_recipe: int = 1,
+    try_bridge: bool = True,
 ) -> bool:
     """Craft a bounded shaped/shapeless recipe through verified grid clicks.
 
@@ -1570,32 +1637,40 @@ def craft_recipe_manual(
     and deterministic for progression recipes unavailable through recipe
     listing on the live 1.21.x client.
 
-    Tries the bridge-native ``place_recipe`` command first (single TCP
-    round-trip).  Falls back to per-click Python choreography if the bridge
-    doesn't support the command or returns an error.
+    By default, tries the bridge-native ``place_recipe`` command first (single
+    TCP round-trip).  Set ``try_bridge=False`` when the caller already made
+    that attempt; this prevents a failed atomic craft from being submitted a
+    second time before the per-click recovery path runs.
     """
     if crafts <= 0:
         return True
 
+    # Both the bridge-native and per-click paths QUICK_MOVE the result.  A
+    # completely full inventory leaves valid output stranded in slot 0 and
+    # used to make the controller repeat the recipe indefinitely.
+    if not ensure_crafting_output_space(ctx):
+        return False
+
     # --- Bridge-native fast path (single round-trip) ---
-    try:
-        payload = {
-            "placements": [
-                {"selector": sel, "grid_slot": slot}
-                for sel, slot in placements
-            ],
-            "expected_output": result_id,
-            "expected_count": output_per_recipe,
-            "crafts": crafts,
-        }
-        resp = ctx.client.transport.dispatch("place_recipe", payload)
-        data = resp.get("data", resp) if isinstance(resp, dict) else {}
-        if data.get("crafted"):
-            return True
-        # Bridge returned a structured error — fall through to Python path.
-    except Exception:
-        # Command not recognised by older bridge, transport error, etc.
-        pass
+    if try_bridge:
+        try:
+            payload = {
+                "placements": [
+                    {"selector": sel, "grid_slot": slot}
+                    for sel, slot in placements
+                ],
+                "expected_output": result_id,
+                "expected_count": output_per_recipe,
+                "crafts": crafts,
+            }
+            resp = ctx.client.transport.dispatch("place_recipe", payload)
+            data = resp.get("data", resp) if isinstance(resp, dict) else {}
+            if data.get("crafted"):
+                return True
+            # Bridge returned a structured error — fall through to Python path.
+        except Exception:
+            # Command not recognised by older bridge, transport error, etc.
+            pass
 
 
     def matches(selector: str, item_id: str) -> bool:

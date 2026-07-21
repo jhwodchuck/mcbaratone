@@ -221,6 +221,14 @@ def test_manual_stone_axe_prefers_atomic_place_recipe(monkeypatch):
     class Transport:
         def dispatch(self, route, payload):
             calls.append((route, payload))
+            if route == "get_screen":
+                return {
+                    "type": "CraftingScreenHandler",
+                    "slots": [
+                        {"slot": slot, "id": "minecraft:air", "count": 0}
+                        for slot in range(46)
+                    ],
+                }
             if route == "place_recipe":
                 return {"data": {"crafted": True}}
             raise AssertionError(f"unexpected fallback route: {route}")
@@ -232,7 +240,8 @@ def test_manual_stone_axe_prefers_atomic_place_recipe(monkeypatch):
             return None
 
     assert inventory_ops.craft_stone_axe_manual(Context())
-    assert calls == [
+    assert calls[0] == ("get_screen", {})
+    assert calls[1:] == [
         (
             "place_recipe",
             {
@@ -392,6 +401,70 @@ def test_full_valuable_inventory_refuses_to_discard_for_crafting(monkeypatch):
 
     assert not inventory_ops.ensure_player_crafting_output_space(ctx)
     assert any("no approved low-value stack" in event for event in ctx.events)
+
+
+def test_full_inventory_discards_one_redundant_cobble_stack(monkeypatch):
+    slots = [
+        {"slot": slot, "id": "minecraft:iron_ingot", "count": 64}
+        for slot in range(46)
+    ]
+    slots[0] = {"slot": 0, "id": "minecraft:air", "count": 0}
+    slots[10] = {"slot": 10, "id": "minecraft:cobblestone", "count": 54}
+    slots[11] = {"slot": 11, "id": "minecraft:cobblestone", "count": 64}
+    clicks = []
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_screen":
+                return {"type": "CraftingScreenHandler", "slots": slots}
+            if route == "inventory_click":
+                clicks.append(payload)
+                slots[int(payload["slot"])] = {
+                    "slot": int(payload["slot"]), "id": "minecraft:air", "count": 0
+                }
+            return {}
+
+    class Context:
+        client = type("Client", (), {"transport": Transport()})()
+
+        def log_event(self, _event):
+            return None
+
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _seconds: None)
+
+    assert inventory_ops.ensure_crafting_output_space(Context())
+    assert clicks == [{"slot": 10, "type": "THROW", "button": 1}]
+
+
+def test_table_recipe_reserves_real_player_slot_before_atomic_craft(monkeypatch):
+    slots = [
+        {"slot": slot, "id": "minecraft:air", "count": 0}
+        for slot in range(46)
+    ]
+    for slot in range(10, 46):
+        slots[slot] = {"slot": slot, "id": "minecraft:diamond", "count": 64}
+    slots[10] = {"slot": 10, "id": "minecraft:wildflowers", "count": 35}
+    clicks = []
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_screen":
+                return {"type": "CraftingScreenHandler", "slots": slots}
+            if route == "inventory_click":
+                clicks.append(payload)
+                slots[10] = {"slot": 10, "id": "minecraft:air", "count": 0}
+            return {}
+
+    class Context:
+        client = type("Client", (), {"transport": Transport()})()
+
+        def log_event(self, _event):
+            return None
+
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _seconds: None)
+
+    assert inventory_ops.ensure_crafting_output_space(Context())
+    assert clicks == [{"slot": 10, "type": "THROW", "button": 1}]
 
 
 def test_manual_crafting_table_recovers_from_full_inventory(monkeypatch):
