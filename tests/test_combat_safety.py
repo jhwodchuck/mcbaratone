@@ -295,6 +295,86 @@ def test_combat_treats_vanished_target_as_finished(monkeypatch):
     assert combat.safe_combat(client, 42, max_duration=1)
 
 
+def test_melee_waits_for_attack_cooldown_before_dispatch(monkeypatch):
+    target = {
+        "id": 42,
+        "type": "minecraft:zombie",
+        "distance": 3.0,
+        "position": {"x": 3, "y": 64, "z": 0},
+    }
+    snapshots = iter(
+        (
+            {
+                "player": {"health": 20, "attack_cooldown": 0.4},
+                "entities": [target],
+            },
+            {
+                "player": {"health": 20, "attack_cooldown": 0.95},
+                "entities": [target],
+            },
+            {
+                "player": {"health": 20, "attack_cooldown": 0.1},
+                "entities": [],
+            },
+        )
+    )
+    transport = CombatTransport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(
+        combat,
+        "_get_combat_snapshot",
+        lambda *_args, **_kwargs: next(snapshots),
+    )
+    monkeypatch.setattr(combat, "equip_best_weapon", lambda _client: True)
+    monkeypatch.setattr(combat, "look_at_entity", lambda *_args: True)
+    monkeypatch.setattr(combat.time, "sleep", lambda _seconds: None)
+
+    assert combat.safe_combat(client, target["id"], max_duration=1)
+    attacks = [payload for route, payload in transport.calls if route == "attack_entity"]
+    assert attacks == [
+        {
+            "entity_id": target["id"],
+            "min_cooldown": combat.MELEE_ATTACK_COOLDOWN_THRESHOLD,
+        }
+    ]
+
+
+def test_combat_aborts_for_secondary_hostile_from_canonical_policy(monkeypatch):
+    target = {
+        "id": 42,
+        "type": "minecraft:zombie",
+        "distance": 3.0,
+        "position": {"x": 3, "y": 64, "z": 0},
+    }
+    drowned = {
+        "id": 7,
+        "type": "minecraft:drowned",
+        "distance": 8.0,
+        "position": {"x": 0, "y": 64, "z": 8},
+    }
+    snapshot = {
+        "player": {
+            "health": 20,
+            "attack_cooldown": 1.0,
+            "block_position": {"x": 0, "y": 64, "z": 0},
+        },
+        "entities": [target, drowned],
+    }
+    transport = CombatTransport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(combat, "_get_combat_snapshot", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(combat, "equip_best_weapon", lambda _client: True)
+
+    assert not combat.safe_combat(
+        client,
+        target["id"],
+        max_duration=1,
+        abort_on_other_hostiles=True,
+    )
+    assert not any(route == "attack_entity" for route, _payload in transport.calls)
+    assert ("cancel", {}) in transport.calls
+
+
 def test_passive_hunt_aborts_if_another_hostile_enters_radius(monkeypatch):
     pig = {
         "id": 42,

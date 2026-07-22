@@ -29,6 +29,9 @@ from .navigation import goto
 
 logger = logging.getLogger(__name__)
 
+MELEE_ATTACK_COOLDOWN_THRESHOLD = 0.9
+MULTI_THREAT_ABORT_RADIUS = 12.0
+
 
 class EntityQueryError(RuntimeError):
     """The bridge entity query failed (timeout/transport/error response).
@@ -210,8 +213,21 @@ def safe_combat(
     approach_failures = 0
     
     while time.time() - start < max_duration:
+        snapshot = _get_combat_snapshot(
+            client,
+            radius=max(30, tracking_radius),
+        )
+        if snapshot is not None:
+            state = snapshot["player"]
+            entities = snapshot["entities"]
+        else:
+            state = client.transport.dispatch("get_state", {})
+            entities = get_nearby_entities(
+                client,
+                radius=max(30, tracking_radius),
+            )
+
         # Check health
-        state = client.transport.dispatch("get_state", {})
         health = state.get("health", 20)
         if health < retreat_health:
             print(f"Retreating! Health: {health}")
@@ -219,31 +235,22 @@ def safe_combat(
             return False
         
         # Check if target still exists
-        entities = get_nearby_entities(client, radius=max(30, tracking_radius))
         target = next((e for e in entities if e.get("id") == target_id), None)
 
         if abort_on_other_hostiles:
-            hostile_names = (
-                "zombie", "skeleton", "creeper", "spider",
-                "witch", "pillager", "slime",
-            )
             other_threat = next(
                 (
-                    entity
-                    for entity in entities
-                    if entity.get("id") != target_id
-                    and entity.get("distance", 999) <= 12
-                    and any(
-                        hostile in str(entity.get("type", "")).lower()
-                        for hostile in hostile_names
-                    )
+                    threat
+                    for threat in assess_threats(entities, state)
+                    if threat.entity.get("id") != target_id
+                    and threat.distance <= MULTI_THREAT_ABORT_RADIUS
                 ),
                 None,
             )
             if other_threat is not None:
                 print(
-                    f"Combat aborted: {other_threat.get('type')} entered "
-                    f"{other_threat.get('distance', 999):.1f}m safety radius"
+                    f"Combat aborted: {other_threat.entity.get('type')} entered "
+                    f"{other_threat.distance:.1f}m safety radius"
                 )
                 client.transport.dispatch("chat", {"message": "#stop"})
                 client.transport.dispatch("cancel", {})
@@ -258,8 +265,21 @@ def safe_combat(
         # Attack if in range
         if dist < 4.5:
             look_at_entity(client, target)
+            cooldown = _attack_cooldown(state)
+            if cooldown < MELEE_ATTACK_COOLDOWN_THRESHOLD:
+                # Continue observing the fight while the weapon recharges.
+                # The bridge repeats this check on the game thread so a
+                # delayed request cannot turn into a weak spam attack.
+                time.sleep(0.05)
+                continue
             try:
-                client.transport.dispatch("attack_entity", {"entity_id": target_id})
+                result = client.transport.dispatch(
+                    "attack_entity",
+                    {
+                        "entity_id": target_id,
+                        "min_cooldown": MELEE_ATTACK_COOLDOWN_THRESHOLD,
+                    },
+                )
             except Exception as exc:
                 # The entity can die or unload between the entity scan and
                 # attack dispatch.  That is a successful end to this combat,
@@ -267,6 +287,12 @@ def safe_combat(
                 if "entity not found" in str(exc).lower():
                     return True
                 print(f"Combat attack failed: {exc}")
+                return False
+            if isinstance(result, dict) and result.get("attacked") is False:
+                if result.get("reason") == "cooldown":
+                    time.sleep(0.05)
+                    continue
+                print(f"Combat attack declined: {result.get('reason', 'unknown')}")
                 return False
             # Reset pathing if we are close enough to just whack it
             if state.get("is_pathing", False):
@@ -302,6 +328,14 @@ def safe_combat(
         time.sleep(0.2)
     
     return False
+
+
+def _attack_cooldown(state: Dict) -> float:
+    """Return normalized melee readiness, defaulting ready for old bridges."""
+    try:
+        return min(1.0, max(0.0, float(state.get("attack_cooldown", 1.0))))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 EMERGENCY_FOOD_ITEMS = [
@@ -1317,6 +1351,12 @@ def defend_or_flee(client) -> bool:
         abort_on_other_hostiles=True,
     )
     if not defeated:
-        run_away(client, primary.entity)
+        escape_target = primary.entity
+        latest = _get_combat_snapshot(client)
+        if latest is not None:
+            updated = assess_threats(latest["entities"], latest["player"])
+            if updated:
+                escape_target = updated[0].entity
+        run_away(client, escape_target)
     runtime.hold_recovery(6.0 if defeated else 10.0)
     return True

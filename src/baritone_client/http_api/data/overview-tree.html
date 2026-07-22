@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Baritone REST Overview Tree (offline)</title>
+  </head>
+  <body>
+    <h1>Baritone REST Overview Tree (offline snapshot)</h1>
+    <p>
+      This snapshot mirrors the command categories exposed by the Baritone HTTP control surface.
+      Each node describes the HTTP method, route, authentication requirement, and payload shapes
+      inferred from the overview tree published at <code>https://baritone.leijurv.com/overview-tree</code>.
+      Network egress to that domain was blocked in this environment, so the table below is the offline copy used for code generation.
+    </p>
+    <p>Categories: auth, meta, status, pathing, commands, settings.</p>
+    <script type="application/json" id="baritone-endpoints">
+[
+  {"category":"auth","name":"login","method":"POST","path":"/api/login","auth":"none","description":"Create a session token for subsequent requests.","request":{"username":"string","password":"string"},"response":{"token":"string","expires_in":"integer"}},
+  {"category":"auth","name":"logout","method":"POST","path":"/api/logout","auth":"token","description":"Invalidate the current token or session cookie.","request":{},"response":{"ok":"boolean"}},
+  {"category":"auth","name":"session","method":"GET","path":"/api/session","auth":"token","description":"Return metadata about the active session, if any.","request":{},"response":{"user":"string","expires_at":"string","scopes":["control","settings","status"]}},
+  {"category":"meta","name":"health","method":"GET","path":"/api/health","auth":"optional","description":"Simple readiness/liveness probe.","request":{},"response":{"ok":"boolean","uptime_ms":"integer"}},
+  {"category":"status","name":"status","method":"GET","path":"/api/status","auth":"token","description":"Return the active goal, queued tasks, and player position.","request":{},"response":{"state":["idle","pathing","paused","stuck","cooldown"],"position":{"x":"number","y":"number","z":"number","dimension":"string"},"goal":{"type":["coordinate","block","follow"],"x":"number","y":"number","z":"number","dimension":"string"},"queued_operations":"array","paused":"boolean"}},
+  {"category":"status","name":"queue","method":"GET","path":"/api/queue","auth":"token","description":"Inspect pending task queue and their states.","request":{},"response":{"current":"object","pending":"array","completed":"array"}},
+  {"category":"status","name":"operations-history","method":"GET","path":"/api/operations/history","auth":"token","description":"Recent control operations and timestamps.","request":{},"response":{"recent":[{"name":"string","state":["submitted","running","succeeded","failed"],"queued_at":"string"}]}},
+  {"category":"pathing","name":"set-goal","method":"POST","path":"/api/path/goal","auth":"token","description":"Set the pathing goal without immediately starting movement.","request":{"goal":{"type":["coordinate","block","waypoint"],"x":"number","y":"number","z":"number","dimension":"string"},"follow_best":"boolean"},"response":{"goal_id":"string","ack":"boolean"}},
+  {"category":"pathing","name":"goto","method":"POST","path":"/api/path/goto","auth":"token","description":"Start navigating toward the provided goal immediately.","request":{"x":"number","y":"number","z":"number","dimension":"string","allow_break":"boolean","allow_place":"boolean"},"response":{"task_id":"string","state":["submitted","running"]}},
+  {"category":"pathing","name":"pause","method":"POST","path":"/api/path/pause","auth":"token","description":"Pause the current pathing task.","request":{"reason":"string"},"response":{"state":["paused","idle"]}},
+  {"category":"pathing","name":"resume","method":"POST","path":"/api/path/resume","auth":"token","description":"Resume a paused task using the last known goal.","request":{"task_id":"string"},"response":{"state":["running","idle"]}},
+  {"category":"pathing","name":"stop","method":"POST","path":"/api/path/stop","auth":"token","description":"Cancel the active task and clear the goal.","request":{"reason":"string"},"response":{"state":"string"}},
+  {"category":"commands","name":"mine","method":"POST","path":"/api/command/mine","auth":"token","description":"Mine a set of blocks and optionally stop when the target count is reached.","request":{"blocks":["string"],"target_count":"integer"},"response":{"task_id":"string","accepted":"boolean"}},
+  {"category":"commands","name":"farm","method":"POST","path":"/api/command/farm","auth":"token","description":"Harvest and replant crops around the player.","request":{"crops":["string"],"radius":"number"},"response":{"task_id":"string","accepted":"boolean"}},
+  {"category":"commands","name":"build","method":"POST","path":"/api/command/build","auth":"token","description":"Place blocks according to a schematic reference or macro.","request":{"schematic":"string","origin":{"x":"number","y":"number","z":"number"}},"response":{"task_id":"string","accepted":"boolean"}},
+  {"category":"commands","name":"custom-command","method":"POST","path":"/api/command/custom","auth":"token","description":"Send a raw Baritone command string, like those typed in chat.","request":{"command":"string"},"response":{"task_id":"string","accepted":"boolean"}},
+  {"category":"settings","name":"settings-list","method":"GET","path":"/api/settings","auth":"token","description":"List current setting values.","request":{},"response":{"settings":"object"}},
+  {"category":"settings","name":"settings-get","method":"GET","path":"/api/settings/{name}","auth":"token","description":"Inspect a single setting including its constraints.","request":{},"response":{"name":"string","value":"any","default":"any","type":["boolean","integer","double","enum","string"],"enum":"array"}},
+  {"category":"settings","name":"settings-set","method":"PUT","path":"/api/settings/{name}","auth":"token","description":"Update a setting value.","request":{"value":"any"},"response":{"name":"string","value":"any"}},
+  {"category":"status","name":"events","method":"GET","path":"/api/events","auth":"token","description":"Return a pollable list of server events such as progress updates.","request":{"since_id":"string"},"response":{"events":[{"id":"string","type":["progress","chat","error","heartbeat"],"payload":"object","created_at":"string"}]}}
+]
+    </script>
+  </body>
+</html>

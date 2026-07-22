@@ -1,12 +1,12 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=69.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "baritone-client"
 version = "0.1.0"
-description = "Python facade for controlling Baritone via a lightweight transport layer"
-authors = [{name = "OpenAI Agent"}]
+description = "Python facade and optional HTTP client for controlling Baritone"
+authors = [{name = "mcbaratone contributors"}]
 readme = "README.md"
 requires-python = ">=3.9"
 classifiers = [
@@ -20,10 +20,16 @@ dependencies = [
     "pydantic>=2.7",
     "mcp>=1.25.0",
     "lz4>=4.3.0",
+    "requests>=2.31",
+    "typing-extensions>=4.12.0",
+    "pyyaml>=6.0.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "requests>=2.31"]
+dev = [
+    "pytest>=7.0",
+    "responses>=0.25.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/jhwodchuck/mcbaratone"
@@ -31,6 +37,13 @@ Repository = "https://github.com/jhwodchuck/mcbaratone"
 
 [project.scripts]
 baritone-mcp-server = "baritone_client.mcp_server:main"
+baritone-http-client = "baritone_client.http_cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"baritone_client.http_api" = ["data/*.html", "data/*.json"]

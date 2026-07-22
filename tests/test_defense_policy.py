@@ -337,6 +337,48 @@ def test_bridge_aggression_metadata_controls_conditional_mob_policy():
     assert assess_threats([angry], state)[0].entity["target_id"] == 99
 
 
+def test_failed_melee_reassesses_and_flees_new_highest_threat(monkeypatch):
+    zombie = _entity(1, "zombie", 4, 4, 0)
+    creeper = _entity(2, "creeper", 3, 0, 3)
+    player = {
+        "health": 20,
+        "armor_count": 4,
+        "block_position": {"x": 0, "y": 64, "z": 0},
+    }
+    snapshots = iter(
+        (
+            {"player": player, "entities": [zombie]},
+            {"player": player, "entities": [zombie, creeper]},
+        )
+    )
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    fled = []
+    monkeypatch.setattr(
+        combat,
+        "_get_combat_snapshot",
+        lambda *_args, **_kwargs: next(snapshots),
+    )
+    monkeypatch.setattr(combat, "equip_best_weapon", lambda _client: True)
+    monkeypatch.setattr(combat, "safe_combat", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        combat,
+        "run_away",
+        lambda _client, target: fled.append(target) or True,
+    )
+
+    assert combat.defend_or_flee(client)
+    assert fled == [creeper]
+
+
 def test_combat_action_safe_combat_delegates_to_canonical_module(monkeypatch):
     client = SimpleNamespace()
     context = SimpleNamespace(client=client)
