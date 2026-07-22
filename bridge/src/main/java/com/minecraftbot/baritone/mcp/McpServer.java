@@ -31,6 +31,7 @@ public class McpServer extends WebSocketServer {
     private final McpJsonRpcHandler rpcHandler;
     private final McpToolRegistry toolRegistry;
     private final McpResourceRegistry resourceRegistry;
+    private final EventManager eventManager;
     private final Map<WebSocket, McpSession> sessions = new ConcurrentHashMap<>();
     
     // Configuration
@@ -46,6 +47,7 @@ public class McpServer extends WebSocketServer {
         
         this.toolRegistry = toolRegistry;
         this.resourceRegistry = resourceRegistry;
+        this.eventManager = toolRegistry.getEventManager();
         this.rpcHandler = new McpJsonRpcHandler(toolRegistry, resourceRegistry);
         
         // Load configuration
@@ -64,7 +66,12 @@ public class McpServer extends WebSocketServer {
      * Create a server with CommandDispatcher for automatic registry creation.
      */
     public static McpServer create(int port, CommandDispatcher commandDispatcher) {
-        McpToolRegistry toolRegistry = new McpToolRegistry(commandDispatcher);
+        return create(port, commandDispatcher, new EventManager());
+    }
+
+    public static McpServer create(int port, CommandDispatcher commandDispatcher,
+                                   EventManager eventManager) {
+        McpToolRegistry toolRegistry = new McpToolRegistry(commandDispatcher, eventManager);
         McpResourceRegistry resourceRegistry = new McpResourceRegistry(commandDispatcher);
         return new McpServer(port, toolRegistry, resourceRegistry);
     }
@@ -117,6 +124,7 @@ public class McpServer extends WebSocketServer {
     public void onClose(WebSocket conn, int code, String reason, boolean remote) {
         McpSession session = sessions.remove(conn);
         if (session != null) {
+            eventManager.unsubscribe(session);
             session.close();
             resourceRegistry.removeSession(session);
         }
@@ -133,6 +141,7 @@ public class McpServer extends WebSocketServer {
         if (conn != null) {
             McpSession session = sessions.remove(conn);
             if (session != null) {
+                eventManager.unsubscribe(session);
                 session.close();
                 resourceRegistry.removeSession(session);
             }
@@ -166,11 +175,16 @@ public class McpServer extends WebSocketServer {
     }
 
     /**
-     * Register this server with an EventManager to receive events.
+     * Verify that this server is attached to the supplied EventManager.
+     *
+     * @deprecated The EventManager is injected when the server is created, so
+     *             no later listener registration is necessary.
      */
+    @Deprecated
     public void registerWithEventManager(EventManager eventManager) {
-        for (McpSession session : sessions.values()) {
-            eventManager.subscribe(session);
+        if (this.eventManager != eventManager) {
+            throw new IllegalArgumentException(
+                "MCP server is already attached to a different EventManager");
         }
     }
 
@@ -207,6 +221,7 @@ public class McpServer extends WebSocketServer {
         
         // Close all sessions
         for (McpSession session : sessions.values()) {
+            eventManager.unsubscribe(session);
             session.close();
         }
         sessions.clear();

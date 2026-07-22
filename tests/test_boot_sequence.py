@@ -29,6 +29,11 @@ def test_boot_sequence_translates_action_message_to_task_reason(monkeypatch):
         "execute",
         lambda _sequence, _context: SimpleNamespace(success=True, message="boot ready"),
     )
+    monkeypatch.setattr(
+        BootSequenceHandler,
+        "_plant_crops",
+        lambda _handler, _client: True,
+    )
     state = RecordingState()
 
     result = BootSequenceHandler().execute(
@@ -38,6 +43,133 @@ def test_boot_sequence_translates_action_message_to_task_reason(monkeypatch):
     assert result.success
     assert result.reason == "boot ready"
     assert state.payloads
+
+
+def test_boot_crop_planting_verifies_and_persists_irrigated_plot(monkeypatch):
+    blocks = {(0, 64, 0): "minecraft:water"}
+    for x in range(-1, 2):
+        for z in range(-1, 2):
+            if (x, z) != (0, 0):
+                blocks[(x, 64, z)] = "minecraft:dirt"
+                blocks[(x, 65, z)] = "minecraft:air"
+
+    inventory = {
+        "minecraft:wooden_hoe": 1,
+        "minecraft:wheat_seeds": 2,
+    }
+
+    class Transport:
+        selected = None
+
+        def dispatch(self, route, payload):
+            if route == "get_block":
+                return {
+                    "id": blocks.get(
+                        (payload["x"], payload["y"], payload["z"]),
+                        "minecraft:air",
+                    )
+                }
+            if route == "interact_block":
+                pos = (payload["x"], payload["y"], payload["z"])
+                if self.selected == "minecraft:wooden_hoe":
+                    blocks[pos] = "minecraft:farmland"
+                elif (
+                    self.selected == "minecraft:wheat_seeds"
+                    and blocks.get(pos) == "minecraft:farmland"
+                    and inventory["minecraft:wheat_seeds"] > 0
+                ):
+                    blocks[(pos[0], pos[1] + 1, pos[2])] = "minecraft:wheat"
+                    inventory["minecraft:wheat_seeds"] -= 1
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    locations = []
+    state = SimpleNamespace(
+        custom_data={},
+        add_location=lambda *args, **kwargs: locations.append((args, kwargs)),
+    )
+    handler = BootSequenceHandler()
+    handler.state = state
+
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.find_nearby_block",
+        lambda _client, block_ids, **_kwargs: (0, 64, 0)
+        if "minecraft:water" in block_ids
+        else None,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.goto",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        boot_sequence,
+        "count_item",
+        lambda _client, item_id: inventory.get(item_id, 0),
+    )
+
+    def select(_client, item_id):
+        if inventory.get(item_id, 0) <= 0:
+            return False
+        transport.selected = item_id
+        return True
+
+    monkeypatch.setattr(boot_sequence, "select_item", select)
+    monkeypatch.setattr(boot_sequence.time, "sleep", lambda _seconds: None)
+
+    assert handler._plant_crops(client)
+    farm = state.custom_data["structures"]["food_source"]
+    assert farm["verified"] is True
+    assert farm["irrigated"] is True
+    assert farm["planted"] == 2
+    assert state.custom_data["farm_location"] == [0, 64, 0]
+    assert len(locations) == 1
+
+
+def test_boot_crop_planting_reuses_verified_plot_without_new_supplies(monkeypatch):
+    blocks = {
+        (0, 64, 0): "minecraft:water",
+        (1, 64, 0): "minecraft:farmland",
+        (1, 65, 0): "minecraft:wheat",
+    }
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_block":
+                return {
+                    "id": blocks.get(
+                        (payload["x"], payload["y"], payload["z"]),
+                        "minecraft:air",
+                    )
+                }
+            if route in {"mine", "interact_block"}:
+                raise AssertionError("verified farm must not be rebuilt")
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    state = SimpleNamespace(custom_data={"farm_location": [0, 64, 0]})
+    handler = BootSequenceHandler()
+    handler.state = state
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.goto",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(boot_sequence, "count_item", lambda *_args: 0)
+    monkeypatch.setattr(
+        boot_sequence,
+        "ensure_supplies",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("verified farm must not craft a hoe")
+        ),
+    )
+
+    assert handler._plant_crops(client)
+    assert state.custom_data["structures"]["food_source"]["planted"] == 1
 
 
 def test_boot_infrastructure_reuses_verified_house_blocks(monkeypatch):

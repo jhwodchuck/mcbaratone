@@ -12,10 +12,13 @@ from .inventory import (
     free_inventory_slots,
     select_item,
 )
+from . import inventory
+_DEFAULT_INVENTORY_ENSURE_RAW_PLANKS = inventory._ensure_raw_planks
 from .tasks import TaskResult
 from .combat import hunt_mobs
 from .navigation import find_nearby_block, goto
-from ..core.exceptions import TransportError
+from .automation_utils import get_player_pos
+from ..core.exceptions import CommandError, TransportError
 
 # Log block types (full IDs)
 LOG_BLOCKS = [
@@ -116,6 +119,11 @@ _BARITONE_BUILD_CLEANUP_SECONDS = 1.0
 
 _ORE_FALLBACK_RADII = (8, 10, 12, 14, 16)
 _ORE_FALLBACK_LIMIT = 3
+# Hunger management for long resource loops / deep stair descent.  These values
+# keep progression moving in fragile server conditions where a strict 14-barrier
+# was stalling bots with safe-but-low food.
+_SAFE_MINING_FOOD = 6
+_MINING_HUNGER_TARGET = 12
 
 
 def _serialized_dispatch(
@@ -144,6 +152,82 @@ def _ensure_outdoor_daylight(client, state: Dict) -> bool:
     return wait_for_safe_daylight(client)
 
 
+def _read_state_with_retry(
+    client,
+    *, retries: int = 3, label: str = "get_state"
+) -> tuple[Optional[Dict[str, Any]], int]:
+    """Read state with bounded retries, returning ``None`` when all retries fail."""
+    attempts = 0
+    while attempts < retries:
+        attempts += 1
+        try:
+            return client.transport.dispatch("get_state", {}), attempts
+        except TransportError:
+            print(
+                f"{label}: transport timeout while reading state "
+                f"(attempt {attempts}/{retries}); retrying"
+            )
+            time.sleep(0.5)
+        except CommandError as exc:
+            error_text = str(exc).lower()
+            if "player not available" in error_text or "not connected" in error_text:
+                print(
+                    f"{label}: state endpoint not ready (attempt {attempts}/{retries}); "
+                    "retrying"
+                )
+                time.sleep(0.5)
+            else:
+                raise
+    return None, attempts
+
+
+def _read_state_optional(
+    client,
+    *,
+    retries: int = 3,
+    label: str = "get_state",
+) -> Optional[Dict[str, Any]]:
+    """Read state but keep loops moving on transient bridge miss."""
+    state, _ = _read_state_with_retry(client, retries=retries, label=label)
+    return state
+
+
+def _find_blocks_optional(
+    client,
+    payload: Dict[str, Any],
+    *,
+    retries: int = 3,
+    label: str = "find_blocks",
+) -> Optional[Dict[str, Any]]:
+    """Read-block search with transient retry and non-fatal fallback."""
+    attempts = 0
+    while attempts < retries:
+        attempts += 1
+        try:
+            return client.transport.dispatch("find_blocks", payload)
+        except (TransportError, CommandError) as exc:
+            message = str(exc).lower()
+            if (
+                attempts < retries
+                and (
+                    isinstance(exc, TransportError)
+                    or "player not available" in message
+                    or "not connected" in message
+                    or "connection lost" in message
+                    or "connection reset" in message
+                )
+            ):
+                print(
+                    f"{label}: find_blocks failed (attempt {attempts}/{retries}); "
+                    f"retrying"
+                )
+                time.sleep(0.5)
+                continue
+            print(f"{label}: find_blocks hard-failed: {exc}")
+            return None
+    return None
+
+
 def _ensure_mining_pickaxe(client) -> bool:
     """Ensure stone gathering has a live pickaxe, including mid-task wear."""
     if sum(count_item(client, item_id) for item_id in PICKAXE_ITEMS) > 0:
@@ -153,7 +237,14 @@ def _ensure_mining_pickaxe(client) -> bool:
     # move toward its saved waypoint.  Doing that after dark exposed a live
     # run to a zombie while the crafting screen was open.  Stay at the mining
     # position until daylight before beginning any replacement workflow.
-    state = client.transport.dispatch("get_state", {})
+    state, _ = _read_state_with_retry(
+        client,
+        retries=3,
+        label="Pickaxe replacement state check",
+    )
+    if state is None:
+        print("DEBUG: Could not read state while checking replacement-time daylight.")
+        return False
     day_time = int(state.get("world_time", 0)) % 24000
     if day_time >= 12000:
         print(
@@ -266,20 +357,29 @@ def _find_safe_nearby_stone(client, radius: int = 8) -> Optional[tuple[int, int,
     so request a batch and rank it locally.  Cobblestone is deliberately omitted
     here so this recovery path cannot dismantle the starter house or utilities.
     """
-    state = client.transport.dispatch("get_state", {})
+    state = _read_state_optional(
+        client,
+        retries=3,
+        label="Safe nearby stone state",
+    )
+    if state is None:
+        return None
     position = state.get("block_position", state.get("position", {}))
     px = int(position.get("x", state.get("x", 0)))
     py = int(position.get("y", state.get("y", 0)))
     pz = int(position.get("z", state.get("z", 0)))
 
-    response = client.transport.dispatch(
-        "find_blocks",
+    response = _find_blocks_optional(
+        client,
         {
             "blocks": ["minecraft:stone", "minecraft:deepslate"],
             "radius": max(1, min(int(radius), 16)),
             "limit": 4096,
         },
+        label="Safe nearby stone search",
     )
+    if response is None:
+        return None
     candidates = []
     for block in response.get("found", []):
         x, y, z = int(block["x"]), int(block["y"]), int(block["z"])
@@ -354,19 +454,26 @@ def _find_safe_nearby_ore(
     excluded_positions: Optional[Set[tuple[int, int, int]]] = None,
 ) -> Optional[tuple[int, int, int]]:
     """Find a nearby ore face while refusing to remove the block underfoot."""
-    state = client.transport.dispatch("get_state", {})
+    state = _read_state_optional(
+        client, retries=3, label="Safe nearby ore state"
+    )
+    if state is None:
+        return None
     position = state.get("block_position", state.get("position", {}))
     px = int(position.get("x", state.get("x", 0)))
     py = int(position.get("y", state.get("y", 0)))
     pz = int(position.get("z", state.get("z", 0)))
-    response = client.transport.dispatch(
-        "find_blocks",
+    response = _find_blocks_optional(
+        client,
         {
             "blocks": block_types,
             "radius": max(1, min(int(radius), 16)),
             "limit": 4096,
         },
+        label="Safe nearby ore search",
     )
+    if response is None:
+        return None
     candidates = []
     excluded = set(excluded_positions or ())
     for block in response.get("found", []):
@@ -429,7 +536,12 @@ def gather_wood(
         # Check the safety boundary before creating a path.  Starting the mine
         # process first gave Baritone enough time to walk out of the starter
         # house at night before the first loop iteration could cancel it.
-        initial_state = client.transport.dispatch("get_state", {})
+        initial_state = _read_state_optional(
+            client, retries=3, label="Wood gather initial state"
+        )
+        if initial_state is None:
+            print("DEBUG: Wood gathering could not read initial state; skipping this attempt")
+            return False
         start_position = initial_state.get(
             "block_position",
             initial_state.get("position", {}),
@@ -458,7 +570,10 @@ def gather_wood(
                 if not _reserve_gathering_inventory(client):
                     return False
                 _start_mine_process(client, LOG_BLOCKS, needed + 4)
-            state = client.transport.dispatch("get_state", {})
+            state = _read_state_optional(client, retries=3, label="Wood gather state")
+            if state is None:
+                time.sleep(0.5)
+                continue
             day_time = int(state.get("world_time", 0)) % 24000
             if latest_world_time is not None and day_time >= int(
                 latest_world_time
@@ -520,7 +635,10 @@ def gather_wood(
                  continue
 
             # Fail Fast: Check if Baritone gave up (is_pathing = False)
-            state = client.transport.dispatch("get_state", {})
+            state = _read_state_optional(client, retries=3, label="Wood gather pathing state")
+            if state is None:
+                time.sleep(0.5)
+                continue
             is_pathing = state.get("is_pathing", True)
             
             # Inventory Progress Tracking
@@ -549,10 +667,16 @@ def gather_wood(
                             # retrying it without changing position.
                             found_log = None
                             try:
-                                found = client.transport.dispatch(
-                                    "find_blocks",
-                                    {"blocks": LOG_BLOCKS, "radius": 128, "limit": 4096},
-                                ).get("found", [])
+                                response = _find_blocks_optional(
+                                    client,
+                                    {
+                                        "blocks": LOG_BLOCKS,
+                                        "radius": 128,
+                                        "limit": 4096,
+                                    },
+                                    label="Wood nearby log search",
+                                )
+                                found = response.get("found", []) if response else []
                                 candidates = [
                                     (
                                         float(item.get("distance", 0)),
@@ -725,7 +849,10 @@ def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
                 print("DEBUG: Could not replace worn pickaxe during stone gathering")
                 return False
             # Fail Fast: Check if Baritone gave up (is_pathing = False)
-            state = client.transport.dispatch("get_state", {})
+            state = _read_state_optional(client, retries=3, label="Stone gather state")
+            if state is None:
+                time.sleep(0.5)
+                continue
             is_pathing = state.get("is_pathing", True)
             if not is_pathing:
                 idle_checks += 1
@@ -839,6 +966,15 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
         failed_targets: set[tuple[int, int, int]] = set()
         
         while time.time() - start < timeout:
+            state, _state_attempts = _read_state_with_retry(
+                client, retries=3, label="Ore gathering get_state"
+            )
+            if state is None:
+                if time.time() - start >= timeout:
+                    print("Ore gathering state check timeout budget exhausted")
+                    return False
+                continue
+
             if free_inventory_slots(client) < 2:
                 _serialized_dispatch(
                     client,
@@ -867,21 +1003,46 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
                 last_tool_check = time.time()
 
             # Fail Fast: Check if Baritone gave up (is_pathing = False)
-            state = client.transport.dispatch("get_state", {})
             is_pathing = state.get("is_pathing", True) # Default True to be safe
 
             if int(state.get("food_level", state.get("food", 20))) <= 8:
                 from .combat import eat_until_hunger
                 client.transport.dispatch("cancel", {})
                 time.sleep(0.75)
-                if not eat_until_hunger(client, minimum_food=14):
-                    print("DEBUG: Ore gathering stopped: hunger could not be stabilized")
-                    return False
+                if not eat_until_hunger(client, minimum_food=_MINING_HUNGER_TARGET):
+                    after_eat, _ = _read_state_with_retry(
+                        client,
+                        retries=2,
+                        label="Ore gathering hunger re-check",
+                    )
+                    if after_eat is None:
+                        print(
+                            "Ore gathering: hunger check timed out; "
+                            "continuing with current food level."
+                        )
+                    else:
+                        fallback_food = int(
+                            after_eat.get("food_level", after_eat.get("food", 20))
+                        )
+                        if fallback_food < _SAFE_MINING_FOOD:
+                            print(
+                                "DEBUG: Ore gathering stopped: hunger could not be "
+                                f"restored safely (food={fallback_food})"
+                            )
+                            return False
+                        print(
+                            "DEBUG: Ore gathering could not reach recovery target; "
+                            f"continuing at fallback food={fallback_food}"
+                        )
+                    _start_mine_process(client, ORES[ore_type], count + 2)
+                    idle_checks = 0
+                    stalled_checks = 0
+                    continue
                 _start_mine_process(client, ORES[ore_type], count + 2)
                 idle_checks = 0
                 stalled_checks = 0
                 continue
-            
+
             if not is_pathing:
                 idle_checks += 1
             else:
@@ -1050,7 +1211,14 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                         post_delay_seconds=_BARITONE_BUILD_CLEANUP_SECONDS,
                     )
                     return True
-                state = client.transport.dispatch("get_state", {})
+                state, _ = _read_state_with_retry(
+                    client,
+                    retries=2,
+                    label="Y navigation wait for block break",
+                )
+                if state is None:
+                    time.sleep(0.25)
+                    continue
                 if state.get("is_dead", False) or float(state.get("health", 20) or 0) <= 0:
                     return False
                 time.sleep(0.25)
@@ -1126,7 +1294,15 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
             starting_health = float(state.get("health", 20) or 0)
             last_position = (target_x, current_y, target_z)
             while time.monotonic() < move_deadline:
-                moved = client.transport.dispatch("get_state", {})
+                moved, _ = _read_state_with_retry(
+                    client,
+                    retries=2,
+                    label="Y navigation cleared-step wait",
+                )
+                if moved is None:
+                    read_flags["unreadable"] = True
+                    time.sleep(0.25)
+                    continue
                 moved_pos = moved.get(
                     "block_position", moved.get("position", {})
                 )
@@ -1139,7 +1315,7 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                     moved.get("is_dead", False)
                     or moved_health <= 0
                     or moved_health < starting_health - 4
-                    or moved_y < target_y - 1
+                    or moved_y < target_y - 2
                 ):
                     _serialized_dispatch(
                         client,
@@ -1173,9 +1349,12 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
             return "stalled"
 
         while time.time() - overall_start < timeout:
-            try:
-                state = client.transport.dispatch("get_state", {})
-            except TransportError:
+            state, _ = _read_state_with_retry(
+                client,
+                retries=2,
+                label="Y navigation progress check",
+            )
+            if state is None:
                 # Transient bridge stall under fleet load: pause and retry the
                 # iteration instead of throwing away a partly-dug staircase.
                 print("Y navigation: transient get_state timeout; resuming descent")
@@ -1200,9 +1379,26 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
             if food_level <= 10:
                 from .combat import eat_until_hunger
                 client.transport.dispatch("cancel", {})
-                if not eat_until_hunger(client, minimum_food=14):
-                    print("Y navigation aborted: could not restore hunger")
-                    return False
+                if not eat_until_hunger(client, minimum_food=_MINING_HUNGER_TARGET):
+                    after_eat, _ = _read_state_with_retry(
+                        client,
+                        retries=2,
+                        label="Y navigation hunger re-check",
+                    )
+                    if after_eat is None:
+                        print("Y navigation: hunger check timed out; pausing briefly and retrying")
+                        time.sleep(1.5)
+                        continue
+                    fallback_food = int(
+                        after_eat.get("food_level", after_eat.get("food", 20))
+                    )
+                    if fallback_food < _SAFE_MINING_FOOD:
+                        print("Y navigation aborted: could not restore hunger")
+                        return False
+                    print(
+                        "Y navigation: could not reach target food before descent; "
+                        f"continuing with fallback food={fallback_food}."
+                    )
             
             if current_y <= y + 3:
                 print(f"DEBUG: Reached target Y={y}!")
@@ -1369,6 +1565,7 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                         break
                     attempted_descent_anchors.add(anchor)
                     ax, ay, az = anchor
+                    anchor_aborted = False
                     print(
                         f"Y navigation: relocating to stable descent anchor "
                         f"({ax}, {ay}, {az})"
@@ -1382,7 +1579,18 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                     move_deadline = time.monotonic() + 15.0
                     starting_health = float(state.get("health", 20) or 0)
                     while time.monotonic() < move_deadline:
-                        moved = client.transport.dispatch("get_state", {})
+                        moved, _ = _read_state_with_retry(
+                            client,
+                            retries=2,
+                            label="Y navigation anchor relocation",
+                        )
+                        if moved is None:
+                            print(
+                                "Y navigation: anchor relocation state timeout; "
+                                "waiting for bridge response"
+                            )
+                            time.sleep(0.25)
+                            continue
                         moved_pos = moved.get(
                             "block_position", moved.get("position", {})
                         )
@@ -1396,7 +1604,7 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                             moved.get("is_dead", False)
                             or moved_health <= 0
                             or moved_health < starting_health - 4
-                            or moved_y < current_y - 1
+                            or moved_y < current_y - 2
                         ):
                             _serialized_dispatch(
                                 client,
@@ -1405,7 +1613,8 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                                 post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
                             )
                             print("Y navigation safety abort during anchor relocation")
-                            return False
+                            anchor_aborted = True
+                            break
                         if (
                             abs(moved_x - ax) <= 1
                             and abs(moved_y - ay) <= 1
@@ -1422,6 +1631,8 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                             step_succeeded = True
                             break
                         time.sleep(0.25)
+                    if anchor_aborted:
+                        continue
                     if step_succeeded:
                         break
                     _serialized_dispatch(
@@ -1556,7 +1767,12 @@ def _wait_for_path_completion(
     grace_deadline = time.monotonic() + start_grace
     observed_pathing = False
     while time.monotonic() < deadline:
-        state = client.transport.dispatch("get_state", {})
+        state = _read_state_optional(
+            client, retries=3, label="Wait for path completion state"
+        )
+        if state is None:
+            time.sleep(0.5)
+            continue
         if state.get("is_pathing", False):
             observed_pathing = True
         elif observed_pathing:
@@ -1645,21 +1861,16 @@ def _craft_with_table(client, item_id: str, qty: int) -> bool:
             total_planks = sum(count_item(client, p) for p in [
                 "minecraft:oak_planks", "minecraft:birch_planks", "minecraft:spruce_planks",
                 "minecraft:dark_oak_planks", "minecraft:acacia_planks", "minecraft:jungle_planks",
-                "minecraft:mangrove_planks", "minecraft:cherry_planks"
+                "minecraft:mangrove_planks", "minecraft:cherry_planks", "minecraft:pale_oak_planks"
             ])
 
             if total_planks < 4:
-                # Check for logs
-                total_logs = sum(count_item(client, b) for b in LOG_BLOCKS)
-                if total_logs > 0:
-                    # Find which log we have
-                    for log in LOG_BLOCKS:
-                        if count_item(client, log) > 0:
-                            print(f"  Crafting planks from {log} for crafting table...")
-                            plank_type = log.replace("_log", "_planks").replace("_wood", "_planks")
-                            craft(client, plank_type, 1)
-                            time.sleep(0.5)
-                            break
+                from .inventory import _ensure_raw_planks
+                if not _ensure_raw_planks(client, 4):
+                    print(
+                        "  Could not ensure 4 planks for crafting table via logs/planks."
+                    )
+                    return False
 
             # Craft crafting table first (2x2 recipe)
             craft(client, "minecraft:crafting_table", 1)
@@ -1749,9 +1960,17 @@ def _craft_with_table(client, item_id: str, qty: int) -> bool:
             client.transport.dispatch("chat", {"message": "#surface"})
             _wait_for_path_completion(client, timeout=120.0)
             # Try again on surface
-            state = client.transport.dispatch("get_state", {})
+            state = _read_state_optional(
+                client, retries=3, label="Craft table surface state"
+            )
+            if state is None:
+                return False
             pos = state.get("block_position", state.get("position", {}))
-            surface_x, surface_y, surface_z = int(pos.get("x", 0)), int(pos.get("y", 64)), int(pos.get("z", 0))
+            surface_x, surface_y, surface_z = (
+                int(pos.get("x", 0)),
+                int(pos.get("y", 64)),
+                int(pos.get("z", 0)),
+            )
             print(f"  At surface Y={surface_y}, trying placement...")
             if place_crafting_table(client, surface_x + 1, surface_y, surface_z):
                 found_spot = True
@@ -1791,6 +2010,38 @@ def _craft_with_table(client, item_id: str, qty: int) -> bool:
         return False
 
 
+def _safe_close_screen(client, label: str = "") -> None:
+    """Best-effort close_screen for stale/laggy bridge responses."""
+    try:
+        client.transport.dispatch("close_screen", {})
+    except Exception as exc:
+        detail = f" ({label})" if label else ""
+        print(f"  close_screen no-op{detail}: {exc}")
+
+
+def _ensure_flamethrower_ready(client, qty: int = 1) -> bool:
+    """Prepare ingredients for flint-and-steel before crafting.
+
+    This avoids brittle empty-item failures in the nether-builder path and keeps
+    ``ensure_supplies`` from repeatedly retrying only the recipe step.
+    """
+    needed = max(1, int(qty))
+    if count_item(client, "minecraft:iron_ingot") < needed:
+        if not _smelt_requirement_shortfall(
+            client,
+            "minecraft:iron_ingot",
+            needed - count_item(client, "minecraft:iron_ingot"),
+        ):
+            if not gather_ores(client, "iron", count=needed):
+                return False
+
+    if count_item(client, "minecraft:flint") < needed:
+        if not gather_gravel(client, count=needed):
+            return False
+
+    return True
+
+
 DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
     "minecraft:oak_log": lambda client, qty: gather_wood(client, count=max(qty, 16)),
     "minecraft:cobblestone": lambda client, qty: gather_stone(client, count=max(qty, 16)),
@@ -1802,18 +2053,18 @@ DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
     "minecraft:furnace": lambda client, qty: _craft_with_table(client, "minecraft:furnace", qty),
     "minecraft:chest": lambda client, qty: _craft_with_table(client, "minecraft:chest", qty),
     # Early game wooden tools (2x2 crafting)
-    "minecraft:stick": lambda client, qty: (client.transport.dispatch("close_screen", {}), craft(client, "minecraft:stick", max(qty, 4)), time.sleep(1)),
-    "minecraft:oak_planks": lambda client, qty: (client.transport.dispatch("close_screen", {}), craft(client, "minecraft:oak_planks", qty), time.sleep(1)),
+    "minecraft:stick": lambda client, qty: (_safe_close_screen(client, "stick"), craft(client, "minecraft:stick", max(qty, 4)), time.sleep(1)),
+    "minecraft:oak_planks": lambda client, qty: (_safe_close_screen(client, "plank"), craft(client, "minecraft:oak_planks", qty), time.sleep(1)),
     # Wooden tools (3x3 crafting table required)
     "minecraft:wooden_pickaxe": lambda client, qty: _craft_with_table(client, "minecraft:wooden_pickaxe", qty),
     "minecraft:wooden_sword": lambda client, qty: _craft_with_table(client, "minecraft:wooden_sword", qty),
     "minecraft:wooden_axe": lambda client, qty: _craft_with_table(client, "minecraft:wooden_axe", qty),
     "minecraft:wooden_shovel": lambda client, qty: _craft_with_table(client, "minecraft:wooden_shovel", qty),
     # Stone tools
-    "minecraft:stone_pickaxe": lambda client, qty: (client.transport.dispatch("close_screen", {}), _craft_with_table(client, "minecraft:stone_pickaxe", qty)),
-    "minecraft:stone_sword": lambda client, qty: (client.transport.dispatch("close_screen", {}), _craft_with_table(client, "minecraft:stone_sword", qty)),
-    "minecraft:stone_axe": lambda client, qty: (client.transport.dispatch("close_screen", {}), _craft_with_table(client, "minecraft:stone_axe", qty)),
-    "minecraft:stone_shovel": lambda client, qty: (client.transport.dispatch("close_screen", {}), _craft_with_table(client, "minecraft:stone_shovel", qty)),
+    "minecraft:stone_pickaxe": lambda client, qty: (_safe_close_screen(client, "stone_pickaxe"), _craft_with_table(client, "minecraft:stone_pickaxe", qty)),
+    "minecraft:stone_sword": lambda client, qty: (_safe_close_screen(client, "stone_sword"), _craft_with_table(client, "minecraft:stone_sword", qty)),
+    "minecraft:stone_axe": lambda client, qty: (_safe_close_screen(client, "stone_axe"), _craft_with_table(client, "minecraft:stone_axe", qty)),
+    "minecraft:stone_shovel": lambda client, qty: (_safe_close_screen(client, "stone_shovel"), _craft_with_table(client, "minecraft:stone_shovel", qty)),
     "minecraft:iron_pickaxe": lambda client, qty: _craft_with_table(client, "minecraft:iron_pickaxe", qty),
     "minecraft:iron_sword": lambda client, qty: _craft_with_table(client, "minecraft:iron_sword", qty),
     "minecraft:iron_axe": lambda client, qty: _craft_with_table(client, "minecraft:iron_axe", qty),
@@ -1838,7 +2089,7 @@ DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
     # timeout: end_game's ensure_supplies({"minecraft:ender_eye": 12}) would
     # have dead-ended exactly that way. Ingredient ACQUISITION (rods, pearls,
     # sugar cane, leather, obsidian) belongs to the owning phases.
-    "minecraft:flint_and_steel": lambda client, qty: _craft_with_table(client, "minecraft:flint_and_steel", qty),
+    "minecraft:flint_and_steel": lambda client, qty: _ensure_flamethrower_ready(client, qty) and _craft_with_table(client, "minecraft:flint_and_steel", qty),
     "minecraft:paper": lambda client, qty: _craft_with_table(client, "minecraft:paper", qty),
     "minecraft:book": lambda client, qty: _craft_with_table(client, "minecraft:book", qty),
     "minecraft:bookshelf": lambda client, qty: _craft_with_table(client, "minecraft:bookshelf", qty),
@@ -1971,6 +2222,54 @@ def manage_inventory(client, minimum_free_slots: int = 1) -> bool:
     return False
 
 
+def _resolve_raw_plank_helper() -> Callable[[Any, int], bool]:
+    """Return the active inventory helper for raw-plank conversion.
+
+    Tests (and future runtime patches) can monkeypatch
+    ``inventory._ensure_raw_planks``. When unpatched, we fall back to a local
+    implementation that uses this module's ``craft``/``gather_wood`` functions.
+    """
+    helper = getattr(inventory, "_ensure_raw_planks", _DEFAULT_INVENTORY_ENSURE_RAW_PLANKS)
+    return helper
+
+
+def _ensure_raw_planks_for_fuel(client, required_planks: int) -> bool:
+    """Ensure enough carried planks by converting any carried logs directly.
+
+    This path is used when ``inventory._ensure_raw_planks`` is not monkeypatched,
+    because that implementation depends on local inventory module symbols that
+    are harder to replace in unit tests.
+    """
+    required_planks = max(0, required_planks)
+    current_planks = sum(count_item(client, item_id) for item_id in PLANK_ITEMS)
+    if current_planks >= required_planks:
+        return True
+
+    missing = required_planks - current_planks
+    while missing > 0:
+        converted = False
+        for log_id, plank_id in LOG_TO_PLANKS.items():
+            available_logs = count_item(client, log_id)
+            if available_logs <= 0:
+                continue
+            # Convert exactly what is needed, but do not exceed available stock.
+            craft_count = min(missing, max(1, available_logs) * 4)
+            if not craft(client, plank_id, craft_count):
+                return False
+            new_planks = sum(count_item(client, item_id) for item_id in PLANK_ITEMS)
+            if new_planks >= required_planks:
+                return True
+            if new_planks <= current_planks:
+                # Prevent live/integration loops when craft is misreported.
+                return False
+            current_planks = new_planks
+            missing = required_planks - current_planks
+            converted = True
+        if not converted:
+            return False
+    return True
+
+
 def _select_furnace_fuel(client, smelt_count: int) -> Optional[str]:
     """Return one carried fuel stack that can finish the requested batch."""
     needed = max(1, int(smelt_count))
@@ -1984,6 +2283,60 @@ def _select_furnace_fuel(client, smelt_count: int) -> Optional[str]:
         if count_item(client, item_id) >= required_items:
             return item_id
     return None
+
+
+def _select_furnace_fuel_from_pool(client, smelt_count: int) -> Optional[str]:
+    """Select fuel by counting same-family logs as potential conversion.
+
+    This supports cases where mixed stack fuel is sufficient but no single
+    carried stack meets the full batch requirement yet can be topped up from
+    local logs (for example 8 jungle planks plus 2 jungle logs for 15 smelts).
+    """
+    needed = max(1, int(smelt_count))
+    preferred = ["minecraft:coal", "minecraft:charcoal"]
+    for plank_id in PLANK_ITEMS:
+        required_items = math.ceil(needed / FURNACE_FUEL_SMELTS[plank_id])
+        log_id = None
+        for log, plank in LOG_TO_PLANKS.items():
+            if plank == plank_id:
+                log_id = log
+                break
+        if log_id is None:
+            continue
+        if count_item(client, plank_id) >= required_items:
+            return plank_id
+        # same-family logs can be converted deterministically into this plank type
+        if count_item(client, plank_id) + count_item(client, log_id) * 4 >= required_items:
+            return plank_id
+    return None
+
+
+def _ensure_fuel_family_planks(client, fuel_id: str, smelt_count: int) -> bool:
+    """Ensure ``fuel_id`` is available in enough quantity for the requested smelt."""
+    if fuel_id not in PLANK_ITEMS:
+        return False
+    required = max(1, math.ceil(max(1, int(smelt_count)) / FURNACE_FUEL_SMELTS[fuel_id]))
+    log_id = None
+    for log, plank in LOG_TO_PLANKS.items():
+        if plank == fuel_id:
+            log_id = log
+            break
+    if log_id is None:
+        return False
+
+    current = count_item(client, fuel_id)
+    while current < required:
+        stock = count_item(client, log_id)
+        if stock <= 0:
+            return False
+        to_craft = min(required - current, stock * 4)
+        if not craft(client, fuel_id, to_craft):
+            return False
+        next_count = count_item(client, fuel_id)
+        if next_count <= current:
+            return False
+        current = next_count
+    return True
 
 
 def _prepare_safe_furnace_fuel(client, smelt_count: int) -> Optional[str]:
@@ -2006,8 +2359,8 @@ def _prepare_safe_furnace_fuel(client, smelt_count: int) -> Optional[str]:
     manage_inventory(client)
     required_planks = math.ceil(max(1, int(smelt_count)) / 1.5)
     current_planks = sum(count_item(client, item_id) for item_id in PLANK_ITEMS)
-    # gather_wood treats four existing planks as one log equivalent, so this
-    # absolute target accounts for both carried logs and carried planks.
+    # Gather a minimal daylight stock only when needed; conversion is now
+    # delegated to the cross-family plank helper.
     required_log_equivalents = math.ceil(required_planks / 4)
     print(
         f"  Preparing safe wood fuel ({current_planks}/{required_planks} planks, "
@@ -2022,34 +2375,29 @@ def _prepare_safe_furnace_fuel(client, smelt_count: int) -> Optional[str]:
         return None
 
     client.transport.dispatch("close_screen", {})
-    # A furnace fuel slot accepts one item id at a time. Aggregate plank totals
-    # can therefore look sufficient while being split across wood families.
-    # Consolidate one family by crafting its matching logs until that single
-    # stack can complete the batch.
-    candidates = sorted(
-        LOG_TO_PLANKS.items(),
-        key=lambda pair: (
-            count_item(client, pair[1]) + 4 * count_item(client, pair[0])
-        ),
-        reverse=True,
-    )
-    consolidated = False
-    for log_id, plank_id in candidates:
-        plank_count = count_item(client, plank_id)
-        log_count = count_item(client, log_id)
-        if plank_count + log_count * 4 < required_planks:
-            continue
-        missing_planks = max(0, required_planks - plank_count)
-        if missing_planks and not craft(client, plank_id, missing_planks):
-            print(f"  Could not consolidate {log_id} into furnace fuel.")
+    ensure_raw_planks = _resolve_raw_plank_helper()
+    if ensure_raw_planks is _DEFAULT_INVENTORY_ENSURE_RAW_PLANKS:
+        if not _ensure_raw_planks_for_fuel(client, required_planks):
+            print("  Wood fuel preparation failed after consolidation.")
             return None
-        consolidated = True
-        break
+    elif not ensure_raw_planks(client, required_planks):
+        print("  Wood fuel preparation failed after consolidation.")
+        return None
 
-    fuel_id = _select_furnace_fuel(client, smelt_count)
+    # At this point we may have enough total planks, but still need one
+    # usable stack type. Prefer the first family that can be completed with
+    # carried same-family logs.
+    fuel_id = _select_furnace_fuel_from_pool(client, smelt_count)
     if fuel_id is None:
-        detail = "split wood families" if not consolidated else "insufficient burn time"
-        print(f"  Wood fuel preparation failed after consolidation ({detail}).")
+        print("  Wood fuel preparation failed after consolidation.")
+        return None
+    if count_item(client, fuel_id) < math.ceil(
+        max(1, int(smelt_count)) / FURNACE_FUEL_SMELTS[fuel_id]
+    ):
+        if not _ensure_fuel_family_planks(client, fuel_id, smelt_count):
+            print("  Wood fuel preparation failed after consolidation.")
+            return None
+
     return fuel_id
 
 
@@ -2258,7 +2606,9 @@ def _smelt_with_furnace(
 
     # Preferred: harness smelter (loads furnace, waits per item, verifies)
     from . import harness_ops
-    state = client.transport.dispatch("get_state", {})
+    state = _read_state_optional(client, retries=3, label="Furnace distance state")
+    if state is None:
+        return False
     position = state.get("block_position", state.get("position", {}))
     distance = sum(
         (float(position.get(axis, 0)) - float(coordinate)) ** 2

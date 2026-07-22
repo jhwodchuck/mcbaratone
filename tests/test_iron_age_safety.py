@@ -21,7 +21,7 @@ def test_iron_phase_stabilizes_low_hunger_before_mining(monkeypatch):
     )
 
     assert iron_age.FoodAndIronHandler()._stabilize_hunger(client)
-    assert calls == [14]
+    assert calls == [12]
 
 
 def test_iron_phase_resume_counts_existing_ingots_before_mining(monkeypatch):
@@ -66,6 +66,26 @@ def test_iron_phase_recovers_critical_health_before_mining(monkeypatch):
 
     assert iron_age.FoodAndIronHandler()._stabilize_hunger(client)
     assert calls == ["recover", "acquire"]
+
+
+def test_iron_phase_skips_hunt_on_minimum_food(monkeypatch):
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                return {"health": 20.0, "food_level": 12}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    searches = []
+    monkeypatch.setattr(iron_age, "eat_until_hunger", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        iron_age,
+        "acquire_emergency_food",
+        lambda _client, **kwargs: searches.append(kwargs) or True,
+    )
+
+    assert iron_age.FoodAndIronHandler()._stabilize_hunger(client)
+    assert not searches
 
 
 def test_y_descent_uses_small_goals_and_disables_fatal_fall_settings(monkeypatch):
@@ -1244,3 +1264,193 @@ def test_food_and_iron_banks_excess_before_first_smelting():
     assert source.index("Deposit bulky excess before smelting") < source.index(
         'ActionTask("Smelt iron ingots"'
     )
+
+
+def _deposit_client(chest_block_seq, player_pos=(-114, 88, -34)):
+    """Client whose get_block at the chest coord walks through a sequence of
+    ids (so a re-placement can flip 'air' -> 'chest'), and whose get_state
+    reports the player standing next to the chest."""
+    seq = list(chest_block_seq)
+    calls = {"place": []}
+
+    def dispatch(route, payload=None):
+        if route == "get_block":
+            return {"id": seq[min(len(seq) - 1, calls.get("gb", 0))]}
+        if route == "get_state":
+            return {"block_position": {"x": player_pos[0], "y": player_pos[1], "z": player_pos[2]}}
+        return {}
+
+    return SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch)), calls
+
+
+def test_deposit_replaces_missing_supply_chest_then_deposits(monkeypatch):
+    """A stale/missing supply-chest coordinate must be re-established, not
+    treated as a fatal phase failure. Confirmed live: Bot08 failed the
+    deposit 368 times standing next to an empty (-114,88,-35)."""
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = SimpleNamespace(
+        custom_data={"structures": {"starter_house": {"supply_chest": [-114, 88, -35]}}}
+    )
+    # First get_block sees no chest; after re-placement it reads as a chest.
+    block_state = {"placed": False}
+
+    def get_block_dispatch(route, payload=None):
+        if route == "get_block":
+            return {"id": "minecraft:chest" if block_state["placed"] else "minecraft:air"}
+        if route == "get_state":
+            return {"block_position": {"x": -114, "y": 88, "z": -34}}
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=get_block_dispatch))
+
+    deposit_attempts = []
+    def deposit(_client, chest_pos, state=None):
+        # Fail until the chest has been re-placed.
+        deposit_attempts.append(chest_pos)
+        return 2 if block_state["placed"] else -1
+    monkeypatch.setattr(iron_age, "deposit_excess_to_chest", deposit)
+    monkeypatch.setattr(iron_age, "count_item", lambda _c, _i: 1)  # carries a chest
+    def place(_c, x, y, z, item, allow_break=True):
+        block_state["placed"] = True
+        return True
+    monkeypatch.setattr(iron_age.harness_ops, "place_block_exact", place)
+    monkeypatch.setattr(iron_age.harness_ops, "move_near", lambda *_a, **_k: True)
+
+    assert handler._deposit_excess_at_home(client, handler.state) is True
+    assert block_state["placed"] is True
+    # Deposited after re-placement (second attempt succeeded).
+    assert len(deposit_attempts) == 2
+
+
+def test_deposit_does_not_brick_phase_when_chest_unrecoverable(monkeypatch):
+    """If the chest cannot be re-established at all, depositing (an inventory
+    optimization) must not fail the whole phase forever -- the bot should
+    carry the excess and continue to the descent."""
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = SimpleNamespace(
+        custom_data={"structures": {"starter_house": {"supply_chest": [-114, 88, -35]}}}
+    )
+
+    def dispatch(route, payload=None):
+        if route == "get_block":
+            return {"id": "minecraft:air"}
+        if route == "get_state":
+            return {"block_position": {"x": -114, "y": 88, "z": -34}}
+        return {}
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+
+    monkeypatch.setattr(iron_age, "deposit_excess_to_chest", lambda *_a, **_k: -1)
+    monkeypatch.setattr(iron_age, "count_item", lambda _c, _i: 0)  # no chest carried
+    monkeypatch.setattr(iron_age, "craft", lambda *_a, **_k: False)  # cannot craft one
+    monkeypatch.setattr(iron_age.harness_ops, "move_near", lambda *_a, **_k: True)
+
+    # Must return True (continue), not False (brick the phase).
+    assert handler._deposit_excess_at_home(client, handler.state) is True
+
+
+def test_stabilize_hunger_falls_back_to_farm_when_local_search_fails(monkeypatch):
+    """When the local bounded emergency-food search fails (as it always will
+    in an animal-sparse biome), the established wheat farm must be tried
+    before degrading to a low-hunger floor or failing outright. Confirmed
+    live: Bot09 stuck in a "no passive food source loaded" loop with an
+    established farm sitting unused."""
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                return {"health": 20.0, "food_level": 3}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = SimpleNamespace(
+        custom_data={"wheat_farm": {"origin": [10, 70, 20]}}
+    )
+
+    # eat_until_hunger is called twice: once in the normal flow (must fail,
+    # so the fallback chain actually runs) and once after the farm harvest
+    # (must succeed) -- track state across the two calls explicitly.
+    harvested = []
+    fed_by_farm = {"v": False}
+
+    def eat_until_hunger_stub(_client, minimum_food):
+        return fed_by_farm["v"]
+
+    def harvest_then_allow_eating(_c, x, y, z):
+        harvested.append((x, y, z))
+        fed_by_farm["v"] = True
+        return True
+
+    monkeypatch.setattr(iron_age, "eat_until_hunger", eat_until_hunger_stub)
+    monkeypatch.setattr(iron_age, "acquire_emergency_food", lambda *_a, **_k: False)
+    monkeypatch.setattr(iron_age, "harvest_wheat_farm", harvest_then_allow_eating)
+    monkeypatch.setattr(
+        iron_age, "visit_known_herd_for_loot",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("must not travel to the herd when the farm already worked")
+        ),
+    )
+
+    assert handler._stabilize_hunger(client) is True
+    assert harvested == [(10, 70, 20)]
+    assert handler._stabilize_hunger_failures == 0
+
+
+def test_stabilize_hunger_falls_back_to_known_herd_when_no_farm_established(monkeypatch):
+    """With no wheat farm yet established, the fallback must go straight to
+    the operator-known herd instead of erroring on a missing farm."""
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                return {"health": 20.0, "food_level": 3}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = SimpleNamespace(custom_data={})
+
+    visited = []
+    fed_by_herd = {"v": False}
+
+    def eat_until_hunger_stub(_client, minimum_food):
+        return fed_by_herd["v"]
+
+    def visit_herd(_client, required_loot, animal_type):
+        visited.append((dict(required_loot), animal_type))
+        fed_by_herd["v"] = True
+        return True
+
+    monkeypatch.setattr(iron_age, "eat_until_hunger", eat_until_hunger_stub)
+    monkeypatch.setattr(iron_age, "acquire_emergency_food", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        iron_age, "harvest_wheat_farm",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("must not try to harvest a farm that was never established")
+        ),
+    )
+    monkeypatch.setattr(iron_age, "visit_known_herd_for_loot", visit_herd)
+
+    assert handler._stabilize_hunger(client) is True
+    assert visited == [({"minecraft:beef": 3}, "cow")]
+
+
+def test_stabilize_hunger_still_degrades_when_farm_and_herd_both_fail(monkeypatch):
+    """If the farm/herd fallback also fails, existing degraded-floor and
+    failure-counter behavior must still apply unchanged."""
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                return {"health": 20.0, "food_level": 3}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = SimpleNamespace(custom_data={})
+
+    monkeypatch.setattr(iron_age, "eat_until_hunger", lambda *_a, **_k: False)
+    monkeypatch.setattr(iron_age, "acquire_emergency_food", lambda *_a, **_k: False)
+    monkeypatch.setattr(iron_age, "visit_known_herd_for_loot", lambda *_a, **_k: False)
+
+    # food_level (3) is below safe_hunger_floor (6), so it must fail closed
+    # until the failure counter reaches its threshold.
+    assert handler._stabilize_hunger(client) is False
+    assert handler._stabilize_hunger_failures == 1

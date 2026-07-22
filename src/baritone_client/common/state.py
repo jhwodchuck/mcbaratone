@@ -22,6 +22,7 @@ class PlayerState:
     food: int
     dimension: str
     is_dead: bool = False
+    biome: str = "unknown"
     
     @property
     def position(self) -> Tuple[float, float, float]:
@@ -90,6 +91,7 @@ class WorldState:
                 food=data.get("food_level", data.get("food", 20)),
                 dimension=data.get("dimension", "minecraft:overworld"),
                 is_dead=data.get("is_dead", False),
+                biome=data.get("biome", "unknown"),
             )
             self._last_refresh = time.time()
             

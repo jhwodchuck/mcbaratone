@@ -11,6 +11,8 @@ from ..state_manager import StateManager
 from ...common import TaskResult, SequentialTask, ActionTask
 from ...common.resources import (
     _craft_with_table,
+    _read_state_with_retry,
+    _safe_close_screen,
     ensure_supplies,
     gather_ores,
     gather_stone,
@@ -33,7 +35,10 @@ from ...common.inventory import (
 )
 from ...common.navigation import find_nearby_block, goto
 from ...common import harness_ops
+from ...common import base as house_utils
 from ...common.combat import acquire_emergency_food, eat_until_hunger, recover_health
+from ...common.farming import harvest_wheat_farm
+from ...common.husbandry import visit_known_herd_for_loot
 
 class FoodAndIronHandler(PhaseHandler):
     """Phase 2: Iron & Diamond mining - Hour 1-2."""
@@ -44,6 +49,26 @@ class FoodAndIronHandler(PhaseHandler):
         self.state: Optional[StateManager] = None
         self._initial_iron_supplies_withdrawn = False
         self._initial_iron_transitioned = False
+        self._stabilize_hunger_failures = 0
+        self._cached_state: Optional[dict] = None
+
+    def _read_state(self, client, label: str):
+        state, attempts = _read_state_with_retry(
+            client,
+            retries=3,
+            label=label,
+        )
+        if state is not None:
+            self._cached_state = state
+        elif self._cached_state is not None:
+            print(
+                f"{label}: using cached state after {attempts} failed read "
+                "attempt(s)."
+            )
+            return self._cached_state
+        if state is None:
+            print(f"{label}: state read failed after {attempts} attempt(s).")
+        return state
     
     def get_name(self) -> str:
         return "Iron & Diamond (Hour 1-2)"
@@ -51,6 +76,19 @@ class FoodAndIronHandler(PhaseHandler):
     def execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
         self.state = state
         tasks = [
+            # Best-effort, non-blocking: if a bed exists and it happens to be
+            # night right now, sleep to anchor the respawn point near base.
+            # A checkpoint resumed here (already past BASE_CONSTRUCTION,
+            # which normally establishes this) may never have gotten the
+            # chance -- deep mining routinely strands the player too far
+            # underground from the surface bed to reach it before dawn, so
+            # without this a death sends the player back to world spawn
+            # instead of near base. Always reports success; establishing the
+            # anchor is a bonus, not a requirement to keep mining.
+            ActionTask(
+                "Opportunistically establish respawn anchor",
+                lambda c: bool(house_utils.try_establish_respawn_anchor_now(c, state)) or True,
+            ),
             # Do not begin a long mining phase on an empty hunger bar.  This
             # uses carried food (including emergency rotten flesh) and fails
             # closed if the bot has no edible reserve.
@@ -93,23 +131,111 @@ class FoodAndIronHandler(PhaseHandler):
         return executor.run(client)
 
     def _stabilize_hunger(self, client) -> bool:
-        state = client.transport.dispatch("get_state", {})
+        state = self._read_state(client, "Stabilize hunger") or {}
         health = float(state.get("health", 20) or 0)
         if health < 12.0:
             print(f"  Health critical ({health:.1f}/20) - recovering before mining...")
-            if not recover_health(client, minimum_health=12.0, timeout=10.0):
-                if not acquire_emergency_food(
-                    client,
-                    minimum_health=12.0,
-                    timeout=300.0,
-                ):
+            recover_health(client, minimum_health=12.0, timeout=10.0)
+            if not acquire_emergency_food(
+                client,
+                minimum_health=12.0,
+                minimum_food=14,
+                timeout=300.0,
+            ):
+                recovery_state = self._read_state(client, "Stabilize hunger recovery") or {}
+                if float(recovery_state.get("health", 20) or 0) < 6.0:
+                    print("  Emergency recovery restored insufficient health; holding before mining.")
                     return False
-            state = client.transport.dispatch("get_state", {})
+                health = float(recovery_state.get("health", 20) or 0)
+            state = self._read_state(client, "Stabilize hunger post-feed") or {}
+
         food_level = int(state.get("food_level", state.get("food", 20)))
-        if food_level >= 14:
+        # At this stage, very low hunger can still be survivable if the
+        # player is sheltered and nearby threats are contained. Requiring 12+ bars
+        # here caused repeated false dead-ends; 6+ is treated as a bounded
+        # recovery floor for now.
+        safe_hunger_floor = 6
+        # The original 14-hunger requirement was strict enough to stall
+        # on deep recovery runs where food can be hard to gather in the
+        # short term. Requiring a safer but lower bar keeps progression from
+        # soft-locking while still preventing high-risk hunger deaths.
+        if food_level > safe_hunger_floor:
+            self._stabilize_hunger_failures = 0
             return True
         print(f"  Hunger low ({food_level}/20) - eating before mining...")
-        return eat_until_hunger(client, minimum_food=14)
+        if eat_until_hunger(client, minimum_food=12):
+            self._stabilize_hunger_failures = 0
+            return True
+        print("  No carried food restored hunger; starting emergency food search...")
+        if acquire_emergency_food(
+            client,
+            minimum_health=12.0,
+            minimum_food=12,
+            timeout=300.0,
+        ):
+            self._stabilize_hunger_failures = 0
+            return True
+
+        # The local bounded search above can never succeed in an
+        # animal-sparse biome -- it will retry the same empty area forever.
+        # Try the farm/herd fallback before settling for a degraded floor or
+        # giving up outright. Confirmed live: Bot09 stuck in a
+        # "no passive food source loaded" loop with nothing nearby to hunt.
+        if self._recover_food_from_known_sources(client):
+            self._stabilize_hunger_failures = 0
+            return True
+
+        if food_level >= safe_hunger_floor:
+            self._stabilize_hunger_failures = 0
+            print(
+                "  Emergency food search failed, but hunger is still "
+                f"at or above fallback floor {safe_hunger_floor}; proceeding."
+            )
+            return True
+
+        self._stabilize_hunger_failures += 1
+        print(
+            "  Emergency food search failed "
+            f"(failures={self._stabilize_hunger_failures})."
+        )
+        if self._stabilize_hunger_failures < 3:
+            return False
+
+        # Bounded fallback: one low-risk pass keeps automation moving after
+        # repeated no-food loops while still guarding against immediate death.
+        fallback_state = self._read_state(client, "Stabilize hunger fallback") or {}
+        fallback_food = int(fallback_state.get("food_level", fallback_state.get("food", 20)))
+        if fallback_food >= safe_hunger_floor:
+            print(
+                "  Hunger still low, but repeated recovery attempts are blocked;"
+                " continuing with minimal safe food bar to avoid hard-lock."
+            )
+            return True
+        print(
+            "  Repeated hunger recovery failures and food still below 8;"
+            " holding before mining to avoid unsafe death."
+        )
+        return False
+
+    def _recover_food_from_known_sources(self, client) -> bool:
+        """Harvest the established wheat farm, or hunt the operator-known
+        distant herd, then eat -- the fallback for a biome with nothing
+        huntable near base. Cheapest option (the nearby farm) first; the
+        herd trip is a genuine expedition and only worth it once the farm
+        can't (or doesn't yet) supply enough.
+        """
+        farm = (self.state.custom_data.get("wheat_farm") if self.state else None) or {}
+        origin = farm.get("origin")
+        if isinstance(origin, (list, tuple)) and len(origin) == 3:
+            fx, fy, fz = (int(v) for v in origin)
+            if harvest_wheat_farm(client, fx, fy, fz) and eat_until_hunger(
+                client, minimum_food=12
+            ):
+                return True
+
+        return visit_known_herd_for_loot(
+            client, {"minecraft:beef": 3}, "cow"
+        ) and eat_until_hunger(client, minimum_food=12)
 
     def _initial_iron_target_satisfied(self, client) -> bool:
         return (
@@ -233,7 +359,9 @@ class FoodAndIronHandler(PhaseHandler):
             range(x + 1, x + 6),
             range(z + 1, z + 6),
         )
-        current = client.transport.dispatch("get_state", {})
+        current = self._read_state(client, "Return to base current state")
+        if current is None:
+            return False
         position = current.get("block_position", current.get("position", {}))
         if (
             int(position.get("x", 0)) in interior_bounds[0]
@@ -306,7 +434,9 @@ class FoodAndIronHandler(PhaseHandler):
         if not entered:
             return False
 
-        arrived = client.transport.dispatch("get_state", {})
+        arrived = self._read_state(client, "Return to base arrival check")
+        if arrived is None:
+            return False
         position = arrived.get("block_position", arrived.get("position", {}))
         safely_inside = (
             int(position.get("x", 0)) in interior_bounds[0]
@@ -325,17 +455,96 @@ class FoodAndIronHandler(PhaseHandler):
         return safely_inside
 
     def _deposit_excess_at_home(self, client, state: StateManager) -> bool:
-        """Make the checkpointed supply chest a required phase boundary."""
+        """Bank excess before smelting, recovering a missing supply chest.
+
+        Depositing is an inventory-pressure optimization, not a hard
+        precondition for descending -- but a persisted chest coordinate can be
+        stale (chest never really placed, or destroyed), and treating that as
+        a fatal phase failure deadlocks FOOD_AND_IRON forever. Confirmed live:
+        Bot08 failed "Deposit bulky excess before smelting" 368 times while
+        standing one block from an empty (-114,88,-35) that its checkpoint
+        insisted held a chest. So: deposit; if that fails, re-establish the
+        chest and retry; and if a deposit still isn't possible, continue
+        carrying the excess rather than bricking the whole progression.
+        """
         structures = state.custom_data.get("structures", {})
         house = structures.get("starter_house", {})
         chest_pos = house.get("supply_chest")
         if not isinstance(chest_pos, (list, tuple)) or len(chest_pos) != 3:
             print("  Starter-house supply chest is not checkpointed.")
-            return False
-        deposited = deposit_excess_to_chest(
-            client, tuple(chest_pos), state=self.state
+            return True
+        chest_pos = tuple(chest_pos)
+
+        if deposit_excess_to_chest(client, chest_pos, state=self.state) >= 0:
+            return True
+
+        # Deposit failed. Re-establish the chest at its checkpointed spot and
+        # retry once before giving up on this (optional) banking step.
+        if self._reestablish_supply_chest(client, chest_pos):
+            if deposit_excess_to_chest(client, chest_pos, state=self.state) >= 0:
+                return True
+
+        print(
+            "  Could not deposit excess (chest unrecoverable); carrying it and "
+            "continuing to the descent instead of failing the phase."
         )
-        return deposited >= 0
+        return True
+
+    def _reestablish_supply_chest(self, client, chest_pos: Tuple[int, int, int]) -> bool:
+        """Re-place the supply chest if its checkpointed block is genuinely
+        gone. Returns True only when a chest verifiably occupies chest_pos."""
+        cx, cy, cz = (int(v) for v in chest_pos)
+
+        block = client.transport.dispatch(
+            "get_block", {"x": cx, "y": cy, "z": cz}
+        ).get("id", "")
+        if "chest" in block:
+            return True
+
+        # Get within interaction range so the block read reflects a loaded
+        # chunk, not a void_air placeholder, before deciding it's really gone.
+        state = self._read_state(client, "Reestablish supply chest distance check")
+        if state is None:
+            return False
+        pos = state.get("block_position", state.get("position", {}))
+        near = all(axis in pos for axis in ("x", "y", "z")) and (
+            (float(pos["x"]) - cx) ** 2
+            + (float(pos["y"]) - cy) ** 2
+            + (float(pos["z"]) - cz) ** 2
+        ) ** 0.5 <= 4.5
+        if not near and not harness_ops.move_near(client, cx, cy, cz, timeout=30.0):
+            print("  Could not reach supply-chest location to re-place it.")
+            return False
+
+        block = client.transport.dispatch(
+            "get_block", {"x": cx, "y": cy, "z": cz}
+        ).get("id", "")
+        if "chest" in block:
+            return True
+        if block == "minecraft:void_air":
+            # Chunk still not loaded -- do not conclude the chest is gone.
+            return False
+
+        if count_item(client, "minecraft:chest") < 1 and not craft(
+            client, "minecraft:chest", 1
+        ):
+            print("  No chest available and could not craft one to re-place.")
+            return False
+
+        print(f"  Re-placing missing supply chest at {(cx, cy, cz)}.")
+        client.transport.dispatch("chat", {"message": "#set allowBreak false"})
+        try:
+            harness_ops.place_block_exact(
+                client, cx, cy, cz, "minecraft:chest", allow_break=False
+            )
+        finally:
+            client.transport.dispatch("cancel", {})
+            client.transport.dispatch("chat", {"message": "#set allowBreak true"})
+
+        block = client.transport.dispatch(
+            "get_block", {"x": cx, "y": cy, "z": cz}
+        ).get("id", "")
+        return "chest" in block
 
     def _normalize_position(self, value) -> Optional[Tuple[int, int, int]]:
         if not isinstance(value, (list, tuple)) or len(value) != 3:
@@ -617,7 +826,7 @@ class FoodAndIronHandler(PhaseHandler):
 
         if nearby is not None:
             if harness_ops.ensure_crafting_table_open(client, table_pos=nearby):
-                client.transport.dispatch("close_screen", {})
+                _safe_close_screen(client, "nearby crafting table")
                 return True
             print(f"  Nearby crafting table at {nearby} is unreachable; replacing it locally.")
             nearby = None
@@ -629,7 +838,7 @@ class FoodAndIronHandler(PhaseHandler):
 
         if not harness_ops.ensure_crafting_table_open(client):
             return False
-        client.transport.dispatch("close_screen", {})
+        _safe_close_screen(client, "new crafting table")
         return True
 
     def _reserve_inventory_space(self, client, minimum_free_slots: int) -> bool:

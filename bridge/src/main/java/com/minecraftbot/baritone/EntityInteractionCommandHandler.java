@@ -12,6 +12,8 @@ import net.minecraft.entity.passive.SheepEntity;
 import net.minecraft.entity.passive.TameableEntity;
 import net.minecraft.entity.passive.VillagerEntity;
 import net.minecraft.registry.Registries;
+import net.minecraft.util.ActionResult;
+import net.minecraft.util.Hand;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import org.slf4j.Logger;
@@ -36,7 +38,8 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
         TRADE,
         LOOK_AT,
         SHEAR,
-        MILK
+        MILK,
+        INTERACT
     }
 
     private static class InteractionValidation {
@@ -71,6 +74,9 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
         String action = params.has("action") ? params.get("action").getAsString() : "look_at";
 
         switch (action) {
+            case "feed":
+            case "interact":
+                return handleDirectEntityInteraction(params, client, action);
             case "tame":
             case "shear":
             case "milk":
@@ -91,17 +97,26 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
                 return CommandResult.error("Player or world not available");
             }
 
-            if (!params.has("entity_type")) {
-                return CommandResult.error("Missing required parameter: entity_type");
+            if (!params.has("entity_id") && !params.has("entity_type")) {
+                return CommandResult.error("Missing required parameter: entity_id or entity_type");
             }
 
-            String entityType = params.get("entity_type").getAsString();
             double maxDistance = params.has("max_distance") ? params.get("max_distance").getAsDouble() : 5.0;
-
-            Entity target = findNearestEntityOfType(client, entityType, maxDistance);
+            Entity target;
+            String targetDescription;
+            if (params.has("entity_id")) {
+                int entityId = params.get("entity_id").getAsInt();
+                target = client.world.getEntityById(entityId);
+                targetDescription = "entity id " + entityId;
+            } else {
+                String entityType = params.get("entity_type").getAsString();
+                target = findNearestEntityOfType(client, entityType, maxDistance);
+                targetDescription = entityType;
+            }
 
             if (target == null) {
-                return CommandResult.error("No valid " + entityType + " found within " + maxDistance + " blocks");
+                return CommandResult.error(
+                    "No valid " + targetDescription + " found within " + maxDistance + " blocks");
             }
 
             // Validate interaction
@@ -127,6 +142,66 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
             data.addProperty("distance", validation.distance);
             data.addProperty("interaction_type", validation.detectedType.name());
 
+            return CommandResult.success(data);
+        });
+    }
+
+    /**
+     * Right-click a specific entity with the currently selected main-hand
+     * item. Unlike crosshair-driven use_item, the entity id remains the target
+     * even if it moves between sensing and interaction.
+     */
+    private CompletableFuture<CommandResult> handleDirectEntityInteraction(
+            JsonObject params, MinecraftClient client, String action) {
+        return executeOnMainThread(client, () -> {
+            if (client.player == null || client.world == null
+                    || client.interactionManager == null) {
+                return CommandResult.error("Player, world, or interaction manager not available");
+            }
+            if (!params.has("entity_id")) {
+                return CommandResult.error("Missing required parameter: entity_id");
+            }
+
+            int entityId = params.get("entity_id").getAsInt();
+            Entity target = client.world.getEntityById(entityId);
+            if (target == null) {
+                return CommandResult.error("Target entity not found: " + entityId);
+            }
+            if ("feed".equals(action) && !(target instanceof AnimalEntity)) {
+                return CommandResult.error("Feed target is not an animal: " + entityId);
+            }
+
+            double maxDistance = params.has("max_distance")
+                ? params.get("max_distance").getAsDouble() : 6.0;
+            double distance = distanceToPlayer(client, target);
+            if (distance > maxDistance) {
+                return CommandResult.error(
+                    "Entity too far: " + String.format("%.2f", distance)
+                        + " blocks (max " + String.format("%.2f", maxDistance) + ")");
+            }
+
+            String heldItem = Registries.ITEM.getId(
+                client.player.getMainHandStack().getItem()).toString();
+            int heldCountBefore = client.player.getMainHandStack().getCount();
+            ActionResult interactionResult = client.interactionManager.interactEntity(
+                client.player, target, Hand.MAIN_HAND);
+            if (interactionResult.isAccepted()) {
+                client.player.swingHand(Hand.MAIN_HAND);
+            }
+
+            JsonObject data = new JsonObject();
+            data.addProperty("success", interactionResult.isAccepted());
+            data.addProperty("accepted", interactionResult.isAccepted());
+            data.addProperty("result", interactionResult.toString());
+            data.addProperty("action", action);
+            data.addProperty("entity_id", target.getId());
+            data.addProperty("entity_type",
+                Registries.ENTITY_TYPE.getId(target.getType()).toString());
+            data.addProperty("distance", distance);
+            data.addProperty("hand", "main_hand");
+            data.addProperty("held_item", heldItem);
+            data.addProperty("held_count_before", heldCountBefore);
+            data.addProperty("held_count_after", client.player.getMainHandStack().getCount());
             return CommandResult.success(data);
         });
     }
@@ -291,6 +366,9 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
 
                 case LOOK_AT:
                     return InteractionValidation.success(distance, InteractionType.LOOK_AT);
+
+                case INTERACT:
+                    return InteractionValidation.success(distance, InteractionType.INTERACT);
             }
         } catch (IllegalArgumentException e) {
             return InteractionValidation.error("Unknown interaction type: " + action);
@@ -332,6 +410,10 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
                 case LOOK_AT:
                     lookAtEntity(client, target);
                     return true;
+
+                case INTERACT:
+                    return client.interactionManager.interactEntity(
+                        client.player, target, Hand.MAIN_HAND).isAccepted();
             }
         } catch (Exception e) {
             LOGGER.error("Interaction failed", e);
@@ -371,5 +453,10 @@ public class EntityInteractionCommandHandler extends AsyncCommandHandler {
         }
 
         return nearest;
+    }
+
+    private double distanceToPlayer(MinecraftClient client, Entity target) {
+        return new Vec3d(client.player.getX(), client.player.getY(), client.player.getZ())
+            .distanceTo(new Vec3d(target.getX(), target.getY(), target.getZ()));
     }
 }

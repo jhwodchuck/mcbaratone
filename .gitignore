@@ -456,6 +456,7 @@ storage_catalog.sqlite3-wal
 # Local headless Minecraft installation and generated run state
 HeadlessMC/
 runs/
+local_server/
 
 # Downloaded Gradle distribution
 bridge/gradle-8.12/

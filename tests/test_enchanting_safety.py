@@ -137,7 +137,9 @@ def test_verified_base_skips_repair_and_resource_gathering(monkeypatch):
 
 
 def test_base_restore_fails_before_workstations_when_shell_repair_fails(monkeypatch):
-    client = SimpleNamespace()
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda *_args, **_kwargs: {})
+    )
     state = SimpleNamespace(
         custom_data={
             "structures": {
@@ -159,6 +161,39 @@ def test_base_restore_fails_before_workstations_when_shell_repair_fails(monkeypa
     assert not handler._ensure_starter_base(client, state)
 
 
+def test_base_restore_defers_when_far_from_starter_house(monkeypatch):
+    """This is the first task in ENCHANTING_PIPELINE's sequence, so it
+    reruns on every phase-level retry -- including mid-expedition, hundreds
+    of blocks from base, where the origin chunk is genuinely unloaded. It
+    must defer instead of surveying from there and misreading the intact
+    house as destroyed. Confirmed live: Bot07 started gathering wood for a
+    "destroyed" house 200+ blocks from its real one."""
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda *_args, **_kwargs: {
+                "block_position": {"x": -9, "y": 78, "z": 300}
+            }
+        )
+    )
+    state = SimpleNamespace(
+        custom_data={
+            "structures": {
+                "starter_house": {"origin": [-9, 78, -122]},
+            }
+        }
+    )
+    handler = enchanting.EnchantingPipelineHandler()
+    monkeypatch.setattr(
+        handler,
+        "_starter_house_integrity",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("must not survey the house from far away")
+        ),
+    )
+
+    assert handler._ensure_starter_base(client, state)
+
+
 def test_failed_leather_hunt_still_returns_home(monkeypatch):
     client = SimpleNamespace(
         transport=SimpleNamespace(dispatch=lambda *_args, **_kwargs: {})
@@ -176,6 +211,9 @@ def test_failed_leather_hunt_still_returns_home(monkeypatch):
         lambda *_args, **_kwargs: TaskResult.fail("night"),
     )
     monkeypatch.setattr(
+        enchanting, "visit_known_herd_for_loot", lambda *_args, **_kwargs: False
+    )
+    monkeypatch.setattr(
         handler,
         "_return_home",
         lambda *_args: returned.append(True) or True,
@@ -183,6 +221,44 @@ def test_failed_leather_hunt_still_returns_home(monkeypatch):
 
     assert not handler._gather_leather(client, state)
     assert returned == [True]
+
+
+def test_leather_hunt_falls_back_to_known_herd_when_local_search_fails(monkeypatch):
+    """The local bounded hunt rotates through dozens of sectors and can still
+    fail entirely if the biome has no huntable animals anywhere in range --
+    confirmed live: Bot07 spent 36+ sector rotations finding zero cows. The
+    known-herd fallback must be tried before giving up, and the final result
+    must reflect whatever it deposits (not just the local hunt's outcome)."""
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda *_args, **_kwargs: {})
+    )
+    state = SimpleNamespace(custom_data={})
+    handler = enchanting.EnchantingPipelineHandler()
+    returns = []
+    leather = {"count": 0}
+
+    monkeypatch.setattr(
+        enchanting, "count_item",
+        lambda _client, item_id: leather["count"] if item_id == "minecraft:leather" else 0,
+    )
+    monkeypatch.setattr(handler, "_withdraw_at_home", lambda *_args: 0)
+    monkeypatch.setattr(handler, "_wait_for_daylight", lambda *_args: True)
+    monkeypatch.setattr(handler, "_leave_starter_house", lambda *_args: True)
+    monkeypatch.setattr(enchanting, "hunt_mobs", lambda *_a, **_k: TaskResult.fail("no targets"))
+    monkeypatch.setattr(handler, "_return_home", lambda *_args: returns.append("return") or True)
+
+    herd_calls = []
+    def herd_fallback(_client, required_loot, animal_type):
+        herd_calls.append((dict(required_loot), animal_type))
+        leather["count"] = 46
+        return True
+    monkeypatch.setattr(enchanting, "visit_known_herd_for_loot", herd_fallback)
+
+    assert handler._gather_leather(client, state) is True
+    assert herd_calls == [({"minecraft:leather": 46}, "cow")]
+    # _return_home must run again after the herd trip, on top of the one
+    # already run in the failed local hunt's finally block.
+    assert returns == ["return", "return"]
 
 
 def test_leave_house_stages_clear_of_closed_door_before_exploring(monkeypatch):
@@ -591,3 +667,82 @@ def test_bookshelf_plank_requirement_uses_six_per_shelf(monkeypatch):
     )
     assert not handler._craft_bookshelves(client, state, target=15)
     assert requested == [90]
+
+
+def test_bed_retry_attempts_are_checkpointed(monkeypatch):
+    saved = []
+    state = SimpleNamespace(
+        custom_data={
+            "structures": {
+                "starter_house": {"origin": [10, 70, -10], "bed": None}
+            },
+        },
+    )
+
+    def save_checkpoint(payload):
+        saved.append(payload)
+        return "checkpoint.json"
+
+    state.save_checkpoint = save_checkpoint
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                return {"food_level": 20, "world_time": 10000}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+
+    monkeypatch.setattr(
+        enchanting,
+        "count_item",
+        lambda *_args: 0,
+    )
+    monkeypatch.setattr(
+        enchanting,
+        "find_nearby_block",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        enchanting,
+        "get_inventory",
+        lambda _client: {"minecraft:sticks": 3},
+    )
+    handler = enchanting.EnchantingPipelineHandler()
+    monkeypatch.setattr(
+        handler,
+        "_withdraw_at_home",
+        lambda *_args, **_kwargs: 1,
+    )
+    monkeypatch.setattr(
+        handler,
+        "_wait_for_daylight",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(enchanting.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        enchanting,
+        "hunt_mobs",
+        lambda *_args, **_kwargs: TaskResult.fail("no sheep"),
+    )
+    monkeypatch.setattr(
+        handler,
+        "_leave_starter_house",
+        lambda *_args: True,
+    )
+    monkeypatch.setattr(
+        handler,
+        "_return_home",
+        lambda *_args: True,
+    )
+    monkeypatch.setattr(
+        enchanting.harness_ops,
+        "craft_bed_manual",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("craft should not run after failed hunt")
+        ),
+    )
+
+    assert not handler._ensure_sleeping_bed(client, state)
+    assert state.custom_data["enchanting"]["bed_retry_attempts"] == 1
+    assert saved == [{"minecraft:sticks": 3}]

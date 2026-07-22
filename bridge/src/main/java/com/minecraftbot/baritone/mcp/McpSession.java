@@ -79,7 +79,11 @@ public class McpSession implements EventManager.EventListener {
     }
 
     public Set<EventManager.EventType> getSubscribedEvents() {
-        return subscribedEvents;
+        return Set.copyOf(subscribedEvents);
+    }
+
+    public int getPriorityThreshold() {
+        return priorityThreshold;
     }
 
     public boolean isSubscribedTo(EventManager.EventType eventType) {

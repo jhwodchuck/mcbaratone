@@ -279,6 +279,16 @@ class EndGameAutomator:
                 success = self.executor.execute_phase(phase)
                 self.telemetry.stop_timer(f"phase_{phase.name}", success=success)
 
+                if (
+                    not success
+                    and self.executor.interruption_reason == "player_death"
+                ):
+                    print(
+                        f"Phase {phase.name} yielded to top-level death recovery; "
+                        "objective attempt was not consumed."
+                    )
+                    continue
+
                 if success:
                     self.planner.mark_done(obj)
                     if self.on_phase_complete:
@@ -471,6 +481,11 @@ class EndGameAutomator:
             # phase with a partial inventory.  A failed recovery is a hard
             # terminal condition for this supervised run.
             print(f"Death recovery failed: {result.message}. Stopping automation.")
+            try:
+                summary = self.resources.get_summary()
+                self.state.save_checkpoint(summary.get("inventory", {}))
+            except Exception as exc:
+                print(f"Warning: Could not persist death recovery state: {exc}")
             self._running = False
             return True
 

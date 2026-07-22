@@ -27,8 +27,8 @@ public class EventManager {
     private final ConcurrentLinkedDeque<Event> eventBuffer = new ConcurrentLinkedDeque<>();
 
     // Event listeners for push-based subscription
-    private final Map<EventType, List<EventListener>> listeners = new ConcurrentHashMap<>();
-    private final List<EventListener> globalListeners = new CopyOnWriteArrayList<>();
+    private final Map<EventType, CopyOnWriteArrayList<EventListener>> listeners = new ConcurrentHashMap<>();
+    private final CopyOnWriteArrayList<EventListener> globalListeners = new CopyOnWriteArrayList<>();
 
     // Statistics
     private final AtomicInteger totalEventsProcessed = new AtomicInteger(0);
@@ -245,7 +245,7 @@ public class EventManager {
      */
     public void subscribe(EventListener listener) {
         if (listener != null) {
-            globalListeners.add(listener);
+            globalListeners.addIfAbsent(listener);
         }
     }
 
@@ -254,7 +254,7 @@ public class EventManager {
      */
     public void subscribe(EventType eventType, EventListener listener) {
         if (listener != null && eventType != null) {
-            listeners.get(eventType).add(listener);
+            listeners.get(eventType).addIfAbsent(listener);
         }
     }
 
@@ -276,6 +276,22 @@ public class EventManager {
         if (listener != null) {
             globalListeners.remove(listener);
             for (List<EventListener> typeListeners : listeners.values()) {
+                typeListeners.remove(listener);
+            }
+        }
+    }
+
+    /**
+     * Unsubscribe a listener from selected event types while preserving its
+     * other subscriptions.
+     */
+    public void unsubscribe(Set<EventType> eventTypes, EventListener listener) {
+        if (listener == null || eventTypes == null) {
+            return;
+        }
+        for (EventType type : eventTypes) {
+            CopyOnWriteArrayList<EventListener> typeListeners = listeners.get(type);
+            if (typeListeners != null) {
                 typeListeners.remove(listener);
             }
         }
@@ -378,7 +394,7 @@ public class EventManager {
         stats.addProperty("global_listeners", globalListeners.size());
 
         JsonObject typeListeners = new JsonObject();
-        for (Map.Entry<EventType, List<EventListener>> entry : listeners.entrySet()) {
+        for (Map.Entry<EventType, CopyOnWriteArrayList<EventListener>> entry : listeners.entrySet()) {
             typeListeners.addProperty(entry.getKey().name().toLowerCase(), entry.getValue().size());
         }
         stats.add("type_listeners", typeListeners);

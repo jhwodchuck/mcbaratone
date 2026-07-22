@@ -953,6 +953,73 @@ def test_craft_recipe_manual_bridge_fallback(monkeypatch):
     assert "inventory_click" in routes
 
 
+def test_craft_recipe_manual_matches_underscore_planks_selector(monkeypatch):
+    """_craft_tool_manual_generic passes "_planks" (not "#planks") as the
+    wooden-tool material selector. craft_recipe_manual must recognize both as
+    "any plank family" -- an exact-equality fallback against a real item id
+    like "minecraft:spruce_planks" never matches, and every wooden tool craft
+    fails at this step regardless of carried plank count. Confirmed live:
+    Bot09 stuck looping "missing _planks" with 8 spruce planks in hand."""
+    from tests.functional.shared import inventory_ops
+
+    class DummyTransport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "place_recipe":
+                raise RuntimeError("Unsupported command")
+            if route == "get_screen":
+                return {
+                    "type": "class_1714",
+                    "slots": [
+                        {"slot": 0, "id": "minecraft:wooden_pickaxe", "count": 1},
+                        *[{"slot": slot, "id": "minecraft:air", "count": 0} for slot in range(1, 10)],
+                        {"slot": 10, "id": "minecraft:spruce_planks", "count": 8},
+                        {"slot": 11, "id": "minecraft:stick", "count": 2},
+                        *[{"slot": slot, "id": "minecraft:air", "count": 0} for slot in range(12, 46)],
+                    ]
+                }
+            return {}
+
+    class DummyContext:
+        def __init__(self, transport):
+            self.client = DummyClient(transport)
+
+        def log_event(self, _event):
+            pass
+
+    class DummyClient:
+        def __init__(self, transport):
+            self.transport = transport
+
+    monkeypatch.setattr(inventory_ops, "do_close_container", lambda _ctx: None)
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _seconds: None)
+
+    transport = DummyTransport()
+    ctx = DummyContext(transport)
+
+    placements = [
+        ("_planks", 1), ("_planks", 2), ("_planks", 3),
+        ("minecraft:stick", 5), ("minecraft:stick", 8),
+    ]
+
+    count_calls = 0
+    def mock_count_item(item_id):
+        nonlocal count_calls
+        count_calls += 1
+        if count_calls > 1:
+            return 1  # after craft
+        return 0
+    ctx.count_item = mock_count_item
+
+    res = inventory_ops.craft_recipe_manual(
+        ctx, "minecraft:wooden_pickaxe", placements, crafts=1, output_per_recipe=1
+    )
+    assert res is True
+
+
 def test_harness_fallback_does_not_submit_atomic_recipe_twice(monkeypatch):
     calls = []
 

@@ -139,11 +139,44 @@ class TravelAction(BaseAction):
             return ActionResult.fail(f"Failed to find safe spot: {e}")
 
     def navigate_to_biome(self, context: ActionContext, biome_type: str, max_distance: int = 1000) -> ActionResult:
-        """Navigate towards a specific biome type."""
+        """Navigate to the nearest matching surface biome in loaded chunks."""
         try:
-            # This would require biome scanning capabilities
-            # For now, use exploration towards a direction
-            result = self.run_command(context, "explore", {"max_distance": max_distance})
-            return ActionResult.ok(f"Exploring for {biome_type} biome", explore_result=result)
+            requested = biome_type.lower().removeprefix("minecraft:")
+            scan = self.run_command(
+                context,
+                "scan_biomes",
+                {"radius": min(max(0, int(max_distance)), 512), "step": 16},
+            )
+            matches = []
+            for biome in scan.get("biomes", []):
+                biome_id = str(biome.get("id", "")).lower()
+                short_name = biome_id.removeprefix("minecraft:")
+                if short_name == requested or requested in short_name:
+                    matches.append(biome)
+            if not matches:
+                return ActionResult.fail(
+                    f"No loaded {biome_type} biome found within "
+                    f"{scan.get('radius', max_distance)} blocks"
+                )
+
+            target = min(matches, key=lambda item: float(item.get("distance", float("inf"))))
+            position = target.get("position") or {}
+            if not all(axis in position for axis in ("x", "y", "z")):
+                return ActionResult.fail(f"Biome scan returned no position for {biome_type}")
+            result = self.run_command(
+                context,
+                "goto",
+                {
+                    "x": int(position["x"]),
+                    "y": int(position["y"]),
+                    "z": int(position["z"]),
+                },
+            )
+            return ActionResult.ok(
+                f"Navigating to {target.get('id', biome_type)} biome",
+                biome=target.get("id", biome_type),
+                target=position,
+                goto_result=result,
+            )
         except Exception as e:
             return ActionResult.fail(f"Failed to navigate to biome {biome_type}: {e}")

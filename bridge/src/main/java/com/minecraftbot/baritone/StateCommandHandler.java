@@ -136,6 +136,10 @@ public class StateCommandHandler extends AbstractCommandHandler {
             // World info (dimension key is immutable, time is volatile)
             data.addProperty("dimension", client.world.getRegistryKey().getValue().toString());
             data.addProperty("world_time", client.world.getTimeOfDay());
+            String biomeId = client.world.getBiome(blockPos).getKey()
+                .map(key -> key.getValue().toString())
+                .orElse("unknown");
+            data.addProperty("biome", biomeId);
 
             JsonObject worldIdentity = new JsonObject();
             worldIdentity.addProperty("version", 1);
@@ -193,105 +197,35 @@ public class StateCommandHandler extends AbstractCommandHandler {
 
                 var entities = client.world.getOtherEntities(null, box);
                 JsonArray entityList = new JsonArray();
+                JsonArray serializationErrors = new JsonArray();
+                int skippedEntities = 0;
 
                 for (Entity entity : entities) {
                     if (entity.distanceTo(player) > radius)
                         continue;
 
-                    JsonObject entityData = new JsonObject();
-                    entityData.addProperty("id", entity.getId());
-                    entityData.addProperty("uuid", entity.getUuidAsString());
-                    entityData.addProperty("type", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
-                    entityData.addProperty("name", entity.getDisplayName().getString());
-                    entityData.addProperty("distance", entity.distanceTo(player));
-
-                    JsonObject entityVelocity = new JsonObject();
-                    entityVelocity.addProperty("x", entity.getVelocity().x);
-                    entityVelocity.addProperty("y", entity.getVelocity().y);
-                    entityVelocity.addProperty("z", entity.getVelocity().z);
-                    entityData.add("velocity", entityVelocity);
-
-                    JsonObject position = new JsonObject();
-                    position.addProperty("x", entity.getX());
-                    position.addProperty("y", entity.getY());
-                    position.addProperty("z", entity.getZ());
-                    entityData.add("position", position);
-
-                    boolean isLiving = entity instanceof LivingEntity;
-                    entityData.addProperty("is_living", isLiving);
-
-                    if (isLiving) {
-                        LivingEntity living = (LivingEntity) entity;
-                        entityData.addProperty("health", living.getHealth());
-                        entityData.addProperty("max_health", living.getMaxHealth());
-
-                        // Age (Baby/Adult)
-                        if (living.isBaby()) {
-                            entityData.addProperty("age", -1); // Proxy for baby
-                            entityData.addProperty("is_baby", true);
-                        } else {
-                            entityData.addProperty("age", 0);
-                            entityData.addProperty("is_baby", false);
-                        }
+                    try {
+                        JsonObject entityData = serializeEntity(entity, player);
+                        entityList.add(entityData);
+                    } catch (Exception e) {
+                        skippedEntities++;
+                        JsonObject error = new JsonObject();
+                        error.addProperty("id", entity.getId());
+                        error.addProperty("type", safeEntityType(entity));
+                        error.addProperty("error", e.getClass().getSimpleName() + ": " + e.getMessage());
+                        serializationErrors.add(error);
+                        logger.warn("Skipping entity {} during state serialization", entity.getId(), e);
                     }
-
-                    // Specific Entity Type Data (NBT Proxies)
-                    if (entity instanceof net.minecraft.entity.passive.TameableEntity) {
-                        net.minecraft.entity.passive.TameableEntity tameable = (net.minecraft.entity.passive.TameableEntity) entity;
-                        entityData.addProperty("is_tamed", tameable.isTamed());
-                        if (tameable.getOwner() != null) {
-                            entityData.addProperty("owner_uuid", tameable.getOwner().getUuid().toString());
-                        }
-                    }
-
-                    if (entity instanceof net.minecraft.entity.passive.VillagerEntity) {
-                        net.minecraft.entity.passive.VillagerEntity villager = (net.minecraft.entity.passive.VillagerEntity) entity;
-                        try {
-                            // Assuming VillagerData is a record or uses accessors without get prefix in new
-                            // mappings
-                            // Try profession() and level() if get... fails, but since I can't try-catch
-                            // compilation, I have to guess.
-                            // Error said: method getProfession() not found.
-                            // I will use String.valueOf on the data itself if I can't find method, or guess
-                            // profession()
-                            // Actually, I'll guess it uses 'profession()' and 'level()' if it's a record.
-                            entityData.addProperty("profession", villager.getVillagerData().toString()); // Fallback to
-                                                                                                         // toString()
-                                                                                                         // to avoid
-                                                                                                         // compilation
-                                                                                                         // error if
-                                                                                                         // accessors
-                                                                                                         // are weird
-                            // entityData.addProperty("level", villager.getVillagerData().level());
-                            // Wait, safe extraction:
-                            // entityData.addProperty("level", 0);
-                        } catch (Throwable t) {
-                            entityData.addProperty("profession", "unknown");
-                            entityData.addProperty("level", 0);
-                        }
-
-                        try {
-                            // Adding offers count as proxy for inspection
-                            entityData.addProperty("offers_count", villager.getOffers().size());
-                        } catch (Throwable t) {
-                            entityData.addProperty("offers_count", 0);
-                        }
-                    }
-
-                    if (entity instanceof net.minecraft.entity.projectile.FishingBobberEntity) {
-                        net.minecraft.entity.projectile.FishingBobberEntity bobber = (net.minecraft.entity.projectile.FishingBobberEntity) entity;
-                        // 0 = Fly, 1 = Hooked, 2 = Bobbing
-                        boolean hasCatch = bobber.getHookedEntity() != null || bobber.isInOpenWater();
-                        entityData.addProperty("has_catch", hasCatch); // Simplified proxy
-                    }
-
-                    entityList.add(entityData);
                 }
 
                 JsonObject data = new JsonObject();
                 data.add("entities", entityList);
                 data.addProperty("count", entityList.size());
                 data.addProperty("radius", radius);
+                data.addProperty("skipped_count", skippedEntities);
+                if (!serializationErrors.isEmpty()) {
+                    data.add("serialization_errors", serializationErrors);
+                }
                 dataRef.set(data);
             } catch (Exception e) {
                 errorRef.set("Failed to get entities: " + e.getMessage());
@@ -313,5 +247,67 @@ public class StateCommandHandler extends AbstractCommandHandler {
         }
 
         return CommandResult.success(dataRef.get());
+    }
+
+    private JsonObject serializeEntity(Entity entity, ClientPlayerEntity player) {
+        JsonObject entityData = new JsonObject();
+        entityData.addProperty("id", entity.getId());
+        entityData.addProperty("uuid", entity.getUuidAsString());
+        entityData.addProperty("type", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
+        entityData.addProperty("name", entity.getDisplayName().getString());
+        entityData.addProperty("distance", entity.distanceTo(player));
+
+        JsonObject entityVelocity = new JsonObject();
+        entityVelocity.addProperty("x", entity.getVelocity().x);
+        entityVelocity.addProperty("y", entity.getVelocity().y);
+        entityVelocity.addProperty("z", entity.getVelocity().z);
+        entityData.add("velocity", entityVelocity);
+
+        JsonObject position = new JsonObject();
+        position.addProperty("x", entity.getX());
+        position.addProperty("y", entity.getY());
+        position.addProperty("z", entity.getZ());
+        entityData.add("position", position);
+
+        boolean isLiving = entity instanceof LivingEntity;
+        entityData.addProperty("is_living", isLiving);
+        if (isLiving) {
+            LivingEntity living = (LivingEntity) entity;
+            entityData.addProperty("health", living.getHealth());
+            entityData.addProperty("max_health", living.getMaxHealth());
+            entityData.addProperty("age", living.isBaby() ? -1 : 0);
+            entityData.addProperty("is_baby", living.isBaby());
+        }
+
+        if (entity instanceof net.minecraft.entity.passive.TameableEntity tameable) {
+            entityData.addProperty("is_tamed", tameable.isTamed());
+            if (tameable.getOwner() != null) {
+                entityData.addProperty("owner_uuid", tameable.getOwner().getUuid().toString());
+            }
+        }
+
+        if (entity instanceof net.minecraft.entity.passive.VillagerEntity villager) {
+            var villagerData = villager.getVillagerData();
+            String profession = villagerData.profession().getKey()
+                .map(key -> key.getValue().toString())
+                .orElse("unknown");
+            entityData.addProperty("profession", profession);
+            entityData.addProperty("level", villagerData.level());
+            entityData.addProperty("offers_count", villager.getOffers().size());
+        }
+
+        if (entity instanceof net.minecraft.entity.projectile.FishingBobberEntity bobber) {
+            boolean hasCatch = bobber.getHookedEntity() != null || bobber.isInOpenWater();
+            entityData.addProperty("has_catch", hasCatch);
+        }
+        return entityData;
+    }
+
+    private String safeEntityType(Entity entity) {
+        try {
+            return Registries.ENTITY_TYPE.getId(entity.getType()).toString();
+        } catch (Exception ignored) {
+            return "unknown";
+        }
     }
 }

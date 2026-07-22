@@ -10,7 +10,7 @@ from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
 from ...common import TaskResult
 from ...common.resources import gather_wood, gather_stone, gather_ores, ensure_supplies
-from ...common.inventory import count_item, craft
+from ...common.inventory import count_item, craft, select_item
 from ...common.base import setup_base
 from ...common.combat import hunt_passive_mobs
 
@@ -149,6 +149,10 @@ class BootSequenceHandler(PhaseHandler):
         Demonstrates the composability of the Actions system by breaking down
         the monolithic boot sequence into individual, reusable actions.
         """
+        # Legacy helper methods on this handler still need the production
+        # state when called from the modular sequence.
+        self.state = state
+
         # Create ActionContext for dependency injection
         context = ActionContext(
             client=client,
@@ -209,9 +213,11 @@ class BootSequenceHandler(PhaseHandler):
 
             # Persist phase state on success
             if result.success:
+                farm_ready = self._plant_crops(client)
                 state.record_phase_payload(Phase.BOOT_SEQUENCE, {
                     "completed_actions": len(boot_sequence.actions),
                     "sequence_result": result.message,
+                    "crop_farm_ready": farm_ready,
                     "timestamp": time.time()
                 })
 
@@ -486,8 +492,212 @@ class BootSequenceHandler(PhaseHandler):
         return True
 
     def _plant_crops(self, client) -> bool:
-        """Plant wheat, carrots, potatoes from collected seeds."""
-        # TODO: Implement crop planting
+        """Plant and verify a small renewable crop plot near the base.
+
+        The operation is deliberately idempotent: existing crops count as
+        success, only dirt/grass is tilled, and every new crop is confirmed by
+        a world read before it is persisted. Natural water is preferred for a
+        compact irrigated plot; a dry starter row remains useful when the bot
+        has no bucket yet.
+        """
+        from ...common.navigation import find_nearby_block, goto
+
+        crop_items = (
+            ("minecraft:wheat_seeds", "minecraft:wheat"),
+            ("minecraft:carrot", "minecraft:carrots"),
+            ("minecraft:potato", "minecraft:potatoes"),
+            ("minecraft:beetroot_seeds", "minecraft:beetroots"),
+        )
+        crop_blocks = {block_id for _, block_id in crop_items}
+        hoe_items = (
+            "minecraft:wooden_hoe",
+            "minecraft:stone_hoe",
+            "minecraft:iron_hoe",
+            "minecraft:golden_hoe",
+            "minecraft:diamond_hoe",
+            "minecraft:netherite_hoe",
+        )
+
+        def block_id(x: int, y: int, z: int) -> str:
+            try:
+                return str(
+                    client.transport.dispatch(
+                        "get_block", {"x": x, "y": y, "z": z}
+                    ).get("id", "")
+                )
+            except Exception:
+                return ""
+
+        state_manager = getattr(self, "state", None) or getattr(
+            client, "_automation_state", None
+        )
+        custom_data = getattr(state_manager, "custom_data", {})
+        saved_farm = custom_data.get("farm_location")
+
+        center = None
+        irrigated = False
+        if isinstance(saved_farm, (list, tuple)) and len(saved_farm) == 3:
+            try:
+                center = tuple(int(value) for value in saved_farm)
+                irrigated = block_id(*center) == "minecraft:water"
+            except (TypeError, ValueError):
+                center = None
+
+        if center is None:
+            water = find_nearby_block(client, ["minecraft:water"], radius=16)
+            if water is not None:
+                center = tuple(int(value) for value in water)
+                irrigated = True
+            else:
+                soil = find_nearby_block(
+                    client,
+                    ["minecraft:farmland", "minecraft:dirt", "minecraft:grass_block"],
+                    radius=20,
+                )
+                if soil is not None:
+                    center = tuple(int(value) for value in soil)
+
+        if center is None:
+            print("  Crop farm deferred: no reachable soil or water found")
+            return False
+
+        cx, cy, cz = center
+        if not goto(client, cx, cy + 1, cz, timeout=45, tolerance=3.0):
+            print(f"  Crop farm deferred: could not reach {center}")
+            return False
+
+        # A 3x3 plot stays within interaction range. If the center is natural
+        # water, its eight neighbors form a compact irrigated starter farm.
+        plots = [
+            (cx + dx, cy, cz + dz)
+            for dx in range(-1, 2)
+            for dz in range(-1, 2)
+            if not (irrigated and dx == 0 and dz == 0)
+        ]
+        verified = []
+        available = []
+        for px, py, pz in plots:
+            ground = block_id(px, py, pz)
+            above = block_id(px, py + 1, pz)
+            if above in crop_blocks:
+                verified.append((px, py + 1, pz, above))
+            elif above in {"minecraft:air", "minecraft:cave_air"} and ground in {
+                "minecraft:farmland",
+                "minecraft:dirt",
+                "minecraft:grass_block",
+            }:
+                available.append((px, py, pz, ground))
+
+        if not verified and not any(
+            count_item(client, item_id) > 0 for item_id, _ in crop_items
+        ):
+            print("  No crops carried; gathering a small wheat-seed starter reserve...")
+            try:
+                client.transport.dispatch(
+                    "mine",
+                    {
+                        "blocks": ["minecraft:grass", "minecraft:tall_grass"],
+                        "quantity": max(4, len(available)),
+                    },
+                )
+                time.sleep(5)
+                client.transport.dispatch("cancel", {})
+            except Exception as exc:
+                print(f"  Wheat-seed gathering deferred: {exc}")
+
+        if not any(count_item(client, item_id) > 0 for item_id, _ in crop_items):
+            if not verified:
+                print("  Crop farm deferred: no plantable crop items acquired")
+                return False
+            # The existing verified plot is already a renewable food source;
+            # do not craft a hoe merely because there is nothing new to plant.
+            available = []
+
+        needs_tilling = any(plot[3] != "minecraft:farmland" for plot in available)
+        selected_hoe = next(
+            (item_id for item_id in hoe_items if count_item(client, item_id) > 0),
+            None,
+        )
+        if needs_tilling and selected_hoe is None:
+            result = ensure_supplies(client, {"minecraft:wooden_hoe": 1}, timeout=120)
+            if result.success:
+                selected_hoe = "minecraft:wooden_hoe"
+
+        for px, py, pz, original_ground in available:
+            if not any(count_item(client, item_id) > 0 for item_id, _ in crop_items):
+                break
+
+            ground = original_ground
+            if ground != "minecraft:farmland":
+                if selected_hoe is None or not select_item(client, selected_hoe):
+                    continue
+                try:
+                    client.transport.dispatch("look_at", {"x": px, "y": py, "z": pz})
+                except Exception:
+                    pass
+                client.transport.dispatch(
+                    "interact_block", {"x": px, "y": py, "z": pz}
+                )
+                for _ in range(5):
+                    if block_id(px, py, pz) == "minecraft:farmland":
+                        ground = "minecraft:farmland"
+                        break
+                    time.sleep(0.1)
+                if ground != "minecraft:farmland":
+                    continue
+
+            crop = next(
+                (
+                    (item_id, planted_block)
+                    for item_id, planted_block in crop_items
+                    if count_item(client, item_id) > 0
+                ),
+                None,
+            )
+            if crop is None or not select_item(client, crop[0]):
+                continue
+            client.transport.dispatch(
+                "interact_block", {"x": px, "y": py, "z": pz}
+            )
+            for _ in range(5):
+                planted = block_id(px, py + 1, pz)
+                if planted == crop[1]:
+                    verified.append((px, py + 1, pz, planted))
+                    break
+                time.sleep(0.1)
+
+        if not verified:
+            print("  Crop farm deferred: no crop placement verified")
+            return False
+
+        farm_record = {
+            "type": "starter_crop_farm",
+            "location": [cx, cy, cz],
+            "irrigated": irrigated,
+            "verified": True,
+            "planted": len(verified),
+            "plots": [[x, y, z, crop] for x, y, z, crop in verified],
+            "timestamp": time.time(),
+        }
+        if state_manager is not None:
+            state_manager.custom_data["farm_location"] = [cx, cy, cz]
+            state_manager.custom_data.setdefault("structures", {})[
+                "food_source"
+            ] = farm_record
+            if hasattr(state_manager, "add_location"):
+                state_manager.add_location(
+                    "farm",
+                    cx,
+                    cy,
+                    cz,
+                    tags=["food", "crops"],
+                    client=client,
+                )
+
+        print(
+            f"  Crop farm verified at {center}: {len(verified)} planted plot(s), "
+            f"irrigated={irrigated}"
+        )
         return True
 
     def _build_cow_pen(self, client) -> bool:

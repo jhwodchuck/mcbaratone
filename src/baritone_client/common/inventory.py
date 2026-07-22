@@ -58,6 +58,15 @@ def count_item(client, item_id: str) -> int:
     return inventory.get(item_id, 0)
 
 
+def _safe_close_screen(client, label: str = "") -> None:
+    """Best-effort close_screen for stale/laggy bridge responses."""
+    try:
+        client.transport.dispatch("close_screen", {})
+    except Exception as exc:
+        detail = f" ({label})" if label else ""
+        logger.debug("close_screen no-op%s: %s", detail, exc)
+
+
 def has_items(client, requirements: Dict[str, int]) -> bool:
     """
     Check if inventory has all required items.
@@ -361,19 +370,11 @@ def _first_log_family_with_stock(client, required_logs: int = 1) -> str:
     return ""
 
 
-def _ensure_planks_for_sticks(client, required_sticks: int) -> bool:
-    """Ensure enough planks are available to craft ``required_sticks``.
-
-    The stick recipe yields FOUR sticks from TWO planks, so the plank cost is
-    ``ceil(sticks / 4) * 2`` - two planks make a full batch. The old formula
-    (``sticks * 2``) demanded 6 planks for 3 sticks when 2 suffice, which
-    dead-locked FOOD_AND_IRON's deep-mining prep: with 5 planks and no logs it
-    thought it was one plank short and failed trying to gather a log it did
-    not need.
-    """
-    required_sticks = max(0, required_sticks)
-    batches = (required_sticks + 3) // 4  # 4 sticks per craft batch
-    required_planks = batches * 2
+def _ensure_raw_planks(client, required_planks: int) -> bool:
+    """Ensure at least ``required_planks`` oak-family planks are on hand,
+    gathering and converting logs from the world if the carried supply is
+    short."""
+    required_planks = max(0, required_planks)
     current_planks = _craft_family_count(client, "minecraft:oak_planks")
     if current_planks >= required_planks:
         return True
@@ -393,7 +394,7 @@ def _ensure_planks_for_sticks(client, required_sticks: int) -> bool:
                 f"  [Craft Debug] no carried logs for {missing_planks} planks; "
                 f"gathering {needed_logs} logs first..."
             )
-            gather_wood(client, count=needed_logs)
+            gather_wood(client, count=needed_logs, timeout=300)
             log_family = _first_log_family_with_stock(client, 1)
         if not log_family:
             return False
@@ -409,6 +410,66 @@ def _ensure_planks_for_sticks(client, required_sticks: int) -> bool:
         missing_planks = required_planks - current_planks
 
     return True
+
+
+def _ensure_planks_for_sticks(client, required_sticks: int) -> bool:
+    """Ensure enough planks are available to craft ``required_sticks``.
+
+    The stick recipe yields FOUR sticks from TWO planks, so the plank cost is
+    ``ceil(sticks / 4) * 2`` - two planks make a full batch. The old formula
+    (``sticks * 2``) demanded 6 planks for 3 sticks when 2 suffice, which
+    dead-locked FOOD_AND_IRON's deep-mining prep: with 5 planks and no logs it
+    thought it was one plank short and failed trying to gather a log it did
+    not need.
+    """
+    required_sticks = max(0, required_sticks)
+    batches = (required_sticks + 3) // 4  # 4 sticks per craft batch
+    required_planks = batches * 2
+    return _ensure_raw_planks(client, required_planks)
+
+
+# Planks consumed directly as a wooden tool's head material (mirrors the
+# manual-grid recipe table in tests/functional/shared/inventory_ops.py).
+_WOODEN_TOOL_MAT_PLANKS = {
+    "pickaxe": 3,
+    "axe": 3,
+    "shovel": 1,
+    "sword": 2,
+    "hoe": 2,
+}
+
+
+def _ensure_wooden_tool_ingredients(client, item_id: str, count: int) -> bool:
+    """Reserve planks for a wooden tool's head material *and* its sticks in
+    one gathering pass, before either consumes carried wood.
+
+    ``ensure_tool_sticks`` only tops planks up to what the stick half of the
+    recipe needs. Gathering the two halves separately can leave the tool
+    head one plank short with nothing left to trigger further gathering: a
+    from-scratch craft (e.g. right after death wipes the inventory) chops
+    just enough wood for sticks, spends it all there, and then retries a
+    failing manual craft forever. Confirmed live: Bot09 stuck looping
+    "Manual minecraft:wooden_pickaxe missing #planks" after respawning with
+    zero items.
+    """
+    from . import harness_ops
+
+    parsed = harness_ops.parse_tool_id(item_id)
+    if not parsed:
+        return True
+    material, tool_type = parsed
+    if material != "_planks":
+        return True
+
+    count = max(1, count)
+    mat_planks = _WOODEN_TOOL_MAT_PLANKS.get(tool_type, 3) * count
+    sticks_per_tool = 1 if tool_type == "sword" else 2
+    required_sticks = sticks_per_tool * count
+    current_sticks = count_item(client, "minecraft:stick")
+    missing_sticks = max(0, required_sticks - current_sticks)
+    stick_batches = (missing_sticks + 3) // 4
+    stick_planks = stick_batches * 2
+    return _ensure_raw_planks(client, mat_planks + stick_planks)
 
 
 # Progression recipes the bridge cannot craft: native `craft` depends on
@@ -572,10 +633,7 @@ def ensure_tool_sticks(client, item_id: str, count: int = 1) -> bool:
     if current >= required:
         return True
 
-    try:
-        client.transport.dispatch("close_screen", {})
-    except Exception as exc:
-        print(f"  [Craft Debug] could not close screen before crafting sticks: {exc}")
+    _safe_close_screen(client, "craft sticks")
 
     missing = required - current
     if not _ensure_planks_for_sticks(client, missing):
@@ -605,6 +663,10 @@ def craft(client, item_id: str, count: int = 1) -> bool:
         True if the items verifiably appeared in inventory
     """
     from . import harness_ops
+
+    if not _ensure_wooden_tool_ingredients(client, item_id, count):
+        print(f"  [Craft Debug] could not prepare wooden tool ingredients for {item_id}")
+        return False
 
     if not ensure_tool_sticks(client, item_id, count):
         print(f"  [Craft Debug] could not prepare stick dependency for {item_id}")

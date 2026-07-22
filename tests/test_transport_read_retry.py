@@ -85,10 +85,34 @@ def test_mutating_route_never_retries(monkeypatch, tcp):
     assert calls == ["goto"]
 
 
-def test_bridge_error_answers_are_not_retried(monkeypatch, tcp):
-    # CommandError is a real bridge answer, not a stall; retrying would spam.
-    calls = _script_dispatch_once(monkeypatch, tcp, [CommandError("Player not available")])
+def test_player_not_available_error_is_retried_on_read_route(monkeypatch, tcp):
+    calls = _script_dispatch_once(
+        monkeypatch,
+        tcp,
+        [CommandError("Player not available"), {"health": 20.0}],
+    )
+
+    assert tcp.dispatch("get_state", {}) == {"health": 20.0}
+    assert calls == ["get_state", "get_state"]
+
+
+def test_bridge_command_errors_are_not_retried(monkeypatch, tcp):
+    # Non-transient command failures should fail fast.
+    calls = _script_dispatch_once(
+        monkeypatch, tcp, [CommandError("Invalid recipe requested")]
+    )
 
     with pytest.raises(CommandError):
         tcp.dispatch("get_state", {})
     assert calls == ["get_state"]
+
+
+def test_best_effort_close_screen_timeout_is_a_noop(tcp):
+    """A laggy close_screen must not raise from the low-level transport.
+
+    This is intentionally exercised through ``_dispatch_once`` rather than a
+    mock: the timeout handler is where the best-effort contract lives.
+    """
+    tcp.timeout = 0.01
+
+    assert tcp.dispatch("close_screen", {}) == {}

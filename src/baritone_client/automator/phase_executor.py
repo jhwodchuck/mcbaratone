@@ -8,7 +8,7 @@ from pprint import pformat
 from typing import Any, Callable, Dict, Optional
 
 from .state_manager import Phase, StateManager
-from ..common.tasks import TaskResult
+from ..common.tasks import PlayerDeathDetected, TaskResult
 from .resource_manager import ResourceManager
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
 import logging
@@ -94,6 +94,7 @@ class PhaseExecutor:
         self.progress_callback: Optional[Callable[[Phase, float, str], None]] = None
         self.error_callback: Optional[Callable[[Phase, Exception], bool]] = None
         self.screenshot_enabled = screenshot_enabled
+        self.interruption_reason: Optional[str] = None
     
     def register_handler(self, phase: Phase, handler: PhaseHandler) -> None:
         """
@@ -164,6 +165,7 @@ class PhaseExecutor:
         Returns:
             True if phase completed successfully
         """
+        self.interruption_reason = None
         handler = self.handlers.get(phase)
         if handler is None:
             print(f"Warning: No handler registered for {phase.name}")
@@ -217,6 +219,11 @@ class PhaseExecutor:
                     print(f"Phase {phase.name} reported failure: {result.reason}")
                     self.state.record_phase_payload(phase, result.data)
                     
+            except PlayerDeathDetected as exc:
+                self.interruption_reason = "player_death"
+                print(f"Phase {phase.name} interrupted for death recovery: {exc}")
+                handler.on_exit(self.client, self.resources, self.state)
+                return False
             except Exception as e:
                 print(f"Error in phase {phase.name}: {e}")
                 

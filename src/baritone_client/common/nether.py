@@ -90,16 +90,26 @@ def build_nether_portal(client, x: int, y: int, z: int, obsidian: int = 14) -> b
 
         # Verify all frame blocks are obsidian
         for bx, by, bz in blocks_to_check:
-            block_response = client.transport.dispatch("get_block", {
-                "position": {"x": bx, "y": by, "z": bz}
-            })
-            if block_response.get("status") == "ok":
-                block_type = block_response.get("data", {}).get("type", "")
-                if block_type != "minecraft:obsidian":
-                    logger.warning("Frame block at (%d,%d,%d) is %s, expected obsidian", bx, by, bz, block_type)
-                    frame_complete = False
-            else:
-                logger.warning("Could not verify block at (%d,%d,%d)", bx, by, bz)
+            block_response = client.transport.dispatch(
+                "get_block",
+                {"x": bx, "y": by, "z": bz},
+            )
+
+            if str(block_response.get("status", "")).lower() == "error":
+                logger.warning("Could not verify block at (%d,%d,%d): %s", bx, by, bz, block_response.get("error"))
+                frame_complete = False
+                continue
+
+            block_data = block_response.get("data", {})
+            block_type = (
+                block_data.get("type")
+                or block_data.get("id")
+                or block_response.get("type")
+                or block_response.get("id")
+                or ""
+            )
+            if block_type != "minecraft:obsidian":
+                logger.warning("Frame block at (%d,%d,%d) is %s, expected obsidian", bx, by, bz, block_type)
                 frame_complete = False
 
         if frame_complete:
@@ -491,9 +501,10 @@ def hunt_endermen(client, target_count: int = 12, timeout: int = 900) -> int:
                         # Check for high ceiling (open space above)
                         ceiling_height = 0
                         for height in range(1, min_ceiling_height + 2):  # Check a few blocks up
-                            check_response = client.transport.dispatch("get_block", {
-                                "position": {"x": bx, "y": by + height, "z": bz}
-                            })
+                            check_response = client.transport.dispatch(
+                                "get_block",
+                                {"x": bx, "y": by + height, "z": bz},
+                            )
                             if check_response.get("status") == "ok":
                                 block_type = check_response.get("data", {}).get("type", "")
                                 if block_type in ["minecraft:air", "minecraft:cave_air"]:
@@ -684,9 +695,10 @@ def find_nearest_portal(client, dimension: str = None) -> Optional[Tuple[int, in
             portal_z = int(pos.get("z", current_z))
 
             # Verify we found a portal block
-            block_response = client.transport.dispatch("get_block", {
-                "position": {"x": portal_x, "y": portal_y, "z": portal_z}
-            })
+            block_response = client.transport.dispatch(
+                "get_block",
+                {"x": portal_x, "y": portal_y, "z": portal_z},
+            )
 
             if block_response.get("status") == "ok":
                 block_type = block_response.get("data", {}).get("type", "")

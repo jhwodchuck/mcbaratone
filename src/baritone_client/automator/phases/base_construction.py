@@ -19,6 +19,7 @@ from ...common.navigation import goto
 from ...common.inventory import count_item, select_item
 from ...common.automation_utils import get_player_pos
 from ...common.combat import acquire_emergency_food, recover_health
+from ...common.farming import establish_wheat_farm
 import time
 
 
@@ -216,12 +217,32 @@ class BaseConstructionHandler(PhaseHandler):
         state.update_position(px, py, pz)
         state.save_checkpoint(resources.get_summary()["inventory"])
 
-        # Plant wheat farm (Optional)
-        if not plant_wheat_farm(client, x, y, z):
-            print("  Warning: Failed to plant wheat farm (Skipping)")
-            # Do not fail phase, just proceed
+        # Sleep in the new bed at the first opportunity so a death anywhere
+        # in a later phase respawns near base instead of at world spawn. See
+        # wait_and_establish_respawn_anchor's docstring for the confirmed
+        # live failure this prevents.
+        if house_utils.wait_and_establish_respawn_anchor(client, state):
+            print("  Respawn anchor established at the starter bed.")
         else:
-            print("  Wheat farm planted successfully")
+            print("  Could not establish a respawn anchor yet; continuing anyway.")
+
+        # Establish an irrigated wheat farm nearby (Optional). This is the
+        # renewable food/breeding-item supply for bases in animal-sparse
+        # biomes where hunting alone can never restock food or leather --
+        # find_flat_ground searches from the player's current position
+        # rather than assuming a fixed offset from the house, since terrain
+        # near the house is not guaranteed flat at the house's exact Y level.
+        farm_spot = find_flat_ground(client, radius=20, footprint=5)
+        if farm_spot is None:
+            print("  No flat ground found for a wheat farm; skipping.")
+        else:
+            fx, fy, fz = farm_spot
+            farm_origin = establish_wheat_farm(client, fx, fy, fz, size=5)
+            if farm_origin is None:
+                print("  Warning: Failed to establish wheat farm (Skipping)")
+            else:
+                state.custom_data["wheat_farm"] = {"origin": list(farm_origin)}
+                print(f"  Wheat farm established at {farm_origin}")
 
         # Success
         resources.refresh_inventory()
@@ -230,6 +251,11 @@ class BaseConstructionHandler(PhaseHandler):
 
     def _summarize_starter_house_progress(self, client, x: int, y: int, z: int) -> dict[str, int | bool]:
         """Return current starter-house completion state by block role."""
+        # A reconnect can land the player back at base before the chunk
+        # finishes streaming in; querying it too early misreads an intact
+        # or partial house as void_air ("missing"), wasting a rebuild
+        # attempt. Give it a moment to load first.
+        house_utils.wait_for_chunk_loaded(client, x, y, z)
         plan = house_utils._good_house_plan(x, y, z)
         floor_total = 0
         floor_ok = 0

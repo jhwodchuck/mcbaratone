@@ -37,6 +37,8 @@ public class CommandHandlerFactory {
         // State commands
         registerHandler("get_state", StateCommandHandler.class);
         registerHandler("get_entities", StateCommandHandler.class);
+        registerHandler("get_player_pos", PlayerPositionCommandHandler.class);
+        registerHandler("scan_biomes", BiomeScanCommandHandler.class);
 
         // Build commands
         registerHandler("build", BuildCommandHandler.class);
@@ -88,8 +90,6 @@ public class CommandHandlerFactory {
         // Remaining Phase 1 handlers
         registerHandler("path", PathCommandHandler.class);
         registerHandler("tunnel_wide", TunnelWideCommandHandler.class);
-        registerHandler("harvest", HarvestCommandHandler.class);
-        registerHandler("plant", PlantCommandHandler.class);
         registerHandler("place_torches", PlaceTorchesCommandHandler.class);
         registerHandler("screenshot", ScreenshotCommandHandler.class);
         registerHandler("auto_craft", AutoCraftCommandHandler.class);

@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from ...transport.enums import MovementStatus, PathCalculationResultType
 from ...core.exceptions import CommandError
@@ -140,19 +140,26 @@ class GetToBlockProcess(BaseProcess):
 
 
 class FarmProcess(BaseProcess):
-    """Process for farming crops."""
+    """Baritone crop harvesting and replanting process."""
     
     def __init__(self, transport: Transport) -> None:
         super().__init__(transport, "farm")
 
-    def start(self, crop: str, replant: bool = True, **params: Any) -> Dict[str, Any]:
+    def start(
+        self,
+        range: int = 0,
+        center: Optional[Tuple[int, int, int]] = None,
+        replant: Optional[bool] = None,
+        **params: Any,
+    ) -> Dict[str, Any]:
         """
         Start farming crops.
         
         Args:
-            crop: Crop type to farm (e.g., "wheat", "carrots")
-            replant: Whether to replant after harvesting (default: True)
-            **params: Additional parameters (e.g., radius)
+            range: Search radius. Zero uses Baritone's default nearby search.
+            center: Optional ``(x, y, z)`` search center.
+            replant: Optionally set Baritone's crop-replant behavior.
+            **params: Additional bridge-supported parameters.
         
         Returns:
             Response dictionary
@@ -160,7 +167,15 @@ class FarmProcess(BaseProcess):
         Raises:
             CommandError: If farming fails to start
         """
-        payload: Dict[str, Any] = {"crop": crop, "replant": bool(replant), **params}
+        if "crop" in params:
+            raise ValueError("Baritone's farm process does not support crop filtering")
+        payload: Dict[str, Any] = {"range": int(range), **params}
+        if center is not None:
+            if len(center) != 3:
+                raise ValueError("center must contain x, y, and z")
+            payload.update({"x": int(center[0]), "y": int(center[1]), "z": int(center[2])})
+        if replant is not None:
+            payload["replant"] = bool(replant)
         return super().start(**payload)
 
 

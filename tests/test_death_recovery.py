@@ -1,10 +1,19 @@
 from types import SimpleNamespace
 
+import pytest
+
 from baritone_client.actions import death_recovery_action
 from baritone_client.actions.death_recovery_action import DeathRecoveryAction
 from baritone_client.automator import automator as automator_module
 from baritone_client.automator.automator import EndGameAutomator
 from baritone_client.automator.state_manager import Phase
+from baritone_client.automator.phase_executor import PhaseExecutor, PhaseHandler
+from baritone_client.common.tasks import (
+    ActionTask,
+    PlayerDeathDetected,
+    SequentialTask,
+    TaskResult,
+)
 from baritone_client.core.interfaces import ActionResult
 
 
@@ -97,7 +106,30 @@ def test_death_recovery_fails_if_pickup_area_stays_unsafe(monkeypatch):
     result = DeathRecoveryAction().execute(context)
 
     assert not result.success
-    assert "could not secure" in result.message
+    assert "could not retreat or secure" in result.message
+    assert result.data["unsafe_recovery_failures"] == 1
+
+
+def test_death_recovery_retreats_to_checkpointed_storage(monkeypatch):
+    context = _context(
+        {"x": -70, "y": 62, "z": -120, "dimension": "minecraft:overworld"}
+    )
+    context.state.custom_data["structures"] = {
+        "starter_house": {"supply_chest": [-10, 70, 12]}
+    }
+    destinations = []
+    monkeypatch.setattr(
+        death_recovery_action,
+        "goto",
+        lambda _client, x, y, z, **_kwargs: destinations.append((x, y, z)) or True,
+    )
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _seconds: None)
+
+    result = DeathRecoveryAction().execute(context)
+
+    assert result.success
+    assert result.data["retreated"]
+    assert destinations == [(-70, 62, -120), (-10, 70, 12)]
 
 
 def test_death_recovery_fails_when_critical_inventory_is_still_missing(monkeypatch):
@@ -136,3 +168,61 @@ def test_automator_stops_instead_of_resuming_after_failed_recovery(monkeypatch):
 
     assert automator._handle_death_recovery()
     assert not automator._running
+
+
+def test_sequential_task_yields_dead_player_without_respawning():
+    calls = []
+
+    class DeadTransport:
+        def dispatch(self, route, payload):
+            calls.append((route, payload))
+            if route == "get_state":
+                return {"is_dead": True, "health": 0}
+            raise AssertionError(f"Unexpected route: {route}")
+
+    client = SimpleNamespace(transport=DeadTransport())
+    task = SequentialTask("phase", [ActionTask("never", lambda _client: True)])
+
+    with pytest.raises(PlayerDeathDetected):
+        task.run(client)
+
+    assert calls == [("get_state", {})]
+
+
+def test_phase_executor_does_not_retry_player_death():
+    class DeadHandler(PhaseHandler):
+        def __init__(self):
+            self.calls = 0
+            self.exited = False
+
+        def execute(self, client, resources, state):
+            self.calls += 1
+            raise PlayerDeathDetected("dead")
+
+        def get_name(self):
+            return "Dead phase"
+
+        def on_exit(self, client, resources, state):
+            self.exited = True
+
+    state = SimpleNamespace(
+        update_progress=lambda *_args, **_kwargs: None,
+        record_phase_payload=lambda *_args, **_kwargs: None,
+    )
+    resources = SimpleNamespace(refresh_inventory=lambda: None)
+    client = SimpleNamespace()
+    handler = DeadHandler()
+    executor = PhaseExecutor(
+        client,
+        resources,
+        state,
+        max_retries=3,
+        retry_delay=0,
+        screenshot_enabled=False,
+    )
+    executor.register_handler(Phase.FOOD_AND_IRON, handler)
+
+    assert not executor.execute_phase(Phase.FOOD_AND_IRON)
+    assert executor.interruption_reason == "player_death"
+    assert handler.calls == 1
+    assert handler.exited

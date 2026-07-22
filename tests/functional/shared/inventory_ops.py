@@ -1674,7 +1674,16 @@ def craft_recipe_manual(
 
 
     def matches(selector: str, item_id: str) -> bool:
-        if selector == "#planks":
+        # "_planks" is the selector _craft_tool_manual_generic passes for
+        # wooden tools (from _TOOL_MATERIALS["wooden"]); "#planks" is the
+        # convention used by hand-authored _MANUAL_GRID_RECIPES placements
+        # elsewhere. Both mean "any plank family" and must match here, or an
+        # exact-equality fallback against a literal item id like
+        # "minecraft:spruce_planks" never matches and every wooden tool
+        # craft fails at this step regardless of carried plank count --
+        # confirmed live: Bot09 stuck looping "missing _planks" with 8
+        # spruce planks in hand.
+        if selector in ("#planks", "_planks"):
             return item_id.endswith("_planks")
         return item_id == selector
 

@@ -326,7 +326,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
         int mcpPort = Integer.parseInt(System.getProperty("mcp.port", "5557"));
         try {
-            mcpServer = McpServer.create(mcpPort, commandDispatcher);
+            mcpServer = McpServer.create(mcpPort, commandDispatcher, eventManager);
             mcpServer.start();
             LOGGER.info("MCP server started on ws://localhost:" + mcpPort);
 

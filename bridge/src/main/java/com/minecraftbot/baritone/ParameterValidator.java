@@ -204,10 +204,14 @@ public class ParameterValidator {
      */
     public static Validator coordinates() {
         return (params, paramName) -> {
+            JsonObject coordinates = params;
+            if (params.has("position") && params.get("position").isJsonObject()) {
+                coordinates = params.getAsJsonObject("position");
+            }
             // Check if all coordinate parameters are present
-            boolean hasX = params.has("x");
-            boolean hasY = params.has("y");
-            boolean hasZ = params.has("z");
+            boolean hasX = coordinates.has("x");
+            boolean hasY = coordinates.has("y");
+            boolean hasZ = coordinates.has("z");
 
             if (!hasX || !hasY || !hasZ) {
                 List<String> missing = new ArrayList<>();
@@ -223,9 +227,9 @@ public class ParameterValidator {
             }
 
             try {
-                int x = params.get("x").getAsInt();
-                int y = params.get("y").getAsInt();
-                int z = params.get("z").getAsInt();
+                int x = coordinates.get("x").getAsInt();
+                int y = coordinates.get("y").getAsInt();
+                int z = coordinates.get("z").getAsInt();
 
                 // Minecraft world boundaries
                 if (x < -30000000 || x > 30000000 || z < -30000000 || z > 30000000) {
@@ -249,7 +253,7 @@ public class ParameterValidator {
                 return ValidationResult.invalid(new CommandError(
                     ErrorCode.INVALID_COORDINATES, ErrorSeverity.ERROR,
                     "Coordinate parameters must be integers",
-                    paramName, params.get("x") + "," + params.get("y") + "," + params.get("z"), "integer coordinates", null
+                    paramName, coordinates.get("x") + "," + coordinates.get("y") + "," + coordinates.get("z"), "integer coordinates", null
                 ));
             }
         };

@@ -1,9 +1,11 @@
 package com.minecraftbot.baritone.mcp;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.minecraftbot.baritone.CommandDispatcher;
 import com.minecraftbot.baritone.CommandResult;
+import com.minecraftbot.baritone.EventManager;
 import net.minecraft.client.MinecraftClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,8 +14,11 @@ import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
@@ -29,14 +34,24 @@ public class McpToolRegistry {
 
     private final CommandDispatcher commandDispatcher;
     private final MinecraftClient client;
+    private final EventManager eventManager;
     
     // Tool definitions: name -> ToolDefinition
     private final Map<String, ToolDefinition> tools = new LinkedHashMap<>();
 
     public McpToolRegistry(CommandDispatcher commandDispatcher) {
+        this(commandDispatcher, new EventManager());
+    }
+
+    public McpToolRegistry(CommandDispatcher commandDispatcher, EventManager eventManager) {
         this.commandDispatcher = commandDispatcher;
+        this.eventManager = eventManager;
         this.client = MinecraftClient.getInstance();
         registerAllTools();
+    }
+
+    EventManager getEventManager() {
+        return eventManager;
     }
 
     /**
@@ -677,10 +692,14 @@ public class McpToolRegistry {
     private void registerSubscribeMissionUpdates() {
         register("subscribe_mission_updates", "Subscribe to mission state updates", schemaBuilder().build(), false,
             (args, session) -> {
-                // TODO: Integrate with EventManager
+                requireSession(session);
+                Set<EventManager.EventType> eventTypes = EnumSet.of(EventManager.EventType.MISSION);
+                session.subscribeToEvents(eventTypes, session.getPriorityThreshold());
+                eventManager.subscribe(eventTypes, session);
                 JsonObject result = new JsonObject();
                 result.addProperty("success", true);
                 result.addProperty("subscribed", true);
+                result.add("event_types", eventTypesToJson(session.getSubscribedEvents()));
                 return result;
             });
     }
@@ -688,8 +707,14 @@ public class McpToolRegistry {
     private void registerUnsubscribeMissionUpdates() {
         register("unsubscribe_mission_updates", "Unsubscribe from mission updates", schemaBuilder().build(), false,
             (args, session) -> {
+                requireSession(session);
+                Set<EventManager.EventType> eventTypes = EnumSet.of(EventManager.EventType.MISSION);
+                eventManager.unsubscribe(eventTypes, session);
+                session.unsubscribeFromEvents(eventTypes);
                 JsonObject result = new JsonObject();
                 result.addProperty("success", true);
+                result.addProperty("subscribed", false);
+                result.add("event_types", eventTypesToJson(session.getSubscribedEvents()));
                 return result;
             });
     }
@@ -701,9 +726,18 @@ public class McpToolRegistry {
 
         register("broadcast_mission_state", "Broadcast mission state update", schema, false,
             (args, session) -> {
-                // TODO: Integrate with EventManager
+                if (!args.has("mission_data") || !args.get("mission_data").isJsonObject()) {
+                    throw new McpException(McpErrorCodes.INVALID_PARAMS,
+                        "mission_data must be a JSON object");
+                }
+                eventManager.publishEvent(
+                    EventManager.EventType.MISSION,
+                    args.getAsJsonObject("mission_data"),
+                    EventManager.Priority.NORMAL,
+                    "mcp");
                 JsonObject result = new JsonObject();
                 result.addProperty("success", true);
+                result.addProperty("published", true);
                 return result;
             });
     }
@@ -776,9 +810,22 @@ public class McpToolRegistry {
 
         register("subscribe_events", "Subscribe to real-time event streaming", schema, false,
             (args, session) -> {
-                // TODO: Integrate with EventManager and McpSession
+                requireSession(session);
+                Set<EventManager.EventType> eventTypes = parseEventTypes(args, "event_types");
+                int priorityThreshold = args.has("priority_threshold")
+                    ? args.get("priority_threshold").getAsInt()
+                    : session.getPriorityThreshold();
+                if (priorityThreshold < EventManager.Priority.LOW.getValue()
+                        || priorityThreshold > EventManager.Priority.CRITICAL.getValue()) {
+                    throw new McpException(McpErrorCodes.INVALID_PARAMS,
+                        "priority_threshold must be between 0 and 3");
+                }
+                session.subscribeToEvents(eventTypes, priorityThreshold);
+                eventManager.subscribe(eventTypes, session);
                 JsonObject result = new JsonObject();
                 result.addProperty("success", true);
+                result.add("event_types", eventTypesToJson(session.getSubscribedEvents()));
+                result.addProperty("priority_threshold", priorityThreshold);
                 return result;
             });
     }
@@ -790,8 +837,13 @@ public class McpToolRegistry {
 
         register("unsubscribe_events", "Unsubscribe from event streaming", schema, false,
             (args, session) -> {
+                requireSession(session);
+                Set<EventManager.EventType> eventTypes = parseEventTypes(args, "event_types");
+                eventManager.unsubscribe(eventTypes, session);
+                session.unsubscribeFromEvents(eventTypes);
                 JsonObject result = new JsonObject();
                 result.addProperty("success", true);
+                result.add("event_types", eventTypesToJson(session.getSubscribedEvents()));
                 return result;
             });
     }
@@ -988,6 +1040,50 @@ public class McpToolRegistry {
             throw new McpException(McpErrorCodes.INVALID_PARAMS, "Missing required parameter: " + key);
         }
         return args.get(key).getAsInt();
+    }
+
+    private void requireSession(McpSession session) {
+        if (session == null) {
+            throw new McpException(McpErrorCodes.INVALID_REQUEST,
+                "This tool requires an active MCP session");
+        }
+    }
+
+    private Set<EventManager.EventType> parseEventTypes(JsonObject args, String key) {
+        if (!args.has(key) || !args.get(key).isJsonArray()) {
+            throw new McpException(McpErrorCodes.INVALID_PARAMS,
+                key + " must be a non-empty array");
+        }
+
+        JsonArray values = args.getAsJsonArray(key);
+        if (values.isEmpty()) {
+            throw new McpException(McpErrorCodes.INVALID_PARAMS,
+                key + " must be a non-empty array");
+        }
+
+        Set<EventManager.EventType> eventTypes = EnumSet.noneOf(EventManager.EventType.class);
+        for (JsonElement value : values) {
+            if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) {
+                throw new McpException(McpErrorCodes.INVALID_PARAMS,
+                    key + " entries must be strings");
+            }
+            String name = value.getAsString().trim().toUpperCase(Locale.ROOT);
+            try {
+                eventTypes.add(EventManager.EventType.valueOf(name));
+            } catch (IllegalArgumentException e) {
+                throw new McpException(McpErrorCodes.INVALID_PARAMS,
+                    "Unknown event type: " + value.getAsString());
+            }
+        }
+        return eventTypes;
+    }
+
+    private JsonArray eventTypesToJson(Set<EventManager.EventType> eventTypes) {
+        JsonArray result = new JsonArray();
+        eventTypes.stream()
+            .sorted()
+            .forEach(type -> result.add(type.name().toLowerCase(Locale.ROOT)));
+        return result;
     }
 
     private JsonObject commandResultToJson(CommandResult result) {

@@ -216,6 +216,94 @@ def test_craft_with_table_repairs_locally_without_following_saved_waypoint(monke
     ) not in client.transport.calls
 
 
+def test_prepare_safe_furnace_fuel_consolidates_wood_via_raw_plank_helper(monkeypatch):
+    client = SimpleNamespace(transport=RecordingTransport())
+    counts = {"minecraft:oak_planks": 0}
+
+    def fake_count(_client, item_id):
+        return counts.get(item_id, 0)
+
+    def fake_gather_wood(_client, count, timeout):
+        # Existing behavior keeps the gather frontier bounded and daylight-safe.
+        assert count == 2
+        assert timeout == 300
+        return True
+
+    def fake_ensure_raw_planks(_client, required_planks):
+        assert required_planks == 8
+        counts["minecraft:oak_planks"] = 8
+        return True
+
+    monkeypatch.setattr(resources, "count_item", fake_count)
+    monkeypatch.setattr(resources, "manage_inventory", lambda _client: None)
+    monkeypatch.setattr(resources, "gather_wood", fake_gather_wood)
+    monkeypatch.setattr(
+        inventory,
+        "_ensure_raw_planks",
+        fake_ensure_raw_planks,
+    )
+
+    assert resources._prepare_safe_furnace_fuel(client, 11) == "minecraft:oak_planks"
+
+
+def test_prepare_safe_furnace_fuel_fails_when_raw_plank_conversion_fails(monkeypatch):
+    client = SimpleNamespace(transport=RecordingTransport())
+    monkeypatch.setattr(resources, "count_item", lambda _client, _item: 0)
+    monkeypatch.setattr(resources, "manage_inventory", lambda _client: None)
+    monkeypatch.setattr(resources, "gather_wood", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        inventory,
+        "_ensure_raw_planks",
+        lambda *_a, **_k: False,
+    )
+
+    assert resources._prepare_safe_furnace_fuel(client, 11) is None
+
+
+def test_craft_with_table_uses_raw_plank_helper_for_table_planks(monkeypatch):
+    from baritone_client.common import base
+
+    client = SimpleNamespace(transport=RecordingTransport())
+    counts = {"minecraft:crafting_table": 0, "minecraft:oak_planks": 0}
+    ensure_calls = []
+
+    def fake_count(_client, item_id):
+        return counts.get(item_id, 0)
+
+    def fake_ensure_raw_planks(_client, required_planks):
+        ensure_calls.append(required_planks)
+        counts["minecraft:oak_planks"] = 8
+        return True
+
+    def fake_craft(_client, item_id, qty):
+        counts[item_id] = counts.get(item_id, 0) + qty
+        return True
+
+    placements = []
+    monkeypatch.setattr(resources, "count_item", fake_count)
+    monkeypatch.setattr(resources, "ensure_tool_sticks", lambda *_a, **_k: True)
+    monkeypatch.setattr(resources, "ensure_stone_material", lambda *_a, **_k: True)
+    monkeypatch.setattr(base, "open_crafting_table", lambda *_a, **_k: False)
+    monkeypatch.setattr(resources, "craft", fake_craft)
+    monkeypatch.setattr(
+        inventory,
+        "_ensure_raw_planks",
+        fake_ensure_raw_planks,
+    )
+    monkeypatch.setattr(resources.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(resources, "get_player_pos", lambda _c: (2, 0, 0))
+    monkeypatch.setattr(resources, "_wait_for_path_completion", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        base,
+        "place_crafting_table",
+        lambda _client, x, y, z: placements.append((x, y, z)) or True,
+    )
+
+    assert resources._craft_with_table(client, "minecraft:flint_and_steel", 1)
+    assert ensure_calls == [4]
+    assert counts["minecraft:crafting_table"] == 1
+
+
 def test_ore_gather_recounts_drops_when_pathing_stops(monkeypatch):
     class OreTransport(RecordingTransport):
         def dispatch(self, route, payload):
@@ -413,7 +501,7 @@ def test_safe_smelting_fuel_gathers_wood_and_crafts_planks(monkeypatch):
     )
     monkeypatch.setattr(resources, "manage_inventory", lambda _client: None)
 
-    def gather(_client, count, timeout):
+    def gather(_client, count, timeout=0):
         gathered.append((count, timeout))
         counts["minecraft:birch_log"] = count
         return True

@@ -51,8 +51,8 @@ class SiblingOrderingTest(unittest.TestCase):
             planner.mark_done(obj)
 
         chosen = planner.select(planner.runnable())
-        # VILLAGER_INFRA carries priority=1; the others default to 0.
-        self.assertEqual(chosen.phase, Phase.VILLAGER_INFRA)
+        # NETHER_AND_BLAZE carries highest post-FOOD_AND_IRON priority.
+        self.assertEqual(chosen.phase, Phase.NETHER_AND_BLAZE)
 
 
 class NonFatalFailureTest(unittest.TestCase):

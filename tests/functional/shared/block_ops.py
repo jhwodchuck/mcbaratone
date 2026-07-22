@@ -25,6 +25,33 @@ from tests.utils.mc_harness.waits import cancel_pathing, wait_for_pathing_stop, 
 # Constants
 BASE_Y = 80
 
+_PASSABLE_STAND_BLOCKS = (
+    "short_grass",
+    "tall_grass",
+    "fern",
+    "flower",
+    "dead_bush",
+    "torch",
+    "fire",
+    "snow",
+    "snow_layer",
+    "moss_carpet",
+    "vine",
+    "cactus",
+)
+
+
+def _is_standable_air_or_cover(block_id: str) -> bool:
+    """Return True if a block is safe to occupy for standing.
+
+    Supports the common passable terrain covers above the player.
+    """
+    if not block_id:
+        return False
+    if "air" in block_id:
+        return True
+    return any(part in block_id for part in _PASSABLE_STAND_BLOCKS)
+
 
 
 def get_inv_slots(data: Dict) -> List:
@@ -88,6 +115,45 @@ def in_range(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, floa
     return (dx * dx + dy * dy + dz * dz) ** 0.5 <= max_dist
 
 
+def find_stand_positions(
+    ctx,
+    x: Union[int, float],
+    y: Union[int, float],
+    z: Union[int, float],
+    radius: int = 3,
+) -> List[Tuple[int, int, int]]:
+    """Find candidate standing positions near coordinates ordered by preference."""
+    candidates = []
+    offsets = []
+    for dy in (0, 1, -1, 2):  # Try standing a bit higher too
+        for dx in range(-radius, radius + 1):
+            for dz in range(-radius, radius + 1):
+                # Avoid standing exactly in the target block OR directly above/below it
+                if abs(dx) < 1 and abs(dz) < 1:
+                    continue
+                offsets.append((dx, dy, dz))
+
+    # Sort by horizontal distance, aiming for ~2 blocks away
+    offsets.sort(key=lambda o: (abs(2.2 - (o[0] * o[0] + o[2] * o[2]) ** 0.5), abs(o[1])))
+
+    for dx, dy, dz in offsets:
+        sx, sy, sz = int(x + dx), int(y + dy), int(z + dz)
+        block_at = block_id_at(ctx, sx, sy, sz)
+        block_above = block_id_at(ctx, sx, sy + 1, sz)
+        block_below = block_id_at(ctx, sx, sy - 1, sz)
+
+        if is_liquid(block_at) or is_liquid(block_below):
+            continue
+        if not _is_standable_air_or_cover(block_at):
+            continue
+        if not _is_standable_air_or_cover(block_above):
+            continue
+        if "air" in block_below:
+            continue
+        candidates.append((sx, sy, sz))
+    return candidates
+
+
 def find_stand_pos(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, float], radius: int = 3) -> Tuple[int, int, int]:
     """Find a suitable standing position near coordinates.
 
@@ -101,32 +167,10 @@ def find_stand_pos(ctx, x: Union[int, float], y: Union[int, float], z: Union[int
     Returns:
         Tuple of (x, y, z) coordinates for standing.
     """
-    offsets = []
-    for dy in (0, 1, -1, 2): # Try standing a bit higher too
-        for dx in range(-radius, radius + 1):
-            for dz in range(-radius, radius + 1):
-                # Avoid standing exactly in the target block OR directly above/below it
-                if abs(dx) < 1 and abs(dz) < 1:
-                    continue
-                offsets.append((dx, dy, dz))
-    
-    # Sort by horizontal distance, aiming for ~2 blocks away
-    offsets.sort(key=lambda o: (abs(2.2 - (o[0]*o[0] + o[2]*o[2])**0.5), abs(o[1])))
-    
-    for dx, dy, dz in offsets:
-        sx, sy, sz = int(x + dx), int(y + dy), int(z + dz)
-        block_at = block_id_at(ctx, sx, sy, sz)
-        block_above = block_id_at(ctx, sx, sy + 1, sz)
-        block_below = block_id_at(ctx, sx, sy - 1, sz)
-        
-        if is_liquid(block_at) or is_liquid(block_below):
-            continue
-        if "air" not in block_at or "air" not in block_above:
-            continue
-        if "air" in block_below:
-            continue
-        return (sx, sy, sz)
-    return (int(x) + 2, int(y), int(z)) # Fallback
+    candidates = find_stand_positions(ctx, x, y, z, radius=radius)
+    if candidates:
+        return candidates[0]
+    return (int(x) + 2, int(y), int(z))  # Fallback
 
 
 def find_place_pos_near(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, float],
@@ -271,14 +315,33 @@ def move_near(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, flo
         True if movement successful.
     """
     from tests.utils.mc_harness.actions import do_goto
-    stand_x, stand_y, stand_z = find_stand_pos(ctx, x, y, z, radius=3)
-    target = {"x": stand_x, "y": stand_y, "z": stand_z}
-    # Use smaller arrival radius for interaction
-    ok = do_goto(ctx, target, timeout=timeout, arrival_radius=1.2, require_arrival=True)
-    if not ok and not in_range(ctx, stand_x, stand_y, stand_z):
+
+    stand_candidates = find_stand_positions(ctx, x, y, z, radius=3)
+    if not stand_candidates:
+        stand_candidates = [find_stand_pos(ctx, x, y, z, radius=5)]
+
+    for idx, (stand_x, stand_y, stand_z) in enumerate(stand_candidates, start=1):
+        target = {"x": stand_x, "y": stand_y, "z": stand_z}
+        ok = do_goto(
+            ctx,
+            target,
+            timeout=timeout,
+            arrival_radius=1.4,
+            require_arrival=True,
+            allow_incomplete=True,
+        )
+        if ok:
+            return True
+        if in_range(ctx, stand_x, stand_y, stand_z):
+            return True
+        if hasattr(ctx, "log_event"):
+            ctx.log_event(
+                f"Move candidate {idx}/{len(stand_candidates)} failed near {x},{y},{z}"
+            )
+        cancel_pathing(ctx)
+    if hasattr(ctx, "log_event"):
         ctx.log_event(f"Move failed near {x},{y},{z}")
-        return False
-    return True
+    return False
 
 
 def fill_plane_chunked(ctx, min_x: int, min_y: int, min_z: int, max_x: int, max_y: int, max_z: int, block: str, xz_step: int = 64):

@@ -23,14 +23,21 @@ public class PlaceBlockCommandHandler implements CommandHandler {
 
     @Override
     public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
-        if (client.player == null || client.world == null) {
-            return CompletableFuture.completedFuture(CommandResult.error("Player/World not available"));
+        if (client.player == null || client.world == null || client.interactionManager == null) {
+            return CompletableFuture.completedFuture(
+                CommandResult.error("Player, world, or interaction manager not available"));
         }
 
         try {
-            int x = params.get("x").getAsInt();
-            int y = params.get("y").getAsInt();
-            int z = params.get("z").getAsInt();
+            JsonObject coordinates = params.has("position") && params.get("position").isJsonObject()
+                ? params.getAsJsonObject("position") : params;
+            if (!coordinates.has("x") || !coordinates.has("y") || !coordinates.has("z")) {
+                return CompletableFuture.completedFuture(CommandResult.error(
+                    "Missing placement coordinates; provide x/y/z or position: {x, y, z}"));
+            }
+            int x = coordinates.get("x").getAsInt();
+            int y = coordinates.get("y").getAsInt();
+            int z = coordinates.get("z").getAsInt();
             
             BlockPos targetPos = new BlockPos(x, y, z);
             
@@ -86,6 +93,7 @@ public class PlaceBlockCommandHandler implements CommandHandler {
                 JsonObject data = new JsonObject();
                 data.addProperty("placed", actionResult.isAccepted());
                 data.addProperty("status", actionResult.toString());
+                data.addProperty("accepted", actionResult.isAccepted());
                 data.addProperty("x", x);
                 data.addProperty("y", y);
                 data.addProperty("z", z);
@@ -94,7 +102,10 @@ public class PlaceBlockCommandHandler implements CommandHandler {
                 if (actionResult.isAccepted()) {
                     return CommandResult.success(data);
                 } else {
-                    return CommandResult.error("Placement failed: " + actionResult.toString() + " Item: " + client.player.getMainHandStack().getName().getString() + " Pos: " + targetPos);
+                    return new CommandResult(false, data,
+                        "Placement rejected by Minecraft: " + actionResult
+                            + "; item=" + client.player.getMainHandStack().getName().getString()
+                            + "; target=" + targetPos);
                 }
             }).get();
             

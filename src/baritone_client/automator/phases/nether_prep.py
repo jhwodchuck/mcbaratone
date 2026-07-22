@@ -6,7 +6,9 @@ from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import StateManager
 from ...common import TaskResult, SequentialTask, ActionTask
+from ...common.resources import ensure_supplies, _read_state_with_retry
 from ...common.resources import gather_ores
+from ...common.inventory import _ensure_raw_planks
 from ...common.nether import build_nether_portal, enter_nether_portal, find_nether_fortress, hunt_blazes, barter_with_piglins
 
 class NetherAndBlazeHandler(PhaseHandler):
@@ -32,16 +34,50 @@ class NetherAndBlazeHandler(PhaseHandler):
 
     def _lava_cast_portal(self, client) -> bool:
         """Build portal using lava casting method."""
+        if not _ensure_raw_planks(client, 4):
+            print(
+                "  Could not prepare planks for portal support; proceeding with "
+                "minimal-material fallback."
+            )
+        materials_ready = ensure_supplies(
+            client,
+            {"minecraft:obsidian": 14, "minecraft:flint_and_steel": 1},
+            timeout=180,
+        )
+        if not materials_ready.success:
+            print("  Could not gather portal materials; cannot build nether portal.")
+            return False
+
         # Get current position
-        state = client.transport.dispatch("get_state", {})
+        state, _ = _read_state_with_retry(client, retries=2, label="Portal build state read")
+        if state is None:
+            print(
+                "  Portal position read timed out; using last-known safe origin "
+                "(0, 64, 0) for this attempt."
+            )
+            state = {"block_position": {"x": 0, "y": 64, "z": 0}}
         pos = state.get("block_position", state.get("position", {}))
         px = int(pos.get("x", 0))
         py = int(pos.get("y", 64))
         pz = int(pos.get("z", 0))
-        
-        # Build portal 3 blocks ahead of player
-        # A real implementation might be smarter about placement, but this fixes the crash
-        return build_nether_portal(client, px + 3, py, pz)
+
+        # Try nearby offsets if the first construction attempt is blocked.
+        candidate_offsets = (
+            (3, 0),
+            (3, 2),
+            (0, 3),
+            (-3, 0),
+            (0, -2),
+            (0, 2),
+        )
+        for offset_x, offset_z in candidate_offsets:
+            x = px + int(offset_x)
+            z = pz + int(offset_z)
+            print(f"  Attempting portal frame at ({x}, {py}, {z})")
+            if build_nether_portal(client, x, py, z):
+                return True
+        print("  All portal placement attempts failed; will retry later.")
+        return False
 
     def _mine_nether_gold(self, client) -> bool:
         """Mine nether gold ore for piglin bartering."""

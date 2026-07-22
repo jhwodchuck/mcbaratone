@@ -930,7 +930,11 @@ def build_compact_night_shelter(client) -> bool:
         for column in side_columns
     )
     roof_complete = _is_wall(_block_at(roof))
-    sheltered = roof_complete and complete_sides >= 3
+    # A missing side is not survivable once hostiles can spawn: it is an open
+    # doorway a mob can walk through while the caller stops watching for
+    # threats. Confirmed by a live Bot09 death on Easy difficulty from a
+    # shelter this call reported as "ready" with one open side.
+    sheltered = roof_complete and complete_sides >= 4
     print(
         f"Night shelter: {'ready' if sheltered else 'partial'} "
         f"({complete_sides}/4 sides, roof={roof_complete})."
@@ -1032,11 +1036,15 @@ def wait_for_safe_daylight(
                 return True
             next_bed_attempt = now + 30.0
 
-        if not shelter_attempted:
-            # Only fight when no enclosure exists.  Once the compact shelter
-            # is complete, outside mobs cannot hit the player; leaving it to
-            # engage a detected creeper defeats the shelter and caused a
-            # confirmed survival death.
+        if not shelter_complete:
+            # Only stand still once the shelter is verified complete (4/4
+            # walls + roof) -- outside mobs cannot hit the player then, and
+            # leaving a truly complete shelter to engage a detected creeper
+            # caused a confirmed prior survival death. A partial enclosure
+            # (e.g. one open side) is not safe: it must keep fighting/fleeing
+            # every poll, not just before the first build attempt, or a mob
+            # can walk in through the gap while the bot waits unarmed -- this
+            # is exactly how Bot09 died on Easy difficulty.
             from .combat import defend_or_flee, scan_for_threats
             threats = scan_for_threats(client, radius=16)
             if threats and threats[0].get("distance", 999) <= 12:
@@ -1044,14 +1052,18 @@ def wait_for_safe_daylight(
                 defend_or_flee(client)
                 time.sleep(poll_interval)
                 continue
-            try:
-                # A partial result is still an attempt. Retrying the same
-                # impossible placement every poll produced thousands of log
-                # lines and consumed the entire night without improving it.
-                shelter_attempted = True
-                shelter_complete = bool(build_compact_night_shelter(client))
-            except Exception as exc:
-                print(f"Daylight safety: compact shelter attempt failed: {exc}")
+            if not shelter_attempted:
+                try:
+                    # A partial result is still an attempt. Retrying the same
+                    # impossible placement every poll produced thousands of
+                    # log lines and consumed the entire night without
+                    # improving it, so only the placement call itself is
+                    # one-shot; threat scanning above still runs every poll
+                    # while shelter_complete is False.
+                    shelter_attempted = True
+                    shelter_complete = bool(build_compact_night_shelter(client))
+                except Exception as exc:
+                    print(f"Daylight safety: compact shelter attempt failed: {exc}")
 
         client.transport.dispatch("cancel", {})
         now = time.monotonic()
@@ -1129,6 +1141,83 @@ def _sleep_in_nearby_bed(client, timeout: float = 15.0) -> bool:
         if live_state.get("is_dead", False):
             return False
     client.transport.dispatch("close_screen", {})
+    return False
+
+
+_BED_BLOCKS = [
+    f"minecraft:{color}_bed"
+    for color in (
+        "white", "orange", "magenta", "light_blue", "yellow", "lime",
+        "pink", "gray", "light_gray", "cyan", "purple", "blue",
+        "brown", "green", "red", "black",
+    )
+]
+
+
+def try_establish_respawn_anchor_now(client, state) -> bool:
+    """Non-blocking: sleep in a nearby bed right now if it's already night.
+
+    Returns immediately (no waiting) if the anchor is already set, no bed is
+    nearby, or it isn't night yet. Safe to call on every retry of a hot-path
+    phase (e.g. FOOD_AND_IRON) without adding delay to attempts that can't
+    succeed yet -- the opportunistic check just waits for a night window to
+    happen to line up with when the bed is nearby.
+    """
+    if state is not None and state.custom_data.get("respawn_anchor_established"):
+        return True
+    if find_nearby_block(client, _BED_BLOCKS, radius=8) is None:
+        return False
+    try:
+        live_state = client.transport.dispatch("get_state", {})
+    except Exception:
+        return False
+    if live_state.get("is_dead", False):
+        return False
+    day_time = int(live_state.get("world_time", 0)) % 24000
+    if day_time < 12500:
+        return False
+    established = _sleep_in_nearby_bed(client)
+    if established and state is not None:
+        state.custom_data["respawn_anchor_established"] = True
+    return established
+
+
+def wait_and_establish_respawn_anchor(client, state, timeout: float = 900.0) -> bool:
+    """Block until night falls, then sleep in the just-placed starter bed so
+    the player's vanilla respawn point anchors near base.
+
+    Sleeping otherwise only happens incidentally during later night waits,
+    and FOOD_AND_IRON's deep mining routinely puts the player too far
+    underground from this surface bed to ever reach it before dawn. With no
+    respawn point ever set, a death anywhere in that phase (or later) sends
+    the player back to world spawn instead of near base -- confirmed live:
+    Bot09 died repeatedly far from home with an empty inventory, having
+    never once slept in its bed. This is the one deliberate blocking wait,
+    meant to run once right after the starter bed is placed; every other
+    call site should use the non-blocking try_establish_respawn_anchor_now.
+    """
+    if state is not None and state.custom_data.get("respawn_anchor_established"):
+        return True
+    if find_nearby_block(client, _BED_BLOCKS, radius=8) is None:
+        print("  No bed placed yet; skipping early respawn-anchor sleep.")
+        return False
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            live_state = client.transport.dispatch("get_state", {})
+        except Exception:
+            time.sleep(5.0)
+            continue
+        if live_state.get("is_dead", False):
+            return False
+        day_time = int(live_state.get("world_time", 0)) % 24000
+        if day_time >= 12500:
+            established = _sleep_in_nearby_bed(client)
+            if established and state is not None:
+                state.custom_data["respawn_anchor_established"] = True
+            return established
+        time.sleep(5.0)
     return False
 
 
@@ -1229,6 +1318,33 @@ _ALL_DOORS = [
     "minecraft:jungle_door", "minecraft:acacia_door", "minecraft:dark_oak_door",
     "minecraft:crimson_door", "minecraft:warped_door",
 ]
+
+
+def wait_for_chunk_loaded(client, x: int, y: int, z: int, timeout: float = 10.0) -> bool:
+    """Poll a coordinate until it stops reporting void_air (unloaded chunk).
+
+    Right after joining/reconnecting, a chunk the player is already standing
+    in can still report "minecraft:void_air" for a brief window before the
+    server streams it in. Treating that as "block missing" produces false
+    structural-integrity failures -- confirmed live: right after a
+    reconnect, Bot07 surveyed its own intact starter house as 0/49 floor
+    blocks, started a from-scratch rebuild with zero tools, and died
+    gathering wood for it. Returns True once a real block id is seen (or the
+    timeout elapses -- callers still proceed with whatever the last read
+    was, matching prior behavior when this call did not exist).
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            block_id = client.transport.dispatch(
+                "get_block", {"x": int(x), "y": int(y), "z": int(z)}
+            ).get("id", "")
+        except Exception:
+            block_id = ""
+        if block_id != "minecraft:void_air":
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def _house_block_id(client, x: int, y: int, z: int) -> str:

@@ -5,6 +5,7 @@ Death recovery action implementation.
 import time
 from typing import Dict, Optional, Tuple
 from ..core.interfaces import ActionContext, ActionResult
+from ..core.exceptions import TransportError
 from ..actions.base import BaseAction
 from ..common.nether import find_nearest_portal
 from ..common import goto
@@ -124,6 +125,50 @@ def _recovery_shortfall(client, expected: Dict[str, int]) -> Dict[str, int]:
     }
 
 
+def _checkpointed_retreat(state) -> Optional[Tuple[int, int, int]]:
+    """Return the best persisted home coordinate without bridge probing."""
+    custom_data = getattr(state, "custom_data", {})
+    structures = custom_data.get("structures", {})
+    house = structures.get("starter_house", {})
+    for key in ("supply_chest", "origin"):
+        value = house.get(key)
+        if isinstance(value, (list, tuple)) and len(value) == 3:
+            return tuple(int(axis) for axis in value)
+
+    locations = custom_data.get("locations", {}).get("chest", [])
+    for location in reversed(locations):
+        if not isinstance(location, dict):
+            continue
+        data = location.get("data", location)
+        try:
+            return (int(data["x"]), int(data["y"]), int(data["z"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    value = custom_data.get("base_location")
+    if isinstance(value, (list, tuple)) and len(value) == 3:
+        return tuple(int(axis) for axis in value)
+    return None
+
+
+def _record_unsafe_recovery(state, death_coords: Tuple[int, int, int]) -> int:
+    """Persist a same-location failure count for recovery circuit diagnosis."""
+    custom_data = getattr(state, "custom_data", {})
+    recovery = custom_data.setdefault("death_recovery", {})
+    location = list(death_coords)
+    failures = int(recovery.get("unsafe_failures", 0))
+    if recovery.get("location") != location:
+        failures = 0
+    failures += 1
+    recovery.update({"location": location, "unsafe_failures": failures})
+    return failures
+
+
+def _clear_unsafe_recovery(state) -> None:
+    custom_data = getattr(state, "custom_data", {})
+    custom_data.pop("death_recovery", None)
+
+
 class DeathRecoveryAction(BaseAction):
     """
     Action to handle player death and recovery.
@@ -139,7 +184,14 @@ class DeathRecoveryAction(BaseAction):
         """
         try:
             # Check for death
-            state = context.client.transport.dispatch("get_state", {})
+            try:
+                state = context.client.transport.dispatch("get_state", {})
+            except TransportError as exc:
+                print(
+                    f"Warning: Death recovery get_state timed out ({exc}); "
+                    "deferring this cycle"
+                )
+                return ActionResult.ok("Death recovery deferred due transport timeout")
             if not state.get("is_dead", False) and state.get("health", 20) > 0:
                 return ActionResult.ok("No death detected")
 
@@ -161,7 +213,14 @@ class DeathRecoveryAction(BaseAction):
             time.sleep(2.0)
 
             # Get death location and recover items
-            response = context.client.transport.dispatch("get_death_location", {})
+            try:
+                response = context.client.transport.dispatch("get_death_location", {})
+            except TransportError as exc:
+                print(
+                    f"Warning: Death recovery could not fetch death location ({exc}); "
+                    "trying fallback state value"
+                )
+                response = {"data": state.get("death_location", {})}
             data = response.get("data", response)
             death_x, death_y, death_z = data.get("x"), data.get("y"), data.get("z")
             death_dim = data.get("dimension", death_dimension).lower()
@@ -249,10 +308,39 @@ class DeathRecoveryAction(BaseAction):
                                 "Critical inventory recovery is incomplete",
                                 missing=shortfall,
                             )
-                        if not secure_recovery_area(context.client):
-                            return ActionResult.fail(
-                                "Recovered items but could not secure the area"
+                        retreat = _checkpointed_retreat(context.state)
+                        if retreat is not None and retreat != death_coords:
+                            print(
+                                f"RECOVERY: retreating recovered inventory to {retreat}"
                             )
+                            if goto(
+                                context.client,
+                                retreat[0],
+                                retreat[1],
+                                retreat[2],
+                                timeout=300,
+                                tolerance=2.0,
+                            ):
+                                _clear_unsafe_recovery(context.state)
+                                return ActionResult.ok(
+                                    "Recovery completed in Overworld after retreat",
+                                    recovered=True,
+                                    retreated=True,
+                                    reset_phase=False,
+                                )
+                        if not secure_recovery_area(context.client):
+                            failures = _record_unsafe_recovery(
+                                context.state, death_coords
+                            )
+                            print(
+                                "RECOVERY_CIRCUIT: unsafe recovery failure "
+                                f"{failures} at {death_coords}"
+                            )
+                            return ActionResult.fail(
+                                "Recovered items but could not retreat or secure the area",
+                                unsafe_recovery_failures=failures,
+                            )
+                        _clear_unsafe_recovery(context.state)
                         return ActionResult.ok(
                             "Recovery completed in Overworld",
                             recovered=True,

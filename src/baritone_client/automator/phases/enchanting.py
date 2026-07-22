@@ -8,14 +8,22 @@ from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import StateManager
 from ...common import TaskResult, SequentialTask, ActionTask, harness_ops
-from ...common.inventory import craft, count_item, withdraw_required_from_chest
+from ...common.inventory import (
+    craft,
+    count_item,
+    deposit_excess_to_chest,
+    get_inventory,
+    withdraw_required_from_chest,
+)
 from ...common.combat import eat_until_hunger, hunt_mobs, scan_for_threats
+from ...common.husbandry import visit_known_herd_for_loot
 from ...common.navigation import find_nearby_block, goto
 from ...common.base import (
     _good_house_plan,
     _house_door_aligned,
     _matches_house_role,
     build_good_house,
+    wait_for_chunk_loaded,
     wait_for_safe_daylight,
 )
 from ...common.resources import (
@@ -84,6 +92,37 @@ class EnchantingPipelineHandler(PhaseHandler):
         if not isinstance(origin, (list, tuple)) or len(origin) != 3:
             return False
         x, y, z = (int(value) for value in origin)
+
+        # This is the first task in ENCHANTING_PIPELINE's sequence, so it
+        # reruns on every phase-level retry -- including mid-expedition,
+        # hundreds of blocks from base. The origin chunk is then genuinely
+        # unloaded, not a transient load race wait_for_chunk_loaded can wait
+        # out, so a survey from here always misreads the intact house as
+        # destroyed and starts a wasteful, dangerous rebuild at the wrong
+        # location. Confirmed live: Bot07 gathering wood for a "destroyed"
+        # house 200+ blocks from its real one. Defer verification until
+        # actually near home; a later retry (typically right after an
+        # expedition's own return-home) will catch it once proximity holds.
+        live_state = client.transport.dispatch("get_state", {})
+        position = live_state.get("block_position", live_state.get("position", {}))
+        if all(axis in position for axis in ("x", "y", "z")):
+            distance = (
+                (float(position["x"]) - x) ** 2
+                + (float(position["y"]) - y) ** 2
+                + (float(position["z"]) - z) ** 2
+            ) ** 0.5
+            if distance > 24.0:
+                print(
+                    f"  Too far from starter house ({distance:.0f} blocks) "
+                    "to verify integrity; deferring check."
+                )
+                return True
+
+        # A reconnect can land the player back at base before the chunk
+        # finishes streaming in; querying it too early misreads the intact
+        # house as void_air ("missing") and triggers a needless, dangerous
+        # from-scratch rebuild. Give it a moment to load first.
+        wait_for_chunk_loaded(client, x, y, z)
         if not self._starter_house_integrity(client, (x, y, z)):
             print("  Starter-house integrity failed; repairing before progression.")
             if not build_good_house(client, x, y, z):
@@ -219,6 +258,28 @@ class EnchantingPipelineHandler(PhaseHandler):
             house["bed"] = list(existing)
             return True
 
+        enchanting_state = state.custom_data.setdefault("enchanting", {})
+        # Some resume paths fail repeatedly before any successful sheep-hunt
+        # attempt can complete (missing sheep, transient bridge issues, or
+        # starvation loops). Count every invocation without a verified bed so
+        # we can eventually skip this non-critical prerequisite instead of
+        # blocking forever on ENCHANTING_PIPELINE.
+        attempt_count = int(enchanting_state.get("bed_retry_attempts", 0)) + 1
+        enchanting_state["bed_retry_attempts"] = attempt_count
+        self._persist_enchanting_state(client, state)
+        if attempt_count >= 4:
+            enchanting_state["skip_bed_requirement"] = True
+            print(
+                "  Bed checks retried too many times; skipping sleeping-bed "
+                "requirement to keep enchanting progression moving."
+            )
+            self._persist_enchanting_state(client, state)
+            return True
+
+        if enchanting_state.get("skip_bed_requirement"):
+            print("  Continuing without verified bed: requirement was previously exhausted.")
+            return True
+
         requirements = {f"minecraft:{color}_wool": 3 for color in WOOL_COLORS}
         requirements.update({bed_id: 1 for bed_id in BED_ITEMS})
         self._withdraw_at_home(client, state, requirements)
@@ -246,6 +307,7 @@ class EnchantingPipelineHandler(PhaseHandler):
             current = count_item(client, f"minecraft:{best_color}_wool")
             if not self._wait_for_daylight(client, state):
                 return False
+            self._bank_diamonds_before_expedition(client, state)
             if not self._leave_starter_house(client, state):
                 return False
 
@@ -277,6 +339,14 @@ class EnchantingPipelineHandler(PhaseHandler):
                 client.transport.dispatch("cancel", {})
                 returned = self._return_home(client, state)
             if not hunted or not hunted.success or not returned:
+                if attempt_count >= 2:
+                    enchanting_state["skip_bed_requirement"] = True
+                    print(
+                        "  Could not secure wool or bed after retries; "
+                        "skipping bed requirement to keep progression."
+                    )
+                    self._persist_enchanting_state(client, state)
+                    return True
                 return False
             wool_color = next(
                 (
@@ -326,9 +396,25 @@ class EnchantingPipelineHandler(PhaseHandler):
                     return True
         return False
 
+    def _persist_enchanting_state(self, client, state: StateManager) -> None:
+        """Persist in-memory enchanting skip/retry counters immediately."""
+        try:
+            state.save_checkpoint(get_inventory(client))
+        except Exception:
+            # Non-fatal: progress persistence is a safety optimization only.
+            pass
+
     def _next_bed_exploration_center(self, origin, state):
-        """Persist sheep-search rotation independently from leather searches."""
-        offsets = ((64, -96), (-64, -96), (96, -48), (-96, -48), (0, -128))
+        """Persist sheep-search rotation independently from leather searches.
+
+        Mirrored south for the same reason as the leather rotation: an
+        all-north offset list can never find sheep if the huntable biome
+        lies south of base instead.
+        """
+        offsets = (
+            (64, -96), (-64, -96), (96, -48), (-96, -48), (0, -128),
+            (64, 96), (-64, 96), (96, 48), (-96, 48), (0, 128),
+        )
         expedition_state = state.custom_data.setdefault("expeditions", {})
         index = int(expedition_state.get("bed_sector_index", 0))
         expedition_state["bed_sector_index"] = index + 1
@@ -346,6 +432,7 @@ class EnchantingPipelineHandler(PhaseHandler):
 
         if not self._wait_for_daylight(client, state):
             return False
+        self._bank_diamonds_before_expedition(client, state)
         if not self._leave_starter_house(client, state):
             return False
 
@@ -392,15 +479,39 @@ class EnchantingPipelineHandler(PhaseHandler):
                 wait_for_safe_daylight(client, max_wait=720.0)
             returned = self._return_home(client, state)
 
-        return bool(
+        if (
             result
             and result.success
             and returned
             and count_item(client, "minecraft:leather") >= target
-        )
+        ):
+            return True
+
+        # The local bounded search above rotates through dozens of sectors
+        # around the base and can still fail entirely if this biome has no
+        # huntable animals anywhere in range -- confirmed live: Bot07 spent
+        # 36+ sector rotations finding zero cows. Fall back to the
+        # operator-known distant herd instead of retrying the same empty
+        # area forever.
+        deficit = target - count_item(client, "minecraft:leather")
+        if deficit > 0 and visit_known_herd_for_loot(
+            client, {"minecraft:leather": deficit}, "cow"
+        ):
+            self._return_home(client, state)
+
+        return count_item(client, "minecraft:leather") >= target
 
     def _next_leather_exploration_center(self, origin, state=None):
-        """Rotate retries durably across sectors north of the starter house."""
+        """Rotate retries durably across sectors surrounding the starter house.
+
+        Every offset used to have a negative dz (north-only). A base whose
+        northern terrain lacks passive-mob biome (ocean, desert, extreme
+        hills) could rotate through every north sector forever and never
+        find a single cow -- confirmed live: Bot07 logged dozens of "No
+        targets found" across many distinct north sectors with zero hits.
+        Mirroring south covers the case where the huntable biome is instead
+        south of base.
+        """
         offsets = (
             (0, -128),
             (128, -64),
@@ -413,6 +524,17 @@ class EnchantingPipelineHandler(PhaseHandler):
             (-96, -96),
             (64, -48),
             (-64, -48),
+            (0, 128),
+            (128, 64),
+            (-128, 64),
+            (128, 24),
+            (-128, 24),
+            (64, 120),
+            (-64, 120),
+            (96, 96),
+            (-96, 96),
+            (64, 48),
+            (-64, 48),
         )
         expedition_index = self._leather_expedition_index
         if state is not None:
@@ -465,7 +587,10 @@ class EnchantingPipelineHandler(PhaseHandler):
             and not self._stage_inside_house(client, state)
         ):
             print("  Could not stage safely away from the doorway for night wait.")
-            return False
+            if not wait_for_safe_daylight(client, max_wait=720.0):
+                return False
+            print("  Doorway staging failed, but day returned and we can resume.")
+            return True
         while time.monotonic() < deadline:
             live_state = client.transport.dispatch("get_state", {})
             day_time = int(live_state.get("world_time", 0)) % 24000
@@ -520,6 +645,24 @@ class EnchantingPipelineHandler(PhaseHandler):
         finally:
             client.transport.dispatch("cancel", {})
             client.transport.dispatch("chat", {"message": "#set allowBreak true"})
+
+    def _bank_diamonds_before_expedition(self, client, state: StateManager) -> None:
+        """Leave carried raw diamonds at home before a trip that doesn't need
+        them, so a field death can't drop banked wealth. Best-effort: a
+        missing or unreachable chest just leaves diamonds carried as before.
+        """
+        if count_item(client, "minecraft:diamond") <= 0:
+            return
+        house = state.custom_data.get("structures", {}).get("starter_house", {})
+        chest = house.get("supply_chest")
+        if not isinstance(chest, (list, tuple)) or len(chest) != 3:
+            return
+        deposit_excess_to_chest(
+            client,
+            tuple(chest),
+            deposit_items={"minecraft:diamond"},
+            state=state,
+        )
 
     def _leave_starter_house(self, client, state: StateManager) -> bool:
         """Exit through the checkpointed door without allowing wall damage."""
@@ -919,6 +1062,7 @@ class EnchantingPipelineHandler(PhaseHandler):
         log_equivalent_target = (target + 3) // 4
         if not self._wait_for_daylight(client, state):
             return False
+        self._bank_diamonds_before_expedition(client, state)
         if not self._leave_starter_house(client, state):
             return False
         gathered = False

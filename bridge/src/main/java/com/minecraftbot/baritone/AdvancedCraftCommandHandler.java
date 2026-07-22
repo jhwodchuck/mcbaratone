@@ -5,15 +5,22 @@ import com.google.gson.JsonObject;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
+import net.minecraft.block.Blocks;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.SlotActionType;
+import net.minecraft.util.Hand;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.Vec3d;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.Socket;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Advanced crafting command handler with recipe validation and multi-step crafting support.
@@ -22,6 +29,9 @@ import java.util.concurrent.CompletableFuture;
 public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(AdvancedCraftCommandHandler.class);
+    private static final int WORKBENCH_SEARCH_RADIUS = 5;
+    private static final int WORKBENCH_OPEN_POLLS = 30;
+    private static final long WORKBENCH_OPEN_POLL_MS = 50L;
 
     // Recipe definition class
     private static class CraftRecipe {
@@ -247,9 +257,82 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
             return false; // Don't try to open workbench if not requested
         }
 
-        // TODO: Implement workbench opening logic if needed
-        // For now, just check if already open
-        return false;
+        if (client.player == null || client.world == null || client.interactionManager == null) {
+            return false;
+        }
+
+        BlockPos workbench = findReachableWorkbench(client);
+        if (workbench == null) {
+            logger.debug("No crafting table found within interaction range");
+            return false;
+        }
+
+        // Server screen-open packets are applied on the Minecraft thread. This
+        // synchronous legacy handler normally runs on the bridge worker thread,
+        // so submit the click and wait here without blocking packet processing.
+        // If invoked from the Minecraft thread, only accept an immediately-open
+        // screen; waiting there would deadlock the client.
+        try {
+            if (client.isOnThread()) {
+                interactWithWorkbench(client, workbench);
+                return isWorkbenchOpen(client);
+            }
+
+            boolean accepted = client.submit(
+                () -> interactWithWorkbench(client, workbench)
+            ).get(2, TimeUnit.SECONDS);
+            if (!accepted) {
+                return false;
+            }
+
+            for (int poll = 0; poll < WORKBENCH_OPEN_POLLS; poll++) {
+                if (isWorkbenchOpen(client)) {
+                    return true;
+                }
+                Thread.sleep(WORKBENCH_OPEN_POLL_MS);
+            }
+            logger.warn("Crafting table interaction was accepted but its screen did not open");
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        } catch (Exception e) {
+            logger.warn("Failed to open crafting table at {}", workbench, e);
+            return false;
+        }
+    }
+
+    private BlockPos findReachableWorkbench(MinecraftClient client) {
+        BlockPos origin = client.player.getBlockPos();
+        Vec3d eyePosition = client.player.getEyePos();
+        BlockPos nearest = null;
+        double nearestDistance = Double.MAX_VALUE;
+
+        for (BlockPos candidate : BlockPos.iterateOutwards(
+                origin, WORKBENCH_SEARCH_RADIUS, WORKBENCH_SEARCH_RADIUS,
+                WORKBENCH_SEARCH_RADIUS)) {
+            if (!client.world.getBlockState(candidate).isOf(Blocks.CRAFTING_TABLE)) {
+                continue;
+            }
+            double distance = eyePosition.squaredDistanceTo(Vec3d.ofCenter(candidate));
+            if (distance <= WORKBENCH_SEARCH_RADIUS * WORKBENCH_SEARCH_RADIUS
+                    && distance < nearestDistance) {
+                nearest = candidate.toImmutable();
+                nearestDistance = distance;
+            }
+        }
+        return nearest;
+    }
+
+    private boolean interactWithWorkbench(MinecraftClient client, BlockPos workbench) {
+        BlockHitResult hitResult = new BlockHitResult(
+            Vec3d.ofCenter(workbench), Direction.UP, workbench, false);
+        boolean accepted = client.interactionManager.interactBlock(
+            client.player, Hand.MAIN_HAND, hitResult).isAccepted();
+        if (accepted) {
+            client.player.swingHand(Hand.MAIN_HAND);
+        }
+        return accepted;
     }
 
     /**

@@ -186,6 +186,9 @@ public class CommandDispatcher {
 
             String command = request.get("command").getAsString();
             JsonObject params = request.has("params") ? request.getAsJsonObject("params") : new JsonObject();
+            if ("get_entities".equals(command) && !params.has("action")) {
+                params.addProperty("action", "entities");
+            }
 
             logger.debug("Dispatching command: {}", command);
 
@@ -544,8 +547,7 @@ public class CommandDispatcher {
                 break;
 
             case "farm":
-                validations.put("crop", ParameterValidator.itemName());
-                validations.put("area", ParameterValidator.integer(1, 1000));
+                validations.put("range", ParameterValidator.integer(0, 512));
                 break;
 
             case "select_slot":

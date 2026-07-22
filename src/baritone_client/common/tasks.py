@@ -8,6 +8,10 @@ from typing import Any, Dict, List, Optional, Callable
 import time
 
 
+class PlayerDeathDetected(RuntimeError):
+    """Signal that phase execution must yield to top-level death recovery."""
+
+
 @dataclass
 class TaskResult:
     """Result of task execution."""
@@ -96,10 +100,17 @@ class SequentialTask(Task):
 
     def run(self, client) -> TaskResult:
         for task in self.tasks:
-            # The death screen blocks every command; recover before each step
-            # so one death doesn't cascade into a chain of task failures.
-            from .combat import ensure_alive
-            ensure_alive(client)
+            # Only the top-level DeathRecoveryAction may respawn. Respawning
+            # here discards the pre-respawn death location and inventory
+            # snapshot, then lets the phase continue with missing resources.
+            state = client.transport.dispatch("get_state", {})
+            health = state.get("health", 20)
+            if state.get("is_dead", False) or (
+                health is not None and float(health) <= 0
+            ):
+                raise PlayerDeathDetected(
+                    f"Player died before sequential task: {task.name}"
+                )
 
             result = task.run(client)
             if not result.success:

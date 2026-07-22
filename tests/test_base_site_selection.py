@@ -127,22 +127,25 @@ def test_base_phase_reuses_saved_in_progress_house_origin(monkeypatch):
             self.saved += 1
 
     built = []
+
+    def find_flat_ground_stub(*_args, **kwargs):
+        # A saved in-progress house origin must be reused, not researched --
+        # only the unrelated farm-placement search (footprint=5) may call
+        # find_flat_ground here.
+        if kwargs.get("footprint") != 5:
+            raise AssertionError("a saved in-progress origin must be reused")
+        return (100, 64, 100)
+
     monkeypatch.setattr(base_construction, "recover_health", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(base_construction, "wait_for_safe_daylight", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
-        base_construction,
-        "find_flat_ground",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("a saved in-progress origin must be reused")
-        ),
-    )
+    monkeypatch.setattr(base_construction, "find_flat_ground", find_flat_ground_stub)
     monkeypatch.setattr(
         base_construction,
         "build_good_house",
         lambda _client, x, y, z: built.append((x, y, z)) or True,
     )
     monkeypatch.setattr(base_construction, "setup_base", lambda *_args: (True, None))
-    monkeypatch.setattr(base_construction, "plant_wheat_farm", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(base_construction, "establish_wheat_farm", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(base_construction, "get_player_pos", lambda *_args: (0, 64, 0))
 
     state = State()
@@ -152,6 +155,47 @@ def test_base_phase_reuses_saved_in_progress_house_origin(monkeypatch):
     assert built == [(-9, 78, -122)]
     assert "base_build_origin" not in state.custom_data
     assert state.custom_data["base_location"] == (-9, 78, -122)
+
+
+def test_base_phase_persists_established_wheat_farm_location(monkeypatch):
+    """A successfully established farm must be recorded on custom_data so
+    later phases (food/leather fallbacks) can find it without re-searching."""
+    class Resources:
+        def phase_ready_result(self, *_args, **_kwargs):
+            return None
+
+        def check_phase_requirements(self, *_args, **_kwargs):
+            return {}
+
+        def get_summary(self):
+            return {"inventory": {}}
+
+        def refresh_inventory(self):
+            return None
+
+    class State:
+        def __init__(self):
+            self.custom_data = {"base_build_origin": [-9, 78, -122]}
+
+        def update_position(self, *_args):
+            return None
+
+        def save_checkpoint(self, *_args):
+            return None
+
+    monkeypatch.setattr(base_construction, "recover_health", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(base_construction, "wait_for_safe_daylight", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(base_construction, "find_flat_ground", lambda *_args, **_kwargs: (12, 70, 34))
+    monkeypatch.setattr(base_construction, "build_good_house", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(base_construction, "setup_base", lambda *_args, **_kwargs: (True, None))
+    monkeypatch.setattr(base_construction, "establish_wheat_farm", lambda *_args, **_kwargs: (12, 70, 34))
+    monkeypatch.setattr(base_construction, "get_player_pos", lambda *_args: (0, 64, 0))
+
+    state = State()
+    result = BaseConstructionHandler().execute(SimpleNamespace(), Resources(), state)
+
+    assert result.success
+    assert state.custom_data["wheat_farm"] == {"origin": [12, 70, 34]}
 
 
 def test_failed_house_is_preserved_without_overlaying_dirt_fallback(monkeypatch):
@@ -236,7 +280,6 @@ def test_recovered_house_progress_can_complete_base_without_rebuild(monkeypatch)
         lambda *_args, **_kwargs: calls.append("entryway") or True,
     )
     monkeypatch.setattr(base_construction, "setup_base", lambda *_args, **_kwargs: (True, None))
-    monkeypatch.setattr(base_construction, "plant_wheat_farm", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(base_construction, "get_player_pos", lambda *_args: (0, 64, 0))
 
     state = State()

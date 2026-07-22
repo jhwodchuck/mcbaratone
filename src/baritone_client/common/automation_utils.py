@@ -83,7 +83,7 @@ def safe_goto(client, x: int, y: int, z: int, timeout: float = 120.0):
 def get_player_pos(client) -> tuple[float, float, float]:
     """Get the current player position as (x, y, z)."""
     state = client.transport.dispatch("get_state", {})
-    pos = state.get("position", {"x": 0, "y": 0, "z": 0})
+    pos = state.get("block_position", state.get("position", {"x": 0, "y": 0, "z": 0}))
     return (pos.get("x", 0), pos.get("y", 0), pos.get("z", 0))
 
 

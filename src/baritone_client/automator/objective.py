@@ -72,9 +72,12 @@ def default_objectives() -> List[Objective]:
         Objective(Phase.BASE_CONSTRUCTION, requires=[Phase.INITIAL_GATHERING]),
         Objective(Phase.BOOT_SEQUENCE, requires=[Phase.BASE_CONSTRUCTION]),
         Objective(Phase.FOOD_AND_IRON, requires=[Phase.BOOT_SEQUENCE]),
-        Objective(Phase.ENCHANTING_PIPELINE, requires=[Phase.FOOD_AND_IRON]),
-        Objective(Phase.NETHER_AND_BLAZE, requires=[Phase.FOOD_AND_IRON]),
-        Objective(Phase.VILLAGER_INFRA, requires=[Phase.FOOD_AND_IRON], priority=1),
+        # Nether progression is the shortest critical path to end-game.
+        # Keep it ahead of enchanting so stalled bots don't re-enter the
+        # enchanting branch before building and traversing a nether portal.
+        Objective(Phase.NETHER_AND_BLAZE, requires=[Phase.FOOD_AND_IRON], priority=2),
+        Objective(Phase.ENCHANTING_PIPELINE, requires=[Phase.FOOD_AND_IRON], priority=1),
+        Objective(Phase.VILLAGER_INFRA, requires=[Phase.FOOD_AND_IRON], priority=0),
         Objective(Phase.XP_ENGINE, requires=[Phase.VILLAGER_INFRA]),
         Objective(Phase.IRON_FARM, requires=[Phase.VILLAGER_INFRA]),
         Objective(Phase.TOOL_PERFECTION,

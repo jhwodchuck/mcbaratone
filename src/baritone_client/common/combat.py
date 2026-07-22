@@ -2,8 +2,10 @@
 Combat utilities - Mob engagement, retreat logic, and healing.
 """
 
+import logging
 import time
 from typing import Dict, List, Optional
+from ..core.exceptions import TransportError
 
 from .inventory import (
     count_item,
@@ -14,19 +16,51 @@ from .inventory import (
 from .tasks import TaskResult
 from .navigation import goto
 
+logger = logging.getLogger(__name__)
 
-def get_nearby_entities(client, radius: int = 30) -> List[Dict]:
+
+class EntityQueryError(RuntimeError):
+    """The bridge entity query failed (timeout/transport/error response).
+
+    Distinct from a successful query that returns zero entities. Silently
+    collapsing the two hid a route-timeout flood as "no animals nearby":
+    Bot07 spent an entire hunt reporting "No targets found" and exploring
+    for leather while a cow stood three blocks away, because every
+    get_entities call was timing out and being swallowed into an empty list.
+    """
+
+
+def get_nearby_entities(
+    client, radius: int = 30, *, raise_on_error: bool = False
+) -> List[Dict]:
     """
     Get list of nearby entities.
-    
+
+    Args:
+        raise_on_error: when True, a failed bridge query raises
+            EntityQueryError instead of returning ``[]``. Callers that must
+            not confuse "the bridge is unreachable" with "no entities here"
+            (e.g. hunt_mobs deciding whether to wander off exploring) should
+            set this. Default stays False so existing best-effort callers are
+            unchanged.
+
     Returns:
-        List of entity dictionaries
+        List of entity dictionaries (empty if the area is genuinely empty, or
+        on error when raise_on_error is False).
     """
     try:
         data = client.transport.dispatch("get_entities", {"radius": radius})
-        return data.get("entities", [])
-    except Exception:
+    except Exception as exc:
+        logger.warning("get_entities bridge query failed: %s", exc)
+        if raise_on_error:
+            raise EntityQueryError(str(exc)) from exc
         return []
+    if isinstance(data, dict) and data.get("error"):
+        logger.warning("get_entities returned error: %s", data.get("error"))
+        if raise_on_error:
+            raise EntityQueryError(str(data.get("error")))
+        return []
+    return data.get("entities", [])
 
 
 def entity_position(entity: Dict) -> Optional[tuple]:
@@ -65,24 +99,33 @@ def look_at_entity(client, entity: Dict) -> bool:
         return False
 
 
-def find_entity_by_type(client, entity_types: List[str], radius: int = 30) -> Optional[Dict]:
+def find_entity_by_type(
+    client,
+    entity_types: List[str],
+    radius: int = 30,
+    *,
+    raise_on_error: bool = False,
+) -> Optional[Dict]:
     """
     Find nearest entity of specified types.
-    
+
     Args:
         entity_types: List of entity type substrings (e.g., ["zombie", "skeleton"])
         radius: Search radius
-        
+        raise_on_error: propagate a bridge-query failure as EntityQueryError
+            instead of returning None (which is otherwise indistinguishable
+            from "no matching entity in range").
+
     Returns:
         Entity dict or None
     """
-    entities = get_nearby_entities(client, radius)
-    
+    entities = get_nearby_entities(client, radius, raise_on_error=raise_on_error)
+
     for entity in sorted(entities, key=lambda e: e.get("distance", 999)):
         entity_type = entity.get("type", "").lower()
         if any(t.lower() in entity_type for t in entity_types):
             return entity
-    
+
     return None
 
 
@@ -262,6 +305,10 @@ EMERGENCY_FOOD_ITEMS = [
     "minecraft:rotten_flesh",
 ]
 
+# Mob-type substrings whose kill drops raw food, i.e. hunting them is itself
+# a way back to a stable hunger level.
+_FOOD_YIELDING_MOBS = ("cow", "mooshroom", "sheep", "pig", "chicken", "rabbit")
+
 
 def _emergency_food_count(client) -> int:
     return sum(count_item(client, item_id) for item_id in EMERGENCY_FOOD_ITEMS)
@@ -409,17 +456,37 @@ def recover_health(
 def acquire_emergency_food(
     client,
     minimum_health: float = 12.0,
+    minimum_food: int = 14,
     timeout: float = 240.0,
+    max_exploration_distance: float = 96.0,
 ) -> bool:
     """Recover an early-game player by hunting only passive food sources.
 
     This is intentionally conservative: it waits for daylight, never explores
     blind while critically wounded, and aborts when a hostile approaches.
     """
-    if recover_health(client, minimum_health=minimum_health, timeout=10.0):
+    minimum_food = max(1, min(int(minimum_food), 20))
+
+    def recovery_complete(state: Optional[Dict] = None) -> bool:
+        state = state or client.transport.dispatch("get_state", {})
+        health = float(state.get("health", 20) or 0)
+        food = int(state.get("food_level", state.get("food", 20)))
+        return health >= minimum_health and food >= minimum_food
+
+    recover_health(client, minimum_health=minimum_health, timeout=10.0)
+    if recovery_complete():
         return True
 
-    state = client.transport.dispatch("get_state", {})
+    try:
+        state = client.transport.dispatch("get_state", {})
+    except Exception:
+        print("RECOVERY: could not read initial state for emergency food; retrying briefly.")
+        time.sleep(1.0)
+        try:
+            state = client.transport.dispatch("get_state", {})
+        except Exception:
+            state = {}
+    cached_state = state if isinstance(state, dict) else {}
     if int(state.get("world_time", 0)) % 24000 >= 12000:
         print("RECOVERY: night detected; waiting in shelter before seeking food")
         from .base import wait_for_safe_daylight
@@ -427,19 +494,63 @@ def acquire_emergency_food(
             return False
 
     start = time.time()
+    state = client.transport.dispatch("get_state", {})
+    position = state.get("block_position", state.get("position", {}))
+    origin_x = float(position.get("x", state.get("x", 0)) or 0)
+    origin_z = float(position.get("z", state.get("z", 0)) or 0)
+    exploring = False
+
+    def stop_exploring() -> None:
+        nonlocal exploring
+        if not exploring:
+            return
+        client.transport.dispatch("cancel", {})
+        client.transport.dispatch("chat", {"message": "#stop"})
+        exploring = False
+
     # Prefer the more nourishing land animals during emergency recovery, and
     # search the full set of loaded chunks after waiting safely for dawn.
     primary_land_food = ["cow", "pig"]
     secondary_land_food = ["sheep", "chicken", "rabbit"]
     water_food = ["salmon", "cod"]
     while time.time() - start < timeout:
-        state = client.transport.dispatch("get_state", {})
-        if float(state.get("health", 20) or 0) >= minimum_health:
+        try:
+            state = client.transport.dispatch("get_state", {})
+            if isinstance(state, dict) and state:
+                cached_state = state
+        except Exception:
+            if cached_state:
+                print("RECOVERY: state read failed; using cached state this cycle.")
+                state = cached_state
+            else:
+                print("RECOVERY: state unavailable and no cache; waiting before retry.")
+                time.sleep(1.0)
+                continue
+        if recovery_complete(state):
+            stop_exploring()
             return True
+
+        day_time = int(state.get("world_time", 0)) % 24000
+        if day_time >= 12000:
+            stop_exploring()
+            print("RECOVERY: daylight ended before emergency food was secured")
+            return False
+
+        position = state.get("block_position", state.get("position", {}))
+        current_x = float(position.get("x", state.get("x", origin_x)) or origin_x)
+        current_z = float(position.get("z", state.get("z", origin_z)) or origin_z)
+        distance = ((current_x - origin_x) ** 2 + (current_z - origin_z) ** 2) ** 0.5
+        if distance > max_exploration_distance:
+            stop_exploring()
+            print(
+                "RECOVERY: emergency food search reached its "
+                f"{max_exploration_distance:.0f}-block safety radius"
+            )
+            return False
 
         threats = scan_for_threats(client, radius=16)
         if threats and threats[0].get("distance", 999) <= 12:
-            client.transport.dispatch("chat", {"message": "#stop"})
+            stop_exploring()
             client.transport.dispatch("cancel", {})
             from .base import _has_existing_enclosure
             if _has_existing_enclosure(client, state):
@@ -456,16 +567,40 @@ def acquire_emergency_food(
         target = find_entity_by_type(client, primary_land_food, radius=64)
         if target is None:
             target = find_entity_by_type(client, secondary_land_food, radius=64)
-        if target is None:
+        # Water-mob drops are substantially harder to collect reliably: the
+        # target can vanish below the player while its item floats elsewhere.
+        # When hunger is still stable, spend the first part of the bounded
+        # search loading land animals instead. Keep fish as a last-resort path
+        # for genuinely critical hunger or after land exploration had time to
+        # work.
+        land_search_elapsed = time.time() - start
+        water_fallback_after = min(90.0, max(15.0, timeout / 2.0))
+        if target is None and (
+            int(state.get("food_level", state.get("food", 20))) <= 6
+            or land_search_elapsed >= water_fallback_after
+        ):
             target = find_entity_by_type(client, water_food, radius=64)
         if target is None:
-            print("RECOVERY: no passive food source loaded; holding position")
-            return False
+            if not exploring:
+                print(
+                    "RECOVERY: no passive food source loaded; starting bounded "
+                    "daylight exploration"
+                )
+                client.transport.dispatch(
+                    "explore",
+                    {"x": int(origin_x), "z": int(origin_z)},
+                )
+                exploring = True
+            time.sleep(3)
+            continue
+
+        stop_exploring()
 
         target_id = target.get("id")
         target_pos = entity_position(target)
         if target_id is None or target_pos is None:
-            return False
+            time.sleep(1)
+            continue
 
         print(
             f"RECOVERY: safely hunting {target.get('type')} at "
@@ -491,9 +626,11 @@ def acquire_emergency_food(
         )
         time.sleep(2)
         heal_if_needed(client, threshold=minimum_health)
-        if recover_health(client, minimum_health=minimum_health, timeout=25.0):
+        recover_health(client, minimum_health=minimum_health, timeout=25.0)
+        if recovery_complete():
             return True
 
+    stop_exploring()
     return False
 
 
@@ -614,14 +751,32 @@ def hunt_mobs(
             client.transport.dispatch("cancel", {})
             if exploring:
                 exploring = False
-            if not eat_until_hunger(client, minimum_food=14):
+            if eat_until_hunger(client, minimum_food=14):
+                continue
+            # No carried food and none of the hunted mobs can supply it
+            # (e.g. blaze/enderman/spider hunts): keep the original safety
+            # net and stop rather than risk continued combat while hungry.
+            hunting_food_animal = any(
+                food_mob in mob_type.lower()
+                for mob_type in mob_types
+                for food_mob in _FOOD_YIELDING_MOBS
+            )
+            if not hunting_food_animal or food_level <= 3:
                 return TaskResult.fail(
                     "Hunt stopped because hunger could not be stabilized",
                     missing=missing,
                     kills=kills,
                     food_level=food_level,
                 )
-            continue
+            # These mob types (cow/mooshroom/sheep/pig/chicken/rabbit) drop
+            # raw meat on death, so hunting them is itself the path back to
+            # food. Aborting here deadlocked forever -- confirmed live on
+            # Bot07, stuck retrying "Gather 46 leather" with an empty food
+            # supply chest and nothing to eat.
+            print(
+                f"  HUNGER: no carried food at {food_level}; continuing hunt "
+                "to find some"
+            )
         # Check for night every 10 seconds
         if time.time() - last_time_check > 10:
             last_time_check = time.time()
@@ -658,8 +813,24 @@ def hunt_mobs(
                     kills=kills,
                     missing=missing,
                 )
-        entity = find_entity_by_type(client, mob_types, radius=search_radius)
-        
+        try:
+            entity = find_entity_by_type(
+                client, mob_types, radius=search_radius, raise_on_error=True
+            )
+        except EntityQueryError as exc:
+            # The bridge could not answer the entity query (route timeout /
+            # transport error). This is NOT an empty area -- do not "explore"
+            # away from mobs that may be right here. Back off and let the
+            # controller's route-timeout-flood detector recover the bridge.
+            # Swallowing this into "no targets found" is what made Bot07 hunt
+            # leather for many minutes with a cow three blocks away.
+            print(f"  Entity query failed (bridge issue: {exc}); pausing hunt scan.")
+            if exploring:
+                client.transport.dispatch("chat", {"message": "#stop"})
+                exploring = False
+            time.sleep(3)
+            continue
+
         if entity is None:
             if not exploring:
                 print("  No targets found, starting exploration...")
@@ -775,7 +946,14 @@ def secure_recovery_area(
     clear_since: Optional[float] = None
 
     while time.time() < deadline:
-        state = client.transport.dispatch("get_state", {})
+        try:
+            state = client.transport.dispatch("get_state", {})
+        except TransportError:
+            # If the bridge times out while securing, keep the area safe and
+            # continue polling rather than immediately failing recovery.
+            clear_since = None
+            time.sleep(0.5)
+            continue
         if float(state.get("health", 20) or 0) <= 0:
             print("RECOVERY: player died while securing the pickup area")
             return False

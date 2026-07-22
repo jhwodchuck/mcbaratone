@@ -23,7 +23,8 @@ def do_goto(
     arrival_radius: float = 1.5,
     start_move_timeout: float = 2.0,
     start_move_min_dist: float = 0.5,
-    require_arrival: bool = True
+    require_arrival: bool = True,
+    allow_incomplete: bool = False,
 ) -> bool:
     """
     Reliable movement to target with arrival verification.
@@ -73,6 +74,20 @@ def do_goto(
     # Wait for pathing to complete (now implies stability too)
     stopped = wait_for_pathing_stop(ctx, timeout=timeout)
     if not stopped:
+        # Live clients sometimes report a pathing state that never fully
+        # transitions while the player has already reached a usable range.
+        # Treat this as a soft success when we are sufficiently close.
+        near_target = wait_for_arrival(
+            ctx,
+            target_tuple,
+            radius=arrival_radius + 0.5,
+            timeout=2.0,
+        )
+        if near_target and (allow_incomplete or not require_arrival):
+            if hasattr(ctx, "log_event"):
+                ctx.log_event("Movement incomplete but near destination")
+            cancel_pathing(ctx)
+            return True
         if hasattr(ctx, "log_event"):
             ctx.log_event("Movement fail: pathing did not stop")
         return False
