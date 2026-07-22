@@ -15,6 +15,14 @@ public class GetEventsCommandHandler extends AbstractCommandHandler {
 
     private EventManager eventManager;
 
+    public GetEventsCommandHandler() {
+        // Retained for reflective factory construction and compatibility.
+    }
+
+    public GetEventsCommandHandler(EventManager eventManager) {
+        this.eventManager = eventManager;
+    }
+
     @Override
     public String getCommandName() {
         return "get_events";

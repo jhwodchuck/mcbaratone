@@ -37,6 +37,7 @@ public class CommandHandlerFactory {
         // State commands
         registerHandler("get_state", StateCommandHandler.class);
         registerHandler("get_entities", StateCommandHandler.class);
+        registerHandler("get_combat_snapshot", StateCommandHandler.class);
         registerHandler("get_player_pos", PlayerPositionCommandHandler.class);
         registerHandler("scan_biomes", BiomeScanCommandHandler.class);
 

@@ -973,3 +973,39 @@ def test_satisfied_stone_target_does_not_discard_inventory(monkeypatch):
     )
 
     assert resources.gather_stone(client, count=32)
+
+
+def test_high_altitude_stone_fallback_returns_to_checkpointed_storage(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {"block_position": {"x": -16, "y": 113, "z": -19}}
+            return {}
+
+    transport = Transport()
+    automation_state = SimpleNamespace(custom_data={})
+    client = SimpleNamespace(
+        transport=transport,
+        _automation_state=automation_state,
+    )
+    destinations = []
+    monkeypatch.setattr(
+        inventory,
+        "resolve_storage_location",
+        lambda *_args, **_kwargs: (-78, 64, 35),
+    )
+    monkeypatch.setattr(
+        resources,
+        "goto",
+        lambda _client, x, y, z, **kwargs: destinations.append((x, y, z, kwargs))
+        or True,
+    )
+
+    assert resources._relocate_to_checkpointed_stone_source(client)
+    assert destinations == [
+        (-78, 64, 35, {"timeout": 240, "tolerance": 3.0})
+    ]

@@ -169,7 +169,7 @@ class CommandDispatcher:
 
     _OBSERVATION_COMMANDS = frozenset({
         "get_state", "state", "get_inventory", "get_view", "get_block",
-        "get_entities", "get_dimension", "get_version", "get_events",
+        "get_entities", "get_combat_snapshot", "get_dimension", "get_version", "get_events",
         "get_recipes", "get_screen", "get_death_location", "status",
         "mission/status", "process/status", "goal/status",
     })

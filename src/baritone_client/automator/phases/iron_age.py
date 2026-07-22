@@ -27,6 +27,7 @@ from ...common.inventory import (
     count_item,
     craft,
     deposit_excess_to_chest,
+    deposit_progression_to_chest,
     equip_best_armor,
     free_inventory_slots,
     has_full_armor,
@@ -43,6 +44,8 @@ from ...common.husbandry import visit_known_herd_for_loot
 class FoodAndIronHandler(PhaseHandler):
     """Phase 2: Iron & Diamond mining - Hour 1-2."""
     _INITIAL_IRON_TARGET = 15
+    _IRON_BANK_TARGET = 64
+    _IRON_BANK_BATCH = 8
     _INITIAL_IRON_TRANSITION_Y = -58
 
     def __init__(self) -> None:
@@ -109,6 +112,10 @@ class FoodAndIronHandler(PhaseHandler):
             ),
             ActionTask("Smelt iron ingots", self._smelt_iron),
             ActionTask("Prepare deep-mining tools + bucket", self._craft_essential_iron),
+            ActionTask(
+                "Bank starter iron before deep expedition",
+                lambda c: self._bank_progression_at_home(c, state),
+            ),
             
             # Phase 2b: Now mine deep diamonds with iron tools
             ActionTask("Dig to diamond level Y-58", self._dig_staircase),
@@ -117,13 +124,17 @@ class FoodAndIronHandler(PhaseHandler):
                 "Return to base with mined valuables",
                 lambda c: self._return_to_base(c, state),
             ),
+            ActionTask(
+                "Withdraw banked iron for equipment crafting",
+                lambda c: self._withdraw_banked_iron(c, state),
+            ),
             ActionTask("Smelt mined iron", lambda c: self._smelt_iron(c, force=True)),
             ActionTask("Craft full iron armor", self._craft_iron_armor),
             ActionTask("Equip and verify iron armor", self._equip_iron_armor),
             ActionTask("Craft iron tools", self._craft_iron_tools),
             ActionTask(
-                "Deposit excess loot at home",
-                lambda c: self._deposit_excess_at_home(c, state),
+                "Bank progression loot at home",
+                lambda c: self._bank_progression_at_home(c, state),
             ),
         ]
         
@@ -135,18 +146,22 @@ class FoodAndIronHandler(PhaseHandler):
         health = float(state.get("health", 20) or 0)
         if health < 12.0:
             print(f"  Health critical ({health:.1f}/20) - recovering before mining...")
-            recover_health(client, minimum_health=12.0, timeout=10.0)
-            if not acquire_emergency_food(
-                client,
-                minimum_health=12.0,
-                minimum_food=14,
-                timeout=300.0,
-            ):
-                recovery_state = self._read_state(client, "Stabilize hunger recovery") or {}
-                if float(recovery_state.get("health", 20) or 0) < 6.0:
-                    print("  Emergency recovery restored insufficient health; holding before mining.")
-                    return False
-                health = float(recovery_state.get("health", 20) or 0)
+            recovered = recover_health(client, minimum_health=12.0, timeout=10.0)
+            if not recovered:
+                acquire_emergency_food(
+                    client,
+                    minimum_health=12.0,
+                    minimum_food=14,
+                    timeout=300.0,
+                )
+            recovery_state = self._read_state(client, "Stabilize hunger recovery") or {}
+            health = float(recovery_state.get("health", 20) or 0)
+            if health < 12.0:
+                print(
+                    "  Emergency recovery did not restore safe health; "
+                    "holding before mining."
+                )
+                return False
             state = self._read_state(client, "Stabilize hunger post-feed") or {}
 
         food_level = int(state.get("food_level", state.get("food", 20)))
@@ -295,12 +310,12 @@ class FoodAndIronHandler(PhaseHandler):
         second staircase through the starter-house floor even though every
         progression output was already present.
         """
-        if count_item(client, "minecraft:diamond") < 5:
+        if self._total_owned(client, "minecraft:diamond") < 5:
             return False
 
         unspent_iron = (
-            count_item(client, "minecraft:raw_iron")
-            + count_item(client, "minecraft:iron_ingot")
+            self._total_owned(client, "minecraft:raw_iron")
+            + self._total_owned(client, "minecraft:iron_ingot")
         )
         if unspent_iron >= 30:
             return True
@@ -335,7 +350,7 @@ class FoodAndIronHandler(PhaseHandler):
         # phase retry that must not make the controller replay the *initial*
         # smelting return forever.  Diamonds are durable evidence that the
         # starter kit existed and the deep-mining leg already ran.
-        deep_haul_reached = count_item(client, "minecraft:diamond") >= 5
+        deep_haul_reached = self._total_owned(client, "minecraft:diamond") >= 5
         if essentials_ready or deep_haul_reached:
             print(
                 "  Deep-mining kit/haul already reached; skipping the "
@@ -488,6 +503,174 @@ class FoodAndIronHandler(PhaseHandler):
             "  Could not deposit excess (chest unrecoverable); carrying it and "
             "continuing to the descent instead of failing the phase."
         )
+        return True
+
+    def _banked_count(self, client, item_id: str) -> int:
+        if self.state is None:
+            return 0
+        try:
+            from ...common.storage_catalog import catalog_for
+
+            return catalog_for(client, self.state).item_count(item_id)
+        except Exception as exc:
+            print(f"  Storage count unavailable for {item_id}: {exc}")
+            return 0
+
+    def _total_owned(self, client, item_id: str) -> int:
+        return count_item(client, item_id) + self._banked_count(client, item_id)
+
+    def _bank_progression_at_home(
+        self,
+        client,
+        state: StateManager,
+        *,
+        deposit_items=None,
+        retain_counts=None,
+    ) -> bool:
+        """Require a verified deposit before another risky expedition."""
+        if not self._return_to_base(client, state):
+            return False
+        house = state.custom_data.get("structures", {}).get("starter_house", {})
+        chest = house.get("supply_chest")
+        if not isinstance(chest, (list, tuple)) or len(chest) != 3:
+            print("  Cannot bank progression: no checkpointed supply chest.")
+            return False
+        chest_pos = tuple(int(value) for value in chest)
+        deposited = deposit_progression_to_chest(
+            client,
+            chest_pos,
+            state=state,
+            retain_counts=retain_counts,
+            deposit_items=deposit_items,
+        )
+        if deposited >= 0:
+            return True
+        if not self._reestablish_supply_chest(client, chest_pos):
+            print("  Progression banking blocked: supply chest could not be restored.")
+            return False
+        return deposit_progression_to_chest(
+            client,
+            chest_pos,
+            state=state,
+            retain_counts=retain_counts,
+            deposit_items=deposit_items,
+        ) >= 0
+
+    def _withdraw_banked_iron(self, client, state: StateManager) -> bool:
+        chest_pos = self._resolve_initial_iron_supply_chest(client, state)
+        if chest_pos is None:
+            return False
+        result = withdraw_required_from_chest(
+            client,
+            chest_pos,
+            {
+                "minecraft:iron_ingot": self._IRON_BANK_TARGET,
+                "minecraft:raw_iron": self._IRON_BANK_TARGET,
+            },
+            state=state,
+        )
+        return result >= 0
+
+    def _bank_mining_progression(
+        self,
+        client,
+        state: StateManager,
+        *,
+        deposit_items,
+        retain_counts,
+    ) -> bool:
+        """Bank a mining haul nearby when the home commute is excessive."""
+        home = self._resolve_initial_iron_supply_chest(client, state)
+        snapshot = client.transport.dispatch("get_state", {})
+        position = snapshot.get("block_position", {})
+        current = (
+            int(position.get("x", 0)),
+            int(position.get("y", 0)),
+            int(position.get("z", 0)),
+        )
+
+        if home is not None:
+            horizontal_distance_sq = (
+                (current[0] - home[0]) ** 2 + (current[2] - home[2]) ** 2
+            )
+            vertical_distance = abs(current[1] - home[1])
+            if horizontal_distance_sq <= 48 ** 2 and vertical_distance <= 24:
+                return self._bank_progression_at_home(
+                    client,
+                    state,
+                    deposit_items=deposit_items,
+                    retain_counts=retain_counts,
+                )
+
+        saved = (
+            state.custom_data.get("storage", {}).get("mining_outpost_chest")
+        )
+        chest_pos = None
+        if isinstance(saved, (list, tuple)) and len(saved) == 3:
+            chest_pos = tuple(int(value) for value in saved)
+
+        if chest_pos is not None:
+            client.transport.dispatch(
+                "goto",
+                {"x": chest_pos[0], "y": chest_pos[1], "z": chest_pos[2]},
+            )
+            block = client.transport.dispatch(
+                "get_block",
+                {"x": chest_pos[0], "y": chest_pos[1], "z": chest_pos[2]},
+            )
+            if "chest" not in str(block.get("id", "")):
+                chest_pos = None
+
+        if chest_pos is None:
+            from ...common.base import place_chest
+
+            for dx, dz in (
+                (1, 0),
+                (-1, 0),
+                (0, 1),
+                (0, -1),
+                (2, 0),
+                (-2, 0),
+            ):
+                candidate = (current[0] + dx, current[1], current[2] + dz)
+                block = client.transport.dispatch(
+                    "get_block",
+                    {"x": candidate[0], "y": candidate[1], "z": candidate[2]},
+                )
+                if "air" not in str(block.get("id", "")):
+                    continue
+                if place_chest(
+                    client,
+                    candidate[0],
+                    candidate[1],
+                    candidate[2],
+                    purpose="mining_outpost",
+                ):
+                    chest_pos = candidate
+                    state.custom_data.setdefault("storage", {})[
+                        "mining_outpost_chest"
+                    ] = list(candidate)
+                    break
+
+        if chest_pos is None:
+            print("  Could not establish mining outpost storage; returning home.")
+            return self._bank_progression_at_home(
+                client,
+                state,
+                deposit_items=deposit_items,
+                retain_counts=retain_counts,
+            )
+
+        deposited = deposit_progression_to_chest(
+            client,
+            chest_pos,
+            state=state,
+            retain_counts=retain_counts,
+            deposit_items=deposit_items,
+        )
+        if deposited < 0:
+            print("  Mining outpost deposit failed; refusing to risk the haul.")
+            return False
         return True
 
     def _reestablish_supply_chest(self, client, chest_pos: Tuple[int, int, int]) -> bool:
@@ -875,21 +1058,63 @@ class FoodAndIronHandler(PhaseHandler):
             print("  Deep-mining objectives already complete; skipping ore search.")
             return True
 
-        finished_ingots = count_item(client, "minecraft:iron_ingot")
-        targets = [
-            ("diamond", 5),
-        ]
-        raw_iron_target = max(0, 30 - finished_ingots)
-        if raw_iron_target > 0:
-            targets.append(("iron", raw_iron_target))
-        for ore_type, count in targets:
-            print(f"  Mining {ore_type} (target: {count})...")
-            if not gather_ores(client, ore_type, count=count, timeout=600):
-                print(f"  {ore_type} mining failed; stopping phase before next task.")
-                try:
-                    client.transport.dispatch("cancel", {})
-                except Exception:
-                    pass
+        if self.state is None:
+            return False
+
+        while (
+            self._total_owned(client, "minecraft:raw_iron")
+            + self._total_owned(client, "minecraft:iron_ingot")
+            < self._IRON_BANK_TARGET
+        ):
+            owned = (
+                self._total_owned(client, "minecraft:raw_iron")
+                + self._total_owned(client, "minecraft:iron_ingot")
+            )
+            remaining = self._IRON_BANK_TARGET - owned
+            carried_raw = count_item(client, "minecraft:raw_iron")
+            batch_target = carried_raw + min(self._IRON_BANK_BATCH, remaining)
+            print(
+                f"  Mining iron bank batch: owned={owned}/"
+                f"{self._IRON_BANK_TARGET}, carried target={batch_target}"
+            )
+            if not gather_ores(client, "iron", count=batch_target, timeout=600):
+                return False
+            if not self._bank_mining_progression(
+                client,
+                self.state,
+                deposit_items={"minecraft:raw_iron", "minecraft:iron_ingot"},
+                retain_counts={
+                    "minecraft:raw_iron": 0,
+                    "minecraft:iron_ingot": 0,
+                },
+            ):
+                return False
+            if (
+                self._total_owned(client, "minecraft:raw_iron")
+                + self._total_owned(client, "minecraft:iron_ingot")
+                < self._IRON_BANK_TARGET
+                and not go_to_y_level(client, -58)
+            ):
+                return False
+
+        if self._total_owned(client, "minecraft:diamond") < 5:
+            if not go_to_y_level(client, -58):
+                return False
+            carried_diamonds = count_item(client, "minecraft:diamond")
+            needed = max(1, 5 - self._total_owned(client, "minecraft:diamond"))
+            if not gather_ores(
+                client,
+                "diamond",
+                count=carried_diamonds + needed,
+                timeout=600,
+            ):
+                return False
+            if not self._bank_mining_progression(
+                client,
+                self.state,
+                deposit_items={"minecraft:diamond"},
+                retain_counts={"minecraft:diamond": 0},
+            ):
                 return False
         return True
 

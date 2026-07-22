@@ -14,15 +14,23 @@ public class CancelCommandHandler implements CommandHandler {
 
     @Override
     public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
-        try {
-            baritone.getPathingBehavior().cancelEverything();
-            
-            JsonObject data = new JsonObject();
-            data.addProperty("cancelled", true);
-            return CompletableFuture.completedFuture(CommandResult.success(data));
-        } catch (Exception e) {
-            return CompletableFuture.completedFuture(CommandResult.error("Cancel failed: " + e.getMessage()));
+        CompletableFuture<CommandResult> result = new CompletableFuture<>();
+        Runnable cancel = () -> {
+            try {
+                baritone.getPathingBehavior().cancelEverything();
+                JsonObject data = new JsonObject();
+                data.addProperty("cancelled", true);
+                result.complete(CommandResult.success(data));
+            } catch (Exception e) {
+                result.complete(CommandResult.error("Cancel failed: " + e.getMessage()));
+            }
+        };
+        if (client != null) {
+            client.execute(cancel);
+        } else {
+            cancel.run();
         }
+        return result;
     }
 
     @Override

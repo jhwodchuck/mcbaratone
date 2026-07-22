@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Callable
 import time
 
+from ..observability import begin_operation, emit_event, end_operation
+
 
 class PlayerDeathDetected(RuntimeError):
     """Signal that phase execution must yield to top-level death recovery."""
@@ -68,6 +70,12 @@ class ActionTask(Task):
         return self._name
 
     def run(self, client) -> TaskResult:
+        operation = begin_operation(
+            "action",
+            self._name,
+            task=self._name,
+            callable=getattr(self.action, "__qualname__", repr(self.action)),
+        )
         try:
             # Record that the action was invoked if the client exposes a calls list
             try:
@@ -78,12 +86,31 @@ class ActionTask(Task):
 
             result = self.action(client, **self.kwargs)
             if isinstance(result, TaskResult):
-                return result
+                normalized = result
             elif isinstance(result, bool):
-                return TaskResult.ok() if result else TaskResult.fail("Action returned False")
+                normalized = (
+                    TaskResult.ok()
+                    if result
+                    else TaskResult.fail("Action returned False")
+                )
             else:
-                return TaskResult.ok(data={"result": result})
+                normalized = TaskResult.ok(data={"result": result})
+            end_operation(
+                operation,
+                "success" if normalized.success else "failure",
+                reason=normalized.reason,
+            )
+            return normalized
+        except PlayerDeathDetected:
+            end_operation(operation, "interrupted", reason="player_death")
+            raise
         except Exception as e:
+            end_operation(
+                operation,
+                "error",
+                reason=str(e),
+                error_type=type(e).__name__,
+            )
             return TaskResult.fail(str(e))
 
 
@@ -99,7 +126,7 @@ class SequentialTask(Task):
         return self._name
 
     def run(self, client) -> TaskResult:
-        for task in self.tasks:
+        for index, task in enumerate(self.tasks):
             # Only the top-level DeathRecoveryAction may respawn. Respawning
             # here discards the pre-respawn death location and inventory
             # snapshot, then lets the phase continue with missing resources.
@@ -112,8 +139,24 @@ class SequentialTask(Task):
                     f"Player died before sequential task: {task.name}"
                 )
 
+            emit_event(
+                "task_decision",
+                sequence=self._name,
+                selected_task=task.name,
+                task_index=index,
+                task_count=len(self.tasks),
+                health=health,
+                food=state.get("food"),
+                position=state.get("block_position"),
+            )
             result = task.run(client)
             if not result.success:
+                emit_event(
+                    "sequence_failure",
+                    sequence=self._name,
+                    failed_task=task.name,
+                    reason=result.reason,
+                )
                 return TaskResult.fail(f"Sequential task failed at {task.name}: {result.reason}")
         return TaskResult.ok(f"All {len(self.tasks)} tasks completed successfully")
 

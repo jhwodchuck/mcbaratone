@@ -188,6 +188,8 @@ public class CommandDispatcher {
             JsonObject params = request.has("params") ? request.getAsJsonObject("params") : new JsonObject();
             if ("get_entities".equals(command) && !params.has("action")) {
                 params.addProperty("action", "entities");
+            } else if ("get_combat_snapshot".equals(command) && !params.has("action")) {
+                params.addProperty("action", "combat_snapshot");
             }
 
             logger.debug("Dispatching command: {}", command);

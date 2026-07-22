@@ -1047,6 +1047,71 @@ EARLY_GAME_EXCESS_ITEMS = {
     "minecraft:redstone",
 }
 
+# Durable progression should leave the player's inventory after each risky
+# expedition. Whole stacks are deposited while ``retain_counts`` keeps one
+# working loadout and a bounded food/fuel reserve carried.
+PROGRESSION_BANK_ITEMS = EARLY_GAME_EXCESS_ITEMS | {
+    "minecraft:raw_iron",
+    "minecraft:iron_ingot",
+    "minecraft:raw_gold",
+    "minecraft:gold_ingot",
+    "minecraft:diamond",
+    "minecraft:emerald",
+    "minecraft:lapis_lazuli",
+    "minecraft:obsidian",
+    "minecraft:ender_pearl",
+    "minecraft:eye_of_ender",
+    "minecraft:blaze_rod",
+    "minecraft:blaze_powder",
+    "minecraft:coal",
+    "minecraft:charcoal",
+    "minecraft:cooked_beef",
+    "minecraft:cooked_porkchop",
+    "minecraft:cooked_chicken",
+    "minecraft:cooked_mutton",
+    "minecraft:cooked_rabbit",
+    "minecraft:baked_potato",
+    "minecraft:bread",
+    "minecraft:golden_apple",
+    "minecraft:iron_pickaxe",
+    "minecraft:iron_axe",
+    "minecraft:iron_sword",
+    "minecraft:iron_shovel",
+    "minecraft:stone_pickaxe",
+    "minecraft:stone_axe",
+    "minecraft:stone_sword",
+    "minecraft:stone_shovel",
+}
+
+PROGRESSION_RETAIN_COUNTS = {
+    "minecraft:chest": 1,
+    "minecraft:oak_planks": 8,
+    "minecraft:spruce_planks": 8,
+    "minecraft:birch_planks": 8,
+    "minecraft:jungle_planks": 8,
+    "minecraft:acacia_planks": 8,
+    "minecraft:dark_oak_planks": 8,
+    "minecraft:mangrove_planks": 8,
+    "minecraft:cherry_planks": 8,
+    "minecraft:coal": 16,
+    "minecraft:charcoal": 16,
+    "minecraft:cooked_beef": 16,
+    "minecraft:cooked_porkchop": 16,
+    "minecraft:cooked_chicken": 16,
+    "minecraft:cooked_mutton": 16,
+    "minecraft:cooked_rabbit": 16,
+    "minecraft:baked_potato": 16,
+    "minecraft:bread": 16,
+    "minecraft:iron_pickaxe": 1,
+    "minecraft:iron_axe": 1,
+    "minecraft:iron_sword": 1,
+    "minecraft:iron_shovel": 1,
+    "minecraft:stone_pickaxe": 1,
+    "minecraft:stone_axe": 1,
+    "minecraft:stone_sword": 1,
+    "minecraft:stone_shovel": 1,
+}
+
 
 def deposit_excess_to_chest(
     client,
@@ -1054,6 +1119,7 @@ def deposit_excess_to_chest(
     deposit_items=None,
     keep_items=None,
     state=None,
+    retain_counts=None,
 ) -> int:
     """Deposit selected player stacks into a verified base chest.
 
@@ -1066,6 +1132,10 @@ def deposit_excess_to_chest(
 
     deposit_items = set(deposit_items or EARLY_GAME_EXCESS_ITEMS)
     keep_items = None if keep_items is None else set(keep_items)
+    retain_counts = {
+        item_id: max(0, int(count))
+        for item_id, count in (retain_counts or {}).items()
+    }
     cx, cy, cz = (int(value) for value in chest_pos)
 
     try:
@@ -1244,6 +1314,13 @@ def deposit_excess_to_chest(
 
     sync_id = data.get("sync_id", screen.get("sync_id"))
     deposited = 0
+    player_totals = {}
+    for item in slots:
+        slot = int(item.get("slot", -1))
+        item_id = item.get("id")
+        count = int(item.get("count", 0) or 0)
+        if slot >= container_slots and item_id and count > 0:
+            player_totals[item_id] = player_totals.get(item_id, 0) + count
     for item in slots:
         slot = int(item.get("slot", -1))
         item_id = item.get("id")
@@ -1253,10 +1330,15 @@ def deposit_excess_to_chest(
             continue
         if keep_items is None and item_id not in deposit_items:
             continue
+        count = int(item.get("count", 0) or 0)
+        reserve = retain_counts.get(item_id, 0)
+        if player_totals.get(item_id, 0) - count < reserve:
+            continue
         payload = {"slot": slot, "type": "QUICK_MOVE", "button": 0}
         if sync_id is not None:
             payload["sync_id"] = sync_id
         client.transport.dispatch("inventory_click", payload)
+        player_totals[item_id] = max(0, player_totals.get(item_id, 0) - count)
         deposited += 1
         time.sleep(0.05)
 
@@ -1289,6 +1371,26 @@ def deposit_excess_to_chest(
     client.transport.dispatch("close_screen", {})
     print(f"STORAGE: deposited {deposited} excess stacks at home")
     return deposited
+
+
+def deposit_progression_to_chest(
+    client,
+    chest_pos: Tuple[int, int, int],
+    *,
+    state=None,
+    retain_counts=None,
+    deposit_items=None,
+) -> int:
+    """Bank valuable surplus while retaining a bounded active loadout."""
+    reserves = dict(PROGRESSION_RETAIN_COUNTS)
+    reserves.update(retain_counts or {})
+    return deposit_excess_to_chest(
+        client,
+        chest_pos,
+        deposit_items=deposit_items or PROGRESSION_BANK_ITEMS,
+        state=state,
+        retain_counts=reserves,
+    )
 
 
 def withdraw_required_from_chest(

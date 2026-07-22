@@ -15,6 +15,13 @@ from .enums import TransportEvent
 from ..events.event_manager import EventManager, EventFilter
 from ..events.event_storage import EventStorage
 from ..core.exceptions import CommandError, RouteError, TransportError
+from ..observability import (
+    emit_event,
+    observe_command_response,
+    observe_entities_response,
+    observe_inventory_response,
+    observe_state_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +170,7 @@ class TcpTransport(Transport):
         "get_block",
         "get_view",
         "get_entities",
+        "get_combat_snapshot",
         "get_screen",
         "get_dimension",
         "get_version",
@@ -183,6 +191,46 @@ class TcpTransport(Transport):
     )
 
     def dispatch(self, route: str, payload: Dict[str, Any], timeout: Optional[float] = None) -> Dict[str, Any]:
+        traced_command = route in {
+            "goto",
+            "explore",
+            "mine",
+            "cancel",
+            "command/cancel",
+            "place_block",
+            "break_block",
+            "craft",
+            "smelt",
+            "open_container",
+            "open_chest",
+            "respawn",
+            "attack",
+        } or route.startswith("process/")
+        command_id = uuid.uuid4().hex if traced_command else None
+        command_started_ns = time.monotonic_ns()
+        if traced_command:
+            emit_event(
+                "command_requested",
+                command_id=command_id,
+                route=route,
+                payload=payload,
+                timeout=timeout,
+            )
+        is_cancel = (
+            route in {"cancel", "command/cancel"}
+            or (route == "command" and payload.get("command") == "cancel")
+            or (route.startswith("process/") and route.endswith("/stop"))
+        )
+        cancel_id = uuid.uuid4().hex if is_cancel else None
+        cancel_started_ns = time.monotonic_ns()
+        if is_cancel:
+            emit_event(
+                "cancellation_requested",
+                cancellation_id=cancel_id,
+                route=route,
+                payload=payload,
+                timeout=timeout,
+            )
         attempts = (
             self._READ_RETRY_ATTEMPTS
             if route in self._READ_ONLY_RETRY_ROUTES
@@ -193,7 +241,42 @@ class TcpTransport(Transport):
         last_error: Optional[Exception] = None
         for attempt in range(attempts):
             try:
-                return self._dispatch_once(route, payload, timeout)
+                response = self._dispatch_once(route, payload, timeout)
+                try:
+                    if route == "get_inventory":
+                        observe_inventory_response(response)
+                    elif route in {"get_state", "process/status"}:
+                        observe_state_response(response)
+                    elif route == "get_entities":
+                        observe_entities_response(response)
+                    if traced_command:
+                        observe_command_response(route, payload, response)
+                        emit_event(
+                            "command_completed",
+                            command_id=command_id,
+                            route=route,
+                            latency_ms=round(
+                                (time.monotonic_ns() - command_started_ns)
+                                / 1_000_000,
+                                3,
+                            ),
+                            response=response,
+                        )
+                except Exception:
+                    logger.debug("Telemetry observation failed", exc_info=True)
+                if is_cancel:
+                    emit_event(
+                        "cancellation_completed",
+                        cancellation_id=cancel_id,
+                        route=route,
+                        attempt=attempt + 1,
+                        latency_ms=round(
+                            (time.monotonic_ns() - cancel_started_ns) / 1_000_000,
+                            3,
+                        ),
+                        response=response,
+                    )
+                return response
             except (TransportError, CommandError) as exc:
                 last_error = exc
                 if (
@@ -214,6 +297,33 @@ class TcpTransport(Transport):
                     )
                     time.sleep(self._READ_RETRY_PAUSE_SECONDS)
                 else:
+                    if traced_command:
+                        emit_event(
+                            "command_failed",
+                            command_id=command_id,
+                            route=route,
+                            latency_ms=round(
+                                (time.monotonic_ns() - command_started_ns)
+                                / 1_000_000,
+                                3,
+                            ),
+                            error_type=type(exc).__name__,
+                            reason=str(exc),
+                        )
+                    if is_cancel:
+                        emit_event(
+                            "cancellation_failed",
+                            cancellation_id=cancel_id,
+                            route=route,
+                            attempt=attempt + 1,
+                            latency_ms=round(
+                                (time.monotonic_ns() - cancel_started_ns)
+                                / 1_000_000,
+                                3,
+                            ),
+                            error_type=type(exc).__name__,
+                            reason=str(exc),
+                        )
                     raise exc
         assert last_error is not None
         raise last_error
@@ -253,7 +363,7 @@ class TcpTransport(Transport):
                 if route == "get_inventory":
                     # Increase timeout for inventory checks to be more robust.
                     effective_timeout = min(self.timeout, 2.0)
-                elif route == "get_state":
+                elif route in ("get_state", "get_combat_snapshot"):
                     # Use a moderate default for get_state when caller didn't
                     # provide one (keeps phase startup snappy but avoids timeouts).
                     effective_timeout = min(self.timeout, 2.0)

@@ -5,7 +5,18 @@ Combat utilities - Mob engagement, retreat logic, and healing.
 import logging
 import time
 from typing import Dict, List, Optional
+
 from ..core.exceptions import TransportError
+
+from .defense import (
+    AttackStyle,
+    DefenseMode,
+    DefenseRuntime,
+    ThreatAssessment,
+    assess_threats,
+    choose_defense_action,
+    plan_escape_candidates,
+)
 
 from .inventory import (
     count_item,
@@ -13,7 +24,7 @@ from .inventory import (
     get_equipped_armor,
     select_item,
 )
-from .tasks import TaskResult
+from .tasks import PlayerDeathDetected, TaskResult
 from .navigation import goto
 
 logger = logging.getLogger(__name__)
@@ -913,19 +924,49 @@ def hunt_mobs(
     )
 
 
-def scan_for_threats(client, radius: int = 16) -> List[Dict]:
-    """Return list of nearby hostile mobs sorted by distance."""
-    hostiles = ["zombie", "skeleton", "creeper", "spider", "witch", "pillager", "enderman", "slime"]
-    
-    nearby = get_nearby_entities(client, radius)
-    threats = []
-    
-    for entity in nearby:
-        etype = entity.get("type", "").lower()
-        if any(h in etype for h in hostiles):
-            threats.append(entity)
-            
-    return sorted(threats, key=lambda e: e.get("distance", 999))
+def scan_for_threats(
+    client,
+    radius: int = 16,
+    *,
+    raise_on_error: bool = False,
+    player_state: Optional[Dict] = None,
+) -> List[Dict]:
+    """Return active hostile entities ordered by assessed danger.
+
+    The return type remains a list of bridge entity dictionaries for existing
+    callers.  Classification and ordering come from the canonical policy in
+    :mod:`baritone_client.common.defense`.
+    """
+    nearby = get_nearby_entities(
+        client,
+        radius,
+        raise_on_error=raise_on_error,
+    )
+    return [item.entity for item in assess_threats(nearby, player_state)]
+
+
+def _get_combat_snapshot(client, radius: int = 16) -> Optional[Dict]:
+    """Use the atomic bridge observation when available.
+
+    Bridge 1.0.23 and older do not expose this route.  Treat an absent or
+    malformed response as a capability miss and retain the established
+    get_state/get_entities path.
+    """
+    try:
+        snapshot = client.transport.dispatch(
+            "get_combat_snapshot",
+            {"radius": radius},
+        )
+    except Exception as exc:
+        logger.debug("Atomic combat snapshot unavailable: %s", exc)
+        return None
+    if not isinstance(snapshot, dict):
+        return None
+    if not isinstance(snapshot.get("player"), dict):
+        return None
+    if not isinstance(snapshot.get("entities"), list):
+        return None
+    return snapshot
 
 
 def secure_recovery_area(
@@ -976,137 +1017,306 @@ def secure_recovery_area(
     return False
 
 
-def run_away(client, threat: Dict):
-    """Run away from a specific threat."""
+_ESCAPE_HAZARDS = (
+    "lava",
+    "fire",
+    "cactus",
+    "magma_block",
+    "campfire",
+    "pointed_dripstone",
+    "sweet_berry_bush",
+)
+_ESCAPE_NON_GROUND = ("air", "water", "lava", "cave_air", "void_air")
+_ESCAPE_PASSABLE = (
+    "air",
+    "grass",
+    "fern",
+    "flower",
+    "snow",
+    "vine",
+)
+
+
+def _defense_runtime(client) -> DefenseRuntime:
+    """Return state attached to the client without module-global bot mixing."""
+    runtime = getattr(client, "_mcbaratone_defense_runtime", None)
+    if runtime is None:
+        runtime = getattr(client.transport, "_mcbaratone_defense_runtime", None)
+    if isinstance(runtime, DefenseRuntime):
+        return runtime
+    runtime = DefenseRuntime()
     try:
-        tp = entity_position(threat)
-        t_pos = (tp[0], tp[2]) if tp else (0, 0)
-
-        # Get our pos
-        state = client.transport.dispatch("get_state", {})
-        pos = state.get("block_position", {})
-        o_x, o_z = int(pos.get("x", 0)), int(pos.get("z", 0))
-        
-        # Vector away
-        dx = o_x - t_pos[0]
-        dz = o_z - t_pos[1]
-        
-        # Normalize roughly
-        dist = (dx*dx + dz*dz)**0.5
-        if dist < 0.1: dist = 1 # Avoid div by zero
-        
-        # Target 25 blocks away
-        target_dist = 25
-        tx = int(o_x + (dx/dist) * target_dist)
-        tz = int(o_z + (dz/dist) * target_dist)
-        
-        print(f"FLEE: Running to {tx}, {o_z} (Away from {t_pos})")
-        client.transport.dispatch("goal", {"x": tx, "y": int(pos.get("y", 64)), "z": tz})
-        client.transport.dispatch("chat", {"message": "#path"})
-        time.sleep(1) # Let it start
-        
-    except Exception as e:
-        print(f"Run away failed: {e}")
+        setattr(client, "_mcbaratone_defense_runtime", runtime)
+    except Exception:
+        # A few client doubles use slots; their transport remains session-local.
+        setattr(client.transport, "_mcbaratone_defense_runtime", runtime)
+    return runtime
 
 
-def ensure_alive(client) -> bool:
-    """Respawn if dead. Returns True if a respawn was needed."""
+def _stop_for_defense(client) -> None:
+    """Cancel both Baritone command and transport-level work."""
+    client.transport.dispatch("chat", {"message": "#stop"})
+    client.transport.dispatch("cancel", {})
+
+
+def _block_id(client, x: int, y: int, z: int) -> Optional[str]:
     try:
-        state = client.transport.dispatch("get_state", {})
-        if state.get("health", 20) is not None and state.get("health", 20) <= 0:
-            print("DEATH: Player is dead! Respawning...")
-            client.transport.dispatch("respawn", {})
-            time.sleep(3)
-            for _ in range(10):
-                state = client.transport.dispatch("get_state", {})
-                if state.get("health", 0) > 0:
-                    print(f"DEATH: Respawned at {state.get('block_position')}")
-                    break
-                time.sleep(1)
+        result = client.transport.dispatch("get_block", {"x": x, "y": y, "z": z})
+    except Exception as exc:
+        logger.debug("Escape terrain probe failed at %s,%s,%s: %s", x, y, z, exc)
+        return None
+    if not isinstance(result, dict):
+        return None
+    block_id = result.get("id", result.get("block"))
+    return str(block_id).lower() if block_id else None
+
+
+def _escape_destination_safe(client, x: int, y: int, z: int) -> bool:
+    """Reject an obvious hazard or unsupported endpoint using existing reads."""
+    feet = _block_id(client, x, y, z)
+    head = _block_id(client, x, y + 1, z)
+    below = _block_id(client, x, y - 1, z)
+    known = tuple(value for value in (feet, head, below) if value)
+    if any(token in block for block in known for token in _ESCAPE_HAZARDS):
+        return False
+    if feet and not any(token in feet for token in _ESCAPE_PASSABLE):
+        return False
+    if head and not any(token in head for token in _ESCAPE_PASSABLE):
+        return False
+    if below and any(token in below for token in _ESCAPE_NON_GROUND):
+        return False
+    # Unknown probes are neutral: refusing every route during partial bridge
+    # degradation is worse than using the best directional fallback.
+    return True
+
+
+def _separation_from(entity: Dict, player_position: Dict) -> float:
+    position = entity_position(entity)
+    if position is None:
+        return float(entity.get("distance", 0) or 0)
+    try:
+        return (
+            (float(position[0]) - float(player_position.get("x", 0))) ** 2
+            + (float(position[2]) - float(player_position.get("z", 0))) ** 2
+        ) ** 0.5
+    except (TypeError, ValueError):
+        return float(entity.get("distance", 0) or 0)
+
+
+def _verify_escape(
+    client,
+    threat_id: Optional[int],
+    initial_distance: float,
+    *,
+    timeout: float,
+    minimum_gain: float,
+) -> bool:
+    """Confirm that the selected route actually increases separation."""
+    deadline = time.monotonic() + max(0.5, timeout)
+    while time.monotonic() < deadline:
+        ensure_alive(client)
+        try:
+            entities = get_nearby_entities(client, 40, raise_on_error=True)
+        except EntityQueryError:
+            time.sleep(0.5)
+            continue
+        target = next((entity for entity in entities if entity.get("id") == threat_id), None)
+        if target is None:
             return True
+        state = client.transport.dispatch("get_state", {})
+        position = state.get("block_position", state.get("position", {})) or {}
+        separation = _separation_from(target, position)
+        if separation >= max(14.0, initial_distance + minimum_gain):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def run_away(
+    client,
+    threat: Dict,
+    *,
+    timeout: float = 6.0,
+    minimum_gain: float = 5.0,
+) -> bool:
+    """Choose a terrain-screened route and verify increasing separation."""
+    try:
+        state = client.transport.dispatch("get_state", {})
+        position = state.get("block_position", state.get("position", {})) or {}
+        try:
+            nearby = scan_for_threats(
+                client,
+                radius=16,
+                raise_on_error=True,
+                player_state=state,
+            )
+        except EntityQueryError:
+            nearby = [threat]
+        if not any(item.get("id") == threat.get("id") for item in nearby):
+            nearby.append(threat)
+        assessments = assess_threats(nearby, state)
+        if not assessments:
+            assessments = [
+                ThreatAssessment(
+                    entity=threat,
+                    entity_type=str(threat.get("type", "unknown")),
+                    distance=float(threat.get("distance", 0) or 0),
+                    closing_speed=0.0,
+                    score=1.0,
+                    style=AttackStyle.MELEE,
+                    always_evade=True,
+                )
+            ]
+        initial_distance = _separation_from(threat, position)
+        candidates = plan_escape_candidates(position, assessments)
+        safe_candidates = [
+            candidate
+            for candidate in candidates[:3]
+            if _escape_destination_safe(client, candidate.x, candidate.y, candidate.z)
+        ]
+        if not safe_candidates:
+            print("FLEE: no terrain-safe escape endpoint found")
+            return False
+
+        per_candidate = max(1.5, timeout / len(safe_candidates))
+        for candidate in safe_candidates:
+            print(
+                f"FLEE: pathing to {candidate.x},{candidate.y},{candidate.z}; "
+                f"initial separation {initial_distance:.1f}m"
+            )
+            client.transport.dispatch(
+                "goal",
+                {"x": candidate.x, "y": candidate.y, "z": candidate.z},
+            )
+            client.transport.dispatch("chat", {"message": "#path"})
+            if _verify_escape(
+                client,
+                threat.get("id"),
+                initial_distance,
+                timeout=per_candidate,
+                minimum_gain=minimum_gain,
+            ):
+                print("FLEE: separation verified")
+                return True
+            client.transport.dispatch("cancel", {})
+        print("FLEE: candidate routes did not increase separation")
+        return False
+    except PlayerDeathDetected:
+        raise
+    except Exception as exc:
+        print(f"Run away failed: {exc}")
+        return False
+
+
+def ensure_alive(client, state: Optional[Dict] = None) -> bool:
+    """Raise when dead so only top-level death recovery may respawn."""
+    try:
+        if state is None:
+            state = client.transport.dispatch("get_state", {})
+        health = state.get("health", 20)
+        if state.get("is_dead", False) or (
+            health is not None and float(health) <= 0
+        ):
+            raise PlayerDeathDetected(
+                "Player died during combat or health recovery"
+            )
+    except PlayerDeathDetected:
+        raise
     except Exception as e:
         print(f"DEATH: ensure_alive check failed: {e}")
     return False
 
 
 def defend_or_flee(client) -> bool:
-    """
-    Check surroundings. If threat:
-    - If weapon: Attack
-    - If no weapon: Flee
-
-    Returns: True if action taken (was interrupted)
-    """
-    # Death makes every other consideration moot - and the death screen
-    # blocks all commands, so long-running tasks spin forever without this.
-    if ensure_alive(client):
-        return True
-
-    state = client.transport.dispatch("get_state", {})
-    health = float(state.get("health", 20) or 0)
-    threats = scan_for_threats(client)
-
-    # Never re-enter combat immediately after retreating.  Previously each
-    # gathering loop saw the same skeleton, attacked again, and drove the
-    # player from 5 health to 1 health.  Low health always means stop, eat,
-    # and create distance if a threat is still close.
-    if health < 12.0:
-        print(f"DEFENSE: Critical health {health:.1f}; holding recovery mode")
-        client.transport.dispatch("chat", {"message": "#stop"})
-        client.transport.dispatch("cancel", {})
-        heal_if_needed(client, threshold=12.0)
-        if threats and threats[0].get("distance", 999) <= 10:
-            run_away(client, threats[0])
-        time.sleep(2)
-        return True
-
-    if not threats:
-        return False
-        
-    closest = threats[0]
-    dist = closest.get("distance", 999)
-    if dist > 10:
-        return False # Too far to worry yet
-        
-    print(f"DEFENSE: Threat detected! {closest.get('type')} at {dist:.1f}m")
-
-    threat_type = str(closest.get("type", "")).lower()
-    # Skeletons and witches can keep damaging an unarmored player while the
-    # bot paths into melee range, and creepers must never be approached as a
-    # routine fight.  Until shield blocking/ranged combat is implemented,
-    # create distance from these threats even at full health.
-    armor_count = len(get_equipped_armor(client))
-    unprotected = armor_count < 3
-    must_flee = unprotected or any(
-        hostile in threat_type for hostile in ("skeleton", "witch", "creeper")
+    """Advance the canonical defensive state machine by one supervised tick."""
+    snapshot = _get_combat_snapshot(client)
+    state = (
+        snapshot["player"]
+        if snapshot is not None
+        else client.transport.dispatch("get_state", {})
     )
-    if must_flee or health < 16.0:
-        if unprotected:
-            reason = f"only {armor_count}/4 armor pieces equipped"
-        elif must_flee:
-            reason = "ranged/explosive threat"
+    ensure_alive(client, state)
+    health = float(state.get("health", 20) or 0)
+    runtime = _defense_runtime(client)
+    try:
+        if snapshot is not None:
+            threats = [
+                item.entity
+                for item in assess_threats(snapshot["entities"], state)
+            ]
         else:
-            reason = f"health only {health:.1f}"
-        print(f"DEFENSE: Fleeing {closest.get('type')} ({reason})")
-        client.transport.dispatch("chat", {"message": "#stop"})
-        client.transport.dispatch("cancel", {})
-        run_away(client, closest)
-        time.sleep(2)
+            threats = scan_for_threats(
+                client,
+                raise_on_error=True,
+                player_state=state,
+            )
+    except TypeError:
+        # Preserve compatibility with existing callers/tests that replace the
+        # old one-argument scanner.
+        threats = scan_for_threats(client)
+    except EntityQueryError as exc:
+        runtime.transition(DefenseMode.ALERT, f"entity query unavailable: {exc}")
+        _stop_for_defense(client)
         return True
-    
-    # Are we equipped?
-    # Simple check: do we have a sword or axe in hotbar/inventory?
-    # equip_best_weapon does the checking and equipping.
-    has_weapon = equip_best_weapon(client)
-    
-    if has_weapon:
-        print("DEFENSE: Engels mode engaged. Attacking.")
-        client.transport.dispatch("chat", {"message": "#stop"}) # Stop mining
-        safe_combat(client, closest.get("id"), retreat_health=12.0)
+
+    assessments = assess_threats(threats, state)
+    armor_count = (
+        int(state.get("armor_count", 0) or 0)
+        if assessments and "armor_count" in state
+        else len(get_equipped_armor(client)) if assessments else 0
+    )
+    has_weapon = False
+    if assessments:
+        primary = assessments[0]
+        urgent_count = sum(item.distance <= 10.0 for item in assessments)
+        if (
+            health >= 16.0
+            and armor_count >= 3
+            and not primary.always_evade
+            and primary.distance <= 10.0
+            and urgent_count <= 1
+        ):
+            has_weapon = equip_best_weapon(client)
+
+    decision = choose_defense_action(
+        assessments,
+        health=health,
+        armor_count=armor_count,
+        has_weapon=has_weapon,
+        runtime=runtime,
+    )
+    runtime.transition(decision.mode, decision.reason)
+
+    if decision.mode == DefenseMode.CLEAR:
+        return False
+    if decision.mode == DefenseMode.ALERT:
+        return False
+    if decision.mode == DefenseMode.RECOVER:
+        print(f"DEFENSE: Recovery mode ({decision.reason})")
+        _stop_for_defense(client)
+        heal_if_needed(client, threshold=12.0)
         return True
-    else:
-        print("DEFENSE: No weapon! FLEE!")
-        client.transport.dispatch("chat", {"message": "#stop"})
-        run_away(client, closest)
-        time.sleep(5) # Run for a bit
+    if decision.primary is None:
+        return False
+
+    primary = decision.primary
+    print(
+        f"DEFENSE: {decision.mode.value} {primary.entity.get('type')} "
+        f"at {primary.distance:.1f}m ({decision.reason}; score={primary.score:.1f})"
+    )
+    _stop_for_defense(client)
+    if decision.mode == DefenseMode.EVADE:
+        escaped = run_away(client, primary.entity)
+        runtime.hold_recovery(8.0 if escaped else 12.0)
         return True
+
+    defeated = safe_combat(
+        client,
+        primary.entity.get("id"),
+        retreat_health=12.0,
+        abort_on_other_hostiles=True,
+    )
+    if not defeated:
+        run_away(client, primary.entity)
+    runtime.hold_recovery(6.0 if defeated else 10.0)
+    return True

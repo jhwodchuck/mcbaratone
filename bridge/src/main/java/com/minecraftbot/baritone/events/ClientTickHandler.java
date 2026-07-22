@@ -8,6 +8,7 @@ import com.google.gson.JsonObject;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.math.BlockPos;
 import org.slf4j.Logger;
@@ -50,6 +51,7 @@ public class ClientTickHandler {
     private double lastDeathX = 0, lastDeathY = 0, lastDeathZ = 0;
     private String lastDeathDimension = "minecraft:overworld";
     private long lastDeathTime = 0;
+    private float lastObservedHealth = Float.NaN;
 
     // Block tracking
     private final Map<BlockPos, BlockState> previousBlockStates = new ConcurrentHashMap<>();
@@ -80,7 +82,8 @@ public class ClientTickHandler {
             handlePathfindingTick(baritone);
         }
 
-        // Player death tracking (every tick is fine)
+        // Damage and death tracking (every tick is fine)
+        trackPlayerDamage(client);
         trackPlayerDeath();
 
         // Weather and time change detection (every tick)
@@ -242,6 +245,76 @@ public class ClientTickHandler {
         }
 
         wasDeadLastTick = isDead;
+    }
+
+    /** Publish health loss immediately, including the best available source metadata. */
+    private void trackPlayerDamage(MinecraftClient client) {
+        if (client.player == null) return;
+        observePlayerDamage(
+            client.player,
+            client.world.getRegistryKey().getValue().toString()
+        );
+    }
+
+    void observePlayerDamage(net.minecraft.client.network.ClientPlayerEntity player, String dimension) {
+        if (player == null) return;
+
+        JsonObject data = new JsonObject();
+        data.addProperty("x", player.getX());
+        data.addProperty("y", player.getY());
+        data.addProperty("z", player.getZ());
+        data.addProperty("dimension", dimension);
+
+        DamageSource source = player.getRecentDamageSource();
+        if (source != null) {
+            data.addProperty("damage_type", source.getName());
+            Entity attacker = source.getAttacker();
+            Entity directSource = source.getSource();
+            if (attacker != null) {
+                addDamageEntity(data, "attacker", attacker);
+                addDamageDirection(data, attacker, player);
+            }
+            if (directSource != null && directSource != attacker) {
+                addDamageEntity(data, "source", directSource);
+                if (attacker == null) addDamageDirection(data, directSource, player);
+            }
+            data.addProperty("is_projectile", directSource != null && directSource != attacker);
+        }
+
+        observeHealth(player.getHealth(), data);
+    }
+
+    void observeHealth(float currentHealth, JsonObject data) {
+        if (Float.isNaN(lastObservedHealth)) {
+            lastObservedHealth = currentHealth;
+            return;
+        }
+        if (currentHealth >= lastObservedHealth) {
+            lastObservedHealth = currentHealth;
+            return;
+        }
+
+        data.addProperty("amount", lastObservedHealth - currentHealth);
+        data.addProperty("previous_health", lastObservedHealth);
+        data.addProperty("health", currentHealth);
+        eventManager.publishEvent(EventManager.EventType.DAMAGE, data, EventManager.Priority.HIGH);
+        lastObservedHealth = currentHealth;
+    }
+
+    private void addDamageEntity(JsonObject data, String prefix, Entity entity) {
+        data.addProperty(prefix + "_id", entity.getId());
+        data.addProperty(prefix + "_uuid", entity.getUuidAsString());
+        data.addProperty(prefix + "_type", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
+    }
+
+    private void addDamageDirection(JsonObject data, Entity source, Entity player) {
+        double dx = source.getX() - player.getX();
+        double dz = source.getZ() - player.getZ();
+        double length = Math.sqrt(dx * dx + dz * dz);
+        if (length > 0.0001) {
+            data.addProperty("direction_x", dx / length);
+            data.addProperty("direction_z", dz / length);
+        }
     }
 
     private void checkWeatherChanges(MinecraftClient client) {

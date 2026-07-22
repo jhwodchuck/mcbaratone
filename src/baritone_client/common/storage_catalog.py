@@ -341,6 +341,16 @@ class StorageCatalog:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def item_count(self, item_id: str) -> int:
+        """Return the current-world total from verified catalog snapshots."""
+        with self._connect() as db:
+            row = db.execute(
+                """SELECT COALESCE(SUM(count), 0) AS count
+                   FROM container_items WHERE world_id=? AND item_id=?""",
+                (self.world_id, item_id),
+            ).fetchone()
+        return int(row["count"] if row else 0)
+
 
 def catalog_for(client, state=None) -> StorageCatalog:
     # Unit-test doubles and ad-hoc clients without an isolated run directory or

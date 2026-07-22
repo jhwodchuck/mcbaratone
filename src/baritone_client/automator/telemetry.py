@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from enum import Enum, auto
 
+from ..observability import configure_event_journal
+
 logger = logging.getLogger(__name__)
 
 
@@ -88,6 +90,7 @@ class TelemetrySystem:
         """
         self.output_dir = Path(output_dir) if output_dir else Path.cwd()
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        configure_event_journal(self.output_dir)
         
         # Counters: name -> value
         self._counters: Dict[str, float] = {}

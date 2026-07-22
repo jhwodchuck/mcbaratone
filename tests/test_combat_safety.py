@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from baritone_client.common import combat
+from baritone_client.common.tasks import PlayerDeathDetected
 
 
 class CombatTransport:
@@ -92,6 +93,16 @@ def test_recover_health_refuses_work_when_no_food(monkeypatch):
 
     assert not combat.recover_health(client, minimum_health=12.0, timeout=1.0)
     assert ("cancel", {}) in transport.calls
+
+
+def test_dead_player_yields_without_local_respawn():
+    transport = CombatTransport(health=0.0)
+    client = SimpleNamespace(transport=transport)
+
+    with pytest.raises(PlayerDeathDetected):
+        combat.defend_or_flee(client)
+
+    assert not any(route == "respawn" for route, _payload in transport.calls)
 
 
 def test_eat_until_hunger_uses_carried_emergency_food(monkeypatch):

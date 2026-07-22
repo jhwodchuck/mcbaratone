@@ -459,7 +459,13 @@ def place_furnace(client, x: int, y: int, z: int) -> bool:
     return True
 
 
-def place_chest(client, x: int, y: int, z: int) -> bool:
+def place_chest(
+    client,
+    x: int,
+    y: int,
+    z: int,
+    purpose: str = "base_storage",
+) -> bool:
     """
     Place a chest at specified location.
 
@@ -480,7 +486,7 @@ def place_chest(client, x: int, y: int, z: int) -> bool:
                 (x, y, z),
                 dimension=str(dimension),
                 container_type=existing_block,
-                purpose="base_storage",
+                purpose=purpose,
             )
         except Exception as exc:
             print(f"  Storage catalog registration deferred: {exc}")
@@ -519,7 +525,7 @@ def place_chest(client, x: int, y: int, z: int) -> bool:
             (x, y, z),
             dimension=str(dimension),
             container_type="minecraft:chest",
-            purpose="base_storage",
+            purpose=purpose,
         )
     except Exception as exc:
         print(f"  Storage catalog registration deferred: {exc}")
@@ -1608,14 +1614,23 @@ def build_good_house(client, x: int, y: int, z: int) -> bool:
             print(f"Good house needs {required_planks} planks; only {total_planks} available")
             return False
 
-        if count_item(client, "minecraft:cobblestone") < required_cobblestone:
+        available_cobblestone = count_item(client, "minecraft:cobblestone")
+        available_deepslate = count_item(client, "minecraft:cobbled_deepslate")
+        if available_cobblestone + available_deepslate < required_cobblestone:
             print("Gathering stone for good house...")
             from .resources import gather_stone
-            if not gather_stone(client, count=required_cobblestone):
-                return False
-        if count_item(client, "minecraft:cobblestone") < required_cobblestone:
-            print("Good house does not have enough cobblestone after gathering")
+            gather_stone(client, count=required_cobblestone)
+            available_cobblestone = count_item(client, "minecraft:cobblestone")
+            available_deepslate = count_item(client, "minecraft:cobbled_deepslate")
+        available_floor_blocks = available_cobblestone + available_deepslate
+        if missing_floor and available_floor_blocks <= 0:
+            print("Good house has no floor material after gathering")
             return False
+        if available_floor_blocks < required_cobblestone:
+            print(
+                "Good house will place an incremental floor batch with "
+                f"{available_floor_blocks} available block(s)."
+            )
 
         # Gathering may have consumed most of the day even though the phase
         # itself began safely.  The floor and shell are slow, exposed placement
@@ -1661,8 +1676,29 @@ def build_good_house(client, x: int, y: int, z: int) -> bool:
         # 1. Floor (Cobble)
         if missing_floor:
             print(f"Repairing Good House Floor ({len(missing_floor)} targets)...")
-            for tx, ty, tz, role in missing_floor:
-                put(tx, ty, tz, role, "minecraft:cobblestone")
+            floor_material = (
+                "minecraft:cobblestone"
+                if available_cobblestone > 0
+                else "minecraft:cobbled_deepslate"
+            )
+            floor_budget = min(len(missing_floor), available_floor_blocks)
+            for tx, ty, tz, role in missing_floor[:floor_budget]:
+                if count_item(client, floor_material) <= 0:
+                    alternate = (
+                        "minecraft:cobbled_deepslate"
+                        if floor_material == "minecraft:cobblestone"
+                        else "minecraft:cobblestone"
+                    )
+                    if count_item(client, alternate) <= 0:
+                        break
+                    floor_material = alternate
+                put(tx, ty, tz, role, floor_material)
+            if floor_budget < len(missing_floor):
+                print(
+                    "Good house incremental floor batch complete; "
+                    "remaining targets will resume next retry."
+                )
+                return False
 
         # 2. Walls (Planks) - leave a 1x2 doorway in the north wall
         wall_targets = [target for target in missing_shell if target[3] == "shell"]

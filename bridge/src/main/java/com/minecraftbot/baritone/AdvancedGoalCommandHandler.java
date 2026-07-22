@@ -80,7 +80,7 @@ public class AdvancedGoalCommandHandler extends AsyncCommandHandler {
             case "composite":
                 return handleCompositeGoal(params, client, baritone);
             case "cancel":
-                return handleCancelGoal(params, baritone);
+                return handleCancelGoal(params, client, baritone);
             case "status":
                 return handleGoalStatus(params, baritone);
             default:
@@ -198,7 +198,7 @@ public class AdvancedGoalCommandHandler extends AsyncCommandHandler {
         });
     }
 
-    private CompletableFuture<CommandResult> handleCancelGoal(JsonObject params, IBaritone baritone) {
+    private CompletableFuture<CommandResult> handleCancelGoal(JsonObject params, MinecraftClient client, IBaritone baritone) {
         String chainId = params.has("chain_id") ? params.get("chain_id").getAsString() : null;
 
         if (chainId != null) {
@@ -208,10 +208,12 @@ public class AdvancedGoalCommandHandler extends AsyncCommandHandler {
             data.addProperty("chain_id", chainId);
             return CompletableFuture.completedFuture(CommandResult.success(data));
         } else {
-            baritone.getPathingBehavior().cancelEverything();
-            JsonObject data = new JsonObject();
-            data.addProperty("goal_cancelled", true);
-            return CompletableFuture.completedFuture(CommandResult.success(data));
+            return executeOnMainThread(client, () -> {
+                baritone.getPathingBehavior().cancelEverything();
+                JsonObject data = new JsonObject();
+                data.addProperty("goal_cancelled", true);
+                return CommandResult.success(data);
+            });
         }
     }
 

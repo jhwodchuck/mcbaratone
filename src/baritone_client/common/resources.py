@@ -14,7 +14,7 @@ from .inventory import (
 )
 from . import inventory
 _DEFAULT_INVENTORY_ENSURE_RAW_PLANKS = inventory._ensure_raw_planks
-from .tasks import TaskResult
+from .tasks import PlayerDeathDetected, TaskResult
 from .combat import hunt_mobs
 from .navigation import find_nearby_block, goto
 from .automation_utils import get_player_pos
@@ -792,8 +792,65 @@ def gather_wood(
         print("DEBUG: gather_wood timeout")
         client.transport.dispatch("cancel", {})
         return False
+    except PlayerDeathDetected:
+        raise
     except Exception as exc:
         print(f"Wood gathering error: {exc}")
+        return False
+
+
+def _relocate_to_checkpointed_stone_source(
+    client,
+    *,
+    minimum_y: int = 96,
+) -> bool:
+    """Return a stranded high-altitude gatherer to checkpointed home terrain."""
+    try:
+        state = client.transport.dispatch("get_state", {})
+        position = state.get("block_position", state.get("position", {}))
+        current = (
+            int(position.get("x", 0)),
+            int(position.get("y", 64)),
+            int(position.get("z", 0)),
+        )
+        if current[1] < minimum_y:
+            return False
+
+        automation_state = getattr(client, "_automation_state", None)
+        if automation_state is None:
+            return False
+
+        from .inventory import resolve_storage_location
+
+        target = resolve_storage_location(
+            client,
+            state=automation_state,
+            verify=False,
+        )
+        if target is None:
+            value = automation_state.custom_data.get("base_location")
+            if isinstance(value, (list, tuple)) and len(value) == 3:
+                target = tuple(int(axis) for axis in value)
+        if target is None:
+            return False
+
+        print(
+            "DEBUG: Stone gathering stranded at "
+            f"Y={current[1]}; returning to checkpointed terrain at {target}"
+        )
+        client.transport.dispatch("cancel", {})
+        return goto(
+            client,
+            target[0],
+            target[1],
+            target[2],
+            timeout=240,
+            tolerance=3.0,
+        )
+    except PlayerDeathDetected:
+        raise
+    except Exception as exc:
+        print(f"DEBUG: Checkpointed stone relocation failed: {exc}")
         return False
 
 
@@ -827,6 +884,7 @@ def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
         stalled_checks = 0
         idle_checks = 0
         direct_failures = 0
+        relocation_attempted = False
         
         while time.time() - start < timeout:
             if free_inventory_slots(client) < 2:
@@ -894,6 +952,19 @@ def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
                     f"({direct_failures}/3); retrying broad mine"
                 )
                 if direct_failures >= 3:
+                    if (
+                        not relocation_attempted
+                        and _relocate_to_checkpointed_stone_source(client)
+                    ):
+                        relocation_attempted = True
+                        direct_failures = 0
+                        idle_checks = 0
+                        stalled_checks = 0
+                        start = time.time()
+                        client.transport.dispatch(
+                            "mine", {"blocks": STONE_BLOCKS, "quantity": count + 10}
+                        )
+                        continue
                     print("DEBUG: No reachable nearby stone after 3 exact attempts")
                     return False
                 client.transport.dispatch(
@@ -907,6 +978,8 @@ def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
         print("DEBUG: gather_stone timeout")
         client.transport.dispatch("cancel", {})
         return False
+    except PlayerDeathDetected:
+        raise
     except Exception as exc:
         print(f"Stone gathering error: {exc}")
         return False
@@ -1107,6 +1180,8 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
             time.sleep(3) # Reduced sleep to scan more often
         client.transport.dispatch("cancel", {})
         return False
+    except PlayerDeathDetected:
+        raise
     except Exception as exc:
         print(f"Ore gathering error: {exc}")
         return False

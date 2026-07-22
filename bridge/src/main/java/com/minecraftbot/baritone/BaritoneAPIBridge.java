@@ -100,6 +100,13 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         // Initialize player context
         playerContext = new MinecraftPlayerContext();
 
+        // The factory normally constructs handlers with no dependencies. Event
+        // polling must share the same manager used by tick/Fabric publishers.
+        CommandHandlerFactory.registerHandlerInstance(
+            "get_events",
+            new GetEventsCommandHandler(eventManager)
+        );
+
         // Initialize command dispatcher with legacy handler
         commandDispatcher = new CommandDispatcher(missionController, this::handleLegacyCommandInternal);
     }

@@ -15,6 +15,7 @@ from .migration import MigrationManager, create_default_checkpoint_migration_reg
 from .serialization_multi import FileSerializer, SerializationFormat
 from .storage import DistributedStorageManager, create_filesystem_storage, StorageMetadata
 from ..world_identity import WorldIdentity
+from ..observability import emit_event
 
 logger = logging.getLogger(__name__)
 
@@ -199,9 +200,15 @@ class StateManager:
         if current_idx < len(phases) - 1:
             # Advancing IS the completion evidence for the phase being left;
             # don't rely on the executor having stamped 1.0 first.
+            previous_phase = self.current_phase
             self.phase_progress[self.current_phase] = 1.0
             self.current_phase = phases[current_idx + 1]
             self.phase_progress[self.current_phase] = 0.0
+            emit_event(
+                "phase_transition",
+                previous_phase=previous_phase.name,
+                current_phase=self.current_phase.name,
+            )
             return True
         return False
 
@@ -213,7 +220,17 @@ class StateManager:
             progress: Progress percentage (0.0 to 1.0)
             phase: Phase to credit; defaults to the current phase
         """
-        self.phase_progress[phase or self.current_phase] = max(0.0, min(1.0, progress))
+        target_phase = phase or self.current_phase
+        previous = self.phase_progress.get(target_phase)
+        normalized = max(0.0, min(1.0, progress))
+        self.phase_progress[target_phase] = normalized
+        if previous != normalized:
+            emit_event(
+                "phase_progress",
+                phase_name=target_phase.name,
+                previous=previous,
+                progress=normalized,
+            )
     
     def get_progress(self, phase: Optional[Phase] = None) -> float:
         """Get progress for a phase (default: current)."""
@@ -229,6 +246,11 @@ class StateManager:
             return
         self.phase_payloads[phase.name] = payload
         self.custom_data.setdefault("phase_payloads", {}).update({phase.name: payload})
+        emit_event(
+            "phase_payload_recorded",
+            phase_name=phase.name,
+            payload_keys=sorted(payload.keys()),
+        )
     
     def add_location(self, category: str, x: int, y: int, z: int, dimension: str = "overworld", tags: Optional[list] = None, client=None) -> None:
         """
@@ -294,6 +316,13 @@ class StateManager:
         """
         import time
         import asyncio
+
+        emit_event(
+            "checkpoint_save_requested",
+            phase_name=self.current_phase.name,
+            inventory_summary=inventory_summary,
+            position=self._last_position,
+        )
 
         if world_identity is not None:
             self.bind_world_identity(world_identity)
@@ -365,10 +394,29 @@ class StateManager:
             loop.close()
 
             logger.info(f"Checkpoint saved with version {self.current_schema_version} to {filepath}")
+            emit_event(
+                "checkpoint_saved",
+                phase_name=self.current_phase.name,
+                path=filepath,
+                schema_version=str(self.current_schema_version),
+                inventory_total=sum(inventory_summary.values()),
+                world_signature=(
+                    effective_identity.stable_hash
+                    if effective_identity is not None
+                    else None
+                ),
+            )
             return filepath
 
         except Exception as e:
             logger.error(f"Failed to save checkpoint: {str(e)}")
+            emit_event(
+                "checkpoint_save_failed",
+                phase_name=self.current_phase.name,
+                error_type=type(e).__name__,
+                reason=str(e),
+                fallback="legacy",
+            )
             # Fallback to legacy method for backward compatibility
             return self._save_checkpoint_legacy(checkpoint)
 
@@ -385,6 +433,12 @@ class StateManager:
         filepath = self.checkpoint_dir / self.CHECKPOINT_FILE
         with open(filepath, "w") as f:
             json.dump(checkpoint, f, indent=2)
+        emit_event(
+            "checkpoint_saved",
+            phase_name=self.current_phase.name,
+            path=str(filepath),
+            fallback="legacy",
+        )
         return str(filepath)
     
     def load_checkpoint(
@@ -403,6 +457,12 @@ class StateManager:
             True if checkpoint loaded, False if not found or seed mismatch
         """
         import asyncio
+
+        emit_event(
+            "checkpoint_load_requested",
+            checkpoint_dir=str(self.checkpoint_dir),
+            current_seed=current_seed,
+        )
 
         try:
             # Try new versioning system first
@@ -429,23 +489,51 @@ class StateManager:
             # No checkpoint on disk is a normal fresh start, not an error;
             # only dict payloads may enter the migration path.
             if not isinstance(checkpoint_data, dict):
+                emit_event(
+                    "checkpoint_not_found",
+                    checkpoint_dir=str(self.checkpoint_dir),
+                )
                 return False
 
             current_identity = self._resolve_current_identity(current_seed, current_world_identity)
-            return self._load_checkpoint_with_migration(
+            loaded = self._load_checkpoint_with_migration(
                 checkpoint_data,
                 current_seed,
                 current_identity,
                 allow_legacy_without_identity,
             )
+            emit_event(
+                "checkpoint_loaded" if loaded else "checkpoint_rejected",
+                phase_name=(self.current_phase.name if loaded else None),
+                validation=self.last_checkpoint_validation,
+                schema_version=(
+                    str(self.loaded_schema_version)
+                    if self.loaded_schema_version is not None
+                    else None
+                ),
+            )
+            return loaded
 
         except Exception as e:
             logger.warning(f"Failed to load checkpoint with new system: {str(e)}")
+            emit_event(
+                "checkpoint_load_failed",
+                error_type=type(e).__name__,
+                reason=str(e),
+                fallback="legacy",
+            )
             # Fallback to legacy loading for backward compatibility
             current_identity = self._resolve_current_identity(current_seed, current_world_identity)
-            return self._load_checkpoint_legacy(
+            loaded = self._load_checkpoint_legacy(
                 current_seed, current_identity, allow_legacy_without_identity
             )
+            emit_event(
+                "checkpoint_loaded" if loaded else "checkpoint_rejected",
+                phase_name=(self.current_phase.name if loaded else None),
+                validation=self.last_checkpoint_validation,
+                fallback="legacy",
+            )
+            return loaded
 
     def _resolve_current_identity(
         self,

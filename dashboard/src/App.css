@@ -494,4 +494,308 @@
   .dashboard-grid {
     grid-template-columns: 1fr;
   }
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---- Minecraft server overview ---- */
+.server-overview {
+  padding: 20px 24px;
+}
+
+.server-offline {
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.server-title-row,
+.server-detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+}
+
+.server-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+}
+
+.server-metrics {
+  display: grid;
+  grid-template-columns: 1.5fr repeat(4, minmax(90px, 1fr));
+  gap: 12px;
+  margin: 18px 0 14px;
+}
+
+.server-metric {
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.server-metric span {
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+}
+
+.server-metric strong {
+  color: var(--secondary);
+  font-family: 'Fira Code', monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-motd {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.server-players {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.player-chip {
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: var(--success);
+  background: var(--success-glow);
+  font-family: 'Fira Code', monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.server-no-sample {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-style: italic;
+}
+
+/* ---- Fleet overview ---- */
+.fill-green {
+  background: linear-gradient(90deg, #059669, var(--success));
+  box-shadow: 0 0 8px var(--success-glow);
+}
+
+.fleet-overview {
+  padding: 20px 24px;
+}
+
+.fleet-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 18px;
+}
+
+.fleet-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.fleet-summary .neon-value {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.fleet-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.bot-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.bot-card {
+  padding: 16px;
+  cursor: pointer;
+  border: 1px solid var(--border-color);
+  transition: var(--transition-smooth);
+}
+
+.bot-card:hover {
+  background: var(--bg-card-hover);
+  transform: translateY(-2px);
+}
+
+.bot-card-selected {
+  border-color: var(--border-color-active);
+  box-shadow: 0 0 0 1px var(--border-color-active), 0 0 18px var(--primary-glow);
+}
+
+.bot-card-stopped {
+  opacity: 0.55;
+}
+
+.bot-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.bot-card-name {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+
+.bot-card-status {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  text-transform: uppercase;
+}
+
+.bot-card-status.ok { background: var(--success-glow); color: var(--success); }
+.bot-card-status.warn { background: rgba(245, 158, 11, 0.18); color: var(--warning); }
+.bot-card-status.stopped { background: rgba(107, 114, 128, 0.18); color: var(--text-muted); }
+
+.bot-card-phase {
+  font-family: 'Fira Code', monospace;
+  font-size: 12px;
+  color: var(--secondary);
+  margin-bottom: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bot-card-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.mini-bar-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-bottom: 3px;
+}
+
+.mini-bar .bar-container {
+  height: 6px;
+}
+
+.bot-card-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: 'Fira Code', monospace;
+}
+
+.bot-card-alert {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--warning);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fleet-alerts {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--border-color);
+  padding-top: 14px;
+}
+
+.fleet-alert {
+  font-size: 12px;
+  color: var(--warning);
+}
+
+.fleet-alert.danger {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* ---- Per-bot detail grid ---- */
+.detail-grid {
+  display: grid;
+  grid-template-columns: 320px 1fr 400px;
+  gap: 24px;
+  align-items: start;
+}
+
+.inline-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  margin-left: 10px;
+  vertical-align: middle;
+}
+
+.inline-dot.active {
+  background: var(--success);
+  box-shadow: 0 0 8px var(--success-glow);
+}
+
+.inline-dot-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: 6px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+
+.warn-chip {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--warning);
+  background: rgba(245, 158, 11, 0.15);
+  padding: 2px 6px;
+  border-radius: 5px;
+  margin-left: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  vertical-align: middle;
+}
+
+@media (max-width: 760px) {
+  .server-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .server-detail-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .server-players {
+    justify-content: flex-start;
+  }
 }

@@ -1,219 +1,320 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 
-// Base API URL is relative to where the dashboard server is hosted
 const API_BASE = "";
 
-function App() {
+// ---- helpers -------------------------------------------------------------
+
+const getItemEmoji = (id) => {
+  if (!id) return "";
+  const name = id.split(':').pop();
+  if (name.includes('pickaxe')) return "⛏️";
+  if (name.includes('axe')) return "🪓";
+  if (name.includes('sword')) return "⚔️";
+  if (name.includes('shovel')) return "🥄";
+  if (name.includes('hoe')) return "🌱";
+  if (name.includes('planks')) return "🪵";
+  if (name.includes('log')) return "🌲";
+  if (name.includes('stick')) return "🥢";
+  if (name.includes('crafting_table')) return "📦";
+  if (name.includes('chest')) return "🧳";
+  if (name.includes('furnace')) return "🔥";
+  if (name.includes('shield')) return "🛡️";
+  if (name.includes('iron_ingot')) return "🪙";
+  if (name.includes('coal')) return "⬛";
+  if (name.includes('apple')) return "🍎";
+  if (name.includes('bread')) return "🍞";
+  if (name.includes('wheat')) return "🌾";
+  if (name.includes('beef') || name.includes('porkchop')) return "🥩";
+  if (name.includes('leather')) return "📜";
+  if (name.includes('cobblestone')) return "🪨";
+  if (name.includes('air')) return "";
+  return "📦";
+};
+
+const barColor = (pct, warn, danger) => {
+  if (pct <= danger) return 'fill-red';
+  if (pct <= warn) return 'fill-orange';
+  return 'fill-green';
+};
+
+function ServerOverview({ server }) {
+  const online = server?.online;
+  const players = server?.player_names || [];
+  return (
+    <section className={`server-overview card ${online === false ? 'server-offline' : ''}`}>
+      <div className="server-title-row">
+        <div className="card-header font-glow" style={{ border: 'none', padding: 0, margin: 0 }}>
+          Minecraft Server
+        </div>
+        <div className="server-state">
+          <span className={`status-dot ${online ? 'active' : ''}`} />
+          <span>{server ? (online ? 'ONLINE' : 'OFFLINE') : 'CHECKING…'}</span>
+        </div>
+      </div>
+
+      <div className="server-metrics">
+        <div className="server-metric"><span>Address</span><strong>{server?.address || '—'}</strong></div>
+        <div className="server-metric"><span>Version</span><strong>{server?.version || '—'}</strong></div>
+        <div className="server-metric"><span>Players</span><strong>{online ? `${server.players_online}/${server.players_max}` : '—'}</strong></div>
+        <div className="server-metric"><span>Latency</span><strong>{server?.latency_ms != null ? `${server.latency_ms} ms` : '—'}</strong></div>
+        <div className="server-metric"><span>Server log</span><strong>{server?.local_log_age_seconds != null ? `${server.local_log_age_seconds}s ago` : 'remote'}</strong></div>
+      </div>
+
+      <div className="server-detail-row">
+        <span className="server-motd">{online ? (server.motd || 'Minecraft server') : (server?.error || 'Server did not answer the status query')}</span>
+        <div className="server-players">
+          {players.length > 0
+            ? players.map((name) => <span className="player-chip" key={name}>{name}</span>)
+            : <span className="server-no-sample">{online && server.players_online > 0 ? 'Player names hidden by server' : 'No players online'}</span>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ---- fleet overview ------------------------------------------------------
+
+function BotCard({ bot, selected, onSelect }) {
+  const health = bot.health ?? null;
+  const food = bot.food ?? null;
+  const healthPct = health != null ? (health / 20) * 100 : 0;
+  const foodPct = food != null ? (food / 20) * 100 : 0;
+  const fresh = bot.heartbeat_fresh;
+  const running = bot.runtime_state === 'active';
+  const age = bot.heartbeat_age_seconds;
+  const failure = bot.current_failures?.length ? bot.current_failures[bot.current_failures.length - 1] : "";
+
+  return (
+    <div
+      className={`bot-card card ${selected ? 'bot-card-selected' : ''} ${!running ? 'bot-card-stopped' : ''}`}
+      onClick={() => onSelect(bot)}
+    >
+      <div className="bot-card-head">
+        <span className="bot-card-name font-glow">{bot.bot}</span>
+        <span className={`bot-card-status ${fresh && running ? 'ok' : (running ? 'warn' : 'stopped')}`}>
+          {running ? (fresh ? 'LIVE' : 'STALE') : 'STOPPED'}
+        </span>
+      </div>
+
+      <div className="bot-card-phase">{bot.phase || '—'}</div>
+
+      <div className="bot-card-bars">
+        <div className="mini-bar">
+          <div className="mini-bar-label"><span>HP</span><span>{health != null ? health.toFixed?.(1) ?? health : '—'}</span></div>
+          <div className="bar-container"><div className={`bar-fill ${barColor(healthPct, 50, 25)}`} style={{ width: `${healthPct}%` }} /></div>
+        </div>
+        <div className="mini-bar">
+          <div className="mini-bar-label"><span>Food</span><span>{food ?? '—'}</span></div>
+          <div className="bar-container"><div className={`bar-fill ${barColor(foodPct, 45, 30)}`} style={{ width: `${foodPct}%` }} /></div>
+        </div>
+      </div>
+
+      <div className="bot-card-meta">
+        <span>📍 {bot.position ? bot.position.join(', ') : '—'}</span>
+        <span>⏱ {age != null ? `${age}s` : '—'}</span>
+      </div>
+      {bot.bridge_unreachable && <div className="bot-card-alert">Bridge unreachable</div>}
+      {failure && <div className="bot-card-alert" title={failure}>⚠ {failure}</div>}
+    </div>
+  );
+}
+
+function FleetOverview({ fleet, selectedName, onSelect }) {
+  const bots = fleet?.bots || [];
+  return (
+    <section className="fleet-overview card">
+      <div className="fleet-head">
+        <div className="card-header font-glow" style={{ border: 'none', padding: 0 }}>Fleet Overview</div>
+        <div className="fleet-summary">
+          <span className="neon-value">
+            {fleet ? `${fleet.healthy_heartbeats}/${fleet.fleet_size} healthy` : '…'}
+          </span>
+          {fleet?.discovered_fleet_size != null && (
+            <span className="fleet-sub">{fleet.discovered_fleet_size} discovered</span>
+          )}
+        </div>
+      </div>
+
+      <div className="bot-card-grid">
+        {bots.length === 0 && <div className="telemetry-fallback">No bots discovered yet…</div>}
+        {bots.map((bot) => (
+          <BotCard key={bot.bot} bot={bot} selected={bot.bot === selectedName} onSelect={onSelect} />
+        ))}
+      </div>
+
+      {(fleet?.current_failure_clusters?.length > 0 || fleet?.shared_house_origins?.length > 0 || fleet?.shared_storage_coordinates?.length > 0) && (
+        <div className="fleet-alerts">
+          {fleet.current_failure_clusters?.slice(0, 4).map((c, i) => (
+            <div key={`f${i}`} className="fleet-alert">⚠ {c.bots} bot(s): {c.failure}</div>
+          ))}
+          {fleet.shared_storage_coordinates?.map((c, i) => (
+            <div key={`s${i}`} className="fleet-alert danger">Storage {JSON.stringify(c.coordinate)} shared by {c.bots.join(', ')}</div>
+          ))}
+          {fleet.shared_house_origins?.map((c, i) => (
+            <div key={`h${i}`} className="fleet-alert danger">House {JSON.stringify(c.coordinate)} shared by {c.bots.join(', ')}</div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ---- per-bot detail ------------------------------------------------------
+
+function BotDetail({ bot }) {
+  const botQuery = `?bot=${bot.bot}`;
   const [state, setState] = useState(null);
+  const [connected, setConnected] = useState(false);
+  const [error, setError] = useState("");
   const [inventory, setInventory] = useState([]);
   const [logs, setLogs] = useState([]);
-  const [connected, setConnected] = useState(false);
-  const [bridgeInfo, setBridgeInfo] = useState({ host: "localhost", port: 5555 });
-  const [error, setError] = useState("");
-  
-  // Terminal state
+
   const [command, setCommand] = useState("");
-  const [terminalHistory, setTerminalHistory] = useState([
-    { type: 'system', text: 'Welcome to mcbaratone Autonomous Operator Terminal.' },
-    { type: 'system', text: 'Ready to receive directives.' }
-  ]);
-  
-  // Crafting state
+  const [terminalHistory, setTerminalHistory] = useState([]);
   const [craftingCount, setCraftingCount] = useState(1);
   const [craftingStatus, setCraftingStatus] = useState("");
 
   const terminalEndRef = useRef(null);
   const logsEndRef = useRef(null);
 
-  // Poll state and inventory
+  // Reset terminal when switching bots.
   useEffect(() => {
+    setTerminalHistory([
+      { type: 'system', text: `Selected ${bot.bot} (bridge ${bot.bridge_port}).` },
+      { type: 'system', text: 'Manual commands here fight the autonomous controller — pause the bot first.' },
+    ]);
+    setState(null);
+    setInventory([]);
+  }, [bot.bot, bot.bridge_port]);
+
+  // Live state + inventory polling for the selected bot.
+  useEffect(() => {
+    let cancelled = false;
     const fetchData = async () => {
       try {
-        const stateRes = await fetch(`${API_BASE}/api/state`);
-        const stateData = await stateRes.json();
-        
-        setConnected(stateData.connected);
-        if (stateData.connected) {
-          setState(stateData.state);
-          setBridgeInfo({ host: stateData.bridge_host, port: stateData.bridge_port });
+        const res = await fetch(`${API_BASE}/api/state${botQuery}`);
+        const data = await res.json();
+        if (cancelled) return;
+        setConnected(data.connected);
+        if (data.connected) {
+          const live = data.state || {};
+          setState({
+            ...live,
+            x: live.x ?? live.position?.x,
+            y: live.y ?? live.position?.y,
+            z: live.z ?? live.position?.z,
+            foodLevel: live.foodLevel ?? live.food_level,
+            hasGoal: live.hasGoal ?? live.is_pathing,
+          });
           setError("");
-        } else {
-          setError(stateData.error || "Disconnected from Minecraft Bridge");
-          setState(null);
         }
-      } catch (err) {
-        setConnected(false);
-        setError("Dashboard server unreachable");
-        setState(null);
-      }
+        else { setError(data.error || "Disconnected"); setState(null); }
 
-      // Fetch inventory if connected
-      if (connected) {
-        try {
-          const invRes = await fetch(`${API_BASE}/api/inventory`);
+        if (data.connected) {
+          const invRes = await fetch(`${API_BASE}/api/inventory${botQuery}`);
           const invData = await invRes.json();
-          if (invData.connected && invData.inventory) {
-            setInventory(invData.inventory.slots || []);
+          if (!cancelled && invData.connected && invData.inventory) {
+            const payload = invData.inventory;
+            const slots = payload.slots || payload.inventory || (Array.isArray(payload) ? payload : []);
+            setInventory(slots.filter((item) => item.id !== 'minecraft:air' && item.count > 0));
           }
-        } catch (err) {
-          console.error("Error fetching inventory:", err);
         }
+      } catch {
+        if (!cancelled) { setConnected(false); setError("Dashboard server unreachable"); setState(null); }
       }
     };
-
     fetchData();
     const interval = setInterval(fetchData, 2000);
-    return () => clearInterval(interval);
-  }, [connected]);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [botQuery]);
 
-  // Poll logs
+  // Per-bot log polling.
   useEffect(() => {
+    let cancelled = false;
     const fetchLogs = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/logs`);
+        const res = await fetch(`${API_BASE}/api/logs${botQuery}`);
         const data = await res.json();
-        setLogs(data.logs || []);
-      } catch (err) {
-        console.error("Error fetching logs:", err);
-      }
+        if (!cancelled) setLogs(data.logs || []);
+      } catch { /* ignore */ }
     };
-
     fetchLogs();
-    const interval = setInterval(fetchLogs, 2000);
-    return () => clearInterval(interval);
-  }, []);
+    const interval = setInterval(fetchLogs, 3000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [botQuery]);
 
-  // Auto-scroll terminal and logs
-  useEffect(() => {
-    terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [terminalHistory]);
+  useEffect(() => { terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [terminalHistory]);
+  useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [logs]);
 
-  useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs]);
-
-  const handleSendCommand = async (e) => {
-    e.preventDefault();
-    if (!command.trim()) return;
-
-    const cmdText = command.trim();
-    setTerminalHistory(prev => [...prev, { type: 'input', text: `> ${cmdText}` }]);
-    setCommand("");
-
+  const postCommand = async (cmdText, label) => {
+    setTerminalHistory(prev => [...prev, { type: 'input', text: `${label || '>'} ${cmdText}` }]);
     try {
       const res = await fetch(`${API_BASE}/api/command`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: cmdText })
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: cmdText, bot: bot.bot }),
       });
       const data = await res.json();
-      if (data.success) {
-        setTerminalHistory(prev => [...prev, { type: 'output', text: data.result || "Command executed successfully." }]);
-      } else {
-        setTerminalHistory(prev => [...prev, { type: 'error', text: `Error: ${data.error}` }]);
-      }
+      setTerminalHistory(prev => [...prev, data.success
+        ? { type: 'output', text: data.result || "OK" }
+        : { type: 'error', text: `Error: ${data.error}` }]);
     } catch (err) {
-      setTerminalHistory(prev => [...prev, { type: 'error', text: `Failed to contact server: ${err.message}` }]);
+      setTerminalHistory(prev => [...prev, { type: 'error', text: err.message }]);
     }
+  };
+
+  const handleSendCommand = (e) => {
+    e.preventDefault();
+    if (!command.trim()) return;
+    postCommand(command.trim());
+    setCommand("");
   };
 
   const handleCraftItem = async (itemId) => {
     setCraftingStatus(`Crafting ${craftingCount}x ${itemId}...`);
     try {
       const res = await fetch(`${API_BASE}/api/craft`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ item: itemId, count: craftingCount })
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ item: itemId, count: craftingCount, bot: bot.bot }),
       });
       const data = await res.json();
-      if (data.success) {
-        setCraftingStatus(`Successfully crafted ${itemId}!`);
-        // Add to terminal history
-        setTerminalHistory(prev => [...prev, { type: 'system', text: `Manual craft succeeded: ${craftingCount}x ${itemId}` }]);
-      } else {
-        setCraftingStatus(`Crafting failed: ${data.error || 'Check ingredients'}`);
-      }
+      setCraftingStatus(data.success ? `Crafted ${itemId}!` : `Failed: ${data.error || 'Check ingredients'}`);
     } catch (err) {
-      setCraftingStatus(`Crafting failed: ${err.message}`);
+      setCraftingStatus(`Failed: ${err.message}`);
     }
     setTimeout(() => setCraftingStatus(""), 4000);
   };
 
-  const executeQuickAction = async (cmdText) => {
-    setTerminalHistory(prev => [...prev, { type: 'input', text: `[Quick Action] ${cmdText}` }]);
-    try {
-      const res = await fetch(`${API_BASE}/api/command`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: cmdText })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setTerminalHistory(prev => [...prev, { type: 'output', text: data.result || "Action sent." }]);
-      } else {
-        setTerminalHistory(prev => [...prev, { type: 'error', text: data.error }]);
-      }
-    } catch (err) {
-      setTerminalHistory(prev => [...prev, { type: 'error', text: err.message }]);
-    }
-  };
-
-  // Helper to render inventory slots structured (slots 9-35 are storage, 0-8 are hotbar)
   const renderInventoryGrid = () => {
-    // Generate empty inventory structure
     const grid = [];
-    
-    // Rows 0-2: Main Inventory (slots 9 to 35)
     for (let r = 0; r < 3; r++) {
       const row = [];
       for (let c = 0; c < 9; c++) {
         const slotNum = 9 + r * 9 + c;
-        const item = inventory.find(i => i.slot === slotNum);
-        row.push({ slot: slotNum, item });
+        row.push({ slot: slotNum, item: inventory.find(i => i.slot === slotNum) });
       }
       grid.push(row);
     }
-    
-    // Row 3: Hotbar (slots 0 to 8)
     const hotbar = [];
-    for (let c = 0; c < 9; c++) {
-      const item = inventory.find(i => i.slot === c);
-      hotbar.push({ slot: c, item });
-    }
+    for (let c = 0; c < 9; c++) hotbar.push({ slot: c, item: inventory.find(i => i.slot === c) });
     grid.push(hotbar);
 
     return (
       <div className="inventory-grid-container">
-        <div className="inventory-header">Inventory Visualizer</div>
+        <div className="inventory-header">Inventory — {bot.bot}</div>
         <div className="grid-slots-wrapper">
           {grid.map((row, rIdx) => (
             <div key={rIdx} className={`inventory-row ${rIdx === 3 ? 'hotbar-row' : ''}`}>
               {row.map(cell => (
-                <div 
-                  key={cell.slot} 
+                <div key={cell.slot}
                   className={`inventory-slot ${cell.item ? 'has-item' : ''}`}
-                  title={cell.item ? `${cell.item.id} (Count: ${cell.item.count})` : `Slot ${cell.slot}`}
-                >
+                  title={cell.item ? `${cell.item.id} (Count: ${cell.item.count})` : `Slot ${cell.slot}`}>
                   {cell.item ? (
                     <div className="slot-item-content">
                       <div className="item-emoji">{getItemEmoji(cell.item.id)}</div>
                       <span className="item-count">{cell.item.count}</span>
-                      {cell.item.damage > 0 && (
-                        <div className="durability-bar">
-                          <div 
-                            className="durability-fill" 
-                            style={{ 
-                              width: `${Math.max(0, 100 - (cell.item.damage * 100 / cell.item.max_damage))} %`,
-                              backgroundColor: cell.item.damage * 3 > cell.item.max_damage ? 'var(--danger)' : 'var(--success)'
-                            }}
-                          />
-                        </div>
-                      )}
                     </div>
-                  ) : (
-                    <span className="slot-number-muted">{cell.slot}</span>
-                  )}
+                  ) : (<span className="slot-number-muted">{cell.slot}</span>)}
                 </div>
               ))}
             </div>
@@ -223,266 +324,200 @@ function App() {
     );
   };
 
-  // Helper emoji map to make inventory items look nice without images
-  const getItemEmoji = (id) => {
-    if (!id) return "";
-    const name = id.split(':').pop();
-    if (name.includes('pickaxe')) return "⛏️";
-    if (name.includes('axe')) return "🪓";
-    if (name.includes('sword')) return "⚔️";
-    if (name.includes('shovel')) return "🥄";
-    if (name.includes('hoe')) return "🌱";
-    if (name.includes('planks')) return "🪵";
-    if (name.includes('log')) return "🌲";
-    if (name.includes('stick')) return "🥢";
-    if (name.includes('crafting_table')) return "📦";
-    if (name.includes('chest')) return "🧳";
-    if (name.includes('furnace')) return "🔥";
-    if (name.includes('shield')) return "🛡️";
-    if (name.includes('iron_ingot')) return "🪙";
-    if (name.includes('coal')) return "⬛";
-    if (name.includes('apple')) return "🍎";
-    if (name.includes('bread')) return "🍞";
-    if (name.includes('cobblestone')) return "🪨";
-    if (name.includes('air')) return "";
-    return "📦"; // Default block package
-  };
+  return (
+    <div className="detail-grid">
+      {/* Telemetry + quick actions */}
+      <section className="dashboard-column left-col">
+        <div className="card telemetry-card">
+          <div className="card-header font-glow">
+            {bot.bot} Telemetry
+            <span className={`inline-dot ${connected ? 'active' : ''}`} />
+            <span className="inline-dot-label">{connected ? `bridge ${bot.bridge_port}` : 'offline'}</span>
+          </div>
+          {state ? (
+            <div className="telemetry-stats">
+              <div className="stat-progress-bar">
+                <div className="bar-labels"><span>HP / Health</span>
+                  <span className="neon-value font-red">{state.health != null ? state.health.toFixed(1) : '—'} / 20</span></div>
+                <div className="bar-container"><div className="bar-fill fill-red" style={{ width: `${(state.health ?? 0) * 5}%` }} /></div>
+              </div>
+              <div className="stat-progress-bar">
+                <div className="bar-labels"><span>Hunger</span>
+                  <span className="neon-value font-orange">{state.foodLevel ?? '20'} / 20</span></div>
+                <div className="bar-container"><div className="bar-fill fill-orange" style={{ width: `${(state.foodLevel ?? 0) * 5}%` }} /></div>
+              </div>
+              <div className="telemetry-grid">
+                <div className="grid-item"><span className="item-label">Pos X</span><span className="item-val font-glow">{state.x != null ? state.x.toFixed(1) : '—'}</span></div>
+                <div className="grid-item"><span className="item-label">Pos Y</span><span className="item-val font-glow">{state.y != null ? state.y.toFixed(1) : '—'}</span></div>
+                <div className="grid-item"><span className="item-label">Pos Z</span><span className="item-val font-glow">{state.z != null ? state.z.toFixed(1) : '—'}</span></div>
+                <div className="grid-item"><span className="item-label">Dimension</span><span className="item-val font-glow uppercase">{state.dimension || 'Overworld'}</span></div>
+              </div>
+              <div className="goal-status-box">
+                <span className="item-label">Active Pathing Goal</span>
+                <div className="goal-content">
+                  {state.hasGoal
+                    ? <div className="goal-active font-cyan">
+                        {state.goalX != null
+                          ? `🎯 Goto (${state.goalX}, ${state.goalY}, ${state.goalZ})`
+                          : '🎯 Pathing in progress'}
+                      </div>
+                    : <div className="goal-inactive">Idle (No active target)</div>}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="telemetry-fallback">{error || "Waiting for live bridge data…"}</div>
+          )}
+        </div>
+
+        <div className="card actions-card">
+          <div className="card-header font-glow">Quick Actions <span className="warn-chip">fights controller</span></div>
+          <div className="actions-buttons-grid">
+            <button onClick={() => postCommand("cancel", "[Quick]")} className="btn btn-danger" disabled={!connected}>🛑 Cancel Task</button>
+            <button onClick={() => postCommand("goal clear", "[Quick]")} className="btn btn-secondary" disabled={!connected}>🧹 Clear Goal</button>
+            <button onClick={() => postCommand("pause", "[Quick]")} className="btn btn-secondary" disabled={!connected}>⏸️ Pause</button>
+            <button onClick={() => postCommand("resume", "[Quick]")} className="btn btn-primary" disabled={!connected}>▶️ Resume</button>
+          </div>
+        </div>
+      </section>
+
+      {/* Inventory + crafting */}
+      <section className="dashboard-column center-col">
+        <div className="card inventory-card">{renderInventoryGrid()}</div>
+        <div className="card crafting-card">
+          <div className="card-header font-glow">Manual Crafting <span className="warn-chip">fights controller</span></div>
+          <div className="crafting-controls">
+            <div className="crafting-count-selector">
+              <label>Count:</label>
+              <input type="number" min="1" max="64" value={craftingCount}
+                onChange={(e) => setCraftingCount(Math.max(1, parseInt(e.target.value) || 1))} />
+            </div>
+            {craftingStatus && <div className="crafting-status-alert font-cyan">{craftingStatus}</div>}
+          </div>
+          <div className="crafting-recipes-grid">
+            {[
+              ["minecraft:oak_planks", "🪵 Oak Planks"],
+              ["minecraft:stick", "🥢 Sticks"],
+              ["minecraft:crafting_table", "📦 Table"],
+              ["minecraft:chest", "🧳 Chest"],
+              ["minecraft:furnace", "🔥 Furnace"],
+              ["minecraft:shield", "🛡️ Shield"],
+              ["minecraft:stone_pickaxe", "⛏️ Stone Pick"],
+              ["minecraft:iron_pickaxe", "⛏️ Iron Pick"],
+            ].map(([id, label]) => (
+              <button key={id} onClick={() => handleCraftItem(id)} className="btn btn-secondary" disabled={!connected}>{label}</button>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Terminal + logs */}
+      <section className="dashboard-column right-col">
+        <div className="card terminal-card">
+          <div className="card-header font-glow">Command Terminal — {bot.bot}</div>
+          <div className="terminal-display">
+            {terminalHistory.map((item, idx) => (
+              <div key={idx} className={`terminal-line line-${item.type}`}>{item.text}</div>
+            ))}
+            <div ref={terminalEndRef} />
+          </div>
+          <form onSubmit={handleSendCommand} className="terminal-form">
+            <input type="text" placeholder="goto 100 64 250, mine iron_ore, cancel…"
+              value={command} onChange={(e) => setCommand(e.target.value)} disabled={!connected} />
+            <button type="submit" className="btn btn-primary" disabled={!connected}>Send</button>
+          </form>
+        </div>
+        <div className="card logs-card">
+          <div className="card-header font-glow">Controller Log — {bot.bot}</div>
+          <div className="logs-display">
+            {logs.length > 0
+              ? logs.map((line, idx) => <div key={idx} className="log-line">{line}</div>)
+              : <div className="log-line-muted">No recent log lines.</div>}
+            <div ref={logsEndRef} />
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// ---- root ----------------------------------------------------------------
+
+function App() {
+  const [fleet, setFleet] = useState(null);
+  const [mcServer, setMcServer] = useState(null);
+  const [selectedName, setSelectedName] = useState(null);
+  const [serverError, setServerError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchFleet = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/fleet`);
+        const data = await res.json();
+        if (cancelled) return;
+        setFleet(data);
+        setServerError("");
+        // Prefer a running bot for the initial drill-down; retain explicit user selection.
+        setSelectedName((current) => current ?? (
+          data.bots?.find((bot) => bot.runtime_state === 'active')?.bot
+          || data.bots?.[0]?.bot
+          || null
+        ));
+      } catch {
+        if (!cancelled) setServerError("Dashboard server unreachable");
+      }
+    };
+    fetchFleet();
+    const interval = setInterval(fetchFleet, 4000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchServer = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/server`);
+        const data = await res.json();
+        if (!cancelled) setMcServer(data);
+      } catch {
+        if (!cancelled) setMcServer({ online: false, error: 'Dashboard server unreachable' });
+      }
+    };
+    fetchServer();
+    const interval = setInterval(fetchServer, 5000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  const selectedBot = fleet?.bots?.find(b => b.bot === selectedName) || null;
 
   return (
     <div className="dashboard-root">
-      {/* Top Header */}
       <header className="dashboard-navbar card">
         <div className="navbar-brand">
           <span className="brand-glow">☄️ ANTIGRAVITY</span>
           <span className="brand-sub">MC Fleet Automation</span>
         </div>
-        
         <div className="navbar-status">
           <div className="status-connection">
-            <span className={`status-dot ${connected ? 'active' : ''}`} />
+            <span className={`status-dot ${fleet && !serverError ? 'active' : ''}`} />
             <span className="status-text">
-              {connected ? 'CONNECTED TO BRIDGE' : 'BRIDGE DISCONNECTED'}
+              {serverError ? 'DASHBOARD OFFLINE' : (fleet ? `${fleet.healthy_heartbeats}/${fleet.fleet_size} BOTS HEALTHY` : 'LOADING…')}
             </span>
           </div>
           <div className="status-port-info">
-            Bridge: <span className="neon-value">{bridgeInfo.host}:{bridgeInfo.port}</span>
+            {fleet?.generated_at && <>Updated <span className="neon-value">{fleet.generated_at.split('T')[1] || fleet.generated_at}</span></>}
           </div>
         </div>
       </header>
 
-      {/* Main Content Grid */}
-      <main className="dashboard-grid">
-        {/* Left Side Panel - Telemetry and Quick Actions */}
-        <section className="dashboard-column left-col">
-          {/* Telemetry Card */}
-          <div className="card telemetry-card">
-            <div className="card-header font-glow">Real-Time Telemetry</div>
-            
-            {state ? (
-              <div className="telemetry-stats">
-                {/* Health & Hunger */}
-                <div className="stat-progress-bar">
-                  <div className="bar-labels">
-                    <span>HP / Health</span>
-                    <span className="neon-value font-red">{state.health ? state.health.toFixed(1) : '20.0'} / 20</span>
-                  </div>
-                  <div className="bar-container">
-                    <div className="bar-fill fill-red" style={{ width: `${(state.health || 20) * 5}%` }} />
-                  </div>
-                </div>
+      <ServerOverview server={mcServer} />
 
-                <div className="stat-progress-bar">
-                  <div className="bar-labels">
-                    <span>Hunger</span>
-                    <span className="neon-value font-orange">{state.foodLevel || '20'} / 20</span>
-                  </div>
-                  <div className="bar-container">
-                    <div className="bar-fill fill-orange" style={{ width: `${(state.foodLevel || 20) * 5}%` }} />
-                  </div>
-                </div>
+      <FleetOverview fleet={fleet} selectedName={selectedName} onSelect={(b) => setSelectedName(b.bot)} />
 
-                {/* Grid stats */}
-                <div className="telemetry-grid">
-                  <div className="grid-item">
-                    <span className="item-label">Position X</span>
-                    <span className="item-val font-glow">{state.x ? state.x.toFixed(2) : '0.00'}</span>
-                  </div>
-                  <div className="grid-item">
-                    <span className="item-label">Position Y</span>
-                    <span className="item-val font-glow">{state.y ? state.y.toFixed(2) : '0.00'}</span>
-                  </div>
-                  <div className="grid-item">
-                    <span className="item-label">Position Z</span>
-                    <span className="item-val font-glow">{state.z ? state.z.toFixed(2) : '0.00'}</span>
-                  </div>
-                  <div className="grid-item">
-                    <span className="item-label">Dimension</span>
-                    <span className="item-val font-glow uppercase">{state.dimension || 'Overworld'}</span>
-                  </div>
-                </div>
-
-                {/* Pathing Goal Status */}
-                <div className="goal-status-box">
-                  <span className="item-label">Active Pathing Goal</span>
-                  <div className="goal-content">
-                    {state.hasGoal ? (
-                      <div className="goal-active font-cyan">
-                        🎯 Goto ({state.goalX}, {state.goalY}, {state.goalZ})
-                      </div>
-                    ) : (
-                      <div className="goal-inactive">Idle (No active target)</div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="telemetry-fallback">
-                {error || "Waiting for bot state data..."}
-              </div>
-            )}
-          </div>
-
-          {/* Quick Actions Card */}
-          <div className="card actions-card">
-            <div className="card-header font-glow">Quick Actions</div>
-            <div className="actions-buttons-grid">
-              <button 
-                onClick={() => executeQuickAction("cancel")} 
-                className="btn btn-danger"
-                disabled={!connected}
-              >
-                🛑 Cancel Active Task
-              </button>
-              <button 
-                onClick={() => executeQuickAction("goal clear")} 
-                className="btn btn-secondary"
-                disabled={!connected}
-              >
-                🧹 Clear Nav Goal
-              </button>
-              <button 
-                onClick={() => executeQuickAction("pause")} 
-                className="btn btn-secondary"
-                disabled={!connected}
-              >
-                ⏸️ Pause Pathfinder
-              </button>
-              <button 
-                onClick={() => executeQuickAction("resume")} 
-                className="btn btn-primary"
-                disabled={!connected}
-              >
-                ▶️ Resume Pathfinder
-              </button>
-            </div>
-          </div>
-        </section>
-
-        {/* Center Panel - Inventory and Manual Crafting */}
-        <section className="dashboard-column center-col">
-          <div className="card inventory-card">
-            {renderInventoryGrid()}
-          </div>
-
-          {/* Recipe Crafting Panel */}
-          <div className="card crafting-card">
-            <div className="card-header font-glow">Auto-Crafting Engine</div>
-            
-            <div className="crafting-controls">
-              <div className="crafting-count-selector">
-                <label>Target Count:</label>
-                <input 
-                  type="number" 
-                  min="1" 
-                  max="64" 
-                  value={craftingCount}
-                  onChange={(e) => setCraftingCount(Math.max(1, parseInt(e.target.value) || 1))}
-                />
-              </div>
-
-              {craftingStatus && (
-                <div className="crafting-status-alert font-cyan">
-                  {craftingStatus}
-                </div>
-              )}
-            </div>
-
-            <div className="crafting-recipes-grid">
-              <button onClick={() => handleCraftItem("minecraft:oak_planks")} className="btn btn-secondary" disabled={!connected}>
-                🪵 Oak Planks (x4)
-              </button>
-              <button onClick={() => handleCraftItem("minecraft:stick")} className="btn btn-secondary" disabled={!connected}>
-                🥢 Sticks (x4)
-              </button>
-              <button onClick={() => handleCraftItem("minecraft:crafting_table")} className="btn btn-secondary" disabled={!connected}>
-                📦 Crafting Table
-              </button>
-              <button onClick={() => handleCraftItem("minecraft:chest")} className="btn btn-secondary" disabled={!connected}>
-                🧳 Chest
-              </button>
-              <button onClick={() => handleCraftItem("minecraft:furnace")} className="btn btn-secondary" disabled={!connected}>
-                🔥 Furnace
-              </button>
-              <button onClick={() => handleCraftItem("minecraft:shield")} className="btn btn-secondary" disabled={!connected}>
-                🛡️ Shield
-              </button>
-              <button onClick={() => handleCraftItem("minecraft:stone_pickaxe")} className="btn btn-secondary" disabled={!connected}>
-                ⛏️ Stone Pickaxe
-              </button>
-              <button onClick={() => handleCraftItem("minecraft:iron_pickaxe")} className="btn btn-secondary" disabled={!connected}>
-                ⛏️ Iron Pickaxe
-              </button>
-            </div>
-          </div>
-        </section>
-
-        {/* Right Side Panel - Command Terminal & Streamer Logs */}
-        <section className="dashboard-column right-col">
-          {/* Terminal Console */}
-          <div className="card terminal-card">
-            <div className="card-header font-glow">Interactive Command Terminal</div>
-            
-            <div className="terminal-display">
-              {terminalHistory.map((item, idx) => (
-                <div key={idx} className={`terminal-line line-${item.type}`}>
-                  {item.text}
-                </div>
-              ))}
-              <div ref={terminalEndRef} />
-            </div>
-
-            <form onSubmit={handleSendCommand} className="terminal-form">
-              <input 
-                type="text" 
-                placeholder="Type command (e.g. goto 100 64 250, mine iron_ore)..." 
-                value={command}
-                onChange={(e) => setCommand(e.target.value)}
-                disabled={!connected}
-              />
-              <button type="submit" className="btn btn-primary" disabled={!connected}>
-                Send
-              </button>
-            </form>
-          </div>
-
-          {/* Log Streamer */}
-          <div className="card logs-card">
-            <div className="card-header font-glow">Live Telemetry Logs</div>
-            <div className="logs-display">
-              {logs.length > 0 ? (
-                logs.map((logLine, idx) => (
-                  <div key={idx} className="log-line">
-                    {logLine}
-                  </div>
-                ))
-              ) : (
-                <div className="log-line-muted">No recent logs recorded.</div>
-              )}
-              <div ref={logsEndRef} />
-            </div>
-          </div>
-        </section>
-      </main>
+      {selectedBot
+        ? <BotDetail bot={selectedBot} />
+        : <div className="card telemetry-fallback" style={{ margin: '0 1rem' }}>Select a bot above to inspect it live.</div>}
     </div>
   );
 }

@@ -13,6 +13,8 @@ from .resource_manager import ResourceManager
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
 import logging
 
+from ..observability import begin_operation, end_operation
+
 logger = logging.getLogger(__name__)
 
 
@@ -190,6 +192,13 @@ class PhaseExecutor:
         
         retries = 0
         while retries <= self.max_retries:
+            operation = begin_operation(
+                "phase_attempt",
+                handler.get_name(),
+                phase=phase.name,
+                attempt=retries + 1,
+                max_attempts=self.max_retries + 1,
+            )
             try:
                 # Refresh inventory before phase
                 self.resources.refresh_inventory()
@@ -198,6 +207,12 @@ class PhaseExecutor:
                 self._report_progress(phase, 0.0, f"Starting {handler.get_name()}")
                 result = self._coerce_result(handler.execute(self.client, self.resources, self.state))
                 self._log_result_details(phase, result)
+                end_operation(
+                    operation,
+                    "success" if result.success else "failure",
+                    reason=result.reason,
+                    attempt=retries + 1,
+                )
                 
                 if result.success:
                     self._report_progress(phase, 1.0, f"Completed {handler.get_name()}")
@@ -220,11 +235,24 @@ class PhaseExecutor:
                     self.state.record_phase_payload(phase, result.data)
                     
             except PlayerDeathDetected as exc:
+                end_operation(
+                    operation,
+                    "interrupted",
+                    reason=str(exc),
+                    interruption="player_death",
+                )
                 self.interruption_reason = "player_death"
                 print(f"Phase {phase.name} interrupted for death recovery: {exc}")
                 handler.on_exit(self.client, self.resources, self.state)
                 return False
             except Exception as e:
+                end_operation(
+                    operation,
+                    "error",
+                    reason=str(e),
+                    error_type=type(e).__name__,
+                    attempt=retries + 1,
+                )
                 print(f"Error in phase {phase.name}: {e}")
                 
                 # Screenshot on error

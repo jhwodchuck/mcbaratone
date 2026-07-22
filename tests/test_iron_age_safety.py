@@ -46,12 +46,16 @@ def test_iron_phase_resume_counts_existing_ingots_before_mining(monkeypatch):
 
 def test_iron_phase_recovers_critical_health_before_mining(monkeypatch):
     class Transport:
+        def __init__(self):
+            self.health = 6.0
+
         def dispatch(self, route, _payload):
             if route == "get_state":
-                return {"health": 6.0, "food_level": 16}
+                return {"health": self.health, "food_level": 16}
             return {}
 
-    client = SimpleNamespace(transport=Transport())
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
     calls = []
     monkeypatch.setattr(
         iron_age,
@@ -61,11 +65,27 @@ def test_iron_phase_recovers_critical_health_before_mining(monkeypatch):
     monkeypatch.setattr(
         iron_age,
         "acquire_emergency_food",
-        lambda *_args, **_kwargs: calls.append("acquire") or True,
+        lambda *_args, **_kwargs: calls.append("acquire")
+        or setattr(transport, "health", 12.0)
+        or True,
     )
 
     assert iron_age.FoodAndIronHandler()._stabilize_hunger(client)
     assert calls == ["recover", "acquire"]
+
+
+def test_iron_phase_holds_when_health_recovery_stays_critical(monkeypatch):
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                return {"health": 6.2, "food_level": 7}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    monkeypatch.setattr(iron_age, "recover_health", lambda *_a, **_k: False)
+    monkeypatch.setattr(iron_age, "acquire_emergency_food", lambda *_a, **_k: False)
+
+    assert iron_age.FoodAndIronHandler()._stabilize_hunger(client) is False
 
 
 def test_iron_phase_skips_hunt_on_minimum_food(monkeypatch):

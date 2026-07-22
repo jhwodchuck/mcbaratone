@@ -7,6 +7,8 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.mob.MobEntity;
+import net.minecraft.entity.projectile.ProjectileEntity;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.math.Box;
 import net.minecraft.server.integrated.IntegratedServer;
@@ -19,7 +21,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Command handler for state queries: get_state, get_entities.
+ * Command handler for state queries: get_state, get_entities, and combat snapshots.
  */
 public class StateCommandHandler extends AbstractCommandHandler {
 
@@ -47,6 +49,8 @@ public class StateCommandHandler extends AbstractCommandHandler {
                 return handleGetState(client, baritone);
             case "entities":
                 return handleGetEntities(client, params);
+            case "combat_snapshot":
+                return handleCombatSnapshot(client, baritone, params);
             default:
                 return CommandResult.error("Unknown state action: " + action);
         }
@@ -92,11 +96,24 @@ public class StateCommandHandler extends AbstractCommandHandler {
             data.addProperty("experience_level", player.experienceLevel);
             data.addProperty("experience_total", player.totalExperience);
             data.addProperty("is_dead", player.isDead());
+            data.addProperty("entity_id", player.getId());
+            data.addProperty("entity_uuid", player.getUuidAsString());
 
             // Player Flags
             data.addProperty("is_sprinting", player.isSprinting());
             data.addProperty("is_sneaking", player.isSneaking());
             data.addProperty("is_on_ground", player.isOnGround());
+            data.addProperty("armor_points", player.getArmor());
+            int armorCount = 0;
+            for (int slot = 36; slot < 40; slot++) {
+                if (!player.getInventory().getStack(slot).isEmpty()) armorCount++;
+            }
+            data.addProperty("armor_count", armorCount);
+            data.addProperty("main_hand", Registries.ITEM.getId(player.getMainHandStack().getItem()).toString());
+            data.addProperty("off_hand", Registries.ITEM.getId(player.getOffHandStack().getItem()).toString());
+            data.addProperty("is_using_item", player.isUsingItem());
+            data.addProperty("is_blocking", player.isBlocking());
+            data.addProperty("attack_cooldown", player.getAttackCooldownProgress(0.0f));
 
             // Active Effects
             JsonArray effects = new JsonArray();
@@ -249,6 +266,75 @@ public class StateCommandHandler extends AbstractCommandHandler {
         return CommandResult.success(dataRef.get());
     }
 
+    /**
+     * Capture player readiness and nearby entities in one client-thread task so
+     * combat policy never combines observations from different game ticks.
+     */
+    private CommandResult handleCombatSnapshot(MinecraftClient client, IBaritone baritone, JsonObject params) {
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<CommandResult> resultRef = new AtomicReference<>();
+        int radius = Math.max(1, Math.min(64, params.has("radius") ? params.get("radius").getAsInt() : 16));
+
+        client.execute(() -> {
+            try {
+                if (client.world == null || client.player == null) {
+                    resultRef.set(CommandResult.error("World or player not available"));
+                    return;
+                }
+
+                CommandResult stateResult = handleGetState(client, baritone);
+                if (!stateResult.isSuccess()) {
+                    resultRef.set(stateResult);
+                    return;
+                }
+
+                ClientPlayerEntity player = client.player;
+                Box box = player.getBoundingBox().expand(radius);
+                JsonArray entityList = new JsonArray();
+                JsonArray serializationErrors = new JsonArray();
+                int skippedEntities = 0;
+                for (Entity entity : client.world.getOtherEntities(player, box)) {
+                    if (entity.distanceTo(player) > radius) continue;
+                    try {
+                        entityList.add(serializeEntity(entity, player));
+                    } catch (Exception e) {
+                        skippedEntities++;
+                        JsonObject error = new JsonObject();
+                        error.addProperty("id", entity.getId());
+                        error.addProperty("type", safeEntityType(entity));
+                        error.addProperty("error", e.getClass().getSimpleName() + ": " + e.getMessage());
+                        serializationErrors.add(error);
+                    }
+                }
+
+                JsonObject data = new JsonObject();
+                data.addProperty("snapshot_version", 1);
+                data.addProperty("tick", client.world.getTime());
+                data.addProperty("radius", radius);
+                data.add("player", stateResult.getData());
+                data.add("entities", entityList);
+                data.addProperty("count", entityList.size());
+                data.addProperty("skipped_count", skippedEntities);
+                if (!serializationErrors.isEmpty()) data.add("serialization_errors", serializationErrors);
+                resultRef.set(CommandResult.success(data));
+            } catch (Exception e) {
+                resultRef.set(CommandResult.error("Failed to get combat snapshot: " + e.getMessage()));
+            } finally {
+                latch.countDown();
+            }
+        });
+
+        try {
+            if (!latch.await(5, TimeUnit.SECONDS)) {
+                return CommandResult.error("Timeout waiting for combat snapshot");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return CommandResult.error("Interrupted while waiting for combat snapshot");
+        }
+        return resultRef.get() != null ? resultRef.get() : CommandResult.error("Combat snapshot unavailable");
+    }
+
     private JsonObject serializeEntity(Entity entity, ClientPlayerEntity player) {
         JsonObject entityData = new JsonObject();
         entityData.addProperty("id", entity.getId());
@@ -277,6 +363,23 @@ public class StateCommandHandler extends AbstractCommandHandler {
             entityData.addProperty("max_health", living.getMaxHealth());
             entityData.addProperty("age", living.isBaby() ? -1 : 0);
             entityData.addProperty("is_baby", living.isBaby());
+        }
+
+        if (entity instanceof MobEntity mob) {
+            Entity target = mob.getTarget();
+            if (target != null) {
+                entityData.addProperty("target_id", target.getId());
+                entityData.addProperty("target_uuid", target.getUuidAsString());
+                entityData.addProperty("target_type", safeEntityType(target));
+            }
+            entityData.addProperty("is_aggressive", target == player);
+            entityData.addProperty("can_see_player", mob.canSee(player));
+        }
+
+        if (entity instanceof ProjectileEntity projectile && projectile.getOwner() != null) {
+            Entity owner = projectile.getOwner();
+            entityData.addProperty("owner_id", owner.getId());
+            entityData.addProperty("owner_type", safeEntityType(owner));
         }
 
         if (entity instanceof net.minecraft.entity.passive.TameableEntity tameable) {

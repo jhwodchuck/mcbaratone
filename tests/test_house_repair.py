@@ -161,6 +161,45 @@ def test_good_house_rejects_even_one_unrepaired_survival_shell_hole(monkeypatch)
     assert not base.build_good_house(client, *origin)
 
 
+def test_good_house_places_partial_floor_when_full_stone_target_is_unavailable(monkeypatch):
+    origin = (10, 64, 20)
+    transport = _WorldTransport()
+    client = SimpleNamespace(transport=transport)
+    inventory_counts = {
+        "minecraft:cobblestone": 10,
+        "minecraft:cobbled_deepslate": 0,
+        "minecraft:oak_planks": 200,
+    }
+
+    monkeypatch.setattr(
+        base,
+        "count_item",
+        lambda _client, item_id: inventory_counts.get(item_id, 0),
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.resources.gather_stone",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(base, "wait_for_safe_daylight", lambda *_a, **_k: True)
+
+    def place(_client, x, y, z, item_id):
+        if inventory_counts.get(item_id, 0) <= 0:
+            return False
+        inventory_counts[item_id] -= 1
+        transport.blocks[(x, y, z)] = item_id
+        return True
+
+    monkeypatch.setattr(base, "robust_place", place)
+
+    assert not base.build_good_house(client, *origin)
+    floor = [
+        position
+        for position, block_id in transport.blocks.items()
+        if block_id == "minecraft:cobblestone" and position[1] == origin[1]
+    ]
+    assert len(floor) == 10
+
+
 def test_exact_placement_accepts_matching_existing_block_without_inventory(monkeypatch):
     class Context:
         client = SimpleNamespace()
