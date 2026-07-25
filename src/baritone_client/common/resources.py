@@ -1038,6 +1038,36 @@ def _manual_column_descend(
     return py <= start_y - 1
 
 
+
+def ensure_tunnel_lighting(client, state, last_torch_pos) -> tuple:
+    """
+    Periodically places a torch if underground and moved far enough.
+    Returns (placed_bool, new_last_torch_pos).
+    """
+    from .base import place_torch
+    import time
+
+    pos = state.get("block_position", state.get("position", {}))
+    x, y, z = float(pos.get("x", 0)), float(pos.get("y", 0)), float(pos.get("z", 0))
+
+    if y >= 60:
+        return False, last_torch_pos
+    
+    if not last_torch_pos:
+        return False, (x, y, z)
+
+    lx, ly, lz = last_torch_pos
+    dist = ((x - lx)**2 + (y - ly)**2 + (z - lz)**2)**0.5
+    
+    if dist > 10:
+        print("DEBUG: Distance from last torch > 10, pausing to place a torch")
+        client.transport.dispatch("cancel", {})
+        time.sleep(0.5)
+        place_torch(client, int(x), int(y), int(z))
+        return True, (x, y, z)
+    
+    return False, last_torch_pos
+
 def _descend_to_stone_layer(
     client,
     *,
@@ -1111,8 +1141,10 @@ def _descend_to_stone_layer(
         "tunnel", {"x": target_x, "y": target_y, "z": target_z, "radius": 2}
     )
 
+
     start = time.time()
     checks = 0
+    last_torch_pos = None
     while time.time() - start < timeout:
         time.sleep(3)
         checks += 1
@@ -1121,6 +1153,12 @@ def _descend_to_stone_layer(
         )
         if after is None:
             continue
+            
+        placed, last_torch_pos = ensure_tunnel_lighting(client, after, last_torch_pos)
+        if placed:
+            client.transport.dispatch("tunnel", {"x": target_x, "y": target_y, "z": target_z, "radius": 2})
+            
+
         apos = after.get("block_position", after.get("position", {}))
         ay = int(apos.get("y", after.get("y", py)))
         # Reached the target depth, or descended far enough that we are
@@ -1181,6 +1219,7 @@ def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
         direct_failures = 0
         relocation_attempted = False
         descent_attempted = False
+        last_torch_pos = None
 
         while time.time() - start < timeout:
             if free_inventory_slots(client) < 2:
@@ -1207,6 +1246,10 @@ def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
             if state is None:
                 time.sleep(0.5)
                 continue
+                
+            placed, last_torch_pos = ensure_tunnel_lighting(client, state, last_torch_pos)
+            if placed:
+                client.transport.dispatch("mine", {"blocks": STONE_BLOCKS, "quantity": count + 10})
             is_pathing = state.get("is_pathing", True)
             if not is_pathing:
                 idle_checks += 1

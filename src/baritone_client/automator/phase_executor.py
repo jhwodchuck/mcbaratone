@@ -268,6 +268,8 @@ class PhaseExecutor:
                 self.interruption_reason = "survival_recovery"
                 print(f"Phase {phase.name} yielded for survival recovery: {exc}")
                 handler.on_exit(self.client, self.resources, self.state)
+                # Add a backoff delay to throttle yield loops when holding for survival recovery
+                time.sleep(2.0)
                 return False
             except Exception as e:
                 end_operation(

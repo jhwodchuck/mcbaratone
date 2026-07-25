@@ -8,6 +8,7 @@ from .waits import (
     wait_for_pathing_stop, 
     wait_for_gui_open, 
     wait_for_arrival,   # New
+    cancel_pathing,
     close_screen
 )
 from .interaction import robust_interact_block  # Updated from robust_interact

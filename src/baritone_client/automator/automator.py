@@ -170,7 +170,8 @@ class EndGameAutomator:
         print("Configuring Baritone settings...")
         settings = [
             "assumeWalkOnLava false",
-            "assumeWalkOnWater false",
+            "assumeWalkOnWater true",
+            "avoidWater true", # Prevent pathing into deep water bodies
             "costLava 200", # Extremely high cost to avoid lava
             "allowParkour true",
             "allowSprint true",

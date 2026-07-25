@@ -1650,13 +1650,21 @@ def withdraw_required_from_catalog(
         try:
             state_resp = client.transport.dispatch("get_state", {})
             live_position = state_resp.get("block_position") or state_resp.get("position") or {}
-            already_near = all(axis in live_position for axis in ("x", "y", "z")) and (
+            dist_to_container = (
                 (float(live_position["x"]) - position[0]) ** 2
                 + (float(live_position["y"]) - position[1]) ** 2
                 + (float(live_position["z"]) - position[2]) ** 2
-            ) ** 0.5 <= 4.5
+            ) ** 0.5 if all(axis in live_position for axis in ("x", "y", "z")) else 999.0
+            already_near = dist_to_container <= 4.5
         except (AttributeError, TypeError, ValueError):
             already_near = False
+            dist_to_container = 999.0
+
+        if not already_near and dist_to_container > 12.0:
+            from .navigation import goto
+            print(f"STORAGE: bot is {dist_to_container:.1f}m away from cataloged container at {position}; navigating closer first...")
+            goto(client, *position, timeout=60.0, check_interval=1.0, tolerance=3.0)
+
         if not already_near and not harness_ops.move_near(
             client, *position, timeout=90.0
         ):

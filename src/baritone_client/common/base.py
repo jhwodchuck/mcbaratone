@@ -51,12 +51,14 @@ def robust_place(client, x: int, y: int, z: int, item_id: str) -> bool:
     from . import harness_ops
     if harness_ops.available():
         try:
-            return harness_ops.place_block_exact(client, x, y, z, item_id)
+            if harness_ops.place_block_exact(client, x, y, z, item_id):
+                return True
+            print(f"  harness place returned False at {(x, y, z)}")
         except Exception as e:
             print(f"  harness place failed at {(x, y, z)}: {e}")
     if not select_item(client, item_id, allow_swap=True):
         return False
-    return safe_place_block(client, x, y, z)
+    return safe_place_block(client, x, y, z, block_id=item_id)
 
 
 def first_available_item(client, candidates) -> Optional[str]:
@@ -405,6 +407,38 @@ def place_bed(client, x: int, y: int, z: int) -> bool:
     return True
 
 
+def place_torch(client, x: int, y: int, z: int) -> bool:
+    """
+    Place a torch at the specified location.
+    
+    Returns:
+        True if placed
+    """
+    existing_block = _house_block_id(client, x, y, z)
+    if existing_block == "minecraft:torch":
+        return True
+
+    # Try to craft torches if none available
+    if count_item(client, "minecraft:torch") < 1:
+        if count_item(client, "minecraft:stick") >= 1 and (count_item(client, "minecraft:coal") >= 1 or count_item(client, "minecraft:charcoal") >= 1):
+            craft(client, "minecraft:torch", 4)
+            time.sleep(0.5)
+        else:
+            print("  Need torches (or coal/charcoal and sticks to craft)")
+            return False
+
+    if not is_position_safe(client, x, y, z):
+        print(f"  Skipping placement at ({x}, {y}, {z}) - Target is liquid")
+        return False
+
+    if not robust_place(client, x, y, z, "minecraft:torch"):
+        print("  Place torch failed")
+        return False
+
+    time.sleep(0.5)
+    return True
+
+
 def setup_base(
     client,
     location: Optional[Tuple[int, int, int]] = None,
@@ -441,6 +475,13 @@ def setup_base(
     
     # Optional: try to place bed
     placed_bed = place_bed(client, x + 2, y, z + 2)
+    
+    # Place torches for spawn proofing
+    place_torch(client, x + 3, y + 1, z + 3) # Interior center
+    place_torch(client, x + 3, y + 1, z - 1) # North exterior
+    place_torch(client, x + 3, y + 1, z + 7) # South exterior
+    place_torch(client, x - 1, y + 1, z + 3) # West exterior
+    place_torch(client, x + 7, y + 1, z + 3) # East exterior
     
     if placed_crafting and placed_furnace and placed_chest:
         print("  Base setup complete!")

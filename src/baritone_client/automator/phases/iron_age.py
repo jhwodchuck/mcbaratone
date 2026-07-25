@@ -47,7 +47,7 @@ class FoodAndIronHandler(PhaseHandler):
     _INITIAL_IRON_TARGET = 15
     _IRON_BANK_TARGET = 64
     _IRON_BANK_BATCH = 8
-    _INITIAL_IRON_TRANSITION_Y = -58
+    _INITIAL_IRON_TRANSITION_Y = 15
 
     def __init__(self) -> None:
         self.state: Optional[StateManager] = None
