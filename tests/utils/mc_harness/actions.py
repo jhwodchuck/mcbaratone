@@ -34,7 +34,7 @@ def do_goto(
         target: Target position dict with x, y, z keys
         timeout: Maximum time to wait for pathing to complete (default 12.0)
         arrival_radius: Maximum distance from target to consider "arrived" (default 1.5)
-        start_move_timeout: Time to wait for movement to start (default 2.0)
+        start_move_timeout: Time to wait for movement to start (default 8.0)
         start_move_min_dist: Minimum distance to move to consider "started" (default 0.5)
         require_arrival: If True, return False if not within arrival_radius (default True)
     

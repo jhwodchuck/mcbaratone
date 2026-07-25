@@ -356,16 +356,18 @@ def plan_escape_candidates(
     base_angle = math.atan2(away_z / length, away_x / length)
     candidates: List[EscapeCandidate] = []
     offsets = (0.0, math.pi / 4, -math.pi / 4, math.pi / 2, -math.pi / 2)
+    y_offsets = (0, 1, -1)
     for index, offset in enumerate(offsets):
         angle = base_angle + offset
-        candidates.append(
-            EscapeCandidate(
-                x=int(round(px + math.cos(angle) * distance)),
-                y=py,
-                z=int(round(pz + math.sin(angle) * distance)),
-                direction_score=1.0 - index * 0.1,
+        for dy in y_offsets:
+            candidates.append(
+                EscapeCandidate(
+                    x=int(round(px + math.cos(angle) * distance)),
+                    y=py + dy,
+                    z=int(round(pz + math.sin(angle) * distance)),
+                    direction_score=1.0 - index * 0.1 - abs(dy) * 0.05,
+                )
             )
-        )
     return candidates
 
 
