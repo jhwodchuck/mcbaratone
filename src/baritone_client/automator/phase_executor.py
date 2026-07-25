@@ -268,7 +268,30 @@ class PhaseExecutor:
                 self.interruption_reason = "survival_recovery"
                 print(f"Phase {phase.name} yielded for survival recovery: {exc}")
                 handler.on_exit(self.client, self.resources, self.state)
-                # Add a backoff delay to throttle yield loops when holding for survival recovery
+                # This used to just sleep(2.0) and return, re-entering the
+                # phase from the top on the next tick. ensure_supplies raises
+                # this specifically when eat_until_hunger fails because
+                # nothing is CARRIED -- it never hunts. With no active
+                # recovery here, food never rises, so the phase replayed the
+                # identical sequence (walk to furnace, smelt, hit the food
+                # gate, raise) forever. Confirmed live: Bot08 looped this for
+                # 700+ attempts at a fixed food=8 while sitting at full
+                # health, never once leaving its base to find food.
+                # acquire_emergency_food is the same bounded, threat-checked
+                # hunt already used elsewhere for this; give food a real
+                # chance to recover before the next attempt instead of a
+                # bare pause.
+                try:
+                    from ..common.combat import acquire_emergency_food
+
+                    acquire_emergency_food(self.client, minimum_food=14, timeout=120.0)
+                except PlayerDeathDetected:
+                    raise
+                except Exception as food_exc:
+                    print(
+                        f"Phase {phase.name} survival-recovery food attempt "
+                        f"failed non-fatally: {food_exc}"
+                    )
                 time.sleep(2.0)
                 return False
             except Exception as e:

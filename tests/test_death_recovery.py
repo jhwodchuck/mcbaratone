@@ -327,6 +327,99 @@ def test_phase_executor_does_not_retry_safe_survival_hold():
     assert handler.exited
 
 
+def test_survival_recovery_actively_seeks_food_before_retrying(monkeypatch):
+    """Regression: the yield handler used to just sleep(2.0) and return, so a
+    phase that keeps hitting the same food gate (ensure_supplies raises this
+    when eat_until_hunger fails because nothing is CARRIED -- it never hunts)
+    replayed identically forever with food frozen. Confirmed live: Bot08
+    looped 700+ attempts at food=8/20 sitting at full health, never once
+    leaving base to find food. The handler must actively attempt recovery,
+    not just pause."""
+    from baritone_client.automator import phase_executor as phase_executor_module
+
+    class HoldingHandler(PhaseHandler):
+        def __init__(self):
+            self.calls = 0
+            self.exited = False
+
+        def execute(self, client, resources, state):
+            self.calls += 1
+            raise SurvivalRecoveryRequired("food remains 8/20 while ensuring supplies")
+
+        def get_name(self):
+            return "Holding phase"
+
+        def on_exit(self, client, resources, state):
+            self.exited = True
+
+    state = SimpleNamespace(
+        update_progress=lambda *_args, **_kwargs: None,
+        record_phase_payload=lambda *_args, **_kwargs: None,
+    )
+    resources = SimpleNamespace(refresh_inventory=lambda: None)
+    handler = HoldingHandler()
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
+    executor = PhaseExecutor(
+        client, resources, state, max_retries=3, retry_delay=0, screenshot_enabled=False
+    )
+    executor.register_handler(Phase.FOOD_AND_IRON, handler)
+
+    attempts = []
+    monkeypatch.setattr(
+        phase_executor_module.time, "sleep", lambda _s: None
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.combat.acquire_emergency_food",
+        lambda _client, **kwargs: attempts.append(kwargs) or True,
+    )
+
+    assert not executor.execute_phase(Phase.FOOD_AND_IRON)
+    assert executor.interruption_reason == "survival_recovery"
+    assert attempts == [{"minimum_food": 14, "timeout": 120.0}]
+
+
+def test_survival_recovery_food_attempt_failure_does_not_crash_the_executor(
+    monkeypatch,
+):
+    """A failed food hunt must not turn the yield into an unhandled crash --
+    the phase should still cleanly yield and let the caller's backoff/retry
+    loop try again."""
+    from baritone_client.automator import phase_executor as phase_executor_module
+
+    class HoldingHandler(PhaseHandler):
+        def execute(self, client, resources, state):
+            raise SurvivalRecoveryRequired("food remains 8/20 while ensuring supplies")
+
+        def get_name(self):
+            return "Holding phase"
+
+        def on_exit(self, client, resources, state):
+            pass
+
+    state = SimpleNamespace(
+        update_progress=lambda *_args, **_kwargs: None,
+        record_phase_payload=lambda *_args, **_kwargs: None,
+    )
+    resources = SimpleNamespace(refresh_inventory=lambda: None)
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
+    executor = PhaseExecutor(
+        client, resources, state, max_retries=3, retry_delay=0, screenshot_enabled=False
+    )
+    executor.register_handler(Phase.FOOD_AND_IRON, HoldingHandler())
+
+    monkeypatch.setattr(phase_executor_module.time, "sleep", lambda _s: None)
+
+    def _boom(_client, **_kwargs):
+        raise RuntimeError("bridge unreachable")
+
+    monkeypatch.setattr(
+        "baritone_client.common.combat.acquire_emergency_food", _boom
+    )
+
+    assert not executor.execute_phase(Phase.FOOD_AND_IRON)
+    assert executor.interruption_reason == "survival_recovery"
+
+
 def test_bootstrap_starter_pickaxe_skips_when_already_carried(monkeypatch):
     from baritone_client.common import inventory as inv
     from baritone_client.common import resources
