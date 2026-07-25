@@ -198,9 +198,9 @@ def ensure_crafting_output_space(ctx, screen=None) -> bool:
     data = screen.get("data", screen)
     slots = data.get("slots", [])
     screen_type = data.get("type", "")
-    if screen_type in {"class_1723", "PlayerScreenHandler"}:
+    if "Player" in screen_type or screen_type in {"class_1723", "PlayerScreenHandler"}:
         player_slot_range = range(9, 45)
-    elif screen_type in {"class_1714", "CraftingScreenHandler"}:
+    elif "Crafting" in screen_type or screen_type in {"class_1714", "CraftingScreenHandler"}:
         player_slot_range = range(10, 46)
     else:
         ctx.log_event(
@@ -1692,10 +1692,10 @@ def craft_recipe_manual(
         data = screen.get("data", screen)
         slots = data.get("slots", [])
         screen_type = data.get("type", "")
-        if len(slots) < 46 or screen_type not in {
-            "class_1714",
-            "CraftingScreenHandler",
-        }:
+        if len(slots) < 46 or (
+            "Crafting" not in screen_type
+            and screen_type not in {"class_1714", "CraftingScreenHandler"}
+        ):
             ctx.log_event(
                 f"Manual recipe failed: expected crafting table, got "
                 f"{screen_type} ({len(slots)} slots)"
@@ -2061,7 +2061,10 @@ def craft_planks_manual(ctx, plank_id: str, output_count: int = 4) -> bool:
         data = screen.get("data", screen)
         slots = data.get("slots", [])
         screen_type = data.get("type", "")
-        if len(slots) < 46 or screen_type not in {"class_1723", "PlayerScreenHandler"}:
+        if len(slots) < 46 or (
+            "Player" not in screen_type
+            and screen_type not in {"class_1723", "PlayerScreenHandler"}
+        ):
             ctx.log_event(
                 f"Manual plank craft expected player 2x2 screen, got {screen_type} ({len(slots)} slots)"
             )
@@ -2131,7 +2134,10 @@ def craft_crafting_table_manual(ctx) -> bool:
     data = screen.get("data", screen)
     slots = data.get("slots", [])
     screen_type = data.get("type", "")
-    if len(slots) < 46 or screen_type not in {"class_1723", "PlayerScreenHandler"}:
+    if len(slots) < 46 or (
+        "Player" not in screen_type
+        and screen_type not in {"class_1723", "PlayerScreenHandler"}
+    ):
         ctx.log_event(
             f"Manual crafting table failed: expected player 2x2 screen, got {screen_type} ({len(slots)} slots)"
         )
