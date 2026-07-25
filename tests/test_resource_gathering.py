@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from baritone_client.common import inventory, resources
 
 
@@ -1293,3 +1295,80 @@ def test_manual_column_descend_refuses_a_long_fall(monkeypatch):
 
     assert resources._manual_column_descend(client, target_y=70) is False
     assert not any(route == "dig_block" for route, _ in transport.calls)
+
+
+def test_ensure_supplies_raises_on_death_instead_of_looping_forever(monkeypatch):
+    """Regression: ensure_supplies had no death/health check at all, so a
+    bootstrap loop (e.g. _ensure_mining_pickaxe -> ensure_supplies({"minecraft
+    :wooden_pickaxe": 1})) kept retrying a gather_wood/craft chain that
+    internally refuses on low health, with nothing in THIS loop ever noticing
+    the player was dead. Confirmed live: Bot10 looped "Ensuring supplies" for
+    its full 600s while get_state().is_dead was already True."""
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+
+    def dispatch(route, payload):
+        transport.calls.append((route, payload))
+        if route == "get_state":
+            return {"health": 0.0, "food_level": 14, "is_dead": True}
+        return {}
+
+    transport.dispatch = dispatch
+    monkeypatch.setattr(resources, "count_item", lambda _c, _item: 0)
+
+    with pytest.raises(resources.PlayerDeathDetected):
+        resources.ensure_supplies(client, {"minecraft:wooden_pickaxe": 1})
+    assert ("cancel", {}) in transport.calls
+
+
+def test_ensure_supplies_recovers_health_before_gathering(monkeypatch):
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+
+    def dispatch(route, payload):
+        transport.calls.append((route, payload))
+        if route == "get_state":
+            return {"health": 8.0, "food_level": 14, "is_dead": False}
+        return {}
+
+    transport.dispatch = dispatch
+    # Never satisfied: keeps the loop iterating so we can observe the
+    # recovery call without needing to simulate a full successful craft.
+    monkeypatch.setattr(resources, "count_item", lambda _c, _item: 0)
+    monkeypatch.setattr(resources.time, "sleep", lambda _s: None)
+    recovered = []
+
+    def fake_recover_health(*_a, **_k):
+        recovered.append(True)
+        # False -> ensure_supplies itself raises SurvivalRecoveryRequired,
+        # which stops the test loop deterministically via the real code path.
+        return False
+
+    monkeypatch.setattr(
+        "baritone_client.common.combat.recover_health", fake_recover_health
+    )
+
+    with pytest.raises(resources.SurvivalRecoveryRequired):
+        resources.ensure_supplies(client, {"minecraft:stick": 1})
+
+    assert recovered == [True]
+
+
+def test_ensure_supplies_yields_when_health_cannot_recover(monkeypatch):
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+
+    def dispatch(route, payload):
+        transport.calls.append((route, payload))
+        if route == "get_state":
+            return {"health": 6.0, "food_level": 14, "is_dead": False}
+        return {}
+
+    transport.dispatch = dispatch
+    monkeypatch.setattr(resources, "count_item", lambda _c, _item: 0)
+    monkeypatch.setattr(
+        "baritone_client.common.combat.recover_health", lambda *_a, **_k: False
+    )
+
+    with pytest.raises(resources.SurvivalRecoveryRequired):
+        resources.ensure_supplies(client, {"minecraft:wooden_pickaxe": 1})

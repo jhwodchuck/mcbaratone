@@ -14,7 +14,7 @@ from .inventory import (
 )
 from . import inventory
 _DEFAULT_INVENTORY_ENSURE_RAW_PLANKS = inventory._ensure_raw_planks
-from .tasks import PlayerDeathDetected, TaskResult
+from .tasks import PlayerDeathDetected, SurvivalRecoveryRequired, TaskResult
 from .combat import hunt_mobs
 from .navigation import find_nearby_block, goto
 from .automation_utils import get_player_pos
@@ -854,6 +854,301 @@ def _relocate_to_checkpointed_stone_source(
         return False
 
 
+_UNSAFE_DESCENT_BLOCKS = ("lava", "water")
+_OPEN_DESCENT_BLOCKS = ("air",)
+# Maximum fall the descent will accept to clear a gap under a pillar. Falls of
+# 3 blocks deal no damage; up to ~6 costs only ~1 heart, which is a fine trade
+# to free a healthy stranded bot rather than stalling on a perfectly-solid
+# column requirement. A landing must still exist within this window (else it is
+# a deep drop / ravine we refuse). Bot08's pillar had a 3-block gap needing a
+# 4-block fall -- 3 was just too strict.
+_MAX_SAFE_FALL_BLOCKS = 6
+
+_CARDINAL_OFFSETS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+
+def _read_block_optional(client, x: int, y: int, z: int) -> Optional[str]:
+    """Best-effort single block-id read; None on any bridge failure."""
+    try:
+        return client.transport.dispatch(
+            "get_block", {"x": x, "y": y, "z": z}
+        ).get("id")
+    except Exception:
+        return None
+
+
+def _choose_descent_offset(
+    client, px: int, py: int, pz: int, *, probe_distance: int = 3
+) -> Optional[tuple[int, int]]:
+    """Find an open cardinal direction to descend toward, off a narrow pillar.
+
+    A straight-down tunnel target at the player's own X/Z forces Baritone to
+    mine the exact block underfoot -- a hardcoded self-preservation refusal,
+    confirmed live: a bot pillared on a 1-wide cobblestone column issued
+    ``tunnel`` and never moved a single block. Aiming the descent at a lateral
+    offset instead gives Baritone a path that requires stepping off the
+    pillar and staircasing down one side (breaking the wall beside it, never
+    the floor beneath it), which is ordinary terrain mining, not the refused
+    case. Returns the first cardinal (dx, dz) whose probe point is open, or
+    None if the pillar is enclosed on all four sides.
+    """
+    for dx, dz in _CARDINAL_OFFSETS:
+        probe = _read_block_optional(
+            client,
+            px + dx * probe_distance,
+            py,
+            pz + dz * probe_distance,
+        )
+        if probe is not None and probe not in ("", None) and "air" in probe:
+            return (dx, dz)
+    return None
+
+
+def _manual_column_descend(
+    client,
+    *,
+    target_y: int,
+    max_steps: int = 40,
+) -> bool:
+    """Break straight down through the player's own column, one block a time.
+
+    Baritone's ``goto``/``tunnel`` refuse to mine the block directly underfoot
+    as a blanket self-preservation rule -- confirmed live on a genuinely
+    isolated pillar (open air on every lateral side for the whole descent, so
+    a lateral-offset tunnel target reported ``is_pathing: False`` and never
+    moved at all; there was nothing to walk on). A bot's own pillar column
+    is frequently solid the entire way down (it built the column climbing
+    up), which this verifies explicitly at each step rather than trusting
+    Baritone's generic refusal: before breaking the block under the feet, a
+    solid, non-hazard landing is confirmed to exist within
+    ``_MAX_SAFE_FALL_BLOCKS`` blocks, so the resulting fall is always bounded
+    and damage is capped (never an uncontrolled plunge).
+
+    ``break_block`` (Baritone builder process, clearArea) and ``attack_block``
+    (a single discrete interaction swing) both fail to break the block
+    underfoot -- the former shares Baritone's self-preservation refusal, the
+    latter never accumulates breaking progress (both verified live: zero
+    effect). ``dig_block`` (bridge 1.0.27+) drives the interaction manager's
+    progressive break every client tick, exactly like holding left-click, and
+    DOES break the underfoot block (verified live: dropped Bot08 off its
+    pillar). The bridge does the per-tick work; here we just kick it off and
+    poll. Returns True only if it ended up meaningfully lower than where it
+    started.
+    """
+    state = _read_state_optional(
+        client, retries=3, label="Manual descend state"
+    )
+    if state is None:
+        return False
+    position = state.get("block_position", state.get("position", {}))
+    px = int(position.get("x", state.get("x", 0)))
+    py = int(position.get("y", state.get("y", 64)))
+    pz = int(position.get("z", state.get("z", 0)))
+    start_y = py
+
+    if not _ensure_mining_pickaxe(client):
+        return False
+
+    steps = 0
+    while py > target_y and steps < max_steps:
+        below_id = str(_read_block_optional(client, px, py - 1, pz) or "")
+        if not below_id or any(name in below_id for name in _OPEN_DESCENT_BLOCKS):
+            print(f"DEBUG: Manual descend: no floor at Y={py - 1}; stopping")
+            break
+        if any(name in below_id for name in _UNSAFE_DESCENT_BLOCKS):
+            print(f"DEBUG: Manual descend: unsafe block ({below_id}) at Y={py - 1}; stopping")
+            break
+
+        # Breaking the block underfoot drops the player onto the first solid
+        # block below it. Falls of up to 3 blocks deal no damage in Minecraft,
+        # so scan down and allow the break as long as a solid, non-hazard
+        # landing exists within that safe distance. This lets the descent clear
+        # a pillar that sits over a small air gap (Bot08's case) instead of
+        # stalling the moment the column is not perfectly solid.
+        landing_id = None
+        landing_gap = None
+        for gap in range(2, 2 + _MAX_SAFE_FALL_BLOCKS):
+            probe_id = str(_read_block_optional(client, px, py - gap, pz) or "")
+            if any(name in probe_id for name in _UNSAFE_DESCENT_BLOCKS):
+                landing_id = probe_id  # hazard -> handled below as unsafe
+                landing_gap = gap
+                break
+            if probe_id and not any(name in probe_id for name in _OPEN_DESCENT_BLOCKS):
+                landing_id = probe_id  # first solid landing
+                landing_gap = gap
+                break
+        if landing_id is None:
+            print(
+                f"DEBUG: Manual descend: no solid landing within {_MAX_SAFE_FALL_BLOCKS} "
+                f"blocks below Y={py - 1}; refusing an unsafe fall. Stopping."
+            )
+            break
+        if any(name in landing_id for name in _UNSAFE_DESCENT_BLOCKS):
+            print(f"DEBUG: Manual descend: unsafe landing ({landing_id}) at Y={py - landing_gap}; stopping")
+            break
+
+        if not any(
+            select_item(client, item_id, allow_swap=True)
+            for item_id in reversed(PICKAXE_ITEMS)
+        ):
+            break
+
+        client.transport.dispatch(
+            "dig_block", {"x": px, "y": py - 1, "z": pz, "face": "UP", "max_ticks": 160}
+        )
+        broke = False
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            time.sleep(0.3)
+            block = str(
+                client.transport.dispatch(
+                    "get_block", {"x": px, "y": py - 1, "z": pz}
+                ).get("id", "")
+            )
+            if not block or "air" in block:
+                broke = True
+                break
+        if not broke:
+            print("DEBUG: Manual descend: dig_block did not verify a break; stopping")
+            break
+
+        # Gravity drops the player onto the first solid block below (a safe
+        # fall of up to _MAX_SAFE_FALL_BLOCKS, per the landing scan above);
+        # confirm the drop rather than assume its exact depth.
+        settle_deadline = time.time() + 5
+        while time.time() < settle_deadline:
+            time.sleep(0.5)
+            after = _read_state_optional(client, retries=1, label="Manual descend settle")
+            if after is None:
+                continue
+            apos = after.get("block_position", after.get("position", {}))
+            ay = int(apos.get("y", after.get("y", py)))
+            if ay <= py - 1:
+                px = int(apos.get("x", apos.get("x", px)))
+                pz = int(apos.get("z", apos.get("z", pz)))
+                py = ay
+                break
+        else:
+            print("DEBUG: Manual descend: player did not drop after breaking; stopping")
+            break
+
+        steps += 1
+
+    _serialized_dispatch(client, "cancel", {}, post_delay_seconds=0.0)
+    return py <= start_y - 1
+
+
+def _descend_to_stone_layer(
+    client,
+    *,
+    target_depth: int = 25,
+    floor_y: int = 50,
+    timeout: int = 180,
+    lateral_reach: int = 8,
+) -> bool:
+    """Tunnel down from a stranded surface position to the stone layer.
+
+    Baritone's broad ``mine`` and the exact-nearby-stone recovery both refuse
+    to dig down from the surface (``_find_safe_nearby_stone`` rejects any face
+    more than a few blocks below the feet), so a gatherer standing on grass or
+    dirt at a high Y can loop forever without ever reaching stone.  This drives
+    a verified ``goto`` to a coordinate ~``target_depth`` blocks below the
+    player at the same X/Z.  Baritone tunnels down to reach it -- breaking
+    blocks along the way and routing around lava -- landing in the stone layer
+    where the caller's ``mine`` immediately finds abundant reachable stone.
+
+    ``floor_y`` keeps the descent well above the lava-prone depths.  Returns
+    True only when the player actually ended up meaningfully lower.
+
+    Uses the bridge ``tunnel`` command, *not* ``goto``: plain ``goto`` to a
+    buried coordinate refuses the vertical dig and never moves, whereas
+    ``tunnel`` runs Baritone's MineProcess for stone/dirt/gravel while pathing
+    to the target, so it staircases down through the surface into stone.
+
+    The target is offset laterally (see ``_choose_descent_offset``) rather
+    than aimed straight down at the player's own X/Z: a live bot pillared on
+    a 1-wide column issued a straight-down tunnel and never moved, because
+    that forces mining the exact block underfoot, which Baritone refuses.
+    """
+    state = _read_state_optional(
+        client, retries=3, label="Descend-to-stone state"
+    )
+    if state is None:
+        return False
+    position = state.get("block_position", state.get("position", {}))
+    px = int(position.get("x", state.get("x", 0)))
+    py = int(position.get("y", state.get("y", 64)))
+    pz = int(position.get("z", state.get("z", 0)))
+
+    target_y = max(int(floor_y), py - int(target_depth))
+    # Already at (or within a couple blocks of) the stone layer -- descending
+    # further would not expose any new stone the broad mine could not see.
+    if target_y >= py - 2:
+        return False
+
+    offset = _choose_descent_offset(client, px, py, pz)
+    if offset is not None:
+        dx, dz = offset
+        target_x = px + dx * lateral_reach
+        target_z = pz + dz * lateral_reach
+    else:
+        # Enclosed on all four probed sides -- fall back to the straight-down
+        # target; it may still work if the pillar is short enough for
+        # Baritone's own path solver to route around underfoot mining.
+        target_x, target_z = px, pz
+
+    print(
+        f"DEBUG: Descending to stone layer from Y={py} to Y={target_y} "
+        f"at ({target_x}, {target_z})"
+        + (" via lateral offset off narrow pillar" if offset is not None else "")
+    )
+    client.transport.dispatch("cancel", {})
+    if not _ensure_mining_pickaxe(client):
+        return False
+    # radius 2 -> GoalNear, so Baritone accepts a staircase approach rather
+    # than demanding the exact buried block (which it may deem unreachable).
+    client.transport.dispatch(
+        "tunnel", {"x": target_x, "y": target_y, "z": target_z, "radius": 2}
+    )
+
+    start = time.time()
+    checks = 0
+    while time.time() - start < timeout:
+        time.sleep(3)
+        checks += 1
+        after = _read_state_optional(
+            client, retries=1, label="Descent progress"
+        )
+        if after is None:
+            continue
+        apos = after.get("block_position", after.get("position", {}))
+        ay = int(apos.get("y", after.get("y", py)))
+        # Reached the target depth, or descended far enough that we are
+        # unambiguously in the stone layer -- hand back to the mine loop.
+        if ay <= target_y + 3 or ay <= py - 10:
+            print(f"DEBUG: Reached stone-mining depth at Y={ay}")
+            return True
+        # An isolated pillar with open air the whole way down has no walkable
+        # route at all -- Baritone reports is_pathing False almost
+        # immediately rather than slowly failing to progress. Stop waiting
+        # out the full timeout once that is confirmed (a couple of checks,
+        # not the very first, to tolerate brief pathfinding startup) and
+        # fall straight to the manual column descent below.
+        if checks >= 2 and not after.get("is_pathing", True) and ay >= py - 1:
+            print(
+                "DEBUG: Descent tunnel has no walkable path "
+                "(is_pathing=False, no floor within the target's reach)"
+            )
+            break
+
+    print("DEBUG: Descent tunnel made no downward progress; trying manual column descend")
+    client.transport.dispatch("cancel", {})
+    if _manual_column_descend(client, target_y=target_y):
+        return True
+    print("DEBUG: Manual column descend also made no progress")
+    return False
+
+
 def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
     """Gather cobblestone until count reached."""
     try:
@@ -885,7 +1180,8 @@ def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
         idle_checks = 0
         direct_failures = 0
         relocation_attempted = False
-        
+        descent_attempted = False
+
         while time.time() - start < timeout:
             if free_inventory_slots(client) < 2:
                 client.transport.dispatch("cancel", {})
@@ -952,6 +1248,24 @@ def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
                     f"({direct_failures}/3); retrying broad mine"
                 )
                 if direct_failures >= 3:
+                    # Primary recovery: the broad mine and exact-nearby search
+                    # both refuse to dig down, so a gatherer stranded on the
+                    # surface never reaches stone. Tunnel down to the stone
+                    # layer first -- this directly exposes abundant stone,
+                    # unlike relocating to the (also-surface) base.
+                    if (
+                        not descent_attempted
+                        and _descend_to_stone_layer(client)
+                    ):
+                        descent_attempted = True
+                        direct_failures = 0
+                        idle_checks = 0
+                        stalled_checks = 0
+                        start = time.time()
+                        client.transport.dispatch(
+                            "mine", {"blocks": STONE_BLOCKS, "quantity": count + 10}
+                        )
+                        continue
                     if (
                         not relocation_attempted
                         and _relocate_to_checkpointed_stone_source(client)
@@ -2870,9 +3184,48 @@ def ensure_supplies(
         return TaskResult.ok("All requirements already satisfied", operations=operations)
 
     while missing and time.time() - start < timeout:
+        # Live blocker: a bot with 0 tools/materials after a death bootstraps
+        # via this exact loop (ensure_supplies({"minecraft:wooden_pickaxe": 1})
+        # from _ensure_mining_pickaxe). Without checking is_dead/health/food
+        # here, a dead or critical player looped this for its full 600s
+        # timeout -- gather_wood's own internal health gate aborted every
+        # attempt ("Wood gathering stopped below safe health") with nothing in
+        # THIS loop ever trying to recover health or even notice the corpse.
+        # Confirmed live: Bot10 stuck retrying a pickaxe craft while
+        # get_state().is_dead was already True.
+        transport = getattr(client, "transport", None)
+        if transport is not None:
+            state, _ = _read_state_with_retry(
+                client, retries=2, label="Ensure supplies survival check"
+            )
+            if state is not None:
+                health = float(state.get("health", 20) or 0)
+                food = int(state.get("food_level", state.get("food", 20)) or 0)
+                if state.get("is_dead", False) or health <= 0:
+                    transport.dispatch("cancel", {})
+                    raise PlayerDeathDetected("player died while ensuring supplies")
+                if health < 12.0:
+                    from .combat import recover_health
+
+                    transport.dispatch("cancel", {})
+                    if not recover_health(client, minimum_health=12.0, timeout=10.0):
+                        raise SurvivalRecoveryRequired(
+                            f"health remains {health:.1f}/20 while ensuring supplies"
+                        )
+                    continue
+                if food <= 10:
+                    from .combat import eat_until_hunger
+
+                    transport.dispatch("cancel", {})
+                    if not eat_until_hunger(client, minimum_food=12):
+                        raise SurvivalRecoveryRequired(
+                            f"food remains {food}/20 while ensuring supplies"
+                        )
+                    continue
+
         # Check inventory space
         manage_inventory(client)
-        
+
         print(f"Ensuring supplies: {missing} (t={time.time()-start:.0f}s/{timeout}s)")
         for item_id, shortfall in list(missing.items()):
             handler = strategies_map.get(item_id)
