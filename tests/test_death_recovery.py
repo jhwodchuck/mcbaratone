@@ -422,3 +422,110 @@ def test_lost_grave_still_fails_when_bootstrap_fails(monkeypatch):
     result = DeathRecoveryAction().execute(context)
 
     assert not result.success
+
+
+def test_repeated_incomplete_grave_is_abandoned_instead_of_looping(monkeypatch):
+    """Regression for a live infinite relaunch loop.
+
+    The incomplete-shortfall path used to `return fail` without recording an
+    unsafe failure. abandon_exhausted_pending_recovery only fires at
+    unsafe_failures >= 1, so the counter stayed 0, the grave was never written
+    off, and every supervisor relaunch resumed the same unsatisfiable target.
+    Bot10 died 12 times in two hours cycling one river grave whose iron kit had
+    already despawned. Past the attempt bound the grave must be abandoned so
+    the bot can continue.
+    """
+    context = _context(
+        {"x": -704, "y": 61, "z": 151, "dimension": "minecraft:overworld"}
+    )
+    # Always short the expected iron pickaxe: the drop is gone for good.
+    monkeypatch.setattr(
+        death_recovery_action,
+        "get_inventory",
+        lambda _client: {"minecraft:iron_pickaxe": 1},
+    )
+    monkeypatch.setattr(death_recovery_action, "goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(death_recovery_action, "_sweep_death_drops", lambda *_a: True)
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        death_recovery_action, "_bootstrap_starter_pickaxe", lambda _c: True
+    )
+    # Pre-load the expectation the way a real prior death would have.
+    context.state.custom_data["death_recovery"] = {
+        "expected_critical": {"minecraft:iron_pickaxe": 2},
+        "pending_location": [-704, 61, 151],
+        "pending_dimension": "minecraft:overworld",
+    }
+
+    # Attempt 1: still worth retrying -> fail, but now it COUNTS the attempt.
+    first = DeathRecoveryAction().execute(context)
+    assert not first.success
+    assert context.state.custom_data["death_recovery"]["unsafe_failures"] == 1
+
+    # Attempt 2: the recorded failure now lets the existing repair boundary
+    # fire, so the grave is written off instead of resumed a third time.
+    # (Which of the two abandon paths runs depends on whether the player is
+    # alive at entry; both must break the loop.)
+    second = DeathRecoveryAction().execute(context)
+    assert second.success
+    assert second.data.get("grave_abandoned")
+    # The pending grave is cleared so the next launch cannot resume the trap.
+    assert "death_recovery" not in context.state.custom_data
+    assert context.state.custom_data["last_abandoned_death_recovery"][
+        "location"
+    ] == [-704, 61, 151]
+
+
+def test_abandon_unrecoverable_grave_clears_target_and_records_reason():
+    state = SimpleNamespace(
+        custom_data={
+            "death_recovery": {
+                "pending_location": [-704, 61, 151],
+                "expected_critical": {"minecraft:iron_pickaxe": 2},
+            }
+        },
+        save_checkpoint=lambda _inv: None,
+    )
+
+    death_recovery_action.abandon_unrecoverable_grave(
+        state, (-704, 61, 151), {"minecraft:iron_pickaxe": 1}, {}, 2
+    )
+
+    # Both the location AND its expected-item list must go, or the next launch
+    # resumes an unsatisfiable target.
+    assert "death_recovery" not in state.custom_data
+    abandoned = state.custom_data["last_abandoned_death_recovery"]
+    assert abandoned["reason"] == "critical_items_unrecoverable"
+    assert abandoned["missing"] == {"minecraft:iron_pickaxe": 1}
+    assert abandoned["unsafe_failures"] == 2
+
+
+def test_abandoned_grave_bootstraps_tools_so_the_bot_can_function(monkeypatch):
+    context = _context(
+        {"x": -704, "y": 61, "z": 151, "dimension": "minecraft:overworld"}
+    )
+    monkeypatch.setattr(
+        death_recovery_action, "get_inventory", lambda _client: {}
+    )
+    monkeypatch.setattr(death_recovery_action, "goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(death_recovery_action, "_sweep_death_drops", lambda *_a: True)
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _s: None)
+    bootstrapped = []
+    monkeypatch.setattr(
+        death_recovery_action,
+        "_bootstrap_starter_pickaxe",
+        lambda _c: bootstrapped.append(True) or True,
+    )
+    context.state.custom_data["death_recovery"] = {
+        "expected_critical": {"minecraft:stone_pickaxe": 1},
+        "pending_location": [-704, 61, 151],
+        "pending_dimension": "minecraft:overworld",
+        # Already at the bound: this execute() should abandon immediately.
+        "unsafe_failures": 1,
+        "location": [-704, 61, 151],
+    }
+
+    result = DeathRecoveryAction().execute(context)
+
+    assert result.success
+    assert bootstrapped == [True]

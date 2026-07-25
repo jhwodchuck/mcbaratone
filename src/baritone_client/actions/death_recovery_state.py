@@ -47,6 +47,43 @@ def abandon_exhausted_pending_recovery(
     return abandoned
 
 
+def abandon_unrecoverable_grave(
+    state: Any,
+    death_coords: Any,
+    shortfall: Dict[str, int],
+    inventory: Dict[str, int],
+    failures: int,
+) -> None:
+    """Give up on a grave whose critical items can never be recovered.
+
+    Items despawn five minutes after a death, and anything dropped into water
+    washes away. Once that happens the ``expected_critical`` shortfall is
+    permanently unsatisfiable, so retrying the same grave is an infinite loop:
+    the controller reaches it, still comes up short, stops automation, and the
+    supervisor relaunches straight back into the same trap. Confirmed live --
+    Bot10 died 12 times in two hours cycling on one river grave whose iron kit
+    was long gone. Clearing ``death_recovery`` drops both the pending location
+    and its expected-item list so the next launch starts clean instead of
+    resuming the trap.
+    """
+    custom_data = getattr(state, "custom_data", {})
+    custom_data["last_abandoned_death_recovery"] = {
+        "location": [int(value) for value in death_coords],
+        "dimension": "minecraft:overworld",
+        "unsafe_failures": int(failures),
+        "missing": dict(shortfall),
+        "reason": "critical_items_unrecoverable",
+    }
+    custom_data.pop("death_recovery", None)
+
+    save = getattr(state, "save_checkpoint", None)
+    if callable(save):
+        try:
+            save(inventory)
+        except Exception as exc:  # never let a checkpoint write break recovery
+            print(f"RECOVERY: abandoned-grave checkpoint deferred ({exc})")
+
+
 def handle_alive_pending_recovery(
     context: Any,
     live_state: Dict[str, Any],

@@ -12,7 +12,16 @@ from ..common import goto
 from ..common.combat import secure_recovery_area
 from ..common.inventory import get_inventory, reset_inventory_cache
 from ..automator.state_manager import Phase
-from .death_recovery_state import handle_alive_pending_recovery
+from .death_recovery_state import (
+    abandon_unrecoverable_grave,
+    handle_alive_pending_recovery,
+)
+
+# How many times a single grave may come up short on critical items before it
+# is written off. Items despawn after five minutes and anything dropped in
+# water washes away, so past this point the shortfall is permanent and
+# retrying is an infinite relaunch loop rather than a recovery.
+_MAX_INCOMPLETE_GRAVE_ATTEMPTS = 2
 
 
 _CRITICAL_RECOVERY_IDS = {
@@ -460,9 +469,47 @@ class DeathRecoveryAction(BaseAction):
                             context.client, expected_critical
                         )
                         if shortfall:
-                            return ActionResult.fail(
-                                "Critical inventory recovery is incomplete",
+                            # Count the attempt so this path is bounded. It
+                            # previously returned fail without recording
+                            # anything, which left unsafe_failures at 0 --
+                            # and abandon_exhausted_pending_recovery only
+                            # fires at >=1, so the grave was never written
+                            # off and every relaunch resumed the same
+                            # unsatisfiable target forever.
+                            failures = _record_unsafe_recovery(
+                                context.state, death_coords
+                            )
+                            print(
+                                "RECOVERY_CIRCUIT: incomplete critical recovery "
+                                f"{failures}/{_MAX_INCOMPLETE_GRAVE_ATTEMPTS} at "
+                                f"{death_coords}; missing {shortfall}"
+                            )
+                            if failures < _MAX_INCOMPLETE_GRAVE_ATTEMPTS:
+                                # Early attempts are worth retrying: a mob may
+                                # have interrupted the sweep while the drops
+                                # are still on the ground.
+                                return ActionResult.fail(
+                                    "Critical inventory recovery is incomplete",
+                                    missing=shortfall,
+                                )
+                            print(
+                                "RECOVERY: writing off unrecoverable grave at "
+                                f"{death_coords}; continuing without its contents"
+                            )
+                            abandon_unrecoverable_grave(
+                                context.state,
+                                death_coords,
+                                shortfall,
+                                get_inventory(context.client),
+                                failures,
+                            )
+                            _bootstrap_starter_pickaxe(context.client)
+                            return ActionResult.ok(
+                                "Abandoned unrecoverable grave and continued",
+                                recovered=False,
+                                grave_abandoned=True,
                                 missing=shortfall,
+                                reset_phase=False,
                             )
                         retreat = _checkpointed_retreat(context.state)
                         if retreat is not None and retreat != death_coords:
