@@ -1140,3 +1140,54 @@ def test_a_successful_evade_never_escalates(monkeypatch):
         combat.defend_or_flee(client)
 
     assert not fought
+
+
+def test_safe_combat_no_retreat_attacks_despite_low_health(monkeypatch):
+    """Regression: the escalation path in defend_or_flee passes
+    no_retreat=True specifically because a fixed retreat_health floor kept
+    getting undercut -- health crashes unpredictably during the failed
+    flee attempts that precede escalation, so by the time safe_combat is
+    called it is often already below whatever floor was configured, and it
+    was retreating on the very first health check without ever attacking.
+    Live: this happened at 4.8hp (floor=6.0) and again at 1.999hp
+    (floor=2.0). no_retreat=True must skip that gate and actually attack."""
+    transport = CombatTransport(health=1.5)
+    client = SimpleNamespace(transport=transport)
+    target = {"id": 5, "type": "minecraft:zombie", "distance": 3.0}
+    monkeypatch.setattr(combat, "equip_best_weapon", lambda *_a, **_k: None)
+    monkeypatch.setattr(combat, "_get_combat_snapshot", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        combat, "get_nearby_entities", lambda *_a, **_k: [target]
+    )
+    monkeypatch.setattr(combat, "_submerged_too_long", lambda *_a, **_k: False)
+    monkeypatch.setattr(combat, "look_at_entity", lambda *_a, **_k: True)
+    monkeypatch.setattr(combat, "_attack_cooldown", lambda *_a, **_k: 999.0)
+    monkeypatch.setattr(combat.time, "sleep", lambda _s: None)
+
+    def dispatch(route, payload):
+        transport.calls.append((route, payload))
+        if route == "get_state":
+            return {"health": transport.health, "block_position": {"x": 0, "y": 64, "z": 0}}
+        if route == "attack_entity":
+            return {"attacked": True}
+        return {}
+
+    transport.dispatch = dispatch
+
+    combat.safe_combat(client, 5, retreat_health=6.0, no_retreat=True, max_duration=0.2)
+
+    assert ("attack_entity", {"entity_id": 5, "min_cooldown": combat.MELEE_ATTACK_COOLDOWN_THRESHOLD}) in transport.calls
+    assert not any(call[0] == "cancel" for call in transport.calls)
+
+
+def test_safe_combat_still_retreats_by_default_at_low_health(monkeypatch):
+    transport = CombatTransport(health=1.5)
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(combat, "equip_best_weapon", lambda *_a, **_k: None)
+    monkeypatch.setattr(combat, "_get_combat_snapshot", lambda *_a, **_k: None)
+    monkeypatch.setattr(combat, "get_nearby_entities", lambda *_a, **_k: [])
+    monkeypatch.setattr(combat, "_submerged_too_long", lambda *_a, **_k: False)
+
+    assert combat.safe_combat(client, 5, retreat_health=6.0) is False
+    assert ("cancel", {}) in transport.calls
+    assert not any(call[0] == "attack_entity" for call in transport.calls)

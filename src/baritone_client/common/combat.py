@@ -198,16 +198,25 @@ def safe_combat(
     max_duration: int = 30,
     abort_on_other_hostiles: bool = False,
     tracking_radius: int = 30,
+    no_retreat: bool = False,
 ) -> bool:
     """
     Fight target with retreat logic.
-    
+
     Args:
         client: Baritone client
         target_id: Entity ID to attack
         retreat_health: Retreat if health drops below this
         max_duration: Maximum combat duration
-        
+        no_retreat: Skip the health-based retreat check entirely. Only for
+            last-resort callers where fleeing has already been tried and
+            failed repeatedly -- a fixed retreat_health floor doesn't work
+            there because each failed flee attempt costs HP unpredictably,
+            so health is often already below any floor by the time this is
+            reached (live proof: Bot09 hit "Retreating! Health: 1.999" with
+            retreat_health=2.0 and never landed a single hit before dying).
+            Other safety checks (drowning, other-hostiles abort) still apply.
+
     Returns:
         True if target killed, False if retreated or failed
     """
@@ -245,9 +254,11 @@ def safe_combat(
 
         # Check health
         health = state.get("health", 20)
-        if health < retreat_health:
+        if health < retreat_health and not no_retreat:
             print(f"Retreating! Health: {health}")
             client.transport.dispatch("cancel", {})
+            return False
+        if health <= 0:
             return False
         
         # Check if target still exists
@@ -1714,18 +1725,19 @@ def defend_or_flee(client) -> bool:
             f"DEFENSE: evasion failed {runtime.evade_failures}x against "
             f"{primary.entity.get('type')}; fighting back as a last resort"
         )
-        # By the time evasion has failed this many times the player is
-        # usually already below a normal retreat_health floor -- live proof:
-        # Bot09 was at 4.8hp when this fired, so safe_combat's own health
-        # check retreated on the very first loop iteration without landing
-        # a single hit, and the bot died two flee cycles later anyway. A
-        # low floor here still bails before a killing blow (each loop
-        # iteration re-checks health) but actually lets the fight happen,
-        # which is strictly better than the guaranteed loss this replaces.
+        # A fixed retreat_health floor does not work here: each failed flee
+        # attempt costs unpredictable HP, so health is often already below
+        # any floor by the time escalation fires. Live proof: this fired at
+        # 4.8hp with retreat_health=6.0, then again at 1.999hp with
+        # retreat_health=2.0 -- both times safe_combat retreated on its very
+        # first health check and never landed a single hit before the bot
+        # died anyway. Skip the retreat check entirely: evasion is already a
+        # proven 0% strategy against this threat, so committing to the fight
+        # is strictly better regardless of current health.
         defeated = safe_combat(
             client,
             threat_id,
-            retreat_health=2.0,
+            no_retreat=True,
             abort_on_other_hostiles=True,
         )
         if defeated:
