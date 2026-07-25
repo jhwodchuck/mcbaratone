@@ -125,8 +125,29 @@ def find_place_pos_near(client, x, y, z, radius=4):
 
 
 def move_near(client, x, y, z, timeout=20.0) -> bool:
+    """Move near a coordinate, surfacing a death to the controller.
+
+    The harness itself only returns False when the player is dead, which is
+    right for the read-only functional suites but useless to the automator:
+    the caller just treats it as "move failed" and retries. Live blocker --
+    Bot07/Bot08 died mid-move and their controllers kept retrying movement on
+    a corpse for minutes instead of running death recovery. Translating it to
+    PlayerDeathDetected here (the adapter boundary) puts the controller into
+    its normal death path immediately, without making the harness raise on
+    the test suites.
+    """
     h = _load()
-    return bool(h["move_near"](make_ctx(client), x, y, z, timeout=timeout))
+    moved = bool(h["move_near"](make_ctx(client), x, y, z, timeout=timeout))
+    if not moved:
+        from .tasks import PlayerDeathDetected
+
+        try:
+            state = client.transport.dispatch("get_state", {})
+        except Exception:
+            return moved
+        if state.get("is_dead", False) or float(state.get("health", 20) or 0) <= 0:
+            raise PlayerDeathDetected("player died during harness movement")
+    return moved
 
 
 # Tool id -> (material substring for the open-screen ingredient scan, tool type)

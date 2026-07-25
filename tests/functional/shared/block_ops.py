@@ -320,7 +320,21 @@ def move_near(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, flo
     if not stand_candidates:
         stand_candidates = [find_stand_pos(ctx, x, y, z, radius=5)]
 
+    from tests.functional.shared.world_ops import is_dead
+
     for idx, (stand_x, stand_y, stand_z) in enumerate(stand_candidates, start=1):
+        # A corpse cannot move, but every candidate still burns its full goto
+        # timeout before "failing". Live blocker: Bot07/Bot08 died mid-loop and
+        # ground through all 41 candidates -- minutes of nothing -- instead of
+        # surfacing the death so the controller could respawn. Check before
+        # each attempt and bail immediately.
+        if is_dead(ctx):
+            if hasattr(ctx, "log_event"):
+                ctx.log_event(
+                    f"Move aborted near {x},{y},{z}: player is dead "
+                    f"(candidate {idx}/{len(stand_candidates)})"
+                )
+            return False
         target = {"x": stand_x, "y": stand_y, "z": stand_z}
         ok = do_goto(
             ctx,

@@ -25,3 +25,94 @@ def test_incomplete_nearby_goto_cancels_pathing_without_name_error(monkeypatch):
     )
     assert cancelled == [ctx]
     assert "Movement incomplete but near destination" in events
+
+
+def test_move_near_bails_immediately_when_player_is_dead(monkeypatch):
+    """A corpse cannot move, but each candidate still burned a full goto
+    timeout. Bot07/Bot08 ground through all 41 candidates after dying instead
+    of surfacing the death, wasting minutes per cycle."""
+    from tests.functional.shared import block_ops
+
+    events = []
+    ctx = SimpleNamespace(
+        client=SimpleNamespace(
+            transport=SimpleNamespace(dispatch=lambda *_a, **_k: {})
+        ),
+        get_state=lambda: {"health": 0.0},
+        log_event=events.append,
+    )
+    monkeypatch.setattr(
+        block_ops,
+        "find_stand_positions",
+        lambda *_a, **_k: [(1, 64, 1), (2, 64, 2), (3, 64, 3)],
+    )
+
+    def _must_not_run(*_a, **_k):
+        raise AssertionError("do_goto must not be attempted while dead")
+
+    monkeypatch.setattr(
+        "tests.utils.mc_harness.actions.do_goto", _must_not_run
+    )
+
+    assert block_ops.move_near(ctx, 5, 64, 5) is False
+    assert any("player is dead" in event for event in events)
+
+
+def test_move_near_still_attempts_candidates_when_alive(monkeypatch):
+    from tests.functional.shared import block_ops
+
+    ctx = SimpleNamespace(
+        client=SimpleNamespace(
+            transport=SimpleNamespace(dispatch=lambda *_a, **_k: {})
+        ),
+        get_state=lambda: {"health": 20.0},
+        log_event=lambda _e: None,
+    )
+    monkeypatch.setattr(
+        block_ops, "find_stand_positions", lambda *_a, **_k: [(1, 64, 1)]
+    )
+    monkeypatch.setattr(
+        "tests.utils.mc_harness.actions.do_goto", lambda *_a, **_k: True
+    )
+    monkeypatch.setattr(block_ops, "in_range", lambda *_a, **_k: True)
+
+    assert block_ops.move_near(ctx, 5, 64, 5) is True
+
+
+def test_harness_ops_move_near_raises_player_death_for_the_controller(monkeypatch):
+    """The harness returns False (right for the read-only suites); the
+    adapter must escalate it so the automator enters death recovery instead
+    of retrying movement on a corpse."""
+    import pytest
+    from baritone_client.common import harness_ops
+    from baritone_client.common.tasks import PlayerDeathDetected
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda *_a, **_k: {"health": 0.0, "is_dead": True}
+        )
+    )
+    monkeypatch.setattr(
+        harness_ops, "_load", lambda: {"move_near": lambda *_a, **_k: False}
+    )
+    monkeypatch.setattr(harness_ops, "make_ctx", lambda _c: object())
+
+    with pytest.raises(PlayerDeathDetected):
+        harness_ops.move_near(client, 1, 2, 3)
+
+
+def test_harness_ops_move_near_returns_false_when_alive_but_blocked(monkeypatch):
+    """A plain unreachable target must stay a soft False, not a death."""
+    from baritone_client.common import harness_ops
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda *_a, **_k: {"health": 20.0, "is_dead": False}
+        )
+    )
+    monkeypatch.setattr(
+        harness_ops, "_load", lambda: {"move_near": lambda *_a, **_k: False}
+    )
+    monkeypatch.setattr(harness_ops, "make_ctx", lambda _c: object())
+
+    assert harness_ops.move_near(client, 1, 2, 3) is False
