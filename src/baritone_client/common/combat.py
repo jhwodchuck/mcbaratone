@@ -1714,10 +1714,18 @@ def defend_or_flee(client) -> bool:
             f"DEFENSE: evasion failed {runtime.evade_failures}x against "
             f"{primary.entity.get('type')}; fighting back as a last resort"
         )
+        # By the time evasion has failed this many times the player is
+        # usually already below a normal retreat_health floor -- live proof:
+        # Bot09 was at 4.8hp when this fired, so safe_combat's own health
+        # check retreated on the very first loop iteration without landing
+        # a single hit, and the bot died two flee cycles later anyway. A
+        # low floor here still bails before a killing blow (each loop
+        # iteration re-checks health) but actually lets the fight happen,
+        # which is strictly better than the guaranteed loss this replaces.
         defeated = safe_combat(
             client,
             threat_id,
-            retreat_health=6.0,
+            retreat_health=2.0,
             abort_on_other_hostiles=True,
         )
         if defeated:
