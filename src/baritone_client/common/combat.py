@@ -1698,8 +1698,31 @@ def defend_or_flee(client) -> bool:
     )
     _stop_for_defense(client)
     if decision.mode == DefenseMode.EVADE:
+        threat_id = primary.entity.get("id")
         escaped = run_away(client, primary.entity)
-        runtime.hold_recovery(8.0 if escaped else 12.0)
+        runtime.record_evade_result(threat_id, escaped)
+        if escaped or not runtime.should_escalate_to_combat(threat_id):
+            runtime.hold_recovery(8.0 if escaped else 12.0)
+            return True
+        # Repeated evasion against this exact threat has failed every time
+        # (see DefenseRuntime.record_evade_result) -- continuing to hold that
+        # 0% strategy is worse than fighting, even unarmored. This is the
+        # one case that bypasses the armor_count<3 EVADE gate: it is reached
+        # only after evasion has already been tried and demonstrably failed,
+        # not instead of it.
+        print(
+            f"DEFENSE: evasion failed {runtime.evade_failures}x against "
+            f"{primary.entity.get('type')}; fighting back as a last resort"
+        )
+        defeated = safe_combat(
+            client,
+            threat_id,
+            retreat_health=6.0,
+            abort_on_other_hostiles=True,
+        )
+        if defeated:
+            runtime.record_evade_result(threat_id, True)
+        runtime.hold_recovery(6.0 if defeated else 10.0)
         return True
 
     defeated = safe_combat(

@@ -1049,3 +1049,94 @@ def test_approach_aquatic_food_surfaces_when_submerged_too_long(monkeypatch):
         combat._approach_aquatic_food(client, target_id=7, entity_type="minecraft:cod")
         is False
     )
+
+
+def test_repeated_failed_evasion_escalates_to_fighting_back(monkeypatch):
+    """Regression for a live cornering: an unarmored bot in mountainous
+    terrain got a zombie stuck in melee range for dozens of consecutive
+    cycles -- armor_count<3 forces EVADE unconditionally, run_away kept
+    returning False ("no terrain-safe escape endpoint found" -- every
+    candidate route was rejected for having open air/ledges nearby), and the
+    bot slowly died doing nothing but failing to flee. Pure evasion with a
+    demonstrated 0% success rate against a threat must eventually escalate
+    to fighting, since continuing it is strictly worse than even an
+    unfavorable fight."""
+    transport = CombatTransport(health=20.0)
+    client = SimpleNamespace(transport=transport)
+    threat = {
+        "id": 42,
+        "type": "minecraft:zombie",
+        "distance": 8.0,
+        "position": {"x": 8, "y": 64, "z": 0},
+    }
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [threat])
+    monkeypatch.setattr(combat, "get_equipped_armor", lambda _c: {})  # 0/4 armor
+    monkeypatch.setattr(combat, "run_away", lambda *_a, **_k: False)
+    monkeypatch.setattr(combat.time, "sleep", lambda _s: None)
+    fought = []
+    monkeypatch.setattr(
+        combat,
+        "safe_combat",
+        lambda *_a, **_k: fought.append(True) or True,
+    )
+
+    # Same runtime persists across calls (stashed on the client), so repeated
+    # ticks against the SAME threat id accumulate failures.
+    for _ in range(3):
+        assert combat.defend_or_flee(client)
+    assert not fought  # not yet -- below the escalation threshold
+
+    assert combat.defend_or_flee(client)
+    assert fought == [True]  # 4th consecutive failure escalates
+
+
+def test_evasion_failure_count_resets_against_a_different_threat(monkeypatch):
+    """Failures against threat A must not silently escalate a fresh
+    encounter with threat B."""
+    transport = CombatTransport(health=20.0)
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(combat, "get_equipped_armor", lambda _c: {})
+    monkeypatch.setattr(combat, "run_away", lambda *_a, **_k: False)
+    monkeypatch.setattr(combat.time, "sleep", lambda _s: None)
+    fought = []
+    monkeypatch.setattr(
+        combat, "safe_combat", lambda *_a, **_k: fought.append(True) or True
+    )
+
+    threat_a = {
+        "id": 1, "type": "minecraft:zombie", "distance": 8.0,
+        "position": {"x": 8, "y": 64, "z": 0},
+    }
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [threat_a])
+    for _ in range(3):
+        combat.defend_or_flee(client)
+
+    threat_b = {
+        "id": 2, "type": "minecraft:zombie", "distance": 8.0,
+        "position": {"x": -8, "y": 64, "z": 0},
+    }
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [threat_b])
+    assert combat.defend_or_flee(client)
+    assert not fought  # a new threat starts its own failure count at 1
+
+
+def test_a_successful_evade_never_escalates(monkeypatch):
+    transport = CombatTransport(health=20.0)
+    client = SimpleNamespace(transport=transport)
+    threat = {
+        "id": 7, "type": "minecraft:zombie", "distance": 8.0,
+        "position": {"x": 8, "y": 64, "z": 0},
+    }
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [threat])
+    monkeypatch.setattr(combat, "get_equipped_armor", lambda _c: {})
+    monkeypatch.setattr(combat, "run_away", lambda *_a, **_k: True)
+    monkeypatch.setattr(combat.time, "sleep", lambda _s: None)
+    fought = []
+    monkeypatch.setattr(
+        combat, "safe_combat", lambda *_a, **_k: fought.append(True) or True
+    )
+
+    for _ in range(6):
+        combat.defend_or_flee(client)
+
+    assert not fought

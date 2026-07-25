@@ -72,6 +72,34 @@ class DefenseRuntime:
     recovery_until: float = 0.0
     last_threat_at: float = 0.0
     last_reason: str = "initial"
+    # Consecutive failed run_away() attempts against the SAME entity id.
+    # Confirmed live: an unarmored bot in mountainous terrain (windswept
+    # forest -- ledges everywhere) got a zombie stuck in melee range for
+    # dozens of consecutive cycles, "no terrain-safe escape endpoint found"
+    # every time, and slowly died. armor_count<3 forces EVADE unconditionally
+    # with no escalation, so pure evasion had a 0% success rate against this
+    # specific threat/terrain combination for the entire encounter -- worse
+    # than even an unfavorable fight. See evade_escalation_threshold below.
+    evade_failures: int = 0
+    evade_failure_entity: Optional[int] = None
+
+    def record_evade_result(self, entity_id: Optional[int], escaped: bool) -> None:
+        """Track a run_away() outcome against one specific threat."""
+        if escaped or entity_id != self.evade_failure_entity:
+            self.evade_failures = 0 if escaped else 1
+            self.evade_failure_entity = None if escaped else entity_id
+        else:
+            self.evade_failures += 1
+
+    def should_escalate_to_combat(
+        self, entity_id: Optional[int], *, threshold: int = 4
+    ) -> bool:
+        """True once evasion has demonstrably failed repeatedly for this threat."""
+        return (
+            entity_id is not None
+            and entity_id == self.evade_failure_entity
+            and self.evade_failures >= threshold
+        )
 
     def transition(
         self,
