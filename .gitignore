@@ -457,6 +457,7 @@ storage_catalog.sqlite3-wal
 HeadlessMC/
 runs/
 local_server/
+telemetry/
 
 # Downloaded Gradle distribution
 bridge/gradle-8.12/

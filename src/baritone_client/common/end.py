@@ -4,9 +4,42 @@ End-dimension helper routines built on top of mission macros.
 
 import logging
 import time
-from typing import Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def _unwrap(payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    nested = payload.get("data")
+    if isinstance(nested, dict):
+        merged = dict(payload)
+        merged.pop("data", None)
+        merged.update(nested)
+        return merged
+    return payload
+
+
+def _entities(payload: Any) -> List[Dict[str, Any]]:
+    return [
+        entity
+        for entity in _unwrap(payload).get("entities", [])
+        if isinstance(entity, dict)
+    ]
+
+
+def _found(payload: Any) -> List[Dict[str, Any]]:
+    return [
+        block
+        for block in _unwrap(payload).get("found", [])
+        if isinstance(block, dict)
+    ]
+
+
+def _position(payload: Dict[str, Any]) -> Dict[str, Any]:
+    value = payload.get("block_position", payload.get("position", {}))
+    return value if isinstance(value, dict) else {}
 
 
 def _get_eye_direction(client) -> Optional[float]:
@@ -15,7 +48,7 @@ def _get_eye_direction(client) -> Optional[float]:
     start = time.time()
     while time.time() - start < 5.0:
         entities = client.transport.dispatch("get_entities", {"radius": 64})
-        for ent in entities.get("entities", []):
+        for ent in _entities(entities):
             if ent.get("type") == "minecraft:eye_of_ender":
                 # Use velocity if available to determine heading
                 vel = ent.get("velocity", {})
@@ -41,7 +74,7 @@ def triangulate_stronghold(client) -> Optional[Tuple[int, int]]:
         return None
 
     state1 = client.transport.dispatch("get_state", {})
-    p1 = state1.get("position", {})
+    p1 = _position(state1)
     x1, z1 = p1.get("x", 0), p1.get("z", 0)
 
     print("Throwing first eye...")
@@ -60,7 +93,7 @@ def triangulate_stronghold(client) -> Optional[Tuple[int, int]]:
 
     # 3. Second throw
     state2 = client.transport.dispatch("get_state", {})
-    p2 = state2.get("position", {})
+    p2 = _position(state2)
     x2, z2 = p2.get("x", 0), p2.get("z", 0)
 
     print("Throwing second eye...")
@@ -110,7 +143,7 @@ def spiral_stronghold_search(client, max_radius: int = 2000, step_size: int = 20
 
     # Get starting position
     start_state = client.transport.dispatch("get_state", {})
-    start_pos = start_state.get("position", {})
+    start_pos = _position(start_state)
     start_x, start_z = start_pos.get("x", 0), start_pos.get("z", 0)
     start_y = start_pos.get("y", 64)
 
@@ -189,7 +222,7 @@ def _monitor_eye_flight(client) -> Optional[float]:
         entities = client.transport.dispatch("get_entities", {"radius": 128})
         eye = None
 
-        for ent in entities.get("entities", []):
+        for ent in _entities(entities):
             if ent.get("type") == "minecraft:eye_of_ender":
                 eye = ent
                 break
@@ -215,33 +248,97 @@ def _monitor_eye_flight(client) -> Optional[float]:
     return max_distance if max_distance > 0 else None
 
 
-def find_end_portal(client, timeout: int = 600) -> bool:
-    """
-    Placeholder portal search loop. Relies on the stronghold macro and polls for
-    phase advancement.
-    """
+def find_end_portal(client, timeout: int = 600) -> Optional[Tuple[int, int, int]]:
+    """Locate actual End portal frames and return their center."""
     start = time.time()
     while time.time() - start < timeout:
-        status = client.mission.status()
-        mission = status.get("mission", {})
-        phase = mission.get("phase", "")
-        if phase == "stronghold_hunt":
+        response = client.transport.dispatch(
+            "find_blocks",
+            {
+                "blocks": ["minecraft:end_portal_frame", "minecraft:end_portal"],
+                "radius": 64,
+                "limit": 64,
+            },
+        )
+        blocks = _found(response)
+        frames = [
+            block for block in blocks
+            if block.get("block") == "minecraft:end_portal_frame"
+        ]
+        if len(frames) >= 12:
+            return (
+                round(sum(int(block["x"]) for block in frames) / len(frames)),
+                round(sum(int(block["y"]) for block in frames) / len(frames)),
+                round(sum(int(block["z"]) for block in frames) / len(frames)),
+            )
+        time.sleep(2)
+    return None
+
+
+def activate_end_portal(client, timeout: int = 60) -> bool:
+    """Fill every missing frame and verify active portal blocks in-world."""
+    from .inventory import select_item
+    from .navigation import goto
+
+    scan = client.transport.dispatch(
+        "find_blocks",
+        {"blocks": ["minecraft:end_portal_frame"], "radius": 32, "limit": 16},
+    )
+    frames = _found(scan)
+    if len(frames) < 12:
+        return False
+    for frame in frames:
+        x, y, z = int(frame["x"]), int(frame["y"]), int(frame["z"])
+        block = _unwrap(client.transport.dispatch("get_block", {"x": x, "y": y, "z": z}))
+        properties = block.get("state", {})
+        if str(properties.get("eye", "false")).lower() == "true":
+            continue
+        if not select_item(client, "minecraft:ender_eye"):
+            return False
+        if not goto(client, x, y, z, timeout=60, tolerance=4.0):
+            return False
+        client.transport.dispatch("interact_block", {"x": x, "y": y, "z": z})
+        verified = _unwrap(
+            client.transport.dispatch("get_block", {"x": x, "y": y, "z": z})
+        )
+        if str(verified.get("state", {}).get("eye", "false")).lower() != "true":
+            return False
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        active = client.transport.dispatch(
+            "find_blocks",
+            {"blocks": ["minecraft:end_portal"], "radius": 16, "limit": 16},
+        )
+        if _found(active):
             return True
-        time.sleep(5)
+        time.sleep(1)
     return False
 
 
-def activate_end_portal(client) -> bool:
-    """
-    Activation is handled on the bridge/macros for now; this placeholder simply
-    records the checkpoint.
-    """
-    client.mission.checkpoint("end_portal", "Portal assumed activated")
-    return True
+def enter_end_portal(
+    client,
+    portal: Optional[Sequence[int]] = None,
+    timeout: int = 60,
+) -> bool:
+    """Walk into a verified active portal and confirm The End dimension."""
+    from .navigation import goto
 
-
-def enter_end_portal(client, timeout: int = 60) -> bool:
-    """Wait for the dimension to become The End."""
+    active = _found(
+        client.transport.dispatch(
+            "find_blocks",
+            {"blocks": ["minecraft:end_portal"], "radius": 32, "limit": 16},
+        )
+    )
+    if active:
+        target = active[0]
+        coords = (int(target["x"]), int(target["y"]), int(target["z"]))
+    elif portal is not None and len(portal) == 3:
+        coords = tuple(int(value) for value in portal)
+    else:
+        return False
+    if not goto(client, *coords, timeout=60, tolerance=0.5):
+        return False
     start = time.time()
     while time.time() - start < timeout:
         state = client.transport.dispatch("get_state", {})
@@ -256,43 +353,69 @@ def fight_ender_dragon(client, timeout: int = 1200) -> bool:
     """
     Advanced dragon fight logic including crystal destruction and pillar climbing.
     """
-    from .navigation import goto, find_nearby_block
+    from .navigation import goto
     from .inventory import select_item
     
     print("Beginning Ender Dragon fight sequence...")
     start_time = time.time()
     
     while time.time() - start_time < timeout:
-        # Check if dragon is dead
-        status = client.mission.status()
-        if status.get("mission", {}).get("note") == "dragon_defeated":
-            return True
-            
-        # 1. Deal with Crystals
-        crystal_pos = find_nearby_block(client, ["minecraft:end_crystal"], radius=128)
-        if crystal_pos:
+        entities = _entities(
+            client.transport.dispatch("get_entities", {"radius": 128})
+        )
+        crystals = [
+            entity for entity in entities
+            if entity.get("type") == "minecraft:end_crystal"
+        ]
+        dragon = next(
+            (
+                entity for entity in entities
+                if entity.get("type") == "minecraft:ender_dragon"
+            ),
+            None,
+        )
+        if dragon is None and not crystals:
+            exit_portal = _found(
+                client.transport.dispatch(
+                    "find_blocks",
+                    {"blocks": ["minecraft:end_portal"], "radius": 64, "limit": 1},
+                )
+            )
+            if exit_portal:
+                return True
+
+        # 1. Deal with crystal entities, never nonexistent crystal blocks.
+        if crystals:
+            crystal = min(crystals, key=lambda value: float(value.get("distance", 999)))
+            crystal_pos = crystal.get("position", {})
+            if not all(axis in crystal_pos for axis in ("x", "y", "z")):
+                time.sleep(1)
+                continue
+            coords = (
+                float(crystal_pos["x"]),
+                float(crystal_pos["y"]),
+                float(crystal_pos["z"]),
+            )
             print(f"Targeting crystal at {crystal_pos}")
             # Climb if high up
-            if crystal_pos[1] > 70:
+            if coords[1] > 70:
                 print("Climbing pillar...")
                 # Pillar up or path to top
-                goto(client, crystal_pos[0], crystal_pos[1], crystal_pos[2], tolerance=10)
+                goto(client, *coords, tolerance=10)
             
             # Use bow or snowballs if possible
             if select_item(client, "minecraft:bow") or select_item(client, "minecraft:snowball"):
-                client.transport.dispatch("look_at", {"x": crystal_pos[0], "y": crystal_pos[1], "z": crystal_pos[2]})
+                client.transport.dispatch("look_at", {"x": coords[0], "y": coords[1], "z": coords[2]})
                 client.transport.dispatch("use_item", {})
             else:
                 # Get close and hit (dangerous)
-                goto(client, *crystal_pos, tolerance=3)
-                client.transport.dispatch("attack_entity", {"id": "minecraft:end_crystal"})
+                goto(client, *coords, tolerance=3)
+                client.transport.dispatch(
+                    "attack_entity", {"entity_id": int(crystal["id"])}
+                )
             continue
 
         # 2. Attack Dragon
-        # Look for the dragon entity
-        entities = client.transport.dispatch("get_entities", {"radius": 128})
-        dragon = next((e for e in entities.get("entities", []) if e.get("id") == "minecraft:ender_dragon"), None)
-        
         if dragon:
             dx, dy, dz = dragon["position"]["x"], dragon["position"]["y"], dragon["position"]["z"]
             print(f"Dragon spotted at ({dx}, {dy}, {dz})")
@@ -301,7 +424,9 @@ def fight_ender_dragon(client, timeout: int = 1200) -> bool:
             if abs(dx) < 10 and abs(dz) < 10 and dy < 80:
                 print("Dragon is perched! Melee attack!")
                 goto(client, 0, 64, 0, tolerance=2)
-                client.transport.dispatch("attack_entity", {"id": "minecraft:ender_dragon"})
+                client.transport.dispatch(
+                    "attack_entity", {"entity_id": int(dragon["id"])}
+                )
             else:
                 # Snipe with bow
                 if select_item(client, "minecraft:bow"):
@@ -310,4 +435,206 @@ def fight_ender_dragon(client, timeout: int = 1200) -> bool:
         
         time.sleep(1)
         
+    return False
+
+
+def traverse_end_gateway(client, timeout: int = 90) -> Optional[Tuple[int, int, int]]:
+    """Pearl through an active gateway and verify outer-island displacement."""
+    from .inventory import select_item
+    from .navigation import goto
+
+    state = _unwrap(client.transport.dispatch("get_state", {}))
+    if "the_end" not in str(state.get("dimension", "")).lower():
+        return None
+    start = _position(state)
+    gateways = _found(
+        client.transport.dispatch(
+            "find_blocks",
+            {"blocks": ["minecraft:end_gateway"], "radius": 96, "limit": 20},
+        )
+    )
+    if not gateways or not select_item(client, "minecraft:ender_pearl"):
+        return None
+    gateway = min(gateways, key=lambda block: float(block.get("distance", 999)))
+    coords = (int(gateway["x"]), int(gateway["y"]), int(gateway["z"]))
+    if not goto(client, *coords, timeout=180, tolerance=3.0):
+        return None
+    client.transport.dispatch(
+        "look_at", {"x": coords[0] + 0.5, "y": coords[1] + 0.5, "z": coords[2] + 0.5}
+    )
+    client.transport.dispatch("use_item", {"hand": "MAIN_HAND"})
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        live = _unwrap(client.transport.dispatch("get_state", {}))
+        current = _position(live)
+        if all(axis in start and axis in current for axis in ("x", "z")):
+            moved = (
+                (float(current["x"]) - float(start["x"])) ** 2
+                + (float(current["z"]) - float(start["z"])) ** 2
+            ) ** 0.5
+            if moved >= 256.0:
+                return coords
+        time.sleep(1)
+    return None
+
+
+def find_end_city(
+    client,
+    timeout: int = 1800,
+    max_distance: float = 4096.0,
+) -> Optional[Tuple[int, int, int]]:
+    """Explore outer islands until a loaded purpur structure is verified."""
+    state = _unwrap(client.transport.dispatch("get_state", {}))
+    start = _position(state)
+    origin_x = float(start.get("x", 0))
+    origin_z = float(start.get("z", 0))
+    exploring = False
+    deadline = time.time() + timeout
+    try:
+        while time.time() < deadline:
+            found = _found(
+                client.transport.dispatch(
+                    "find_blocks",
+                    {
+                        "blocks": [
+                            "minecraft:purpur_block",
+                            "minecraft:purpur_pillar",
+                            "minecraft:end_stone_bricks",
+                        ],
+                        "radius": 64,
+                        "limit": 256,
+                    },
+                )
+            )
+            purpur = [
+                block for block in found
+                if "purpur" in str(block.get("block", ""))
+            ]
+            if len(purpur) >= 20:
+                return (
+                    round(sum(int(block["x"]) for block in purpur) / len(purpur)),
+                    round(sum(int(block["y"]) for block in purpur) / len(purpur)),
+                    round(sum(int(block["z"]) for block in purpur) / len(purpur)),
+                )
+            live = _position(_unwrap(client.transport.dispatch("get_state", {})))
+            distance = (
+                (float(live.get("x", origin_x)) - origin_x) ** 2
+                + (float(live.get("z", origin_z)) - origin_z) ** 2
+            ) ** 0.5
+            if distance > max_distance:
+                return None
+            if not exploring:
+                client.transport.dispatch(
+                    "explore", {"x": int(origin_x), "z": int(origin_z)}
+                )
+                exploring = True
+            time.sleep(4)
+    finally:
+        if exploring:
+            client.transport.dispatch("cancel", {})
+            client.transport.dispatch("chat", {"message": "#stop"})
+    return None
+
+
+def acquire_shulker_boxes(client, target: int = 5, timeout: int = 1200) -> bool:
+    """Collect shells from real shulkers and craft the requested boxes."""
+    from .inventory import count_item
+    from .combat import hunt_mobs
+    from .resources import ensure_supplies
+
+    if count_item(client, "minecraft:shulker_box") >= target:
+        return True
+    shells_needed = max(0, target * 2 - count_item(client, "minecraft:shulker_shell"))
+    if shells_needed:
+        hunted = hunt_mobs(
+            client,
+            mob_types=["shulker"],
+            required_loot={"minecraft:shulker_shell": shells_needed},
+            search_radius=96,
+            timeout=timeout,
+            heal_threshold=14.0,
+            max_distance_from_origin=256.0,
+        )
+        if not hunted.success:
+            return False
+    if not ensure_supplies(client, {"minecraft:chest": target}, timeout=600).success:
+        return False
+    return ensure_supplies(
+        client, {"minecraft:shulker_box": target}, timeout=600
+    ).success and count_item(client, "minecraft:shulker_box") >= target
+
+
+def acquire_elytra(client, timeout: int = 600) -> bool:
+    """Break End-ship item frames by entity id until Elytra is collected."""
+    from .inventory import count_item
+    from .navigation import goto
+
+    if count_item(client, "minecraft:elytra") >= 1:
+        return True
+    deadline = time.time() + timeout
+    attacked = set()
+    while time.time() < deadline:
+        frames = [
+            entity
+            for entity in _entities(
+                client.transport.dispatch("get_entities", {"radius": 96})
+            )
+            if entity.get("type") in {"minecraft:item_frame", "minecraft:glow_item_frame"}
+            and entity.get("id") not in attacked
+        ]
+        if not frames:
+            return False
+        for frame in sorted(frames, key=lambda value: float(value.get("distance", 999))):
+            position = frame.get("position", {})
+            if not all(axis in position for axis in ("x", "y", "z")):
+                continue
+            if not goto(
+                client,
+                int(position["x"]),
+                int(position["y"]),
+                int(position["z"]),
+                timeout=120,
+                tolerance=3.0,
+            ):
+                continue
+            attacked.add(frame["id"])
+            client.transport.dispatch(
+                "attack_entity", {"entity_id": int(frame["id"])}
+            )
+            time.sleep(2)
+            if count_item(client, "minecraft:elytra") >= 1:
+                return True
+    return False
+
+
+def return_from_end(client, timeout: int = 180) -> bool:
+    """Enter the active central exit portal and verify the Overworld."""
+    from .navigation import goto
+
+    portals = _found(
+        client.transport.dispatch(
+            "find_blocks",
+            {"blocks": ["minecraft:end_portal"], "radius": 96, "limit": 16},
+        )
+    )
+    if not portals:
+        return False
+    target = min(portals, key=lambda block: float(block.get("distance", 999)))
+    if not goto(
+        client,
+        int(target["x"]),
+        int(target["y"]),
+        int(target["z"]),
+        timeout=180,
+        tolerance=0.5,
+    ):
+        return False
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        dimension = str(
+            _unwrap(client.transport.dispatch("get_state", {})).get("dimension", "")
+        ).lower()
+        if "overworld" in dimension:
+            return True
+        time.sleep(1)
     return False

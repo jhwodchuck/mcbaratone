@@ -64,6 +64,10 @@ public class ClientTickHandler {
     public void onClientTick(MinecraftClient client) {
         if (playerContext.isPlayerNull() || client.world == null) return;
 
+        // Advance any in-progress manual (non-Baritone) block break. Cheap
+        // no-op when idle; only active during a dig_block request.
+        com.minecraftbot.baritone.ManualMiningController.getInstance().tick(client);
+
         tickCounter++;
 
         // Audit/EMIT tick event periodically

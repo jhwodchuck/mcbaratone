@@ -10,8 +10,9 @@ from ..actions.base import BaseAction
 from ..common.nether import find_nearest_portal
 from ..common import goto
 from ..common.combat import secure_recovery_area
-from ..common.inventory import get_inventory
+from ..common.inventory import get_inventory, reset_inventory_cache
 from ..automator.state_manager import Phase
+from .death_recovery_state import handle_alive_pending_recovery
 
 
 _CRITICAL_RECOVERY_IDS = {
@@ -25,7 +26,7 @@ _CRITICAL_RECOVERY_IDS = {
     "minecraft:flint_and_steel",
     "minecraft:obsidian",
     "minecraft:ender_pearl",
-    "minecraft:eye_of_ender",
+    "minecraft:ender_eye",
     "minecraft:blaze_rod",
     "minecraft:blaze_powder",
 }
@@ -125,16 +126,55 @@ def _recovery_shortfall(client, expected: Dict[str, int]) -> Dict[str, int]:
     }
 
 
+def _player_alive(client) -> bool:
+    """Require a fresh live postcondition before recovery may resume a phase."""
+    try:
+        state = client.transport.dispatch("get_state", {})
+    except Exception:
+        return False
+    return not state.get("is_dead", False) and float(state.get("health", 0) or 0) > 0
+
+
+def _bootstrap_starter_pickaxe(client) -> bool:
+    """Re-craft a minimum wooden pickaxe after a lost grave.
+
+    A death drops the whole toolkit.  When the grave despawns (5-minute timer)
+    or is unreachable, returning ``fail`` here leaves the bot permanently naked
+    -- no pickaxe means it cannot mine, so its phase loops forever re-attempting
+    stone gathering with nothing in hand.  The wooden-tool craft chain already
+    gathers wood -> planks -> sticks from scratch, so driving it restores the
+    one tool progression cannot proceed without.  Returns True if a pickaxe is
+    now carried (already-had counts as success).
+    """
+    from ..common.inventory import count_item
+    from ..common.resources import PICKAXE_ITEMS, ensure_supplies
+
+    try:
+        if any(count_item(client, item_id) > 0 for item_id in PICKAXE_ITEMS):
+            return True
+        print("RECOVERY: grave lost; bootstrapping a wooden pickaxe from scratch...")
+        result = ensure_supplies(
+            client, {"minecraft:wooden_pickaxe": 1}, timeout=300
+        )
+        succeeded = bool(getattr(result, "success", False)) and any(
+            count_item(client, item_id) > 0 for item_id in PICKAXE_ITEMS
+        )
+        print(
+            "RECOVERY: starter pickaxe bootstrap "
+            f"{'succeeded' if succeeded else 'failed'}"
+        )
+        return succeeded
+    except Exception as exc:  # never let recovery raise out of a fallback
+        print(f"RECOVERY: starter pickaxe bootstrap error: {exc}")
+        return False
+
+
 def _checkpointed_retreat(state) -> Optional[Tuple[int, int, int]]:
     """Return the best persisted home coordinate without bridge probing."""
     custom_data = getattr(state, "custom_data", {})
-    structures = custom_data.get("structures", {})
-    house = structures.get("starter_house", {})
-    for key in ("supply_chest", "origin"):
-        value = house.get(key)
-        if isinstance(value, (list, tuple)) and len(value) == 3:
-            return tuple(int(axis) for axis in value)
-
+    # Live catalog evidence is stronger than an old structure sketch. Bot10's
+    # house chest was air while the location catalog held a verified chest;
+    # prioritizing the stale house caused a 250-block naked retreat.
     locations = custom_data.get("locations", {}).get("chest", [])
     for location in reversed(locations):
         if not isinstance(location, dict):
@@ -145,10 +185,52 @@ def _checkpointed_retreat(state) -> Optional[Tuple[int, int, int]]:
         except (KeyError, TypeError, ValueError):
             continue
 
+    structures = custom_data.get("structures", {})
+    house = structures.get("starter_house", {})
+    for key in ("supply_chest", "origin"):
+        value = house.get(key)
+        if isinstance(value, (list, tuple)) and len(value) == 3:
+            return tuple(int(axis) for axis in value)
+
     value = custom_data.get("base_location")
     if isinstance(value, (list, tuple)) and len(value) == 3:
         return tuple(int(axis) for axis in value)
     return None
+
+
+def _reach_overworld_grave(
+    client,
+    death_coords: Tuple[int, int, int],
+    *,
+    attempts: int = 3,
+) -> bool:
+    """Reach a grave across repeated naked deaths without losing its target."""
+    for attempt in range(1, max(1, int(attempts)) + 1):
+        state = client.transport.dispatch("get_state", {})
+        if state.get("is_dead", False) or float(state.get("health", 20) or 0) <= 0:
+            print(
+                f"RECOVERY: respawning for grave approach {attempt}/{attempts}"
+            )
+            client.transport.dispatch("respawn", {})
+            reset_inventory_cache()  # dropped-on-death items must not linger in cache
+            time.sleep(2.0)
+        reached = goto(
+            client,
+            death_coords[0],
+            death_coords[1],
+            death_coords[2],
+            timeout=120,
+        )
+        final_state = client.transport.dispatch("get_state", {})
+        alive = not final_state.get("is_dead", False) and float(
+            final_state.get("health", 20) or 0
+        ) > 0
+        if reached and alive:
+            return True
+        print(
+            f"RECOVERY: grave approach {attempt}/{attempts} did not finish alive"
+        )
+    return False
 
 
 def _record_unsafe_recovery(state, death_coords: Tuple[int, int, int]) -> int:
@@ -167,6 +249,17 @@ def _record_unsafe_recovery(state, death_coords: Tuple[int, int, int]) -> int:
 def _clear_unsafe_recovery(state) -> None:
     custom_data = getattr(state, "custom_data", {})
     custom_data.pop("death_recovery", None)
+
+
+def _persist_pending_recovery(state, expected: Dict[str, int]) -> None:
+    """Best-effort checkpoint of a grave target before the controller can exit."""
+    save = getattr(state, "save_checkpoint", None)
+    if not callable(save):
+        return
+    try:
+        save(expected)
+    except Exception as exc:
+        print(f"RECOVERY: pending grave checkpoint deferred ({exc})")
 
 
 class DeathRecoveryAction(BaseAction):
@@ -193,7 +286,7 @@ class DeathRecoveryAction(BaseAction):
                 )
                 return ActionResult.ok("Death recovery deferred due transport timeout")
             if not state.get("is_dead", False) and state.get("health", 20) > 0:
-                return ActionResult.ok("No death detected")
+                return handle_alive_pending_recovery(context, state, get_inventory)
 
             # The player position remains available on the death screen.  Save
             # it before respawning because some bridge versions clear their
@@ -205,11 +298,49 @@ class DeathRecoveryAction(BaseAction):
             # never be mistaken for a complete item recovery.
             expected_critical = _critical_inventory(get_inventory(context.client))
 
+            recovery_state = context.state.custom_data.setdefault(
+                "death_recovery", {}
+            )
+            pending_location = recovery_state.get("pending_location")
+            resuming_pending = (
+                isinstance(pending_location, (list, tuple))
+                and len(pending_location) == 3
+            )
+            if resuming_pending:
+                stored_expected = recovery_state.get("expected_critical", {})
+                if isinstance(stored_expected, dict):
+                    expected_critical = {
+                        item_id: max(
+                            int(stored_expected.get(item_id, 0)),
+                            int(expected_critical.get(item_id, 0)),
+                        )
+                        for item_id in set(stored_expected) | set(expected_critical)
+                    }
+                print(
+                    "RECOVERY: resuming persisted grave target "
+                    f"{tuple(int(value) for value in pending_location)}"
+                )
+            elif death_position:
+                pending_location = [
+                    int(death_position.get("x", 0)),
+                    int(death_position.get("y", 0)),
+                    int(death_position.get("z", 0)),
+                ]
+                recovery_state.update(
+                    {
+                        "pending_location": pending_location,
+                        "pending_dimension": death_dimension,
+                        "expected_critical": expected_critical,
+                    }
+                )
+                _persist_pending_recovery(context.state, expected_critical)
+
             print("\n!!! PLAYER DIED !!!")
             print("Starting recovery sequence...")
 
             # Respawn
             context.client.transport.dispatch("respawn", {})
+            reset_inventory_cache()  # dropped-on-death items must not linger in cache
             time.sleep(2.0)
 
             # Get death location and recover items
@@ -224,6 +355,11 @@ class DeathRecoveryAction(BaseAction):
             data = response.get("data", response)
             death_x, death_y, death_z = data.get("x"), data.get("y"), data.get("z")
             death_dim = data.get("dimension", death_dimension).lower()
+            if resuming_pending:
+                death_x, death_y, death_z = pending_location
+                death_dim = str(
+                    recovery_state.get("pending_dimension", death_dim)
+                ).lower()
             if death_x is None and death_position:
                 death_x = death_position.get("x")
                 death_y = death_position.get("y")
@@ -236,6 +372,18 @@ class DeathRecoveryAction(BaseAction):
                     "z": int(death_z),
                     "dimension": death_dim,
                 }
+                recovery_state.update(
+                    {
+                        "pending_location": [
+                            int(death_x),
+                            int(death_y),
+                            int(death_z),
+                        ],
+                        "pending_dimension": death_dim,
+                        "expected_critical": expected_critical,
+                    }
+                )
+                _persist_pending_recovery(context.state, expected_critical)
 
                 print(f"Death location: ({death_x}, {death_y}, {death_z}) in {death_dim}")
 
@@ -273,7 +421,12 @@ class DeathRecoveryAction(BaseAction):
                                 if success:
                                     # Enter portal to return to Overworld
                                     from ..common import enter_nether_portal
-                                    if enter_nether_portal(context.client, timeout=60):
+                                    if enter_nether_portal(
+                                        context.client,
+                                        timeout=60,
+                                        target_dimension="minecraft:overworld",
+                                        portal=portal_coords,
+                                    ):
                                         print("Returned to Overworld via portal")
                                         # Reset to bootstrap since we're back at spawn area
                                         context.state.set_phase(Phase.BOOT_SEQUENCE)
@@ -292,10 +445,13 @@ class DeathRecoveryAction(BaseAction):
                     # Died in Overworld - standard recovery.  Resume the
                     # interrupted phase after pickup; completed earlier phases
                     # remain valid and should not be replayed.
-                    success = goto(context.client, int(death_x), int(death_y), int(death_z), timeout=600)
+                    death_coords = (int(death_x), int(death_y), int(death_z))
+                    success = _reach_overworld_grave(
+                        context.client,
+                        death_coords,
+                    )
                     if success:
                         print("Recovered items from death location")
-                        death_coords = (int(death_x), int(death_y), int(death_z))
                         if not _sweep_death_drops(context.client, death_coords):
                             return ActionResult.fail(
                                 "Death-pile item entities remain after recovery sweep"
@@ -310,23 +466,39 @@ class DeathRecoveryAction(BaseAction):
                             )
                         retreat = _checkpointed_retreat(context.state)
                         if retreat is not None and retreat != death_coords:
-                            print(
-                                f"RECOVERY: retreating recovered inventory to {retreat}"
-                            )
-                            if goto(
-                                context.client,
-                                retreat[0],
-                                retreat[1],
-                                retreat[2],
-                                timeout=300,
-                                tolerance=2.0,
-                            ):
-                                _clear_unsafe_recovery(context.state)
-                                return ActionResult.ok(
-                                    "Recovery completed in Overworld after retreat",
-                                    recovered=True,
-                                    retreated=True,
-                                    reset_phase=False,
+                            retreat_distance = (
+                                (retreat[0] - death_coords[0]) ** 2
+                                + (retreat[2] - death_coords[2]) ** 2
+                            ) ** 0.5
+                            if retreat_distance <= 96.0:
+                                print(
+                                    "RECOVERY: retreating recovered inventory "
+                                    f"to {retreat}"
+                                )
+                                if goto(
+                                    context.client,
+                                    retreat[0],
+                                    retreat[1],
+                                    retreat[2],
+                                    timeout=180,
+                                    tolerance=2.0,
+                                ):
+                                    if not _player_alive(context.client):
+                                        return ActionResult.fail(
+                                            "Player died during post-recovery retreat"
+                                        )
+                                    _clear_unsafe_recovery(context.state)
+                                    return ActionResult.ok(
+                                        "Recovery completed in Overworld after retreat",
+                                        recovered=True,
+                                        retreated=True,
+                                        reset_phase=False,
+                                    )
+                            else:
+                                print(
+                                    "RECOVERY: verified storage is "
+                                    f"{retreat_distance:.1f}m away; securing the "
+                                    "grave locally instead of risking a naked commute"
                                 )
                         if not secure_recovery_area(context.client):
                             failures = _record_unsafe_recovery(
@@ -340,6 +512,10 @@ class DeathRecoveryAction(BaseAction):
                                 "Recovered items but could not retreat or secure the area",
                                 unsafe_recovery_failures=failures,
                             )
+                        if not _player_alive(context.client):
+                            return ActionResult.fail(
+                                "Player died while securing the recovered grave"
+                            )
                         _clear_unsafe_recovery(context.state)
                         return ActionResult.ok(
                             "Recovery completed in Overworld",
@@ -347,9 +523,27 @@ class DeathRecoveryAction(BaseAction):
                             reset_phase=False,
                         )
                     print("Failed to reach death location")
+                    # Grave unreachable/despawned: bootstrap starter tools so a
+                    # single bad death does not wedge the bot toolless forever.
+                    if _bootstrap_starter_pickaxe(context.client):
+                        _clear_unsafe_recovery(context.state)
+                        return ActionResult.ok(
+                            "Grave unreachable; bootstrapped starter tools instead",
+                            recovered=False,
+                            bootstrapped_tools=True,
+                            reset_phase=False,
+                        )
                     return ActionResult.fail("Failed to reach death location")
 
             print("Death location unavailable; refusing to discard the active phase")
+            if _bootstrap_starter_pickaxe(context.client):
+                _clear_unsafe_recovery(context.state)
+                return ActionResult.ok(
+                    "Death location unavailable; bootstrapped starter tools instead",
+                    recovered=False,
+                    bootstrapped_tools=True,
+                    reset_phase=False,
+                )
             return ActionResult.fail("Death location unavailable for item recovery")
 
         except Exception as e:

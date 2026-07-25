@@ -137,14 +137,14 @@ def test_house_gate_probes_persisted_plan(tmp_path):
 def test_eyes_gate_uses_real_minecraft_item_id(tmp_path):
     wrong_path = write_checkpoint(
         tmp_path,
-        {"inventory_summary": {"minecraft:ender_eye": 12}},
+        {"inventory_summary": {"minecraft:eye_of_ender": 12}},
     )
     wrong = ProgressionEvidence.capture(FakeContext(), wrong_path)
     assert not gate_by_id("T1208").evaluate(wrong)[0]
 
     right_path = write_checkpoint(
         tmp_path,
-        {"inventory_summary": {"minecraft:eye_of_ender": 12}},
+        {"inventory_summary": {"minecraft:ender_eye": 12}},
     )
     right = ProgressionEvidence.capture(FakeContext(), right_path)
     assert gate_by_id("T1208").evaluate(right)[0]

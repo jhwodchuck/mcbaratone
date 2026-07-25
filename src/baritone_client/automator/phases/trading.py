@@ -5,7 +5,7 @@ Phase 8: Trading Empire Logic
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import StateManager
-from ...common import TaskResult, SequentialTask, ActionTask
+from ...common import TaskResult
 
 class ToolPerfectionHandler(PhaseHandler):
     """Phase 8: Librarian trading - Hour 7-8."""
@@ -14,17 +14,7 @@ class ToolPerfectionHandler(PhaseHandler):
         return "Trading Empire (Hour 7-8)"
     
     def execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
-        tasks = [
-            ActionTask("Breed villagers", self._breed_villagers),
-            ActionTask("Roll librarians for Mending", self._roll_mending),
-            ActionTask("Roll librarians for Efficiency V", self._roll_efficiency),
-            ActionTask("Roll librarians for Unbreaking III", self._roll_unbreaking),
-            ActionTask("Roll librarians for Fortune III", self._roll_fortune),
-            ActionTask("Cure villagers for discounts", self._cure_villagers),
-        ]
-        
-        executor = SequentialTask("Trading Empire", tasks)
-        return executor.run(client)
+        return TaskResult.fail("Librarian trading is not implemented")
 
     def _breed_villagers(self, client) -> bool:
         """Breed more villagers for trading."""

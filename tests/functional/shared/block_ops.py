@@ -328,9 +328,9 @@ def move_near(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, flo
             timeout=timeout,
             arrival_radius=1.4,
             require_arrival=True,
-            allow_incomplete=True,
+            allow_incomplete=False,
         )
-        if ok:
+        if ok and in_range(ctx, x, y, z, max_dist=4.5):
             return True
         if in_range(ctx, stand_x, stand_y, stand_z):
             return True

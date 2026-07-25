@@ -21,6 +21,25 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 from baritone_client import Client, TcpTransport
 from baritone_client.automator import EndGameAutomator
+from baritone_client.world_identity import read_level_dat_seed
+
+
+def _resolve_world_seed(explicit_seed, host):
+    """Resolve a dedicated-server seed without inventing checkpoint identity."""
+    if explicit_seed is not None:
+        return int(explicit_seed)
+    configured = os.environ.get("MC_WORLD_SEED")
+    if configured:
+        try:
+            return int(configured)
+        except ValueError:
+            raise ValueError("MC_WORLD_SEED must be an integer")
+    if str(host).lower() in {"localhost", "127.0.0.1", "::1"}:
+        local_level = os.path.join(
+            os.path.dirname(__file__), "local_server", "world", "level.dat"
+        )
+        return read_level_dat_seed(local_level)
+    return None
 
 
 def main():
@@ -32,6 +51,12 @@ def main():
     parser.add_argument("--host", default="localhost", help="Bridge host")
     parser.add_argument("--port", type=int, default=5555, help="Bridge port")
     parser.add_argument("--timeout", type=float, default=15.0, help="Transport timeout in seconds (for bridge responses)")
+    parser.add_argument(
+        "--world-seed",
+        type=int,
+        default=None,
+        help="Authoritative dedicated-server seed when the client bridge cannot report it",
+    )
     parser.add_argument(
         "--run-dir",
         default=None,
@@ -85,12 +110,16 @@ def main():
             time.sleep(5.0)
         
         print("Connected successfully!")
+        world_seed = _resolve_world_seed(args.world_seed, args.host)
+        if world_seed is not None:
+            print("Dedicated-server world seed loaded for checkpoint identity.")
         
         # Initialize automator
         automator = EndGameAutomator(
             client,
             checkpoint_dir=args.run_dir,
             screenshot_enabled=not args.no_screenshots,
+            world_seed_override=world_seed,
         )
         automator.register_default_handlers()
         if args.no_background_systems:

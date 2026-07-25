@@ -14,6 +14,10 @@ class PlayerDeathDetected(RuntimeError):
     """Signal that phase execution must yield to top-level death recovery."""
 
 
+class SurvivalRecoveryRequired(RuntimeError):
+    """Signal a safe survival hold that must not consume an objective attempt."""
+
+
 @dataclass
 class TaskResult:
     """Result of task execution."""
@@ -28,6 +32,23 @@ class TaskResult:
     @classmethod
     def fail(cls, reason: str, **data) -> "TaskResult":
         return cls(success=False, reason=reason, data=data)
+
+
+def normalize_task_result(result: Any) -> TaskResult:
+    """Convert supported action result shapes to the task result contract."""
+    if isinstance(result, TaskResult):
+        return result
+    if isinstance(result, bool):
+        return TaskResult.ok() if result else TaskResult.fail("Action returned False")
+    if hasattr(result, "success"):
+        reason = getattr(result, "reason", None)
+        if reason is None:
+            reason = getattr(result, "message", "")
+        data = getattr(result, "data", {})
+        if not isinstance(data, dict):
+            data = {"result": result}
+        return TaskResult(bool(result.success), str(reason or ""), data)
+    return TaskResult.ok(data={"result": result})
 
 
 class Task(ABC):
@@ -85,24 +106,20 @@ class ActionTask(Task):
                 pass
 
             result = self.action(client, **self.kwargs)
-            if isinstance(result, TaskResult):
-                normalized = result
-            elif isinstance(result, bool):
-                normalized = (
-                    TaskResult.ok()
-                    if result
-                    else TaskResult.fail("Action returned False")
-                )
-            else:
-                normalized = TaskResult.ok(data={"result": result})
+            normalized = normalize_task_result(result)
             end_operation(
                 operation,
                 "success" if normalized.success else "failure",
                 reason=normalized.reason,
             )
             return normalized
-        except PlayerDeathDetected:
-            end_operation(operation, "interrupted", reason="player_death")
+        except (PlayerDeathDetected, SurvivalRecoveryRequired) as exc:
+            reason = (
+                "player_death"
+                if isinstance(exc, PlayerDeathDetected)
+                else "survival_recovery"
+            )
+            end_operation(operation, "interrupted", reason=reason)
             raise
         except Exception as e:
             end_operation(
@@ -149,7 +166,7 @@ class SequentialTask(Task):
                 food=state.get("food"),
                 position=state.get("block_position"),
             )
-            result = task.run(client)
+            result = normalize_task_result(task.run(client))
             if not result.success:
                 emit_event(
                     "sequence_failure",

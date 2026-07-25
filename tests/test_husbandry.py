@@ -166,6 +166,34 @@ def test_breed_herd_fails_if_cannot_reach(monkeypatch):
     assert husbandry.breed_herd(client, (-320, 72, -202), "cow") is False
 
 
+def test_discover_herd_returns_verified_observed_centroid(monkeypatch):
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                return {"block_position": {"x": 0, "y": 64, "z": 0}}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    monkeypatch.setattr(
+        husbandry,
+        "_animals_of_type",
+        lambda *_a, **_k: [
+            {"position": {"x": 10, "y": 65, "z": 20}},
+            {"position": {"x": 12, "y": 65, "z": 22}},
+        ],
+    )
+    went = []
+    monkeypatch.setattr(
+        husbandry,
+        "goto",
+        lambda _c, x, y, z, **_k: went.append((x, y, z)) or True,
+    )
+    monkeypatch.setattr(husbandry, "count_herd", lambda *_a, **_k: 2)
+
+    assert husbandry.discover_herd(client, "cow") == (11, 65, 21)
+    assert went == [(11, 65, 21)]
+
+
 def test_visit_known_herd_returns_true_immediately_if_already_satisfied(monkeypatch):
     """If required_loot is already banked, must not travel anywhere."""
     client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
@@ -179,6 +207,42 @@ def test_visit_known_herd_returns_true_immediately_if_already_satisfied(monkeypa
     assert husbandry.visit_known_herd_for_loot(
         client, {"minecraft:leather": 5}, "cow"
     ) is True
+
+
+def test_visit_known_herd_verifies_preserved_breeding_pair(monkeypatch):
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
+    monkeypatch.setattr(husbandry, "count_item", lambda *_a, **_k: 16)
+    went = []
+    monkeypatch.setattr(
+        husbandry,
+        "goto",
+        lambda _c, x, y, z, **_k: went.append((x, y, z)) or True,
+    )
+    monkeypatch.setattr(husbandry, "breed_pair", lambda *_a, **_k: True)
+    monkeypatch.setattr(husbandry, "count_herd", lambda *_a, **_k: 2)
+
+    assert husbandry.visit_known_herd_for_loot(
+        client,
+        {"minecraft:beef": 16},
+        "cow",
+        preserve_breeding_pair=True,
+    ) is True
+    assert went == [(-320, 72, -202), (-320, 72, -202)]
+
+
+def test_visit_known_herd_rejects_nonrenewable_survivors(monkeypatch):
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
+    monkeypatch.setattr(husbandry, "count_item", lambda *_a, **_k: 16)
+    monkeypatch.setattr(husbandry, "goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(husbandry, "breed_pair", lambda *_a, **_k: False)
+    monkeypatch.setattr(husbandry, "count_herd", lambda *_a, **_k: 1)
+
+    assert husbandry.visit_known_herd_for_loot(
+        client,
+        {"minecraft:beef": 16},
+        "cow",
+        preserve_breeding_pair=True,
+    ) is False
 
 
 def test_visit_known_herd_fails_for_unknown_animal_type():

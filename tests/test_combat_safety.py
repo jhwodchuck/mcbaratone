@@ -134,11 +134,220 @@ def test_eat_until_hunger_uses_carried_emergency_food(monkeypatch):
     assert len(uses) == 2
 
 
+def test_eat_until_hunger_yields_death_to_top_level_recovery():
+    client = SimpleNamespace(transport=CombatTransport(health=0.0))
+
+    with pytest.raises(PlayerDeathDetected):
+        combat.eat_until_hunger(client, minimum_food=14)
+
+
 def test_emergency_food_list_uses_current_raw_meat_item_ids():
     assert "minecraft:beef" in combat.EMERGENCY_FOOD_ITEMS
     assert "minecraft:porkchop" in combat.EMERGENCY_FOOD_ITEMS
+    assert "minecraft:tropical_fish" in combat.EMERGENCY_FOOD_ITEMS
     assert "minecraft:raw_beef" not in combat.EMERGENCY_FOOD_ITEMS
     assert "minecraft:raw_porkchop" not in combat.EMERGENCY_FOOD_ITEMS
+
+
+def test_emergency_recovery_ignores_hostile_sealed_far_below_player():
+    state = {"block_position": {"x": -7, "y": 72, "z": 33}}
+    cave_creeper = {
+        "type": "minecraft:creeper",
+        "distance": 10.4,
+        "position": {"x": -4, "y": 62, "z": 31},
+    }
+    surface_creeper = {
+        "type": "minecraft:creeper",
+        "distance": 10.4,
+        "position": {"x": -4, "y": 70, "z": 31},
+    }
+
+    assert not combat._threat_can_reach_player(cave_creeper, state)
+    assert combat._threat_can_reach_player(surface_creeper, state)
+
+
+def test_aquatic_food_uses_dynamic_follow_until_melee_range(monkeypatch):
+    transport = CombatTransport(health=20.0)
+    client = SimpleNamespace(transport=transport)
+    scans = iter(
+        (
+            [{"id": 22, "type": "minecraft:tropical_fish", "distance": 8.0}],
+            [{"id": 22, "type": "minecraft:tropical_fish", "distance": 3.5}],
+        )
+    )
+    monkeypatch.setattr(combat, "get_nearby_entities", lambda *_args, **_kwargs: next(scans))
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(combat.time, "sleep", lambda _seconds: None)
+
+    assert combat._approach_aquatic_food(
+        client,
+        22,
+        "minecraft:tropical_fish",
+    )
+    assert ("chat", {"message": "#follow entity tropical_fish"}) in transport.calls
+    assert transport.calls[-2:] == [
+        ("chat", {"message": "#stop"}),
+        ("cancel", {}),
+    ]
+
+
+def test_aquatic_hunt_surfaces_until_head_reaches_air(monkeypatch):
+    class SurfaceTransport(CombatTransport):
+        def __init__(self):
+            super().__init__(health=18.0)
+            self.head_blocks = iter(("minecraft:water", "minecraft:air"))
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "health": self.health,
+                    "block_position": {"x": 4, "y": 61, "z": 8},
+                }
+            if route == "get_block":
+                return {"id": next(self.head_blocks)}
+            return {}
+
+    transport = SurfaceTransport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(combat.time, "sleep", lambda _seconds: None)
+
+    assert combat._surface_after_aquatic_hunt(client)
+    assert ("chat", {"message": "#surface"}) in transport.calls
+    assert transport.calls[-2:] == [
+        ("chat", {"message": "#stop"}),
+        ("cancel", {}),
+    ]
+
+
+class SubmergedTransport(CombatTransport):
+    def __init__(self, head_id="minecraft:water"):
+        super().__init__(health=20.0)
+        self.head_id = head_id
+
+    def dispatch(self, route, payload):
+        self.calls.append((route, payload))
+        if route == "get_state":
+            return {"health": self.health, "block_position": {"x": 0, "y": 62, "z": 0}}
+        if route == "get_block":
+            return {"id": self.head_id}
+        return {}
+
+
+def test_submersion_reflex_ignores_first_tick_then_surfaces(monkeypatch):
+    client = SimpleNamespace(transport=SubmergedTransport("minecraft:water"))
+    surfaced = []
+    monkeypatch.setattr(
+        combat,
+        "_surface_after_aquatic_hunt",
+        lambda _c, **_k: surfaced.append(True) or True,
+    )
+    state = {"block_position": {"x": 0, "y": 62, "z": 0}}
+
+    # First fully-submerged tick is below threshold -> no surfacing yet.
+    assert combat.escape_water_if_submerged(client, state) is False
+    assert client._submersion_ticks == 1
+    assert surfaced == []
+
+    # Second consecutive tick reaches the threshold -> surface and reset.
+    assert combat.escape_water_if_submerged(client, state) is True
+    assert surfaced == [True]
+    assert client._submersion_ticks == 0
+
+
+def test_submersion_reflex_resets_when_head_clears(monkeypatch):
+    client = SimpleNamespace(
+        transport=SubmergedTransport("minecraft:air"), _submersion_ticks=5
+    )
+    surfaced = []
+    monkeypatch.setattr(
+        combat,
+        "_surface_after_aquatic_hunt",
+        lambda _c, **_k: surfaced.append(True) or True,
+    )
+    state = {"block_position": {"x": 0, "y": 70, "z": 0}}
+
+    # Head is in air (e.g. swimming on the surface) -> reflex is a no-op.
+    assert combat.escape_water_if_submerged(client, state) is False
+    assert client._submersion_ticks == 0
+    assert surfaced == []
+
+
+def test_defend_or_flee_surfaces_before_assessing_threats(monkeypatch):
+    # Pre-seed one submersion tick so this call reaches the surface threshold.
+    client = SimpleNamespace(
+        transport=SubmergedTransport("minecraft:water"), _submersion_ticks=1
+    )
+    surfaced = []
+    monkeypatch.setattr(combat, "_get_combat_snapshot", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        combat,
+        "_surface_after_aquatic_hunt",
+        lambda _c, **_k: surfaced.append(True) or True,
+    )
+    # Threat assessment must never run while the bot is drowning.
+    monkeypatch.setattr(
+        combat,
+        "scan_for_threats",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("must surface before assessing threats")
+        ),
+    )
+
+    assert combat.defend_or_flee(client) is True
+    assert surfaced == [True]
+
+
+def test_near_death_recovery_eventually_explores_instead_of_holding_forever(
+    monkeypatch,
+):
+    """Regression for the live Bot09 stall: health=3.5, food=10, no threats,
+    no loaded food target. must_hold_for_critical_food(critical_health_floor
+    default) is True the whole time, so a caller that returned False on the
+    first hold would loop this forever. The bounded hold_cycles grace period
+    must fall through to the same bounded exploration a merely-hurt bot uses.
+    """
+
+    class NearDeathTransport(CombatTransport):
+        def __init__(self):
+            super().__init__(health=3.5)
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "health": self.health,
+                    "food_level": 10,
+                    "world_time": 1000,
+                    "block_position": {"x": 0, "y": 64, "z": 0},
+                }
+            return {}
+
+    client = SimpleNamespace(transport=NearDeathTransport())
+    monkeypatch.setattr(combat, "recover_health", lambda *_a, **_k: False)
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [])
+    monkeypatch.setattr(combat, "get_nearby_entities", lambda *_a, **_k: [])
+    monkeypatch.setattr(combat.time, "sleep", lambda _s: None)
+
+    class ReachedExploration(Exception):
+        pass
+
+    def explored(*_a, **_k):
+        if _a and _a[0] == "explore":
+            raise ReachedExploration()
+        return {}
+
+    original_dispatch = client.transport.dispatch
+
+    def wrapped_dispatch(route, payload):
+        if route == "explore":
+            raise ReachedExploration()
+        return original_dispatch(route, payload)
+
+    client.transport.dispatch = wrapped_dispatch
+
+    with pytest.raises(ReachedExploration):
+        combat.acquire_emergency_food(client, minimum_health=12.0, timeout=60)
 
 
 def test_emergency_food_hunts_passive_target_then_recovers(monkeypatch):
@@ -152,6 +361,7 @@ def test_emergency_food_hunts_passive_target_then_recovers(monkeypatch):
     }
     recovery_results = iter((False, True))
     hunted = []
+    renewable_sources = []
 
     def recover(*_args, **_kwargs):
         recovered = next(recovery_results)
@@ -161,14 +371,31 @@ def test_emergency_food_hunts_passive_target_then_recovers(monkeypatch):
 
     monkeypatch.setattr(combat, "recover_health", recover)
     monkeypatch.setattr(combat, "scan_for_threats", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(combat, "find_entity_by_type", lambda *_args, **_kwargs: sheep)
+    herd = [
+        {**sheep, "id": 12 + index, "distance": 8.0 + index}
+        for index in range(3)
+    ]
+    monkeypatch.setattr(
+        combat,
+        "get_nearby_entities",
+        lambda _client, radius: herd if radius == 64 else [],
+    )
     monkeypatch.setattr(combat, "safe_combat", lambda *_args, **_kwargs: hunted.append(True) or True)
     monkeypatch.setattr(combat, "heal_if_needed", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(combat.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr("baritone_client.common.navigation.goto", lambda *_args, **_kwargs: True)
 
-    assert combat.acquire_emergency_food(client, minimum_health=12.0)
+    assert combat.acquire_emergency_food(
+        client,
+        minimum_health=12.0,
+        renewable_source_callback=lambda animal_type, location: renewable_sources.append(
+            (animal_type, location)
+        ),
+    )
     assert hunted == [True]
+    assert renewable_sources == [("sheep", (8, 64, 0))]
+    assert ("chat", {"message": "#set allowSprint false"}) in transport.calls
+    assert ("chat", {"message": "#set allowSprint true"}) in transport.calls
 
 
 def test_emergency_food_explores_until_passive_target_loads(monkeypatch):
@@ -181,8 +408,7 @@ def test_emergency_food_explores_until_passive_target_loads(monkeypatch):
         "position": {"x": 10, "y": 64, "z": 0},
     }
     recovery_results = iter((False, True))
-    scans = iter((None, None, cow))
-    scanned_groups = []
+    land_scans = {"count": 0}
     hunted = []
     def recover(*_args, **_kwargs):
         recovered = next(recovery_results)
@@ -192,11 +418,18 @@ def test_emergency_food_explores_until_passive_target_loads(monkeypatch):
 
     monkeypatch.setattr(combat, "recover_health", recover)
     monkeypatch.setattr(combat, "scan_for_threats", lambda *_args, **_kwargs: [])
-    def find_target(_client, entity_types, **_kwargs):
-        scanned_groups.append(tuple(entity_types))
-        return next(scans)
+    herd = [
+        {**cow, "id": 13 + index, "distance": 10.0 + index}
+        for index in range(3)
+    ]
 
-    monkeypatch.setattr(combat, "find_entity_by_type", find_target)
+    def nearby(_client, radius):
+        if radius != 64:
+            return []
+        land_scans["count"] += 1
+        return herd if land_scans["count"] >= 3 else []
+
+    monkeypatch.setattr(combat, "get_nearby_entities", nearby)
     monkeypatch.setattr(combat, "safe_combat", lambda *_args, **_kwargs: hunted.append(True) or True)
     monkeypatch.setattr(combat, "heal_if_needed", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(combat.time, "sleep", lambda _seconds: None)
@@ -206,7 +439,6 @@ def test_emergency_food_explores_until_passive_target_loads(monkeypatch):
     assert hunted == [True]
     assert ("explore", {"x": 0, "z": 0}) in transport.calls
     assert ("chat", {"message": "#stop"}) in transport.calls
-    assert ("salmon", "cod") not in scanned_groups
 
 
 def test_emergency_food_does_not_treat_full_health_low_hunger_as_recovered(monkeypatch):
@@ -232,7 +464,11 @@ def test_emergency_food_does_not_treat_full_health_low_hunger_as_recovered(monke
     def reach_food_search(*_args, **_kwargs):
         raise ReachedFoodSearch()
 
-    monkeypatch.setattr(combat, "find_entity_by_type", reach_food_search)
+    monkeypatch.setattr(
+        combat,
+        "get_nearby_entities",
+        lambda _client, radius: reach_food_search() if radius == 64 else [],
+    )
 
     with pytest.raises(ReachedFoodSearch):
         combat.acquire_emergency_food(
@@ -637,6 +873,41 @@ def test_hunt_continues_hunting_food_animal_without_carried_food(monkeypatch):
     assert fed == [14]
 
 
+def test_hunt_does_not_classify_requested_hostile_as_other_hostile(monkeypatch):
+    client = SimpleNamespace(transport=CombatTransport())
+    zombie = {
+        "id": 42,
+        "type": "minecraft:zombie",
+        "distance": 5.0,
+        "position": {"x": 5, "y": 64, "z": 0},
+    }
+    monkeypatch.setattr(combat, "count_item", lambda *_args: 0)
+    monkeypatch.setattr(combat, "heal_if_needed", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        combat, "get_nearby_entities", lambda *_args, **_kwargs: [zombie]
+    )
+
+    class ReachedTargetSelection(Exception):
+        pass
+
+    monkeypatch.setattr(
+        combat,
+        "find_entity_by_type",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ReachedTargetSelection()
+        ),
+    )
+
+    with pytest.raises(ReachedTargetSelection):
+        combat.hunt_mobs(
+            client,
+            ["zombie"],
+            {"minecraft:rotten_flesh": 1},
+            timeout=30,
+            abort_on_other_hostiles=True,
+        )
+
+
 def test_get_nearby_entities_raises_on_bridge_failure_when_requested():
     """A failed bridge query must be distinguishable from a genuinely empty
     area. Silently returning [] on a transport error made a route-timeout
@@ -700,3 +971,81 @@ def test_hunt_pauses_scan_on_bridge_failure_instead_of_exploring(monkeypatch):
     # Must not have wandered off exploring on a bridge failure.
     assert ("explore", {"x": -6, "z": -250}) not in transport.calls
     assert ("chat", {"message": "#explore"}) not in transport.calls
+
+
+def test_survival_tick_surfaces_submerged_player(monkeypatch):
+    client = SimpleNamespace(
+        transport=SubmergedTransport("minecraft:water"), _submersion_ticks=1
+    )
+    surfaced = []
+    monkeypatch.setattr(
+        combat,
+        "_surface_after_aquatic_hunt",
+        lambda _c, **_k: surfaced.append(True) or True,
+    )
+    state = {"block_position": {"x": 0, "y": 62, "z": 0}}
+
+    assert combat.survival_tick(client, state) is True
+    assert surfaced == [True]
+
+
+def test_survival_tick_noop_when_dry():
+    client = SimpleNamespace(transport=SubmergedTransport("minecraft:air"))
+    assert combat.survival_tick(
+        client, {"block_position": {"x": 0, "y": 70, "z": 0}}
+    ) is False
+
+
+def test_submerged_too_long_times_out_then_fires(monkeypatch):
+    client = SimpleNamespace(transport=SubmergedTransport("minecraft:water"))
+    clock = iter([100.0, 109.0])
+    monkeypatch.setattr(combat.time, "time", lambda: next(clock))
+    state = {"block_position": {"x": 0, "y": 62, "z": 0}}
+
+    # First call starts the submersion timer, not yet over the limit.
+    assert combat._submerged_too_long(client, state, max_seconds=8.0) is False
+    assert client._submerged_since == 100.0
+    # 9s later -> over the 8s limit.
+    assert combat._submerged_too_long(client, state, max_seconds=8.0) is True
+
+
+def test_submerged_too_long_resets_when_head_clears():
+    client = SimpleNamespace(
+        transport=SubmergedTransport("minecraft:air"), _submerged_since=100.0
+    )
+    assert (
+        combat._submerged_too_long(
+            client, {"block_position": {"x": 0, "y": 70, "z": 0}}, max_seconds=8.0
+        )
+        is False
+    )
+    assert client._submerged_since is None
+
+
+def test_safe_combat_surfaces_and_aborts_when_submerged_too_long(monkeypatch):
+    client = SimpleNamespace(transport=CombatTransport(health=20.0))
+    monkeypatch.setattr(combat, "_get_combat_snapshot", lambda *_a, **_k: None)
+    monkeypatch.setattr(combat, "get_nearby_entities", lambda *_a, **_k: [])
+    monkeypatch.setattr(combat, "equip_best_weapon", lambda _c: True)
+    monkeypatch.setattr(combat, "_submerged_too_long", lambda *_a, **_k: True)
+    monkeypatch.setattr(combat.time, "sleep", lambda _s: None)
+    surfaced = []
+    monkeypatch.setattr(
+        combat,
+        "_surface_after_aquatic_hunt",
+        lambda _c, **_k: surfaced.append(True) or True,
+    )
+
+    assert combat.safe_combat(client, target_id=5) is False
+    assert surfaced == [True]
+
+
+def test_approach_aquatic_food_surfaces_when_submerged_too_long(monkeypatch):
+    client = SimpleNamespace(transport=SubmergedTransport("minecraft:water"))
+    monkeypatch.setattr(combat, "_submerged_too_long", lambda *_a, **_k: True)
+    monkeypatch.setattr(combat.time, "sleep", lambda _s: None)
+
+    assert (
+        combat._approach_aquatic_food(client, target_id=7, entity_type="minecraft:cod")
+        is False
+    )

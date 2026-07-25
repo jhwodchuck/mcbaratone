@@ -12,11 +12,18 @@ from ...common.resources import LOG_BLOCKS, PLANK_ITEMS
 from ...common.base import build_emergency_shelter, sleep_through_night, wait_for_safe_daylight
 from ...common.combat import (
     acquire_emergency_food,
+    eat_until_hunger,
     hunt_passive_mobs,
     hunt_mobs,
     recover_health,
 )
-from ...common.tasks import TaskResult, SequentialTask, ActionTask
+from ...common.storage_catalog import catalog_for
+from ...common.tasks import (
+    ActionTask,
+    SequentialTask,
+    SurvivalRecoveryRequired,
+    TaskResult,
+)
 
 # Modular Action Imports
 from ...actions import (
@@ -188,9 +195,10 @@ class InitialGatheringHandler(PhaseHandler):
             pass
         if not recover_health(client, minimum_health=12.0):
             if not acquire_emergency_food(client, minimum_health=12.0):
-                return TaskResult.fail(
-                    "Initial gathering blocked: health recovery or emergency food required"
+                raise SurvivalRecoveryRequired(
+                    "initial gathering health remains below 12 after bounded recovery"
                 )
+        self._stabilize_gathering_hunger(client)
 
         print("DEBUG: Checking sleep_through_night...")
         # 0. Safety Check
@@ -283,17 +291,25 @@ class InitialGatheringHandler(PhaseHandler):
         """
         from ...common.inventory import resolve_storage_location
 
-        log_blocks = sum(count_item(client, log) for log in LOG_BLOCKS)
-        plank_total = sum(count_item(client, plank) for plank in PLANK_ITEMS)
-        total_logs = log_blocks + (plank_total // 4)
-        cobble = count_item(client, "minecraft:cobblestone")
+        try:
+            stored = catalog_for(client, getattr(self, "state", None)).inventory_totals()
+        except (OSError, RuntimeError, ValueError):
+            stored = {}
+
+        def owned(item_id: str) -> int:
+            return count_item(client, item_id) + int(stored.get(item_id, 0) or 0)
+
+        log_blocks = sum(owned(log) for log in LOG_BLOCKS)
+        plank_total = sum(owned(plank) for plank in PLANK_ITEMS)
+        wood_equivalent = (log_blocks * 4) + plank_total
+        cobble = owned("minecraft:cobblestone")
         has_pickaxe = (
-            count_item(client, "minecraft:stone_pickaxe") > 0
-            or count_item(client, "minecraft:iron_pickaxe") > 0
+            owned("minecraft:stone_pickaxe") > 0
+            or owned("minecraft:iron_pickaxe") > 0
         )
         has_cutter = (
-            count_item(client, "minecraft:stone_axe") > 0
-            or count_item(client, "minecraft:stone_sword") > 0
+            owned("minecraft:stone_axe") > 0
+            or owned("minecraft:stone_sword") > 0
         )
 
         storage_pos = resolve_storage_location(
@@ -306,12 +322,11 @@ class InitialGatheringHandler(PhaseHandler):
             storage_pos is not None
             and deposit_verified
         )
-        # Once tools, cobble, and verified storage exist, the base phase can
-        # gather additional planks from a better location.  Requiring eight
-        # carried log-equivalents here caused an endless retry loop after a
-        # restart, even when the player already had enough material to build a
-        # starter base.
-        wood_ready = total_logs >= 4 or plank_total >= 8 or storage_ready
+        # T1202 is an ownership gate, not a carried-inventory gate. Count live
+        # inventory plus verified non-missing storage, but do not let the
+        # existence of a chest substitute for the required 64 plank-equivalent
+        # wood buffer.
+        wood_ready = wood_equivalent >= 64
         met = (
             has_pickaxe
             and has_cutter
@@ -321,7 +336,7 @@ class InitialGatheringHandler(PhaseHandler):
         )
         print(
             f"  Core goal check: pickaxe={has_pickaxe} cutter={has_cutter} "
-            f"logs={total_logs}/8 cobble={cobble}/32 "
+            f"wood={wood_equivalent}/64 plank-equivalent cobble={cobble}/32 "
             f"storage={storage_pos} deposit_verified={deposit_verified} "
             f"-> {'MET' if met else 'NOT MET'}"
         )
@@ -348,17 +363,51 @@ class InitialGatheringHandler(PhaseHandler):
         return gather_wood(client, count=4)
 
     def _gather_bulk_wood(self, client) -> bool:
-        """Try to build a wood buffer, but let base construction recover."""
-        if gather_wood(client, count=8):
+        """Gather the full T1202 wood buffer with the stone axe."""
+        if gather_wood(client, count=16):
             return True
         planks = sum(count_item(client, item_id) for item_id in PLANK_ITEMS)
-        if planks >= 8:
+        logs = sum(count_item(client, item_id) for item_id in LOG_BLOCKS)
+        if (logs * 4) + planks >= 64:
             print(
-                f"  Bulk wood hunt could not reach a tree; continuing with "
-                f"{planks} planks so storage/base construction can proceed."
+                "  Bulk wood hunt ended after the acceptance buffer was met "
+                f"({(logs * 4) + planks}/64 plank-equivalent)."
             )
             return True
         return False
+
+    @staticmethod
+    def _stabilize_gathering_hunger(client, minimum_food: int = 12) -> None:
+        """Establish a working hunger margin or yield without charging a retry."""
+        transport = getattr(client, "transport", None)
+        if transport is None:
+            return
+        try:
+            live = transport.dispatch("get_state", {})
+        except Exception:
+            return
+        if not isinstance(live, dict):
+            return
+        nested = live.get("data")
+        if isinstance(nested, dict):
+            live = {**live, **nested}
+        food = int(live.get("food_level", live.get("food", 20)) or 0)
+        if food >= minimum_food:
+            return
+        print(f"  Hunger low ({food}/20) before gathering; recovering food...")
+        if eat_until_hunger(client, minimum_food=minimum_food):
+            return
+        if acquire_emergency_food(
+            client,
+            minimum_health=12.0,
+            minimum_food=minimum_food,
+            timeout=120.0,
+            max_exploration_distance=128.0,
+        ):
+            return
+        raise SurvivalRecoveryRequired(
+            f"initial gathering food remains below {minimum_food} after bounded recovery"
+        )
 
     def _hunt_food_optional(self, client) -> bool:
         """Keep progression moving once a safe starter food buffer exists."""

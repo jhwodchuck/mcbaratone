@@ -167,7 +167,11 @@ class StorageCatalog:
                     label=COALESCE(excluded.label, containers.label),
                     purpose=COALESCE(excluded.purpose, containers.purpose),
                     last_seen=excluded.last_seen,
-                    status=excluded.status,
+                    status=CASE
+                        WHEN containers.status='missing' AND excluded.status='known'
+                        THEN containers.status
+                        ELSE excluded.status
+                    END,
                     metadata_json=excluded.metadata_json
                 """,
                 (
@@ -315,10 +319,24 @@ class StorageCatalog:
                 ),
             )
 
+    def mark_missing(
+        self,
+        position: Tuple[int, int, int],
+        *,
+        dimension: str,
+    ) -> None:
+        """Record that a loaded, readable coordinate no longer has a container."""
+        self.register_container(
+            position,
+            dimension=dimension,
+            status="missing",
+            metadata={"source": "live_block_verification"},
+        )
+
     def list_containers(self) -> list[Dict[str, Any]]:
         with self._connect() as db:
             rows = db.execute(
-                """SELECT * FROM containers WHERE world_id=?
+                """SELECT * FROM containers WHERE world_id=? AND status!='missing'
                    ORDER BY COALESCE(last_inventory_scan, 0) DESC, last_seen DESC""",
                 (self.world_id,),
             ).fetchall()
@@ -332,7 +350,7 @@ class StorageCatalog:
                        c.last_inventory_scan, SUM(i.count) AS count
                 FROM container_items i
                 JOIN containers c USING(world_id, dimension, x, y, z)
-                WHERE i.world_id=? AND i.item_id=?
+                WHERE i.world_id=? AND i.item_id=? AND c.status!='missing'
                 GROUP BY c.dimension, c.x, c.y, c.z, c.label, c.purpose,
                          c.last_inventory_scan
                 ORDER BY count DESC
@@ -345,11 +363,26 @@ class StorageCatalog:
         """Return the current-world total from verified catalog snapshots."""
         with self._connect() as db:
             row = db.execute(
-                """SELECT COALESCE(SUM(count), 0) AS count
-                   FROM container_items WHERE world_id=? AND item_id=?""",
+                """SELECT COALESCE(SUM(i.count), 0) AS count
+                   FROM container_items i
+                   JOIN containers c USING(world_id, dimension, x, y, z)
+                   WHERE i.world_id=? AND i.item_id=? AND c.status!='missing'""",
                 (self.world_id, item_id),
             ).fetchone()
         return int(row["count"] if row else 0)
+
+    def inventory_totals(self) -> Dict[str, int]:
+        """Return aggregate item counts from all non-missing containers."""
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT i.item_id, COALESCE(SUM(i.count), 0) AS count
+                   FROM container_items i
+                   JOIN containers c USING(world_id, dimension, x, y, z)
+                   WHERE i.world_id=? AND c.status!='missing'
+                   GROUP BY i.item_id""",
+                (self.world_id,),
+            ).fetchall()
+        return {str(row["item_id"]): int(row["count"]) for row in rows}
 
 
 def catalog_for(client, state=None) -> StorageCatalog:

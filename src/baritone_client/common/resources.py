@@ -337,9 +337,9 @@ def _approach_and_break_log(client, log_pos: tuple[int, int, int]) -> bool:
         lx,
         ly,
         lz,
-        timeout=45,
+        timeout=90,
         check_interval=1.0,
-        tolerance=3.0,
+        tolerance=5.0,
     ):
         return False
     select_item(client, "minecraft:stone_axe", allow_swap=True)
@@ -1957,7 +1957,8 @@ def _craft_with_table(client, item_id: str, qty: int) -> bool:
             print(f"  Cannot get position to place crafting table")
             return False
         
-        px, py, pz = int(pos[0]), int(pos[1]), int(pos[2])
+        import math
+        px, py, pz = math.floor(float(pos[0])), math.floor(float(pos[1])), math.floor(float(pos[2]))
         
         # Try a few spots around the player
         found_spot = False
@@ -1973,9 +1974,16 @@ def _craft_with_table(client, item_id: str, qty: int) -> bool:
              (1, -1, 0), (-1, -1, 0),
         ]
         
+        _REPLACEABLE = {
+            "minecraft:air", "minecraft:cave_air", "minecraft:void_air",
+            "minecraft:short_grass", "minecraft:tall_grass", "minecraft:grass",
+            "minecraft:leaf_litter", "minecraft:vine", "minecraft:snow",
+            "minecraft:fern", "minecraft:large_fern", "minecraft:dead_bush",
+            "",
+        }
         found_spot = False
         table_pos = None
-        max_attempts = 8  # Increased since we have more spots to try
+        max_attempts = 16  # Try all offsets before mining a fallback space
         attempts = 0
         
         for dx, dy, dz in offsets:
@@ -1989,9 +1997,9 @@ def _craft_with_table(client, item_id: str, qty: int) -> bool:
             try:
                 block_result = client.transport.dispatch("get_block", {"x": tx, "y": ty, "z": tz})
                 block_id = block_result.get("id", "")
-                if block_id not in ["minecraft:air", "minecraft:cave_air", "minecraft:short_grass", "minecraft:tall_grass", ""]:
+                if block_id not in _REPLACEABLE:
                     print(f"  Skip ({tx}, {ty}, {tz}) - occupied by {block_id}")
-                    continue  # Skip this spot, it's not air
+                    continue  # Skip this spot, it's not replaceable
             except Exception as e:
                 print(f"  Block check failed: {e}")
                 # Continue anyway if check fails
@@ -2660,7 +2668,8 @@ def _smelt_with_furnace(
 
         print("  Placing furnace after fuel gathering is complete...")
         pos = get_player_pos(client)
-        px, py, pz = int(pos[0]), int(pos[1]), int(pos[2])
+        import math
+        px, py, pz = math.floor(float(pos[0])), math.floor(float(pos[1])), math.floor(float(pos[2]))
         offsets = [
             (1, 0, 0),
             (-1, 0, 0),

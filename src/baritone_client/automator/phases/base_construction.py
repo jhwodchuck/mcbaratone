@@ -2,6 +2,8 @@
 Base Construction Phase - Shelter, furnace, crafting table, bed, farm.
 """
 
+from typing import Optional
+
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
@@ -14,11 +16,17 @@ from ...common.base import (
     setup_base,
     wait_for_safe_daylight,
 )
-from ...common.tasks import TaskResult, SequentialTask, ActionTask
+from ...common.tasks import (
+    ActionTask,
+    SequentialTask,
+    SurvivalRecoveryRequired,
+    TaskResult,
+)
 from ...common.navigation import goto
 from ...common.inventory import count_item, select_item
+from ...common.resources import _wait_for_path_completion
 from ...common.automation_utils import get_player_pos
-from ...common.combat import acquire_emergency_food, recover_health
+from ...common.combat import acquire_emergency_food, eat_until_hunger, recover_health
 from ...common.farming import establish_wheat_farm
 import time
 
@@ -95,6 +103,14 @@ class BaseConstructionHandler(PhaseHandler):
     
     def get_name(self) -> str:
         return "Base Construction"
+
+    @staticmethod
+    def _recovery_center(state: StateManager) -> Optional[tuple[float, float]]:
+        """Anchor emergency searches to the persisted build site."""
+        origin = state.custom_data.get("base_build_origin")
+        if isinstance(origin, (list, tuple)) and len(origin) == 3:
+            return (float(origin[0]), float(origin[2]))
+        return None
     
     def execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
         """
@@ -109,9 +125,13 @@ class BaseConstructionHandler(PhaseHandler):
             return ready
 
         if not recover_health(client, minimum_health=12.0):
-            if not acquire_emergency_food(client, minimum_health=12.0):
-                return TaskResult.fail(
-                    "Base construction blocked: health recovery or emergency food required"
+            if not acquire_emergency_food(
+                client,
+                minimum_health=12.0,
+                exploration_center=self._recovery_center(state),
+            ):
+                raise SurvivalRecoveryRequired(
+                    "base construction health remains below 12 after bounded recovery"
                 )
 
         # A base build starts with exposed gathering and many slow placement
@@ -149,12 +169,25 @@ class BaseConstructionHandler(PhaseHandler):
 
         x, y, z = location
 
+        # Death recovery may deliberately secure a grave locally when the
+        # house is hundreds of blocks away. Resume by making one explicit
+        # trip back to the persisted site; otherwise the builder attempts
+        # every floor/wall coordinate from the remote grave and burns minutes
+        # of failed movement without changing the house.
+        if not self._stage_at_build_site(client, x, y, z):
+            return self._record_unreachable_build_site(
+                state,
+                resources.get_summary()["inventory"],
+            )
+        state.custom_data.pop("base_site_return_failures", None)
+
         # Build or repair the starter house (plank walls, cobble floor, door).
         # Do not overlay a dirt fallback on the same footprint: a verified
         # partial shell is resumable, while the fallback corrupts its floor
         # and walls and makes the next retry harder.
         repair_attempt = int(state.custom_data.get("base_construction_repair_attempts", 0))
         house_built = False
+        base_setup_complete = False
         if repair_attempt >= 3:
             existing_progress = self._summarize_starter_house_progress(client, x, y, z)
             if self._should_continue_from_recovered_house(
@@ -169,6 +202,15 @@ class BaseConstructionHandler(PhaseHandler):
         if not house_built:
             house_built = build_good_house(client, x, y, z)
         if not house_built:
+            # Building and its supporting wood gathering deliberately stop at
+            # low hunger. That is a survival hold, not evidence that the
+            # resumable shell is defective, so recover food (bounded) and
+            # yield without consuming a repair/objective attempt if recovery
+            # cannot restore a working margin.
+            self._recover_build_survival_or_yield(
+                client,
+                recovery_center=(x, z),
+            )
             repair_attempt += 1
             state.custom_data["base_construction_repair_attempts"] = repair_attempt
             house_progress = self._summarize_starter_house_progress(client, x, y, z)
@@ -188,6 +230,25 @@ class BaseConstructionHandler(PhaseHandler):
                         "Starter house was not completed and recovery could not place an entryway"
                     )
                 house_built = True
+            elif repair_attempt >= 5:
+                # Durable storage and workstations are the progression boundary.
+                # After five failed shell repairs, establish those inside the
+                # surviving footprint instead of spending hours rebuilding.
+                print(
+                    "  Full starter house exceeded repair budget; "
+                    "establishing functional infrastructure in the partial shell."
+                )
+                base_setup_complete, _ = setup_base(client, (x, y + 1, z))
+                if not base_setup_complete:
+                    state.save_checkpoint(resources.get_summary()["inventory"])
+                    return TaskResult.fail(
+                        "Starter house repair budget exhausted and functional base setup failed"
+                    )
+                state.custom_data["base_construction_degraded"] = {
+                    "repair_attempts": repair_attempt,
+                    "progress": house_progress,
+                }
+                house_built = True
             else:
                 print("  Starter house build fell short; preserving it for repair retry...")
                 state.save_checkpoint(resources.get_summary()["inventory"])
@@ -197,9 +258,10 @@ class BaseConstructionHandler(PhaseHandler):
             return TaskResult.fail("Starter house was not completed; retry required")
 
         # Set up base infrastructure inside the house, on top of its floor
-        success, _ = setup_base(client, (x, y + 1, z))
-        if not success:
-            return TaskResult.fail("Failed to set up base infrastructure")
+        if not base_setup_complete:
+            success, _ = setup_base(client, (x, y + 1, z))
+            if not success:
+                return TaskResult.fail("Failed to set up base infrastructure")
             
         # Save base location for future phases (e.g. Iron Age smelting)
         state.custom_data["base_location"] = location
@@ -248,6 +310,160 @@ class BaseConstructionHandler(PhaseHandler):
         resources.refresh_inventory()
         summary = resources.get_summary()
         return TaskResult.ok("Base construction complete", inventory=summary["inventory"])
+
+    @staticmethod
+    def _record_unreachable_build_site(
+        state: StateManager,
+        inventory_summary: dict,
+    ) -> TaskResult:
+        """Persist a return failure and retire a repeatedly unreachable site."""
+        return_failures = int(
+            state.custom_data.get("base_site_return_failures", 0)
+        ) + 1
+        state.custom_data["base_site_return_failures"] = return_failures
+        repair_attempts = int(
+            state.custom_data.get("base_construction_repair_attempts", 0)
+        )
+        if repair_attempts >= 3 or return_failures >= 2:
+            # Preserve the blocks in-world; only retire the stale checkpoint
+            # pointer so the next attempt can select a reachable surface site.
+            state.custom_data.pop("base_build_origin", None)
+            state.custom_data.pop("base_construction_repair_attempts", None)
+            state.custom_data.pop("base_site_return_failures", None)
+            print(
+                "  Persisted starter-house site remained unreachable "
+                f"(returns={return_failures}, repairs={repair_attempts}); "
+                "preserving the old shell and relocating on the next attempt."
+            )
+        state.save_checkpoint(inventory_summary)
+        return TaskResult.fail(
+            "Could not return to the persisted starter-house build site"
+        )
+
+    @staticmethod
+    def _within_staging_band(client, x: int, y: int, z: int):
+        """Return ``(staged, py)`` for the current position vs the house band.
+
+        The builder only needs to be close enough to place the shell, so the
+        acceptance band is deliberately loose (16m horizontal, 8m vertical of
+        the staging point). ``staged`` is ``None`` when live state cannot be
+        read, ``py`` is the current Y (or ``None``).
+        """
+        transport = getattr(client, "transport", None)
+        if transport is None:
+            return True, None
+        try:
+            state = transport.dispatch("get_state", {})
+        except Exception:
+            return None, None
+        if not isinstance(state, dict):
+            return None, None
+        nested = state.get("data")
+        if isinstance(nested, dict):
+            state = {**state, **nested}
+        position = state.get("block_position", state.get("position", {}))
+        px = float(position.get("x", state.get("x", x)) or x)
+        py = float(position.get("y", state.get("y", y + 1)) or (y + 1))
+        pz = float(position.get("z", state.get("z", z)) or z)
+        horizontal = ((px - (x + 3)) ** 2 + (pz - (z - 2)) ** 2) ** 0.5
+        return (horizontal <= 16.0 and abs(py - (y + 1)) <= 8.0), py
+
+    @classmethod
+    def _stage_at_build_site(cls, client, x: int, y: int, z: int) -> bool:
+        """Reach one safe exterior staging point before per-block placement."""
+        transport = getattr(client, "transport", None)
+        if transport is None:
+            return True
+        # House placement temporarily disables breaking so Baritone cannot
+        # tunnel through the shell.  If that controller is externally stopped,
+        # the client-side setting survives the Python process.  Always restore
+        # the travel policy before a recovery/surface route.
+        for command in (
+            "#set allowBreak true",
+            "#set allowPlace true",
+            "#set allowDownward false",
+        ):
+            transport.dispatch("chat", {"message": command})
+        staged, py = cls._within_staging_band(client, x, y, z)
+        if staged is None:
+            return False
+        if staged:
+            return True
+        target = (x + 3, y + 1, z - 2)
+        if py is not None and py < y - 8:
+            print(
+                f"  Recovery position is {y - py:.0f} blocks below the house; "
+                "surfacing before the return trip..."
+            )
+            transport.dispatch("chat", {"message": "#surface"})
+            _wait_for_path_completion(client, timeout=120.0)
+            # Surfacing alone can land us inside the band; re-check before a
+            # full return trip rather than assuming we still need to travel.
+            staged, _ = cls._within_staging_band(client, x, y, z)
+            if staged:
+                return True
+        print(
+            "  Returning from recovery position to persisted house staging "
+            f"point {target}..."
+        )
+        if goto(client, target[0], target[1], target[2], timeout=300, tolerance=4.0):
+            return True
+        # Baritone can stop short of the strict 4m goal (e.g. it cannot stand
+        # on the exact staging block) yet leave us close enough to build. Trust
+        # the loose staging band, not goto's tight tolerance -- confirmed live:
+        # Bot08 looped here failing a 6.4m return it had effectively already
+        # completed.
+        staged, _ = cls._within_staging_band(client, x, y, z)
+        return bool(staged)
+
+    @staticmethod
+    def _recover_build_survival_or_yield(
+        client,
+        minimum_food: int = 12,
+        recovery_center: Optional[tuple[float, float]] = None,
+    ) -> None:
+        """Restore building health/hunger or yield without charging a retry."""
+        transport = getattr(client, "transport", None)
+        if transport is None:
+            return
+        try:
+            live = transport.dispatch("get_state", {})
+        except Exception:
+            return
+        if not isinstance(live, dict):
+            return
+        nested = live.get("data")
+        if isinstance(nested, dict):
+            live = {**live, **nested}
+        health = float(live.get("health", 20) or 0)
+        food = int(live.get("food_level", live.get("food", 20)) or 0)
+        if health >= 12.0 and food >= minimum_food:
+            return
+
+        print(
+            f"  Building stopped at health={health:.1f}/20 food={food}/20; "
+            "attempting bounded survival recovery before charging a repair attempt..."
+        )
+        recovered = health >= 12.0 and eat_until_hunger(
+            client, minimum_food=minimum_food
+        )
+        if health < 12.0:
+            recovered = recover_health(client, minimum_health=12.0, timeout=10.0)
+        if not recovered:
+            recovered = acquire_emergency_food(
+                client,
+                minimum_health=12.0,
+                minimum_food=minimum_food,
+                timeout=120.0,
+                max_exploration_distance=128.0,
+                exploration_center=recovery_center,
+            )
+        if recovered:
+            return
+        raise SurvivalRecoveryRequired(
+            "base construction health or hunger remains below its working margin "
+            "after bounded recovery"
+        )
 
     def _summarize_starter_house_progress(self, client, x: int, y: int, z: int) -> dict[str, int | bool]:
         """Return current starter-house completion state by block role."""

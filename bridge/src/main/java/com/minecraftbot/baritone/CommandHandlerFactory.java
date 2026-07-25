@@ -81,6 +81,7 @@ public class CommandHandlerFactory {
         registerHandler("get_screen", GetScreenCommandHandler.class);
         registerHandler("settings", SettingsCommandHandler.class);
         registerHandler("break_block", BreakBlockCommandHandler.class);
+        registerHandler("dig_block", DigBlockCommandHandler.class);
         registerHandler("get_dimension", GetDimensionCommandHandler.class);
         registerHandler("get_death_location", GetDeathLocationCommandHandler.class);
         registerHandler("throw_item", ThrowItemCommandHandler.class);

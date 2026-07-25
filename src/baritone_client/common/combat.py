@@ -4,7 +4,13 @@ Combat utilities - Mob engagement, retreat logic, and healing.
 
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
+from .food_recovery import (
+    bounded_exploration_origin,
+    collect_edible_drop,
+    must_hold_for_critical_food,
+)
+from .combat_targeting import matches_requested_mob
 
 from ..core.exceptions import TransportError
 
@@ -227,6 +233,16 @@ def safe_combat(
                 radius=max(30, tracking_radius),
             )
 
+        # Surface before drowning: a fish fight keeps the bot submerged and
+        # attacking in place with no goto to trigger the normal reflex. Allow a
+        # brief dive, then force a surface well under the ~15s air supply.
+        if _submerged_too_long(client, state, max_seconds=8.0):
+            print("SURVIVAL: submerged too long mid-combat; surfacing to avoid drowning")
+            client.transport.dispatch("cancel", {})
+            _surface_after_aquatic_hunt(client, timeout=8.0)
+            client._submerged_since = None
+            return False
+
         # Check health
         health = state.get("health", 20)
         if health < retreat_health:
@@ -330,12 +346,211 @@ def safe_combat(
     return False
 
 
+def _approach_aquatic_food(
+    client,
+    target_id: int,
+    entity_type: str,
+    *,
+    timeout: float = 15.0,
+) -> bool:
+    """Use Baritone's dynamic entity goal to reach a swimming food mob.
+
+    A coordinate goal at a fish's water block is not standable, so normal
+    ``goto`` retries can never enter melee range. Entity-follow maintains a
+    nearby reachable goal as the fish moves, and is always cancelled before
+    combat takes ownership of movement.
+    """
+    command_type = str(entity_type).split(":")[-1]
+    try:
+        client.transport.dispatch(
+            "chat",
+            {"message": f"#follow entity {command_type}"},
+        )
+        deadline = time.time() + max(0.0, float(timeout))
+        while time.time() < deadline:
+            # #follow drives the bot into the water after the fish with no
+            # goto reflex to catch drowning -- this is exactly where Bot08
+            # drowned. Bail out to surface after a bounded dive.
+            follow_state = client.transport.dispatch("get_state", {})
+            if _submerged_too_long(client, follow_state, max_seconds=8.0):
+                print("SURVIVAL: submerged too long chasing aquatic food; surfacing")
+                return False
+            entities = get_nearby_entities(client, radius=64)
+            target = next(
+                (entity for entity in entities if entity.get("id") == target_id),
+                None,
+            )
+            if target is None:
+                return True
+            if float(target.get("distance", 999)) < 4.5:
+                return True
+            threats = scan_for_threats(client, radius=12)
+            if threats and float(threats[0].get("distance", 999)) <= 12:
+                return False
+            time.sleep(0.5)
+        return False
+    finally:
+        client.transport.dispatch("chat", {"message": "#stop"})
+        client.transport.dispatch("cancel", {})
+
+
+def _surface_after_aquatic_hunt(client, *, timeout: float = 10.0) -> bool:
+    """Reach breathing air after a fish kill without targeting its water block."""
+    try:
+        client.transport.dispatch("chat", {"message": "#surface"})
+        deadline = time.time() + max(0.0, float(timeout))
+        while time.time() < deadline:
+            state = client.transport.dispatch("get_state", {})
+            ensure_alive(client, state)
+            position = state.get("block_position", state.get("position", {}))
+            if all(axis in position for axis in ("x", "y", "z")):
+                head = client.transport.dispatch(
+                    "get_block",
+                    {
+                        "x": int(position["x"]),
+                        "y": int(position["y"]) + 1,
+                        "z": int(position["z"]),
+                    },
+                ).get("id", "")
+                if "water" not in str(head):
+                    return True
+            time.sleep(0.5)
+        return False
+    finally:
+        client.transport.dispatch("chat", {"message": "#stop"})
+        client.transport.dispatch("cancel", {})
+
+
+# Consecutive supervision ticks with the head underwater before forcing a
+# surface.  At ~3s between ticks this reacts within ~6s -- well inside the
+# ~15s before drown damage begins -- while ignoring a momentary dip through a
+# waterfall or a one-block plunge.
+_SUBMERSION_TICKS_BEFORE_SURFACE = 2
+
+
+def _head_block_is_water(client, state) -> bool:
+    """True when the block at head height is water (player fully submerged).
+
+    A bot swimming across the surface has its head in air (only the feet block
+    is water), so this fires only on genuine full submersion.
+    """
+    position = state.get("block_position", state.get("position", {}))
+    if not all(axis in position for axis in ("x", "y", "z")):
+        return False
+    try:
+        head = client.transport.dispatch(
+            "get_block",
+            {
+                "x": int(position["x"]),
+                "y": int(position["y"]) + 1,
+                "z": int(position["z"]),
+            },
+        ).get("id", "")
+    except Exception:
+        return False
+    return "water" in str(head)
+
+
+def _submerged_too_long(client, state, *, max_seconds: float) -> bool:
+    """Track continuous head-underwater TIME; True once it exceeds max_seconds.
+
+    The tick-count reflex (escape_water_if_submerged) surfaces after 2
+    supervision ticks, which is right for the slow (~2s) goto/defence loops
+    but wrong for the fast (~0.2-0.5s) aquatic-hunt/combat loops -- there 2
+    ticks is under a second, so it would surface before ever reaching a fish.
+    Conversely those loops previously had NO drowning check at all, so a bot
+    chasing a fish stayed submerged the full ~15s air supply and DROWNED
+    (confirmed live: Bot08 died "safely hunting tropical_fish"). A wall-clock
+    limit lets a hunt dive briefly to grab a near-surface fish, then forces a
+    surface well before the air runs out, regardless of loop frequency.
+    """
+    if not _head_block_is_water(client, state):
+        client._submerged_since = None
+        return False
+    since = getattr(client, "_submerged_since", None)
+    now = time.time()
+    if since is None:
+        client._submerged_since = now
+        return False
+    return (now - since) >= float(max_seconds)
+
+
+def escape_water_if_submerged(client, state) -> bool:
+    """Surface the bot before it drowns -- the single largest cause of fleet deaths.
+
+    The bridge does not expose the air-supply meter, so submersion is inferred
+    from the block at head height.  Baritone crosses water on the surface fine,
+    but bots still drown when fully submerged: knocked into deep water by a mob,
+    pathing along a lake bottom, or breaking blocks while under.  Once the head
+    has stayed underwater across consecutive supervision ticks, drive Baritone's
+    ``#surface`` and confirm the head reaches air.  Returns True when a surfacing
+    action was taken so the caller pauses/retries like any other defensive
+    reflex.
+    """
+    if not _head_block_is_water(client, state):
+        client._submersion_ticks = 0
+        return False
+    ticks = int(getattr(client, "_submersion_ticks", 0)) + 1
+    client._submersion_ticks = ticks
+    if ticks < _SUBMERSION_TICKS_BEFORE_SURFACE:
+        return False
+    print(
+        f"SURVIVAL: head underwater for {ticks} supervision ticks; "
+        "surfacing to avoid drowning"
+    )
+    if _surface_after_aquatic_hunt(client, timeout=12.0):
+        client._submersion_ticks = 0
+    return True
+
+
+def survival_tick(client, state=None) -> bool:
+    """Central per-poll survival reflex for any long-running wait loop.
+
+    Hooking the drowning check only into ``defend_or_flee`` covered gather/base
+    loops but missed the activity where bots actually drown -- pathing across
+    water -- because ``goto``'s wait loop never called it.  This is the shared
+    entry point those blocking primitives call each poll so the reflex fires
+    during ALL activity.  Currently it surfaces a submerged player; returns
+    True if it intervened (the caller should assume the current Baritone
+    process was cancelled and re-issue it).
+    """
+    try:
+        if state is None:
+            state = client.transport.dispatch("get_state", {})
+        return escape_water_if_submerged(client, state)
+    except PlayerDeathDetected:
+        raise
+    except Exception:
+        return False
+
+
 def _attack_cooldown(state: Dict) -> float:
     """Return normalized melee readiness, defaulting ready for old bridges."""
     try:
         return min(1.0, max(0.0, float(state.get("attack_cooldown", 1.0))))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _threat_can_reach_player(
+    threat: Dict,
+    player_state: Dict,
+    *,
+    max_vertical_separation: float = 6.0,
+) -> bool:
+    """Reject sealed cave mobs that are close only in three-dimensional range."""
+    threat_position = entity_position(threat)
+    player_position = player_state.get(
+        "block_position", player_state.get("position", {})
+    )
+    if threat_position is None or "y" not in player_position:
+        return True
+    try:
+        return abs(float(threat_position[1]) - float(player_position["y"])) <= float(
+            max_vertical_separation
+        )
+    except (TypeError, ValueError):
+        return True
 
 
 EMERGENCY_FOOD_ITEMS = [
@@ -346,7 +561,7 @@ EMERGENCY_FOOD_ITEMS = [
     "minecraft:golden_apple", "minecraft:beef",
     "minecraft:porkchop", "minecraft:chicken",
     "minecraft:mutton", "minecraft:rabbit",
-    "minecraft:salmon", "minecraft:cod",
+    "minecraft:salmon", "minecraft:cod", "minecraft:tropical_fish",
     "minecraft:rotten_flesh",
 ]
 
@@ -365,6 +580,7 @@ def eat_until_hunger(client, minimum_food: int = 14) -> bool:
     attempts = 0
     while attempts < 10:
         state = client.transport.dispatch("get_state", {})
+        ensure_alive(client, state)
         food_level = int(state.get("food_level", state.get("food", 20)))
         if food_level >= minimum_food:
             return True
@@ -504,6 +720,10 @@ def acquire_emergency_food(
     minimum_food: int = 14,
     timeout: float = 240.0,
     max_exploration_distance: float = 96.0,
+    exploration_center: Optional[tuple[float, float]] = None,
+    renewable_source_callback: Optional[
+        Callable[[str, tuple[int, int, int]], None]
+    ] = None,
 ) -> bool:
     """Recover an early-game player by hunting only passive food sources.
 
@@ -541,23 +761,47 @@ def acquire_emergency_food(
     start = time.time()
     state = client.transport.dispatch("get_state", {})
     position = state.get("block_position", state.get("position", {}))
-    origin_x = float(position.get("x", state.get("x", 0)) or 0)
-    origin_z = float(position.get("z", state.get("z", 0)) or 0)
+    origin_x, origin_z = bounded_exploration_origin(
+        position,
+        exploration_center,
+        max_exploration_distance,
+    )
     exploring = False
+    sprint_suppressed = False
 
     def stop_exploring() -> None:
-        nonlocal exploring
-        if not exploring:
-            return
-        client.transport.dispatch("cancel", {})
-        client.transport.dispatch("chat", {"message": "#stop"})
-        exploring = False
+        nonlocal exploring, sprint_suppressed
+        if exploring:
+            client.transport.dispatch("cancel", {})
+            client.transport.dispatch("chat", {"message": "#stop"})
+            exploring = False
+        if sprint_suppressed:
+            client.transport.dispatch(
+                "chat", {"message": "#set allowSprint true"}
+            )
+            sprint_suppressed = False
+
+    # Emergency exploration values remaining hunger more than travel speed.
+    # Live Bot10 burned food 9 -> 6 in roughly 35 seconds while sprinting and
+    # died before a source loaded. Restore the normal setting on every bounded
+    # exit through ``stop_exploring``.
+    client.transport.dispatch("chat", {"message": "#set allowSprint false"})
+    sprint_suppressed = True
 
     # Prefer the more nourishing land animals during emergency recovery, and
     # search the full set of loaded chunks after waiting safely for dawn.
     primary_land_food = ["cow", "pig"]
     secondary_land_food = ["sheep", "chicken", "rabbit"]
-    water_food = ["salmon", "cod"]
+    water_food = ["salmon", "cod", "tropical_fish"]
+    # A bot already near death cannot regenerate without eating, and cannot
+    # eat without exploring: holding indefinitely guarantees it never
+    # recovers. Give the hold a short, bounded grace period (a genuinely new
+    # threat can still abort immediately via the check above) and then fall
+    # through to the same bounded, threat-checked exploration a merely-hurt
+    # bot already uses -- it strictly dominates permanent inaction once no
+    # threat is present.
+    hold_cycles = 0
+    max_hold_cycles = 3
     while time.time() - start < timeout:
         try:
             state = client.transport.dispatch("get_state", {})
@@ -571,9 +815,27 @@ def acquire_emergency_food(
                 print("RECOVERY: state unavailable and no cache; waiting before retry.")
                 time.sleep(1.0)
                 continue
+        ensure_alive(client, state)
         if recovery_complete(state):
             stop_exploring()
             return True
+        # A prior combat/pickup cycle may have added raw food while health
+        # remained above the healing threshold. Re-attempt eating every loop;
+        # otherwise the bot can carry several meals at hunger 10 and continue
+        # hunting until timeout without ever consuming them.
+        if eat_until_hunger(client, minimum_food=minimum_food):
+            refreshed = client.transport.dispatch("get_state", {})
+            if recovery_complete(refreshed):
+                stop_exploring()
+                return True
+        from .navigation import goto as recovery_goto
+
+        if collect_edible_drop(
+            client,
+            get_nearby_entities(client, radius=48),
+            recovery_goto,
+        ):
+            continue
 
         day_time = int(state.get("world_time", 0)) % 24000
         if day_time >= 12000:
@@ -593,15 +855,24 @@ def acquire_emergency_food(
             )
             return False
 
-        threats = scan_for_threats(client, radius=16)
-        if threats and threats[0].get("distance", 999) <= 12:
+        threats = scan_for_threats(client, radius=16, player_state=state)
+        immediate_threat = next(
+            (
+                threat
+                for threat in threats
+                if threat.get("distance", 999) <= 12
+                and _threat_can_reach_player(threat, state)
+            ),
+            None,
+        )
+        if immediate_threat is not None:
             stop_exploring()
             client.transport.dispatch("cancel", {})
             from .base import _has_existing_enclosure
             if _has_existing_enclosure(client, state):
                 print(
-                    f"RECOVERY: {threats[0].get('type')} is "
-                    f"{threats[0].get('distance', 999):.1f}m away; "
+                    f"RECOVERY: {immediate_threat.get('type')} is "
+                    f"{immediate_threat.get('distance', 999):.1f}m away; "
                     "holding inside verified shelter"
                 )
                 time.sleep(5)
@@ -609,9 +880,45 @@ def acquire_emergency_food(
             print("RECOVERY: hostile nearby and no enclosure; aborting food run")
             return False
 
-        target = find_entity_by_type(client, primary_land_food, radius=64)
-        if target is None:
-            target = find_entity_by_type(client, secondary_land_food, radius=64)
+        current_food = int(state.get("food_level", state.get("food", 20)))
+        nearby = get_nearby_entities(client, radius=64)
+
+        def food_group(animal_type: str) -> List[dict]:
+            return [
+                entity
+                for entity in nearby
+                if animal_type in str(entity.get("type", "")).lower()
+                and not entity.get("is_baby", False)
+            ]
+
+        target = None
+        for animal_type in primary_land_food + secondary_land_food:
+            group = food_group(animal_type)
+            if len(group) >= 3:
+                positions = [entity_position(entity) for entity in group]
+                positions = [position for position in positions if position is not None]
+                if positions and renewable_source_callback is not None:
+                    centroid = (
+                        round(sum(position[0] for position in positions) / len(positions)),
+                        round(sum(position[1] for position in positions) / len(positions)),
+                        round(sum(position[2] for position in positions) / len(positions)),
+                    )
+                    renewable_source_callback(animal_type, centroid)
+                # Kill at most the animals beyond a breeding pair. The next
+                # loop sees only two and leaves them intact.
+                target = min(group, key=lambda entity: float(entity.get("distance", 999)))
+                break
+            if len(group) == 1 and current_food <= 8:
+                # A singleton is not a renewable herd. Use it before hunger
+                # becomes critical rather than spending the remaining safety
+                # margin wandering past a non-renewable food source.
+                target = group[0]
+                break
+            if len(group) == 2 and current_food <= 2:
+                # Preserve a viable breeding pair unless starvation is
+                # immediately life-threatening.
+                target = min(group, key=lambda entity: float(entity.get("distance", 999)))
+                break
         # Water-mob drops are substantially harder to collect reliably: the
         # target can vanish below the player while its item floats elsewhere.
         # When hunger is still stable, spend the first part of the bounded
@@ -621,11 +928,33 @@ def acquire_emergency_food(
         land_search_elapsed = time.time() - start
         water_fallback_after = min(90.0, max(15.0, timeout / 2.0))
         if target is None and (
-            int(state.get("food_level", state.get("food", 20))) <= 6
+            current_food <= 6
             or land_search_elapsed >= water_fallback_after
         ):
-            target = find_entity_by_type(client, water_food, radius=64)
+            # A distant fish is not emergency food: the follow path spends the
+            # remaining hunger margin and repeatedly pulled live bots into
+            # water without ever reaching melee/loot range. Restrict aquatic
+            # fallback to a genuinely nearby target; otherwise keep the
+            # bounded land search active.
+            target = find_entity_by_type(client, water_food, radius=16)
         if target is None:
+            if (
+                must_hold_for_critical_food(
+                    state,
+                    minimum_health=minimum_health,
+                    current_food=current_food,
+                )
+                and hold_cycles < max_hold_cycles
+            ):
+                hold_cycles += 1
+                stop_exploring()
+                print(
+                    "RECOVERY: critical health/hunger with no loaded food "
+                    f"target; holding {hold_cycles}/{max_hold_cycles} cycles "
+                    "before searching anyway"
+                )
+                time.sleep(3)
+                continue
             if not exploring:
                 print(
                     "RECOVERY: no passive food source loaded; starting bounded "
@@ -651,6 +980,22 @@ def acquire_emergency_food(
             f"RECOVERY: safely hunting {target.get('type')} at "
             f"{target.get('distance', 999):.1f}m"
         )
+        target_type = str(target.get("type", ""))
+        if any(water_type in target_type for water_type in water_food) and float(
+            target.get("distance", 999)
+        ) >= 4.5:
+            if not _approach_aquatic_food(
+                client,
+                target_id,
+                target_type,
+                timeout=8.0,
+            ):
+                print("RECOVERY: aquatic target could not be reached safely")
+                time.sleep(1)
+                continue
+        aquatic_target = any(
+            water_type in target_type for water_type in water_food
+        )
         if not safe_combat(
             client,
             target_id,
@@ -660,15 +1005,20 @@ def acquire_emergency_food(
         ):
             return False
 
-        from .navigation import goto
-        goto(
-            client,
-            int(target_pos[0]),
-            int(target_pos[1]),
-            int(target_pos[2]),
-            timeout=45,
-            tolerance=1.5,
-        )
+        if aquatic_target:
+            if not _surface_after_aquatic_hunt(client):
+                print("RECOVERY: could not prove breathing air after aquatic hunt")
+                return False
+        else:
+            from .navigation import goto
+            goto(
+                client,
+                int(target_pos[0]),
+                int(target_pos[1]),
+                int(target_pos[2]),
+                timeout=45,
+                tolerance=1.5,
+            )
         time.sleep(2)
         heal_if_needed(client, threshold=minimum_health)
         recover_health(client, minimum_health=minimum_health, timeout=25.0)
@@ -720,6 +1070,7 @@ def hunt_mobs(
     latest_world_time: Optional[int] = None,
     max_distance_from_origin: Optional[float] = None,
     exploration_center: Optional[tuple[int, int]] = None,
+    max_kills: Optional[int] = None,
 ) -> TaskResult:
     """
     Hunt a set of mobs until loot requirements are satisfied.
@@ -735,6 +1086,7 @@ def hunt_mobs(
         latest_world_time: Stop early enough to return before sunset
         max_distance_from_origin: Bound expedition radius around its start
         exploration_center: Explicit X/Z center that leads away from owned structures
+        max_kills: Hard safety cap, even when requested loot is still missing
     """
     start = time.time()
     baseline = {item: count_item(client, item) for item in required_loot}
@@ -760,8 +1112,9 @@ def hunt_mobs(
 
     exploring = False
     last_time_check = 0
-    
     while (missing or (target_kills and kills < target_kills)) and time.time() - start < timeout:
+        if max_kills is not None and kills >= max(0, int(max_kills)):
+            break
         live_state = client.transport.dispatch("get_state", {})
         day_time = int(live_state.get("world_time", 0)) % 24000
         if latest_world_time is not None and day_time >= int(latest_world_time):
@@ -847,6 +1200,7 @@ def hunt_mobs(
                         hostile in str(entity.get("type", "")).lower()
                         for hostile in hostile_names
                     )
+                    and not matches_requested_mob(str(entity.get("type", "")), mob_types)
                 ),
                 None,
             )
@@ -1270,6 +1624,10 @@ def defend_or_flee(client) -> bool:
         else client.transport.dispatch("get_state", {})
     )
     ensure_alive(client, state)
+    # Drowning is the fleet's #1 killer and more urgent than any land threat:
+    # get the head above water before assessing mobs.
+    if escape_water_if_submerged(client, state):
+        return True
     health = float(state.get("health", 20) or 0)
     runtime = _defense_runtime(client)
     try:

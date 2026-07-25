@@ -7,6 +7,7 @@ from typing import Optional, Callable, Any
 from .state_manager import StateManager, Phase
 from .resource_manager import ResourceManager
 from .phase_executor import PhaseExecutor, PhaseHandler
+from .phase_verifier import PhaseVerifier
 from .objective import ObjectivePlanner, default_objectives
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
 from .systems import SafetySystem, HungerSystem, MappingSystem
@@ -49,6 +50,7 @@ class EndGameAutomator:
         auto_checkpoint: bool = True,
         checkpoint_interval: float = 60.0,
         screenshot_enabled: bool = True,
+        world_seed_override: Optional[int] = None,
     ):
         """
         Initialize the automator.
@@ -59,8 +61,11 @@ class EndGameAutomator:
             auto_checkpoint: Whether to auto-save checkpoints
             checkpoint_interval: Seconds between auto-checkpoints
             screenshot_enabled: Capture screenshots on phase transitions
+            world_seed_override: Authoritative seed when a dedicated server
+                cannot expose it through the client bridge
         """
         self.client = client
+        self.world_seed_override = world_seed_override
         self.state = StateManager(checkpoint_dir)
         self.resources = ResourceManager(client)
         self.coordination = CoordinationHub()
@@ -69,12 +74,14 @@ class EndGameAutomator:
             HungerSystem(client, self.coordination, resources=self.resources),
             MappingSystem(client, self.coordination, resources=self.resources, state_manager=self.state)
         ]
+        self.phase_verifier = PhaseVerifier(client, self.resources, self.state)
         self.executor = PhaseExecutor(
             client,
             self.resources,
             self.state,
             self.coordination,
             screenshot_enabled=screenshot_enabled,
+            verifier=self.phase_verifier,
         )
         self.telemetry = TelemetrySystem(checkpoint_dir)
 
@@ -142,6 +149,12 @@ class EndGameAutomator:
             if host:
                 server_address = f"{host}:{port}" if port is not None else str(host)
             identity = WorldIdentity.from_state(state, server_address=server_address)
+            if self.world_seed_override is not None and identity.seed is None:
+                identity = WorldIdentity(
+                    seed=int(self.world_seed_override),
+                    world_name=identity.world_name,
+                    server_address=identity.server_address,
+                )
             return identity if identity.available else None
         except Exception:
             return None
@@ -281,12 +294,17 @@ class EndGameAutomator:
 
                 if (
                     not success
-                    and self.executor.interruption_reason == "player_death"
+                    and self.executor.interruption_reason
+                    in {"player_death", "survival_recovery"}
                 ):
+                    self.planner.mark_yielded(obj)
+                    interruption = self.executor.interruption_reason
                     print(
-                        f"Phase {phase.name} yielded to top-level death recovery; "
+                        f"Phase {phase.name} yielded to {interruption}; "
                         "objective attempt was not consumed."
                     )
+                    if interruption == "survival_recovery":
+                        time.sleep(max(1.0, min(5.0, self.executor.retry_delay)))
                     continue
 
                 if success:

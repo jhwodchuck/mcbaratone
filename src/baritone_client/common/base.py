@@ -4,10 +4,19 @@ Base building utilities - Shelter, storage, and infrastructure.
 
 import math
 import time
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Optional, Tuple
 from .navigation import goto, find_nearby_block
 from .automation_utils import get_player_pos
+from .build_safety import (
+    BuildSurvivalHold as _BuildSurvivalHold,
+    has_build_survival_margin as _has_build_survival_margin,
+)
 from .inventory import count_item, select_item, craft
+from .site_selection import (
+    find_flat_ground,
+    find_flat_site_in_view as _find_flat_site_in_view,
+    surface_y_at as _surface_y_at,
+)
 
 
 def is_position_safe(client, x: int, y: int, z: int) -> bool:
@@ -30,173 +39,6 @@ def is_position_safe(client, x: int, y: int, z: int) -> bool:
         print(f"  Safety check error: {e}")
         return True
 
-
-
-def _surface_y_at(client, x: int, z: int, top: int = 120, bottom: int = 40) -> Optional[int]:
-    """Scan down from the sky for the first solid block; return the y to stand on."""
-    try:
-        for y in range(top, bottom, -1):
-            bid = client.transport.dispatch("get_block", {"x": x, "y": y, "z": z}).get("id", "")
-            if bid and "air" not in bid and "water" not in bid and "lava" not in bid:
-                if any(s in bid for s in ("leaves", "log")):
-                    # Tree canopy - keep scanning to the ground below it
-                    continue
-                return y + 1
-    except Exception:
-        pass
-    return None
-
-
-_NATURAL_GROUND = {
-    "minecraft:grass_block", "minecraft:dirt", "minecraft:coarse_dirt",
-    "minecraft:rooted_dirt", "minecraft:podzol", "minecraft:mycelium",
-    "minecraft:stone", "minecraft:deepslate", "minecraft:sand",
-    "minecraft:red_sand", "minecraft:gravel", "minecraft:clay",
-    "minecraft:snow_block", "minecraft:mud", "minecraft:mud_bricks",
-}
-
-
-def _find_flat_site_in_view(
-    voxels: Iterable[Dict],
-    center: Tuple[int, int, int],
-    radius: int,
-    footprint: int,
-) -> Optional[Tuple[int, int, int]]:
-    """Choose the closest dry, clear footprint from one get_view snapshot."""
-    px, _py, pz = center
-    blocks = {
-        (int(voxel["x"]), int(voxel["y"]), int(voxel["z"])): voxel.get("id", "")
-        for voxel in voxels
-        if all(axis in voxel for axis in ("x", "y", "z"))
-    }
-    ground_by_column = {}
-    liquid_by_column = {}
-    for (x, y, z), block_id in blocks.items():
-        if block_id in _NATURAL_GROUND or block_id.endswith("_terracotta"):
-            ground_by_column[(x, z)] = max(y, ground_by_column.get((x, z), -64))
-        if "water" in block_id or "lava" in block_id:
-            liquid_by_column[(x, z)] = max(y, liquid_by_column.get((x, z), -64))
-
-    max_origin_x = px + radius - footprint + 1
-    max_origin_z = pz + radius - footprint + 1
-    candidates = []
-    for ox in range(px - radius, max_origin_x + 1):
-        for oz in range(pz - radius, max_origin_z + 1):
-            columns = [
-                (ox + dx, oz + dz)
-                for dx in range(footprint)
-                for dz in range(footprint)
-            ]
-            if any(column not in ground_by_column for column in columns):
-                continue
-            standing_heights = [ground_by_column[column] + 1 for column in columns]
-            spread = max(standing_heights) - min(standing_heights)
-            if spread > 1:
-                continue
-            build_y = max(standing_heights)
-            if any(liquid_by_column.get(column, -64) >= build_y - 1 for column in columns):
-                continue
-
-            # The floor may replace grass or snow at build_y, but walls and
-            # headroom must not intersect trees, existing structures, or rock.
-            obstruction_count = 0
-            hard_obstruction = False
-            for column in columns:
-                cx, cz = column
-                for cy in range(build_y + 1, build_y + 5):
-                    block_id = blocks.get((cx, cy, cz), "")
-                    if not block_id:
-                        continue
-                    if "_log" in block_id or "_leaves" in block_id:
-                        obstruction_count += 1
-                    elif not any(
-                        token in block_id
-                        for token in ("grass", "flower", "fern", "snow", "vine")
-                    ):
-                        hard_obstruction = True
-                        break
-                if hard_obstruction:
-                    break
-            if hard_obstruction:
-                continue
-
-            center_x = ox + (footprint - 1) / 2
-            center_z = oz + (footprint - 1) / 2
-            distance = math.hypot(center_x - px, center_z - pz)
-            candidates.append((spread, obstruction_count, distance, ox, build_y, oz))
-
-    if not candidates:
-        return None
-    _spread, _obstructions, _distance, x, y, z = min(candidates)
-    return (x, y, z)
-
-
-def find_flat_ground(
-    client,
-    radius: int = 20,
-    footprint: int = 1,
-) -> Optional[Tuple[int, int, int]]:
-    """
-    Find an area suitable for building a base. If the player is deep
-    underground (e.g. still in the starter mine), path to the surface first -
-    a base at the bottom of a shaft is useless.
-
-    Args:
-        client: Baritone client
-        radius: Search radius
-
-    Returns:
-        (x, y, z) of suitable location or None
-    """
-    try:
-        state = client.transport.dispatch("get_state", {})
-        # The bridge returns a flattened state dict without a "status" key;
-        # only treat an explicit error (or a missing position) as failure.
-        if state.get("error"):
-            return None
-
-        pos = state.get("block_position", state.get("position", {}))
-        if not pos:
-            return None
-        px = int(pos.get("x", 0))
-        py = int(pos.get("y", 64))
-        pz = int(pos.get("z", 0))
-
-        surface_y = _surface_y_at(client, px, pz)
-        if surface_y is not None and py < surface_y - 3:
-            print(f"  Underground at y={py} (surface ~y={surface_y}). Pathing to the surface...")
-            from .automation_utils import safe_goto
-            if safe_goto(client, px, surface_y, pz, timeout=180.0):
-                state = client.transport.dispatch("get_state", {})
-                pos = state.get("block_position", state.get("position", {}))
-                px = int(pos.get("x", px))
-                py = int(pos.get("y", surface_y))
-                pz = int(pos.get("z", pz))
-            else:
-                print("  Warning: could not reach the surface; using current position.")
-
-        if footprint <= 1:
-            return (px, py, pz)
-
-        view_radius = max(footprint + 2, min(int(radius), 32))
-        view = client.transport.dispatch("get_view", {"radius": view_radius})
-        site = _find_flat_site_in_view(
-            view.get("voxels", []),
-            (px, py, pz),
-            view_radius,
-            footprint,
-        )
-        if site is not None:
-            print(f"  Found {footprint}x{footprint} building site at {site}")
-            return site
-
-        print(
-            f"  No dry {footprint}x{footprint} site found within {view_radius} blocks"
-        )
-        return None
-
-    except Exception:
-        return None
 
 
 def robust_place(client, x: int, y: int, z: int, item_id: str) -> bool:
@@ -1599,6 +1441,15 @@ def build_good_house(client, x: int, y: int, z: int) -> bool:
                 client.transport.dispatch("cancel", {})
                 client.transport.dispatch("chat", {"message": "#set allowBreak true"})
 
+        # Material acquisition can be longer and more hazardous than the
+        # placement batch itself.  Enter the phase-level bounded food recovery
+        # before mining stone or gathering wood, not only after a placement
+        # eventually notices the depleted margin.
+        if not _has_build_survival_margin(client):
+            raise _BuildSurvivalHold(
+                "health or hunger is below the material-gathering margin"
+            )
+
         # Keep enough in hand for the missing shell plus a table, door, and
         # chest.  Cobble reserve covers the furnace after floor repair.
         required_planks = len(missing_shell) + (18 if not door_present else 8)
@@ -1665,6 +1516,10 @@ def build_good_house(client, x: int, y: int, z: int) -> bool:
             nonlocal repaired, failed
             if _matches_house_role(_house_block_id(client, px, py, pz), role):
                 return
+            if not _has_build_survival_margin(client):
+                raise _BuildSurvivalHold(
+                    "health or hunger fell below the construction margin"
+                )
             if material is None:
                 failed += 1
                 return
@@ -1779,6 +1634,9 @@ def build_good_house(client, x: int, y: int, z: int) -> bool:
             and door_placed
         )
 
+    except _BuildSurvivalHold as e:
+        print(f"Good house build paused for survival recovery: {e}")
+        return False
     except Exception as e:
         print(f"Good house build failed: {e}")
         return False

@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from baritone_client.automator.phases import enchanting
+from baritone_client.automator.state_manager import Phase, StateManager
 from baritone_client.common.tasks import TaskResult
 
 
@@ -648,10 +649,40 @@ def test_obsidian_mining_resumes_after_eating(monkeypatch):
     assert len([call for call in calls if call[0] == "mine"]) == 2
 
 
-def test_unimplemented_enchanting_completion_steps_fail_closed():
+def test_enchanting_station_is_built_verified_and_persisted(monkeypatch, tmp_path):
+    world = {}
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_block":
+                key = (payload["x"], payload["y"], payload["z"])
+                return {"id": world.get(key, "minecraft:stone" if key[1] == 64 else "minecraft:air")}
+            if route == "get_inventory":
+                return {"inventory": []}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    state = StateManager(tmp_path)
+    state.custom_data = {
+        "base_location": [0, 64, 0],
+        "structures": {"starter_house": {"origin": [0, 64, 0]}},
+    }
     handler = enchanting.EnchantingPipelineHandler()
-    assert not handler._build_enchanting_room(SimpleNamespace())
-    assert not handler._roll_enchants(SimpleNamespace())
+    monkeypatch.setattr(enchanting, "goto", lambda *_a, **_k: True)
+
+    def place(_client, x, y, z, item_id, **_kwargs):
+        world[(x, y, z)] = item_id
+        return True
+
+    monkeypatch.setattr(enchanting.harness_ops, "place_block_exact", place)
+
+    assert handler._build_enchanting_room(client, state)
+    station = state.custom_data["structures"]["enchanting_station"]
+    assert station["verified"] is True
+    assert len(station["bookshelves"]) == 15
+    assert handler._roll_enchants(client, state)
+    assert state.custom_data["capabilities"]["level_30_enchanting"] is True
+    assert state.get_phase_payload(Phase.ENCHANTING_PIPELINE)["level_30_ready"] is True
 
 
 def test_bookshelf_plank_requirement_uses_six_per_shelf(monkeypatch):

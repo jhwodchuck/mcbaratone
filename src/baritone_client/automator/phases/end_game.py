@@ -4,10 +4,22 @@ Phase 9: End Game Logic
 
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
-from ..state_manager import StateManager
+from ..state_manager import Phase, StateManager
 from ...common import TaskResult, SequentialTask, ActionTask
 from ...common.resources import ensure_supplies
-from ...common.end import triangulate_stronghold, find_end_portal, activate_end_portal, enter_end_portal, fight_ender_dragon
+from ...common.navigation import goto
+from ...common.end import (
+    acquire_elytra,
+    acquire_shulker_boxes,
+    activate_end_portal,
+    enter_end_portal,
+    fight_ender_dragon,
+    find_end_city,
+    find_end_portal,
+    return_from_end,
+    traverse_end_gateway,
+    triangulate_stronghold,
+)
 
 class WorldUnlockHandler(PhaseHandler):
     """Phase 9: End dimension access - Hour 8-9."""
@@ -17,52 +29,200 @@ class WorldUnlockHandler(PhaseHandler):
     
     def execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
         tasks = [
-            ActionTask("Craft Eyes of Ender", self._craft_eyes),
-            ActionTask("Locate stronghold", lambda c: triangulate_stronghold(c)),
-            ActionTask("Find and activate End portal", self._activate_portal),
-            ActionTask("Enter The End", lambda c: enter_end_portal(c)),
-            ActionTask("Kill Ender Dragon (one-cycle)", self._kill_dragon),
-            ActionTask("Loot End City", self._loot_end_city),
-            ActionTask("Acquire 5+ shulker boxes", self._acquire_shulkers),
-            ActionTask("Grab Elytra", self._grab_elytra),
-            ActionTask("Return to Overworld", self._return_overworld),
+            ActionTask("Craft Eyes of Ender", lambda c: self._craft_eyes(c, state, resources)),
+            ActionTask("Locate stronghold", lambda c: self._locate_stronghold(c, state, resources)),
+            ActionTask("Find and activate End portal", lambda c: self._activate_portal(c, state, resources)),
+            ActionTask("Enter The End", lambda c: self._enter_end(c, state, resources)),
+            ActionTask("Kill Ender Dragon (one-cycle)", lambda c: self._kill_dragon(c, state, resources)),
+            ActionTask("Loot End City", lambda c: self._loot_end_city(c, state, resources)),
+            ActionTask("Acquire 5+ shulker boxes", lambda c: self._acquire_shulkers(c, state, resources)),
+            ActionTask("Grab Elytra", lambda c: self._grab_elytra(c, state, resources)),
+            ActionTask("Return to Overworld", lambda c: self._return_overworld(c, state, resources)),
         ]
         
         executor = SequentialTask("End Unlock", tasks)
         return executor.run(client)
 
-    def _craft_eyes(self, client) -> bool:
+    @staticmethod
+    def _checkpoint(state: StateManager, resources: ResourceManager) -> None:
+        resources.refresh_inventory()
+        state.save_checkpoint(resources.get_summary()["inventory"])
+
+    def _craft_eyes(
+        self, client, state: StateManager, resources: ResourceManager
+    ) -> bool:
         """Craft 12 Eyes of Ender."""
-        return ensure_supplies(client, {"minecraft:ender_eye": 12}).success
-
-    def _activate_portal(self, client) -> bool:
-        """Find and activate the End portal."""
-        if not find_end_portal(client):
+        if not ensure_supplies(client, {"minecraft:ender_eye": 12}).success:
             return False
-        return activate_end_portal(client)
+        payload = state.get_phase_payload(Phase.WORLD_UNLOCK)
+        payload["eyes_ready"] = 12
+        state.record_phase_payload(Phase.WORLD_UNLOCK, payload)
+        self._checkpoint(state, resources)
+        return True
 
-    def _kill_dragon(self, client) -> bool:
+    def _locate_stronghold(
+        self, client, state: StateManager, resources: ResourceManager
+    ) -> bool:
+        """Triangulate and durably persist the stronghold estimate."""
+        existing = state.custom_data.get("stronghold_coords")
+        if isinstance(existing, (list, tuple)) and len(existing) == 2:
+            return True
+        coords = triangulate_stronghold(client)
+        if coords is None:
+            return False
+        x, z = (int(value) for value in coords)
+        snapshot = client.transport.dispatch("get_state", {})
+        position = snapshot.get("block_position", snapshot.get("position", {}))
+        y = int(position.get("y", 64))
+        state.custom_data["stronghold_coords"] = [x, z]
+        state.add_location(
+            "stronghold", x, y, z, dimension="overworld", tags=["triangulated"]
+        )
+        payload = state.get_phase_payload(Phase.WORLD_UNLOCK)
+        payload["stronghold_coords"] = [x, z]
+        state.record_phase_payload(Phase.WORLD_UNLOCK, payload)
+        self._checkpoint(state, resources)
+        return True
+
+    def _activate_portal(
+        self, client, state: StateManager, resources: ResourceManager
+    ) -> bool:
+        """Find and activate the End portal."""
+        stronghold = state.custom_data.get("stronghold_coords")
+        if isinstance(stronghold, (list, tuple)) and len(stronghold) == 2:
+            snapshot = client.transport.dispatch("get_state", {})
+            position = snapshot.get("block_position", snapshot.get("position", {}))
+            if not goto(
+                client,
+                int(stronghold[0]),
+                int(position.get("y", 64)),
+                int(stronghold[1]),
+                timeout=900,
+                tolerance=16.0,
+            ):
+                return False
+        # Let Baritone's structure goal refine the triangulated surface
+        # estimate. Completion is still decided solely by the live frame scan.
+        try:
+            client.mission.macro("locate_stronghold", {})
+        except Exception as exc:
+            print(f"  Stronghold macro unavailable; continuing local scan: {exc}")
+        portal = find_end_portal(client)
+        if portal is None:
+            return False
+        px, py, pz = (int(value) for value in portal)
+        state.custom_data["end_portal"] = [px, py, pz]
+        state.add_location(
+            "end_portal", px, py, pz, dimension="overworld", tags=["portal_room"]
+        )
+        if not activate_end_portal(client):
+            return False
+        self._checkpoint(state, resources)
+        return True
+
+    def _enter_end(
+        self, client, state: StateManager, resources: ResourceManager
+    ) -> bool:
+        portal = state.custom_data.get("end_portal")
+        if not enter_end_portal(client, portal=portal):
+            return False
+        state.custom_data.setdefault("milestones", {})["end_entered"] = True
+        payload = state.get_phase_payload(Phase.WORLD_UNLOCK)
+        payload["end_entered"] = True
+        state.record_phase_payload(Phase.WORLD_UNLOCK, payload)
+        self._checkpoint(state, resources)
+        return True
+
+    def _kill_dragon(
+        self, client, state: StateManager, resources: ResourceManager
+    ) -> bool:
         """Kill the Ender Dragon, attempting one-cycle strategy."""
         print("Fighting Ender Dragon...")
-        return fight_ender_dragon(client)
+        if not fight_ender_dragon(client):
+            return False
+        state.custom_data.setdefault("milestones", {})["dragon_defeated"] = True
+        payload = state.get_phase_payload(Phase.WORLD_UNLOCK)
+        payload["dragon_defeated"] = True
+        state.record_phase_payload(Phase.WORLD_UNLOCK, payload)
+        self._checkpoint(state, resources)
+        return True
 
-    def _loot_end_city(self, client) -> bool:
+    def _loot_end_city(
+        self, client, state: StateManager, resources: ResourceManager
+    ) -> bool:
         """Find and loot an End City."""
         print("Searching for End City...")
-        # TODO: Implement End City finding and looting
-        return True
+        existing = state.custom_data.get("end_city")
+        if isinstance(existing, (list, tuple)) and len(existing) == 3:
+            return goto(client, *existing, timeout=900, tolerance=24.0)
+        gateway = traverse_end_gateway(client)
+        if gateway is None:
+            return False
+        arrival_state = client.transport.dispatch("get_state", {})
+        arrival = arrival_state.get(
+            "block_position", arrival_state.get("position", {})
+        )
+        if not all(axis in arrival for axis in ("x", "y", "z")):
+            return False
+        arrival_coords = [
+            int(arrival["x"]), int(arrival["y"]), int(arrival["z"])
+        ]
+        state.custom_data["outer_end_gateway"] = arrival_coords
+        state.add_location(
+            "end_gateway",
+            *arrival_coords,
+            dimension="the_end",
+            tags=["outer_islands", "return"],
+        )
+        city = find_end_city(client)
+        if city is None:
+            return False
+        state.custom_data["end_city"] = list(city)
+        state.add_location(
+            "end_city", *city, dimension="the_end", tags=["purpur_verified"]
+        )
+        self._checkpoint(state, resources)
+        return goto(client, *city, timeout=900, tolerance=24.0)
 
-    def _acquire_shulkers(self, client) -> bool:
+    def _acquire_shulkers(
+        self, client, state: StateManager, resources: ResourceManager
+    ) -> bool:
         """Kill shulkers and craft 5+ shulker boxes."""
         print("Acquiring shulker boxes...")
+        if not acquire_shulker_boxes(client, target=5):
+            return False
+        self._checkpoint(state, resources)
         return True
 
-    def _grab_elytra(self, client) -> bool:
+    def _grab_elytra(
+        self, client, state: StateManager, resources: ResourceManager
+    ) -> bool:
         """Find and grab Elytra from End Ship."""
         print("Searching for Elytra...")
+        if not acquire_elytra(client):
+            return False
+        self._checkpoint(state, resources)
         return True
 
-    def _return_overworld(self, client) -> bool:
+    def _return_overworld(
+        self, client, state: StateManager, resources: ResourceManager
+    ) -> bool:
         """Return to Overworld via End gateway or portal."""
         print("Returning to Overworld...")
+        snapshot = client.transport.dispatch("get_state", {})
+        if "overworld" in str(snapshot.get("dimension", "")).lower():
+            return True
+        arrival = state.custom_data.get("outer_end_gateway")
+        if not isinstance(arrival, (list, tuple)) or len(arrival) != 3:
+            return False
+        if not goto(client, *arrival, timeout=1200, tolerance=12.0):
+            return False
+        if traverse_end_gateway(client) is None:
+            return False
+        if not return_from_end(client):
+            return False
+        state.custom_data.setdefault("milestones", {})[
+            "returned_from_end"
+        ] = True
+        self._checkpoint(state, resources)
         return True

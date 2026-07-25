@@ -160,6 +160,11 @@ class ObjectivePlanner:
     def mark_done(self, obj: Objective) -> None:
         obj.status = ObjStatus.DONE
 
+    def mark_yielded(self, obj: Objective) -> None:
+        """Requeue an interrupted objective without consuming an attempt."""
+        obj.status = ObjStatus.PENDING
+        obj.attempts = max(0, obj.attempts - 1)
+
     def mark_failed(self, obj: Objective) -> bool:
         """Record a failed attempt.
 

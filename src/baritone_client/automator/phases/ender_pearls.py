@@ -36,7 +36,11 @@ class EnderPearlHandler(PhaseHandler):
         dimension = snapshot.get("dimension", snapshot.get("world", {}).get("dimension", ""))
         if "overworld" not in dimension.lower():
             print("Returning to Overworld for Enderman farming...")
-            success = enter_nether_portal(client, timeout=60)
+            success = enter_nether_portal(
+                client,
+                timeout=60,
+                target_dimension="minecraft:overworld",
+            )
             if not success:
                 missing = resources.check_phase_requirements(Phase.ENDER_PEARL_FARM)
                 return TaskResult.fail("Failed to return to Overworld", missing=missing)

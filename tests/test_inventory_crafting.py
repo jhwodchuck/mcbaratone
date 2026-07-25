@@ -482,6 +482,102 @@ def test_withdraw_required_uses_chest_slots_and_leaves_other_storage(monkeypatch
     ]
 
 
+def test_catalog_withdraw_prefers_known_item_container(monkeypatch):
+    class Catalog:
+        def find_item(self, item_id):
+            assert item_id == "minecraft:bread"
+            return [
+                {
+                    "dimension": "minecraft:overworld",
+                    "x": 20,
+                    "y": 65,
+                    "z": 20,
+                }
+            ]
+
+        def list_containers(self):
+            return [
+                {
+                    "dimension": "minecraft:overworld",
+                    "x": 2,
+                    "y": 65,
+                    "z": 2,
+                }
+            ]
+
+    counts = {"minecraft:bread": 0}
+    visited = []
+
+    monkeypatch.setattr(
+        "baritone_client.common.storage_catalog.catalog_for",
+        lambda _client, _state: Catalog(),
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.harness_ops.move_near",
+        lambda _client, x, y, z, **_kwargs: visited.append((x, y, z)) or True,
+    )
+    monkeypatch.setattr(
+        inventory,
+        "count_item",
+        lambda _client, item_id: counts.get(item_id, 0),
+    )
+
+    def withdraw(_client, position, requirements, state=None):
+        assert position == (20, 65, 20)
+        assert requirements == {"minecraft:bread": 8}
+        counts["minecraft:bread"] = 8
+        return 1
+
+    monkeypatch.setattr(inventory, "withdraw_required_from_chest", withdraw)
+
+    client = DummyClient(DummyTransport())
+    assert inventory.withdraw_required_from_catalog(
+        client,
+        {"minecraft:bread": 8},
+        state=SimpleNamespace(),
+    ) == 1
+    assert visited == [(20, 65, 20)]
+
+
+def test_catalog_withdraw_skips_recent_container_known_not_to_hold_item(monkeypatch):
+    class Catalog:
+        def find_item(self, _item_id):
+            return []
+
+        def list_containers(self):
+            return [
+                {
+                    "dimension": "minecraft:overworld",
+                    "x": 2,
+                    "y": 65,
+                    "z": 2,
+                    "last_inventory_scan": inventory.time.time(),
+                }
+            ]
+
+    monkeypatch.setattr(
+        "baritone_client.common.storage_catalog.catalog_for",
+        lambda _client, _state: Catalog(),
+    )
+    monkeypatch.setattr(
+        inventory,
+        "count_item",
+        lambda _client, _item_id: 0,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.harness_ops.move_near",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("fresh negative snapshot must not trigger travel")
+        ),
+    )
+
+    assert inventory.withdraw_required_from_catalog(
+        DummyClient(DummyTransport()),
+        {"minecraft:bread": 8},
+        state=SimpleNamespace(),
+    ) == 0
+
+
 def test_deposit_loads_persisted_chest_chunk_before_rejecting_it(monkeypatch):
     class UnloadedChestTransport:
         def __init__(self):
@@ -778,10 +874,14 @@ def test_manual_grid_recipe_shapes_match_vanilla():
             "minecraft:obsidian": 4,
         },
         "minecraft:blaze_powder": {"minecraft:blaze_rod": 1},
-        "minecraft:ender_eye": {
-            "minecraft:blaze_powder": 1,
-            "minecraft:ender_pearl": 1,
-        },
+            "minecraft:ender_eye": {
+                "minecraft:blaze_powder": 1,
+                "minecraft:ender_pearl": 1,
+            },
+            "minecraft:shulker_box": {
+                "minecraft:shulker_shell": 2,
+                "minecraft:chest": 1,
+            },
         "minecraft:bow": {"minecraft:stick": 3, "minecraft:string": 3},
         "minecraft:arrow": {
             "minecraft:flint": 1,
@@ -1157,3 +1257,94 @@ def test_storage_resolver_reads_starter_house_supply_chest(monkeypatch):
     assert inventory.resolve_storage_location(
         DummyClient(DummyTransport()), state=state, verify=False
     ) == (12, 70, -4)
+
+
+def test_storage_resolver_prefers_verified_chest_over_unloaded_landmark():
+    state = SimpleNamespace(
+        custom_data={
+            "structures": {
+                "starter_house": {"supply_chest": [100, 70, 100]}
+            },
+            "locations": {"chest": [{"x": 4, "y": 65, "z": 4}]},
+        },
+        get_locations=lambda category: {
+            category: [{"x": 4, "y": 65, "z": 4}]
+        },
+    )
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_block":
+                position = (payload["x"], payload["y"], payload["z"])
+                return {
+                    "id": (
+                        "minecraft:void_air"
+                        if position == (100, 70, 100)
+                        else "minecraft:chest"
+                    )
+                }
+            return {}
+
+    assert inventory.resolve_storage_location(
+        DummyClient(Transport()), state=state, verify=True
+    ) == (4, 65, 4)
+
+
+def test_reset_inventory_cache_prevents_stale_phantom_after_death():
+    """A dropped-on-death tool must not resurface from the stale cache.
+
+    Without the reset, get_inventory's failed-read fallback returns the
+    pre-death snapshot, so a naked bot reports a phantom pickaxe and never
+    recrafts. reset_inventory_cache() makes a failed read fail safe.
+    """
+    class FlakyTransport:
+        def __init__(self):
+            self.fail = False
+
+        def dispatch(self, route, payload):
+            if self.fail:
+                return {"error": "player not available"}
+            return {
+                "data": {
+                    "inventory": [
+                        {"id": "minecraft:wooden_pickaxe", "count": 1}
+                    ]
+                }
+            }
+
+    client = SimpleNamespace(transport=FlakyTransport())
+    # Prime the cache with a pre-death pickaxe.
+    assert inventory.count_item(client, "minecraft:wooden_pickaxe") == 1
+
+    # Death drops it; respawn clears the cache.
+    inventory.reset_inventory_cache()
+
+    # Subsequent bridge reads fail -> must NOT report the dropped pickaxe.
+    client.transport.fail = True
+    assert inventory.count_item(client, "minecraft:wooden_pickaxe") == 0
+
+
+def test_stale_cache_would_report_phantom_without_reset():
+    """Documents the failure mode the reset fixes: no reset -> phantom tool."""
+    class FlakyTransport:
+        def __init__(self):
+            self.fail = False
+
+        def dispatch(self, route, payload):
+            if self.fail:
+                return {"error": "player not available"}
+            return {
+                "data": {
+                    "inventory": [
+                        {"id": "minecraft:wooden_pickaxe", "count": 1}
+                    ]
+                }
+            }
+
+    client = SimpleNamespace(transport=FlakyTransport())
+    assert inventory.count_item(client, "minecraft:wooden_pickaxe") == 1
+    # No reset. A failed read returns the stale snapshot => phantom pickaxe.
+    client.transport.fail = True
+    assert inventory.count_item(client, "minecraft:wooden_pickaxe") == 1
+    # Clean up module state so the cache does not leak into other tests.
+    inventory.reset_inventory_cache()

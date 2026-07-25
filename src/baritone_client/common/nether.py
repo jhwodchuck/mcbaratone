@@ -8,7 +8,7 @@ primarily used by higher-level scripts as orchestration primitives.
 
 import logging
 import time
-from typing import Optional, Tuple, Dict
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .automation_utils import place_block
 from .combat import hunt_mobs, find_entity_by_type
@@ -16,17 +16,144 @@ from .inventory import count_item, find_item_slot
 
 logger = logging.getLogger(__name__)
 
+PortalPosition = Tuple[int, int, int]
+
+
+def _unwrap(payload: Any) -> Dict[str, Any]:
+    """Accept both legacy envelopes and the current unwrapped transport ABI."""
+    if not isinstance(payload, dict):
+        return {}
+    nested = payload.get("data")
+    if isinstance(nested, dict):
+        merged = dict(payload)
+        merged.pop("data", None)
+        merged.update(nested)
+        return merged
+    return payload
+
+
+def _position(payload: Mapping[str, Any]) -> PortalPosition:
+    pos = payload.get("block_position", payload.get("position", payload))
+    if not isinstance(pos, Mapping):
+        pos = {}
+    return (
+        int(pos.get("x", 0)),
+        int(pos.get("y", 64)),
+        int(pos.get("z", 0)),
+    )
+
+
+def _dimension(payload: Mapping[str, Any]) -> str:
+    return str(payload.get("dimension", "")).lower().removeprefix("minecraft:")
+
+
+def _dimension_matches(current: str, target: str) -> bool:
+    aliases = {
+        "nether": "the_nether",
+        "the_nether": "the_nether",
+        "overworld": "overworld",
+        "end": "the_end",
+        "the_end": "the_end",
+    }
+    current_name = aliases.get(current.lower().removeprefix("minecraft:"), current)
+    target_name = aliases.get(target.lower().removeprefix("minecraft:"), target)
+    return current_name == target_name
+
+
+def _found_blocks(payload: Any) -> List[Dict[str, Any]]:
+    data = _unwrap(payload)
+    blocks = data.get("found", data.get("blocks", []))
+    return [block for block in blocks if isinstance(block, dict)]
+
+
+def _entities(payload: Any) -> List[Dict[str, Any]]:
+    entities = _unwrap(payload).get("entities", [])
+    return [entity for entity in entities if isinstance(entity, dict)]
+
+
+def _block_id(payload: Any) -> str:
+    data = _unwrap(payload)
+    return str(data.get("id") or data.get("type") or data.get("block") or "")
+
 
 def _wait_for_dimension(client, target: str, timeout: int) -> bool:
-    """Poll bridge state until the dimension string contains ``target``."""
-    target = target.lower()
+    """Poll bridge state until the exact canonical target dimension is active."""
     start = time.time()
     while time.time() - start < timeout:
-        state = client.transport.dispatch("get_state", {})
-        dimension = state.get("dimension", "")
-        if target in dimension.lower():
+        state = _unwrap(client.transport.dispatch("get_state", {}))
+        if _dimension_matches(_dimension(state), target):
             return True
-        time.sleep(2)
+        time.sleep(1)
+    return False
+
+
+def _frame_positions(x: int, y: int, z: int) -> Tuple[PortalPosition, ...]:
+    positions = [(x + dx, y, z) for dx in range(4)]
+    positions.extend((x + dx, y + 4, z) for dx in range(4))
+    for dy in range(1, 4):
+        positions.extend(((x, y + dy, z), (x + 3, y + dy, z)))
+    return tuple(positions)
+
+
+def _portal_interior(x: int, y: int, z: int) -> Tuple[PortalPosition, ...]:
+    return tuple((x + dx, y + dy, z) for dx in (1, 2) for dy in (1, 2, 3))
+
+
+def verify_portal(
+    client,
+    portal: PortalPosition,
+    *,
+    require_active: bool = True,
+) -> bool:
+    """Verify a constructed frame and, optionally, active portal blocks."""
+    x, y, z = portal
+    if any(
+        _block_id(
+            client.transport.dispatch(
+                "get_block", {"x": bx, "y": by, "z": bz}
+            )
+        )
+        != "minecraft:obsidian"
+        for bx, by, bz in _frame_positions(x, y, z)
+    ):
+        return False
+    if not require_active:
+        return True
+    return any(
+        _block_id(
+            client.transport.dispatch(
+                "get_block", {"x": bx, "y": by, "z": bz}
+            )
+        )
+        == "minecraft:nether_portal"
+        for bx, by, bz in _portal_interior(x, y, z)
+    )
+
+
+def ignite_portal(
+    client,
+    portal: PortalPosition,
+    timeout: int = 15,
+) -> bool:
+    """Ignite a verified frame and wait for active portal blocks."""
+    if verify_portal(client, portal, require_active=True):
+        return True
+    if not verify_portal(client, portal, require_active=False):
+        return False
+    x, y, z = portal
+    target = (x + 1, y + 1, z)
+    try:
+        client.transport.dispatch(
+            "place_fire", {"x": target[0], "y": target[1], "z": target[2]}
+        )
+    except Exception as exc:
+        logger.warning("Portal ignition command failed: %s", exc)
+        return False
+    start = time.time()
+    while time.time() - start < timeout:
+        if verify_portal(client, portal, require_active=True):
+            return True
+        time.sleep(0.5)
     return False
 
 
@@ -71,48 +198,7 @@ def build_nether_portal(client, x: int, y: int, z: int, obsidian: int = 14) -> b
             place_block(client, x + 3, y + dy, z, "minecraft:obsidian")
             time.sleep(0.1)
 
-        # Verify the frame is complete by checking block placement
-        frame_complete = True
-        blocks_to_check = []
-
-        # Check bottom row
-        for dx in range(4):
-            blocks_to_check.append((x + dx, y, z))
-
-        # Check top row
-        for dx in range(4):
-            blocks_to_check.append((x + dx, y + 4, z))
-
-        # Check sides
-        for dy in range(1, 4):
-            blocks_to_check.append((x, y + dy, z))      # left
-            blocks_to_check.append((x + 3, y + dy, z))  # right
-
-        # Verify all frame blocks are obsidian
-        for bx, by, bz in blocks_to_check:
-            block_response = client.transport.dispatch(
-                "get_block",
-                {"x": bx, "y": by, "z": bz},
-            )
-
-            if str(block_response.get("status", "")).lower() == "error":
-                logger.warning("Could not verify block at (%d,%d,%d): %s", bx, by, bz, block_response.get("error"))
-                frame_complete = False
-                continue
-
-            block_data = block_response.get("data", {})
-            block_type = (
-                block_data.get("type")
-                or block_data.get("id")
-                or block_response.get("type")
-                or block_response.get("id")
-                or ""
-            )
-            if block_type != "minecraft:obsidian":
-                logger.warning("Frame block at (%d,%d,%d) is %s, expected obsidian", bx, by, bz, block_type)
-                frame_complete = False
-
-        if frame_complete:
+        if verify_portal(client, (x, y, z), require_active=False):
             client.mission.checkpoint("nether_portal_built", f"Portal frame completed at {x},{y},{z}")
             logger.info("Nether portal frame successfully built")
             return True
@@ -125,12 +211,54 @@ def build_nether_portal(client, x: int, y: int, z: int, obsidian: int = 14) -> b
         return False
 
 
-def enter_nether_portal(client, timeout: int = 60) -> bool:
-    """
-    Wait for the player to transition into the Nether. The caller is expected to
-    step into an existing portal before invoking this helper.
-    """
-    return _wait_for_dimension(client, "nether", timeout)
+def enter_portal(
+    client,
+    portal: PortalPosition,
+    *,
+    target_dimension: str,
+    timeout: int = 60,
+) -> bool:
+    """Walk into an active portal and verify the requested destination."""
+    state = _unwrap(client.transport.dispatch("get_state", {}))
+    if _dimension_matches(_dimension(state), target_dimension):
+        return True
+    x, y, z = portal
+    target = (x, y, z)
+    current_block = _block_id(
+        client.transport.dispatch("get_block", {"x": x, "y": y, "z": z})
+    )
+    if current_block != "minecraft:nether_portal" and verify_portal(
+        client, portal, require_active=True
+    ):
+        target = (x + 1, y + 1, z)
+    try:
+        client.transport.dispatch(
+            "goto",
+            {"x": target[0], "y": target[1], "z": target[2], "radius": 0},
+        )
+    except Exception as exc:
+        logger.warning("Portal approach failed: %s", exc)
+        return False
+    return _wait_for_dimension(client, target_dimension, timeout)
+
+
+def enter_nether_portal(
+    client,
+    timeout: int = 60,
+    *,
+    target_dimension: str = "minecraft:the_nether",
+    portal: Optional[PortalPosition] = None,
+) -> bool:
+    """Backward-compatible portal traversal with an explicit destination."""
+    portal = portal or find_nearest_portal(client)
+    if portal is None:
+        return False
+    return enter_portal(
+        client,
+        portal,
+        target_dimension=target_dimension,
+        timeout=timeout,
+    )
 
 
 def find_nether_fortress(
@@ -176,29 +304,30 @@ def find_nether_fortress(
 
                 logger.debug("Scanning for fortress at (%d, %d, %d)", current_x, current_y, current_z)
 
-                # Scan a large area around current position for fortress blocks
+                # FindBlocksCommandHandler scans around the current player; the
+                # transport returns its data dictionary directly.
                 fortress_blocks = [
                     "minecraft:nether_bricks",
                     "minecraft:nether_brick_fence",
                     "minecraft:nether_brick_stairs",
                     "minecraft:nether_wart",
-                    "minecraft:chest",  # Often found in fortresses
-                    "minecraft:spawner"  # Blaze spawners are fortress hallmarks
+                    "minecraft:spawner",
                 ]
 
-                scan_response = client.transport.dispatch("scan_blocks", {
-                    "center": {"x": current_x, "y": current_y, "z": current_z},
-                    "radius": 50,  # Large scan radius to detect fortress structures
-                    "block_types": fortress_blocks
-                })
+                blocks = _found_blocks(
+                    client.transport.dispatch(
+                        "find_blocks",
+                        {"blocks": fortress_blocks, "radius": 32, "limit": 512},
+                    )
+                )
 
-                if scan_response.get("status") == "ok":
-                    blocks = scan_response.get("data", {}).get("blocks", [])
-
+                if blocks:
                     # Count fortress-specific blocks
                     fortress_block_counts = {}
                     for block in blocks:
-                        block_type = block.get("type", "")
+                        block_type = str(
+                            block.get("block") or block.get("type") or block.get("id") or ""
+                        )
                         if block_type in fortress_blocks:
                             fortress_block_counts[block_type] = fortress_block_counts.get(block_type, 0) + 1
 
@@ -214,9 +343,11 @@ def find_nether_fortress(
                                nether_brick_count, nether_wart_count, spawner_count)
 
                     # Thresholds for fortress detection
-                    if (nether_brick_count >= 100 or  # Large concentration of nether bricks
-                        nether_wart_count >= 5 or    # Nether wart is fortress-exclusive
-                        spawner_count >= 2):         # Multiple spawners indicate fortress
+                    if (
+                        nether_brick_count >= 40
+                        or nether_wart_count >= 1
+                        or spawner_count >= 1
+                    ):
 
                         # Find the center of the fortress structure and bounds for systematic exploration
                         if blocks:
@@ -227,8 +358,18 @@ def find_nether_fortress(
                             max_x = max_y = max_z = float('-inf')
 
                             for block in blocks:
-                                if block.get("type") in ["minecraft:nether_bricks", "minecraft:nether_brick_fence",
-                                                        "minecraft:nether_brick_stairs", "minecraft:nether_wart"]:
+                                block_type = str(
+                                    block.get("block")
+                                    or block.get("type")
+                                    or block.get("id")
+                                    or ""
+                                )
+                                if block_type in [
+                                    "minecraft:nether_bricks",
+                                    "minecraft:nether_brick_fence",
+                                    "minecraft:nether_brick_stairs",
+                                    "minecraft:nether_wart",
+                                ]:
                                     bx, by, bz = block.get("x", 0), block.get("y", 0), block.get("z", 0)
                                     total_x += bx
                                     total_y += by
@@ -275,7 +416,8 @@ def find_nether_fortress(
 def hunt_blazes(client, target_count: int = 8, timeout: int = 600) -> int:
     """
     Hunt blazes using systematic fortress exploration with backtracking.
-    Assumes player is already near fortress center from find_nether_fortress.
+    ``target_count`` is the desired total rod count, not additional rods.
+    Assumes the player is near the center returned by find_nether_fortress.
     """
     try:
         logger.info("Starting systematic fortress blaze hunt for %d rods", target_count)
@@ -302,18 +444,20 @@ def hunt_blazes(client, target_count: int = 8, timeout: int = 600) -> int:
 
         current_target = None
         scan_interval = 5  # Scan every 5 seconds
+        last_scan = 0.0
 
         while time.time() - start_time < timeout:
             current_time = time.time()
 
             # Check if we have enough rods
             current_rods = count_item(client, "minecraft:blaze_rod")
-            if current_rods - rods_start >= target_count:
-                logger.info("Collected %d blaze rods, target reached", current_rods - rods_start)
+            if current_rods >= target_count:
+                logger.info("Blaze rod target reached: %d/%d", current_rods, target_count)
                 break
 
             # Periodic scanning for spawners and fortress structure
-            if current_time - (explored_positions and len(explored_positions) * scan_interval or 0) % scan_interval < 1:
+            if current_time - last_scan >= scan_interval:
+                last_scan = current_time
 
                 # Get current position
                 state = client.transport.dispatch("get_state", {})
@@ -339,20 +483,29 @@ def hunt_blazes(client, target_count: int = 8, timeout: int = 600) -> int:
                 explored_positions.add(current_pos_key)
 
                 # Scan for blaze spawners and fortress blocks
-                scan_response = client.transport.dispatch("scan_blocks", {
-                    "center": {"x": current_x, "y": current_y, "z": current_z},
-                    "radius": 20,
-                    "block_types": ["minecraft:spawner", "minecraft:nether_bricks", "minecraft:nether_brick_stairs"]
-                })
+                blocks = _found_blocks(
+                    client.transport.dispatch(
+                        "find_blocks",
+                        {
+                            "blocks": [
+                                "minecraft:spawner",
+                                "minecraft:nether_bricks",
+                                "minecraft:nether_brick_stairs",
+                            ],
+                            "radius": 20,
+                            "limit": 256,
+                        },
+                    )
+                )
 
-                if scan_response.get("status") == "ok":
-                    blocks = scan_response.get("data", {}).get("blocks", [])
-
+                if blocks:
                     fortress_blocks = []
                     new_spawners = []
 
                     for block in blocks:
-                        block_type = block.get("type", "")
+                        block_type = str(
+                            block.get("block") or block.get("type") or block.get("id") or ""
+                        )
                         if block_type == "minecraft:spawner":
                             # Check if it's a blaze spawner by examining nearby blocks or entity data
                             spawner_pos = (block.get("x"), block.get("y"), block.get("z"))
@@ -376,14 +529,16 @@ def hunt_blazes(client, target_count: int = 8, timeout: int = 600) -> int:
                             result = hunt_mobs(
                                 client,
                                 mob_types=["blaze"],
-                                required_loot={"minecraft:blaze_rod": target_count - (current_rods - rods_start)},
+                                required_loot={
+                                    "minecraft:blaze_rod": target_count - current_rods
+                                },
                                 search_radius=15,
                                 timeout=min(60, timeout - (time.time() - start_time)),  # Short timeout per spawner
                                 heal_threshold=10.0,
                             )
 
                             current_rods = count_item(client, "minecraft:blaze_rod")
-                            if current_rods - rods_start >= target_count:
+                            if current_rods >= target_count:
                                 break
 
                     # If no spawners found, explore fortress structure
@@ -393,7 +548,11 @@ def hunt_blazes(client, target_count: int = 8, timeout: int = 600) -> int:
                         for dx, dy, dz in directions:
                             score = 0
                             for bx, by, bz in fortress_blocks:
-                                dist = abs(bx - (current_x + dx)) + abs(by - (current_y + dy)) + abs(bz - (current_z + dz))
+                                dist = (
+                                    abs(bx - (current_x + dx))
+                                    + abs(by - (current_y + dy))
+                                    + abs(bz - (current_z + dz))
+                                )
                                 if dist < 15:  # Within exploration range
                                     score += 1
                             direction_scores[(dx, dy, dz)] = score
@@ -485,14 +644,22 @@ def hunt_endermen(client, target_count: int = 12, timeout: int = 900) -> int:
                 logger.debug("Scanning for optimal Enderman spawn locations from (%d, %d)", current_x, current_z)
 
                 # Scan area for potential spawn locations
-                scan_response = client.transport.dispatch("scan_blocks", {
-                    "center": {"x": current_x, "y": current_y, "z": current_z},
-                    "radius": scan_radius,
-                    "block_types": ["minecraft:stone", "minecraft:dirt", "minecraft:grass_block"]  # Common spawn surfaces
-                })
+                blocks = _found_blocks(
+                    client.transport.dispatch(
+                        "find_blocks",
+                        {
+                            "blocks": [
+                                "minecraft:stone",
+                                "minecraft:dirt",
+                                "minecraft:grass_block",
+                            ],
+                            "radius": min(scan_radius, 32),
+                            "limit": 256,
+                        },
+                    )
+                )
 
-                if scan_response.get("status") == "ok":
-                    blocks = scan_response.get("data", {}).get("blocks", [])
+                if blocks:
                     potential_spawns = []
 
                     for block in blocks:
@@ -505,12 +672,9 @@ def hunt_endermen(client, target_count: int = 12, timeout: int = 900) -> int:
                                 "get_block",
                                 {"x": bx, "y": by + height, "z": bz},
                             )
-                            if check_response.get("status") == "ok":
-                                block_type = check_response.get("data", {}).get("type", "")
-                                if block_type in ["minecraft:air", "minecraft:cave_air"]:
-                                    ceiling_height += 1
-                                else:
-                                    break
+                            block_type = _block_id(check_response)
+                            if block_type in ["minecraft:air", "minecraft:cave_air"]:
+                                ceiling_height += 1
                             else:
                                 break
 
@@ -547,9 +711,9 @@ def hunt_endermen(client, target_count: int = 12, timeout: int = 900) -> int:
                         "types": ["enderman"]
                     })
 
-                    if entities_response.get("status") == "ok":
-                        entities = entities_response.get("data", {}).get("entities", [])
+                    entities = _entities(entities_response)
 
+                    if entities:
                         for entity in entities:
                             entity_id = entity.get("id")
                             entity_pos = entity.get("position", {})
@@ -683,28 +847,30 @@ def find_nearest_portal(client, dimension: str = None) -> Optional[Tuple[int, in
         else:
             dimension = dimension.lower()
 
-        # Use goto to find portal - Baritone can navigate to "portal" block type
-        result = client.transport.dispatch("goto", {"target": "portal"})
-
-        if result.get("status") == "ok":
-            # Get position after navigation attempt
-            state = client.transport.dispatch("get_state", {})
-            pos = state.get("block_position", state.get("position", {}))
-            portal_x = int(pos.get("x", current_x))
-            portal_y = int(pos.get("y", 64))
-            portal_z = int(pos.get("z", current_z))
-
-            # Verify we found a portal block
-            block_response = client.transport.dispatch(
-                "get_block",
-                {"x": portal_x, "y": portal_y, "z": portal_z},
+        blocks = _found_blocks(
+            client.transport.dispatch(
+                "find_blocks",
+                {"blocks": ["minecraft:nether_portal"], "radius": 32, "limit": 64},
             )
-
-            if block_response.get("status") == "ok":
-                block_type = block_response.get("data", {}).get("type", "")
-                if "portal" in block_type.lower():
-                    logger.info(f"Found portal at ({portal_x}, {portal_y}, {portal_z}) in {dimension}")
-                    return (portal_x, portal_y, portal_z)
+        )
+        if blocks:
+            nearest = min(
+                blocks,
+                key=lambda block: float(
+                    block.get(
+                        "distance",
+                        (int(block.get("x", 0)) - current_x) ** 2
+                        + (int(block.get("z", 0)) - current_z) ** 2,
+                    )
+                ),
+            )
+            portal = (
+                int(nearest.get("x", current_x)),
+                int(nearest.get("y", 64)),
+                int(nearest.get("z", current_z)),
+            )
+            logger.info("Found portal at %s in %s", portal, dimension)
+            return portal
 
         logger.warning("Could not find nearby portal")
         return None
@@ -719,8 +885,9 @@ def barter_with_piglins(client, gold_ingots_count: int, timeout: int = 300) -> D
     Find Piglins and barter gold ingots.
     Returns dict of gained items.
     """
-    start_inventory = client.transport.dispatch("get_inventory", {}).get("inventory", [])
-    initial_counts = {} # track gained items
+    start_inventory = _unwrap(
+        client.transport.dispatch("get_inventory", {})
+    ).get("inventory", [])
 
     bartered = 0
     start_time = time.time()
@@ -770,7 +937,9 @@ def barter_with_piglins(client, gold_ingots_count: int, timeout: int = 300) -> D
     # (Simplified: just returning what we think we got based on inventory diff if we implemented that, 
     # but for now just return empty dict or implement diff logic properly)
     # Calculate gained items
-    end_inventory = client.transport.dispatch("get_inventory", {}).get("inventory", [])
+    end_inventory = _unwrap(
+        client.transport.dispatch("get_inventory", {})
+    ).get("inventory", [])
     
     # Simple diff: Check what increased
     # Needs to handle stacking

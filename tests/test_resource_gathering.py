@@ -975,6 +975,102 @@ def test_satisfied_stone_target_does_not_discard_inventory(monkeypatch):
     assert resources.gather_stone(client, count=32)
 
 
+def test_descend_to_stone_layer_tunnels_down_from_surface(monkeypatch):
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+    # Pre-descent read (Y=101), then progress reads that show the tunnel
+    # staircasing down until it reaches the stone-mining depth.
+    states = iter(
+        [
+            {"block_position": {"x": 3, "y": 101, "z": -11}},  # initial
+            {"block_position": {"x": 3, "y": 92, "z": -11}},   # progress
+            {"block_position": {"x": 2, "y": 78, "z": -10}},   # reached depth
+        ]
+    )
+    monkeypatch.setattr(
+        resources, "_read_state_optional", lambda *_a, **_k: next(states)
+    )
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _c: True)
+    monkeypatch.setattr(resources.time, "sleep", lambda _s: None)
+
+    assert resources._descend_to_stone_layer(client)
+    # A tunnel is issued toward target_y = max(50, 101-25) = 76 at the same X/Z.
+    tunnels = [p for r, p in transport.calls if r == "tunnel"]
+    assert tunnels == [{"x": 3, "y": 76, "z": -11, "radius": 2}]
+    # The broad mine is cancelled before the descent tunnel is issued.
+    assert ("cancel", {}) in transport.calls
+
+
+def test_descend_to_stone_layer_is_noop_when_already_deep(monkeypatch):
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(
+        resources,
+        "_read_state_optional",
+        lambda *_a, **_k: {"block_position": {"x": 0, "y": 52, "z": 0}},
+    )
+
+    # Already within a couple blocks of the floor -- descending exposes nothing new.
+    assert resources._descend_to_stone_layer(client) is False
+    assert [r for r, _ in transport.calls if r == "tunnel"] == []
+
+
+def test_descend_to_stone_layer_fails_when_no_downward_progress(monkeypatch):
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+    # Stays at Y=100 forever -> tunnel never makes progress -> failure.
+    monkeypatch.setattr(
+        resources,
+        "_read_state_optional",
+        lambda *_a, **_k: {"block_position": {"x": 0, "y": 100, "z": 0}},
+    )
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _c: True)
+    monkeypatch.setattr(resources.time, "sleep", lambda _s: None)
+    # Force the timeout to expire immediately after the first poll.
+    clock = iter([0, 0, 999])
+    monkeypatch.setattr(resources.time, "time", lambda: next(clock))
+
+    assert resources._descend_to_stone_layer(client) is False
+
+
+def test_stranded_gatherer_descends_before_relocating(monkeypatch):
+    """The recovery ladder must try tunnelling down to stone before giving up
+    or relocating to the (also-surface) base."""
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+
+    # Never accumulates cobble, so the loop keeps hitting the stall recovery.
+    monkeypatch.setattr(resources, "count_item", lambda _c, _i: 0)
+    monkeypatch.setattr(resources, "_reserve_gathering_inventory", lambda _c: True)
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _c: True)
+    monkeypatch.setattr(resources, "free_inventory_slots", lambda _c: 10)
+    monkeypatch.setattr(
+        resources, "_read_state_optional", lambda *_a, **_k: {"is_pathing": False}
+    )
+    monkeypatch.setattr(resources, "_find_safe_nearby_stone", lambda _c, **_k: None)
+    monkeypatch.setattr(
+        "baritone_client.common.combat.defend_or_flee", lambda _c: False
+    )
+    monkeypatch.setattr(resources.time, "sleep", lambda _s: None)
+
+    order = []
+    monkeypatch.setattr(
+        resources,
+        "_descend_to_stone_layer",
+        lambda _c, **_k: order.append("descend") or False,
+    )
+    monkeypatch.setattr(
+        resources,
+        "_relocate_to_checkpointed_stone_source",
+        lambda _c, **_k: order.append("relocate") or False,
+    )
+
+    assert not resources.gather_stone(client, count=9, timeout=5)
+    # Descent is attempted, and strictly before relocation.
+    assert order[0] == "descend"
+    assert order.index("descend") < order.index("relocate")
+
+
 def test_high_altitude_stone_fallback_returns_to_checkpointed_storage(monkeypatch):
     class Transport:
         def __init__(self):
@@ -1009,3 +1105,191 @@ def test_high_altitude_stone_fallback_returns_to_checkpointed_storage(monkeypatc
     assert destinations == [
         (-78, 64, 35, {"timeout": 240, "tolerance": 3.0})
     ]
+
+
+def test_choose_descent_offset_picks_first_open_cardinal_direction():
+    class ProbeTransport(RecordingTransport):
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_block":
+                # (+1,0) is solid; (-1,0) is open -> must pick (-1, 0).
+                if payload == {"x": 3 + 3, "y": 101, "z": -11}:
+                    return {"id": "minecraft:stone"}
+                if payload == {"x": 3 - 3, "y": 101, "z": -11}:
+                    return {"id": "minecraft:air"}
+                return {"id": "minecraft:stone"}
+            return {}
+
+    client = SimpleNamespace(transport=ProbeTransport())
+
+    assert resources._choose_descent_offset(client, 3, 101, -11) == (-1, 0)
+
+
+def test_choose_descent_offset_none_when_fully_enclosed():
+    client = SimpleNamespace(transport=RecordingTransport())  # get_block -> {}
+
+    assert resources._choose_descent_offset(client, 3, 101, -11) is None
+
+
+def test_descend_to_stone_layer_aims_laterally_off_a_narrow_pillar(monkeypatch):
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+    states = iter(
+        [
+            {"block_position": {"x": 3, "y": 101, "z": -11}},
+            {"block_position": {"x": 3, "y": 92, "z": -11}},
+            {"block_position": {"x": -1, "y": 76, "z": -11}},
+        ]
+    )
+    monkeypatch.setattr(
+        resources, "_read_state_optional", lambda *_a, **_k: next(states)
+    )
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _c: True)
+    monkeypatch.setattr(resources.time, "sleep", lambda _s: None)
+    # Open to the west (-1, 0); everything else solid.
+    monkeypatch.setattr(
+        resources,
+        "_choose_descent_offset",
+        lambda _c, _px, _py, _pz, **_k: (-1, 0),
+    )
+
+    assert resources._descend_to_stone_layer(client)
+    tunnels = [p for r, p in transport.calls if r == "tunnel"]
+    # target_x = 3 + (-1)*8 = -5, same target_y=76, same z.
+    assert tunnels == [{"x": -5, "y": 76, "z": -11, "radius": 2}]
+
+
+def test_manual_column_descend_breaks_one_block_at_a_time_when_supported(monkeypatch):
+    """A genuinely solid column (support always present) descends step by
+    step using the ``dig_block`` command (bridge 1.0.27+), NOT ``break_block``
+    (Baritone builder process, same underfoot refusal) nor ``attack_block``
+    (single swing, no progress) -- both verified live to break nothing."""
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+    positions = iter([101, 100, 99, 98])  # settles one lower after each break
+
+    # The bridge's dig_block breaks the block over the following ticks; model
+    # that as "air after the dig_block for that cell has been issued".
+    dug = set()
+
+    def dispatch(route, payload):
+        transport.calls.append((route, payload))
+        if route == "get_block":
+            key = (payload["x"], payload["y"], payload["z"])
+            if key in dug:
+                return {"id": "minecraft:air"}
+            return {"id": "minecraft:cobblestone" if payload["y"] <= 100 else "minecraft:air"}
+        if route == "get_state":
+            return {"block_position": {"x": 3, "y": next(positions), "z": -11}}
+        if route == "dig_block":
+            dug.add((payload["x"], payload["y"], payload["z"]))
+            return {"started": True}
+        return {}
+
+    transport.dispatch = dispatch
+    monkeypatch.setattr(resources, "select_item", lambda *_a, **_k: True)
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _c: True)
+    monkeypatch.setattr(resources.time, "sleep", lambda _s: None)
+
+    assert resources._manual_column_descend(client, target_y=98, max_steps=5)
+    assert any(route == "dig_block" for route, _ in transport.calls)
+    assert not any(route == "break_block" for route, _ in transport.calls)
+    assert not any(route == "attack_block" for route, _ in transport.calls)
+
+
+def test_manual_column_descend_stops_before_an_uncontrolled_fall(monkeypatch):
+    """If the block two below is open, breaking would exceed a 1-block drop
+    -- must stop rather than risk it."""
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+
+    def dispatch(route, payload):
+        transport.calls.append((route, payload))
+        if route == "get_state":
+            return {"block_position": {"x": 3, "y": 101, "z": -11}}
+        if route == "get_block":
+            # Y=100 (feet-1) is solid; Y=99 (feet-2, the support) is open air.
+            return {"id": "minecraft:cobblestone" if payload["y"] == 100 else "minecraft:air"}
+        return {}
+
+    transport.dispatch = dispatch
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _c: True)
+
+    assert resources._manual_column_descend(client, target_y=70) is False
+    assert not any(route == "break_block" for route, _ in transport.calls)
+
+
+def test_manual_column_descend_refuses_lava(monkeypatch):
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+
+    def dispatch(route, payload):
+        transport.calls.append((route, payload))
+        if route == "get_state":
+            return {"block_position": {"x": 3, "y": 101, "z": -11}}
+        if route == "get_block":
+            return {"id": "minecraft:lava"}
+        return {}
+
+    transport.dispatch = dispatch
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _c: True)
+
+    assert resources._manual_column_descend(client, target_y=70) is False
+    assert not any(route == "break_block" for route, _ in transport.calls)
+
+
+def test_manual_column_descend_allows_a_safe_short_fall_over_a_small_gap(monkeypatch):
+    """A pillar sitting over a <=3-block air gap must still descend: the drop
+    is damage-free, so refusing it would needlessly strand the bot."""
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+    # Feet at 101; Y=100 solid (feet-1), Y=99/98 air gap, Y=97 solid landing
+    # (a 3-block fall -> no damage). After the break the player lands at 98.
+    positions = iter([101, 98])
+    dug = set()
+
+    def dispatch(route, payload):
+        transport.calls.append((route, payload))
+        if route == "get_block":
+            y = payload["y"]
+            key = (payload["x"], y, payload["z"])
+            if key in dug:
+                return {"id": "minecraft:air"}
+            if y in (100, 97):
+                return {"id": "minecraft:cobblestone"}
+            return {"id": "minecraft:air"}  # 99, 98 gap
+        if route == "get_state":
+            return {"block_position": {"x": 3, "y": next(positions), "z": -11}}
+        if route == "dig_block":
+            dug.add((payload["x"], payload["y"], payload["z"]))
+            return {"started": True}
+        return {}
+
+    transport.dispatch = dispatch
+    monkeypatch.setattr(resources, "select_item", lambda *_a, **_k: True)
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _c: True)
+    monkeypatch.setattr(resources.time, "sleep", lambda _s: None)
+
+    assert resources._manual_column_descend(client, target_y=97, max_steps=3)
+    assert any(route == "dig_block" for route, _ in transport.calls)
+
+
+def test_manual_column_descend_refuses_a_long_fall(monkeypatch):
+    """A drop with no solid landing within the safe-fall window must stop."""
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+
+    def dispatch(route, payload):
+        transport.calls.append((route, payload))
+        if route == "get_state":
+            return {"block_position": {"x": 3, "y": 101, "z": -11}}
+        if route == "get_block":
+            # Only feet-1 solid; a deep void below (no landing within 3).
+            return {"id": "minecraft:cobblestone" if payload["y"] == 100 else "minecraft:air"}
+        return {}
+
+    transport.dispatch = dispatch
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _c: True)
+
+    assert resources._manual_column_descend(client, target_y=70) is False
+    assert not any(route == "dig_block" for route, _ in transport.calls)

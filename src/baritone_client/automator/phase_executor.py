@@ -5,15 +5,18 @@ Phase Executor - Executes phase-specific automation logic.
 import time
 from abc import ABC, abstractmethod
 from pprint import pformat
-from typing import Any, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 
 from .state_manager import Phase, StateManager
-from ..common.tasks import PlayerDeathDetected, TaskResult
+from ..common.tasks import PlayerDeathDetected, SurvivalRecoveryRequired, TaskResult
 from .resource_manager import ResourceManager
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
 import logging
 
 from ..observability import begin_operation, end_operation
+
+if TYPE_CHECKING:
+    from .phase_verifier import PhaseVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +73,7 @@ class PhaseExecutor:
         max_retries: int = 3,
         retry_delay: float = 5.0,
         screenshot_enabled: bool = True,
+        verifier: Optional["PhaseVerifier"] = None,
     ):
         """
         Initialize phase executor.
@@ -96,6 +100,7 @@ class PhaseExecutor:
         self.progress_callback: Optional[Callable[[Phase, float, str], None]] = None
         self.error_callback: Optional[Callable[[Phase, Exception], bool]] = None
         self.screenshot_enabled = screenshot_enabled
+        self.verifier = verifier
         self.interruption_reason: Optional[str] = None
     
     def register_handler(self, phase: Phase, handler: PhaseHandler) -> None:
@@ -206,6 +211,14 @@ class PhaseExecutor:
                 # Execute phase
                 self._report_progress(phase, 0.0, f"Starting {handler.get_name()}")
                 result = self._coerce_result(handler.execute(self.client, self.resources, self.state))
+                if result.success and self.verifier is not None:
+                    verification = self.verifier.verify(phase, result)
+                    if not verification.success:
+                        result = TaskResult.fail(
+                            f"Phase postcondition verification failed: {verification.reason}",
+                            verification_gate_ids=list(verification.gate_ids),
+                            handler_result=result.data,
+                        )
                 self._log_result_details(phase, result)
                 end_operation(
                     operation,
@@ -243,6 +256,17 @@ class PhaseExecutor:
                 )
                 self.interruption_reason = "player_death"
                 print(f"Phase {phase.name} interrupted for death recovery: {exc}")
+                handler.on_exit(self.client, self.resources, self.state)
+                return False
+            except SurvivalRecoveryRequired as exc:
+                end_operation(
+                    operation,
+                    "interrupted",
+                    reason=str(exc),
+                    interruption="survival_recovery",
+                )
+                self.interruption_reason = "survival_recovery"
+                print(f"Phase {phase.name} yielded for survival recovery: {exc}")
                 handler.on_exit(self.client, self.resources, self.state)
                 return False
             except Exception as e:

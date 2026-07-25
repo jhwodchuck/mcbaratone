@@ -15,6 +15,10 @@ class IronFarmHandler(PhaseHandler):
         return "Iron Farm (Hour 6-7)"
     
     def execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
+        return TaskResult.fail("Iron farm construction is not implemented")
+
+    def _legacy_execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
+        """Retained implementation scaffold; not production-complete."""
         # Set farm location in state
         pos_response = client.transport.dispatch("get_state", {})
         if 'error' in pos_response:
@@ -56,25 +60,20 @@ class IronFarmHandler(PhaseHandler):
 
     def _move_villagers(self, client, farm_location: Tuple[int, int, int]) -> bool:
         """Transport 3 villagers to the iron farm location."""
-        # TODO: Implement villager transport logic
-        print(f"Moving 3 villagers to {farm_location}...")
-        return True
+        print(f"Iron-farm villager transport is not implemented for {farm_location}")
+        return False
 
     def _add_zombie(self, client, farm_location: Tuple[int, int, int]) -> bool:
         """Capture and add a zombie to scare villagers."""
-        # TODO: Implement zombie capture logic
-        print(f"Adding zombie to farm at {farm_location}...")
-        return True
+        print(f"Iron-farm zombie capture is not implemented for {farm_location}")
+        return False
 
     def _build_iron_farm(self, client, farm_location: Tuple[int, int, int]) -> bool:
         """Construct the iron farm structure."""
-        # TODO: Implement iron farm construction
-        x, y, z = farm_location
-        print(f"Building iron farm at ({x}, {y}, {z})...")
-        return True
+        print(f"Iron farm construction is not implemented for {farm_location}")
+        return False
 
     def _start_production(self, client, farm_location: Tuple[int, int, int]) -> bool:
         """Verify iron golems are spawning."""
-        # TODO: Implement production verification
-        print(f"Verifying iron production at {farm_location}...")
-        return True
+        print(f"Iron production verification is not implemented for {farm_location}")
+        return False

@@ -21,7 +21,7 @@ def do_goto(
     target: Dict[str, Union[int, float]], 
     timeout: float = 12.0,
     arrival_radius: float = 1.5,
-    start_move_timeout: float = 2.0,
+    start_move_timeout: float = 8.0,
     start_move_min_dist: float = 0.5,
     require_arrival: bool = True,
     allow_incomplete: bool = False,

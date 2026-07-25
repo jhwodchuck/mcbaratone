@@ -1,9 +1,12 @@
 from types import SimpleNamespace
 
+import pytest
+
 from baritone_client.automator.phases import base_construction
 from baritone_client.automator.phases.base_construction import BaseConstructionHandler
 from baritone_client.common import base
 from baritone_client.common.base import _find_flat_site_in_view
+from baritone_client.common.tasks import SurvivalRecoveryRequired
 
 
 def _flat_patch(origin_x, origin_z, size=9, ground_y=63):
@@ -41,6 +44,50 @@ def test_flat_site_selection_allows_natural_tree_blocks_to_be_cleared():
         64,
         -3,
     )
+
+
+def test_find_flat_ground_refuses_false_surface_arrival(monkeypatch):
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                return {"block_position": {"x": -28, "y": 46, "z": 60}}
+            if route == "get_block":
+                return {
+                    "id": (
+                        "minecraft:stone"
+                        if payload["y"] == 65
+                        else "minecraft:air"
+                    )
+                }
+            if route == "get_view":
+                raise AssertionError("must not select a site while still underground")
+            raise AssertionError(route)
+
+    monkeypatch.setattr(
+        "baritone_client.common.automation_utils.safe_goto",
+        lambda *_args, **_kwargs: True,
+    )
+
+    assert (
+        base.find_flat_ground(
+            SimpleNamespace(transport=Transport()), radius=24, footprint=7
+        )
+        is None
+    )
+
+
+def test_build_survival_margin_rejects_low_food():
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda *_args, **_kwargs: {
+                "health": 20.0,
+                "food_level": 9,
+                "is_dead": False,
+            }
+        )
+    )
+
+    assert not base._has_build_survival_margin(client)
 
 
 def test_base_phase_refuses_exposed_night_work(monkeypatch):
@@ -155,6 +202,189 @@ def test_base_phase_reuses_saved_in_progress_house_origin(monkeypatch):
     assert built == [(-9, 78, -122)]
     assert "base_build_origin" not in state.custom_data
     assert state.custom_data["base_location"] == (-9, 78, -122)
+
+
+def test_remote_recovery_position_stages_at_saved_house_before_building(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, _payload):
+            self.calls.append((route, _payload))
+            if route == "get_state":
+                return {"block_position": {"x": -103, "y": 61, "z": 275}}
+            if route == "chat":
+                return {}
+            raise AssertionError(route)
+
+    resources = SimpleNamespace(
+        phase_ready_result=lambda *_args, **_kwargs: None,
+        check_phase_requirements=lambda *_args, **_kwargs: {},
+        get_summary=lambda: {"inventory": {}},
+    )
+
+    class State:
+        def __init__(self):
+            self.custom_data = {"base_build_origin": [6, 114, -12]}
+            self.saved = 0
+
+        def save_checkpoint(self, *_args):
+            self.saved += 1
+
+    destinations = []
+    monkeypatch.setattr(base_construction, "recover_health", lambda *_a, **_k: True)
+    monkeypatch.setattr(base_construction, "wait_for_safe_daylight", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        base_construction, "_wait_for_path_completion", lambda *_a, **_k: True
+    )
+    monkeypatch.setattr(
+        base_construction,
+        "goto",
+        lambda _client, x, y, z, **_kwargs: destinations.append((x, y, z))
+        or False,
+    )
+    monkeypatch.setattr(
+        base_construction,
+        "build_good_house",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("remote player must stage before block placement")
+        ),
+    )
+
+    state = State()
+    result = BaseConstructionHandler().execute(
+        SimpleNamespace(transport=Transport()), resources, state
+    )
+
+    assert not result.success
+    assert destinations == [(9, 115, -14)]
+    assert "base_construction_repair_attempts" not in state.custom_data
+    assert state.custom_data["base_site_return_failures"] == 1
+    assert state.saved == 1
+
+
+def test_repeatedly_repaired_unreachable_house_is_relocated(monkeypatch):
+    """An old partial shell must not trap the phase in an endless return loop."""
+
+    class Resources:
+        def phase_ready_result(self, *_args, **_kwargs):
+            return None
+
+        def check_phase_requirements(self, *_args, **_kwargs):
+            return {}
+
+        def get_summary(self):
+            return {"inventory": {}}
+
+    class State:
+        def __init__(self):
+            self.custom_data = {
+                "base_build_origin": [235, 64, 113],
+                "base_construction_repair_attempts": 5,
+            }
+            self.saved = 0
+
+        def save_checkpoint(self, *_args):
+            self.saved += 1
+
+    monkeypatch.setattr(base_construction, "recover_health", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        base_construction, "wait_for_safe_daylight", lambda *_a, **_k: True
+    )
+    monkeypatch.setattr(
+        BaseConstructionHandler,
+        "_stage_at_build_site",
+        classmethod(lambda *_a, **_k: False),
+    )
+
+    state = State()
+    result = BaseConstructionHandler().execute(
+        SimpleNamespace(), Resources(), state
+    )
+
+    assert not result.success
+    assert "base_build_origin" not in state.custom_data
+    assert "base_construction_repair_attempts" not in state.custom_data
+    assert state.saved == 1
+
+
+def test_second_failed_return_relocates_even_without_build_repairs(monkeypatch):
+    class Resources:
+        phase_ready_result = lambda *_args, **_kwargs: None
+        check_phase_requirements = lambda *_args, **_kwargs: {}
+        get_summary = lambda *_args, **_kwargs: {"inventory": {}}
+
+    class State:
+        custom_data = {
+            "base_build_origin": [-12, 65, 56],
+            "base_site_return_failures": 1,
+        }
+
+        def save_checkpoint(self, *_args):
+            return None
+
+    monkeypatch.setattr(base_construction, "recover_health", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        base_construction, "wait_for_safe_daylight", lambda *_a, **_k: True
+    )
+    monkeypatch.setattr(
+        BaseConstructionHandler,
+        "_stage_at_build_site",
+        classmethod(lambda *_a, **_k: False),
+    )
+
+    state = State()
+    result = BaseConstructionHandler().execute(
+        SimpleNamespace(), Resources(), state
+    )
+
+    assert not result.success
+    assert "base_build_origin" not in state.custom_data
+    assert "base_site_return_failures" not in state.custom_data
+
+
+def test_stage_at_build_site_accepts_loose_band_when_goto_stops_short(monkeypatch):
+    """Baritone can stop short of goto's strict 4m goal yet leave the builder
+    close enough to place the shell. _stage_at_build_site must trust the loose
+    staging band, not goto's tolerance. Confirmed live: Bot08 looped failing a
+    6.4m return it had effectively already completed."""
+    # House origin (6, 114, -12); staging target (9, 115, -14). The player ends
+    # up ~2m from the staging point after goto reports failure -> within band.
+    positions = iter([
+        {"block_position": {"x": 50, "y": 114, "z": -12}},   # entry: ~41m, not staged
+        {"block_position": {"x": 7, "y": 114, "z": -13}},     # after goto: within band
+    ])
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                return next(positions)
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    monkeypatch.setattr(base_construction, "goto", lambda *_a, **_k: False)
+
+    assert BaseConstructionHandler._stage_at_build_site(client, 6, 114, -12) is True
+
+
+def test_stage_at_build_site_fails_when_goto_leaves_player_out_of_band(monkeypatch):
+    """If goto fails and the player is still far from the house, staging must
+    still fail so the phase does not attempt block placement from afar."""
+    positions = iter([
+        {"block_position": {"x": 50, "y": 114, "z": -12}},   # entry: not staged
+        {"block_position": {"x": 48, "y": 114, "z": -12}},    # after goto: still far
+    ])
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                return next(positions)
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    monkeypatch.setattr(base_construction, "goto", lambda *_a, **_k: False)
+
+    assert BaseConstructionHandler._stage_at_build_site(client, 6, 114, -12) is False
 
 
 def test_base_phase_persists_established_wheat_farm_location(monkeypatch):
@@ -357,3 +587,61 @@ def test_unrecoverable_house_returns_retry_required(monkeypatch):
     assert not result.success
     assert result.reason == "Starter house was not completed; retry required"
     assert state.saved == 1
+
+
+def test_low_hunger_house_failure_yields_without_charging_repair_attempt(monkeypatch):
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "chat":
+                return {}
+            assert route == "get_state"
+            return {"health": 20, "food_level": 6}
+
+    resources = SimpleNamespace(
+        phase_ready_result=lambda *_args, **_kwargs: None,
+        check_phase_requirements=lambda *_args, **_kwargs: {},
+        get_summary=lambda: {"inventory": {}},
+    )
+
+    class State:
+        def __init__(self):
+            self.custom_data = {"base_build_origin": [11, 70, 20]}
+
+        def save_checkpoint(self, *_args):
+            return None
+
+    monkeypatch.setattr(base_construction, "recover_health", lambda *_a, **_k: True)
+    monkeypatch.setattr(base_construction, "wait_for_safe_daylight", lambda *_a, **_k: True)
+    monkeypatch.setattr(base_construction, "build_good_house", lambda *_a, **_k: False)
+    monkeypatch.setattr(base_construction, "eat_until_hunger", lambda *_a, **_k: False)
+    monkeypatch.setattr(base_construction, "acquire_emergency_food", lambda *_a, **_k: False)
+
+    state = State()
+    with pytest.raises(SurvivalRecoveryRequired):
+        BaseConstructionHandler().execute(
+            SimpleNamespace(transport=Transport()), resources, state
+        )
+
+    assert "base_construction_repair_attempts" not in state.custom_data
+
+
+def test_low_health_after_house_failure_yields_before_repair_attempt(monkeypatch):
+    transport = SimpleNamespace(
+        dispatch=lambda route, _payload: {"health": 9, "food_level": 20}
+    )
+    monkeypatch.setattr(base_construction, "recover_health", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        base_construction, "acquire_emergency_food", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(
+        base_construction,
+        "eat_until_hunger",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("full hunger must not be treated as the health recovery")
+        ),
+    )
+
+    with pytest.raises(SurvivalRecoveryRequired):
+        BaseConstructionHandler()._recover_build_survival_or_yield(
+            SimpleNamespace(transport=transport)
+        )

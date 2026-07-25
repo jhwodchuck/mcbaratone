@@ -11,6 +11,7 @@ from baritone_client.automator.phase_executor import PhaseExecutor, PhaseHandler
 from baritone_client.common.tasks import (
     ActionTask,
     PlayerDeathDetected,
+    SurvivalRecoveryRequired,
     SequentialTask,
     TaskResult,
 )
@@ -30,16 +31,20 @@ class RecoveryTransport:
     def __init__(self, death_response):
         self.death_response = death_response
         self.calls = []
+        self.dead = True
 
     def dispatch(self, route, payload):
         self.calls.append((route, payload))
         if route == "get_state":
             return {
-                "is_dead": True,
-                "health": 0,
+                "is_dead": self.dead,
+                "health": 0 if self.dead else 20,
                 "block_position": {"x": -66, "y": 63, "z": -125},
                 "dimension": "minecraft:overworld",
             }
+        if route == "respawn":
+            self.dead = False
+            return {}
         if route == "get_death_location":
             return self.death_response
         return {}
@@ -72,6 +77,36 @@ def test_death_recovery_accepts_unwrapped_bridge_response(monkeypatch):
     assert not result.data["reset_phase"]
     assert context.state.get_current_phase() == Phase.BASE_CONSTRUCTION
     assert context.state.custom_data["last_death_location"]["x"] == -70
+
+
+def test_alive_operator_restart_abandons_exhausted_pending_grave(monkeypatch):
+    context = _context({})
+    context.client.transport.dead = False
+    context.state.custom_data["death_recovery"] = {
+        "pending_location": [-150, 11, 220],
+        "pending_dimension": "minecraft:overworld",
+        "unsafe_failures": 1,
+    }
+    monkeypatch.setattr(
+        death_recovery_action,
+        "get_inventory",
+        lambda _client: {"minecraft:dirt": 2},
+    )
+
+    result = DeathRecoveryAction().execute(context)
+
+    assert result.success
+    assert result.data["grave_abandoned"]
+    assert "death_recovery" not in context.state.custom_data
+    assert context.state.custom_data["last_abandoned_death_recovery"] == {
+        "location": [-150, 11, 220],
+        "dimension": "minecraft:overworld",
+        "unsafe_failures": 1,
+        "reason": "operator_restart_after_terminal_safety_stop",
+    }
+    assert not any(
+        route == "respawn" for route, _payload in context.client.transport.calls
+    )
 
 
 def test_death_recovery_falls_back_to_pre_respawn_position(monkeypatch):
@@ -110,12 +145,38 @@ def test_death_recovery_fails_if_pickup_area_stays_unsafe(monkeypatch):
     assert result.data["unsafe_recovery_failures"] == 1
 
 
+def test_death_recovery_never_resumes_phase_if_player_dies_while_securing(monkeypatch):
+    context = _context(
+        {"x": -70, "y": 62, "z": -120, "dimension": "minecraft:overworld"}
+    )
+    monkeypatch.setattr(death_recovery_action, "goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _seconds: None)
+
+    def die_while_securing(_client):
+        context.client.transport.dead = True
+        return True
+
+    monkeypatch.setattr(
+        death_recovery_action, "secure_recovery_area", die_while_securing
+    )
+
+    result = DeathRecoveryAction().execute(context)
+
+    assert not result.success
+    assert result.message == "Player died while securing the recovered grave"
+    assert context.state.custom_data["death_recovery"]["pending_location"] == [
+        -70,
+        62,
+        -120,
+    ]
+
+
 def test_death_recovery_retreats_to_checkpointed_storage(monkeypatch):
     context = _context(
         {"x": -70, "y": 62, "z": -120, "dimension": "minecraft:overworld"}
     )
     context.state.custom_data["structures"] = {
-        "starter_house": {"supply_chest": [-10, 70, 12]}
+        "starter_house": {"supply_chest": [-10, 70, -60]}
     }
     destinations = []
     monkeypatch.setattr(
@@ -129,7 +190,7 @@ def test_death_recovery_retreats_to_checkpointed_storage(monkeypatch):
 
     assert result.success
     assert result.data["retreated"]
-    assert destinations == [(-70, 62, -120), (-10, 70, 12)]
+    assert destinations == [(-70, 62, -120), (-10, 70, -60)]
 
 
 def test_death_recovery_fails_when_critical_inventory_is_still_missing(monkeypatch):
@@ -226,3 +287,138 @@ def test_phase_executor_does_not_retry_player_death():
     assert executor.interruption_reason == "player_death"
     assert handler.calls == 1
     assert handler.exited
+
+
+def test_phase_executor_does_not_retry_safe_survival_hold():
+    class HoldingHandler(PhaseHandler):
+        def __init__(self):
+            self.calls = 0
+            self.exited = False
+
+        def execute(self, client, resources, state):
+            self.calls += 1
+            raise SurvivalRecoveryRequired("food remains below threshold")
+
+        def get_name(self):
+            return "Holding phase"
+
+        def on_exit(self, client, resources, state):
+            self.exited = True
+
+    state = SimpleNamespace(
+        update_progress=lambda *_args, **_kwargs: None,
+        record_phase_payload=lambda *_args, **_kwargs: None,
+    )
+    resources = SimpleNamespace(refresh_inventory=lambda: None)
+    handler = HoldingHandler()
+    executor = PhaseExecutor(
+        SimpleNamespace(),
+        resources,
+        state,
+        max_retries=3,
+        retry_delay=0,
+        screenshot_enabled=False,
+    )
+    executor.register_handler(Phase.FOOD_AND_IRON, handler)
+
+    assert not executor.execute_phase(Phase.FOOD_AND_IRON)
+    assert executor.interruption_reason == "survival_recovery"
+    assert handler.calls == 1
+    assert handler.exited
+
+
+def test_bootstrap_starter_pickaxe_skips_when_already_carried(monkeypatch):
+    from baritone_client.common import inventory as inv
+    from baritone_client.common import resources
+
+    monkeypatch.setattr(
+        inv,
+        "count_item",
+        lambda _c, item_id: 1 if item_id == "minecraft:wooden_pickaxe" else 0,
+    )
+    crafted = []
+    monkeypatch.setattr(
+        resources,
+        "ensure_supplies",
+        lambda *_a, **_k: crafted.append(True) or SimpleNamespace(success=True),
+    )
+    client = SimpleNamespace(transport=SimpleNamespace())
+
+    assert death_recovery_action._bootstrap_starter_pickaxe(client) is True
+    assert crafted == []  # already had a pickaxe; must not attempt a craft
+
+
+def test_bootstrap_starter_pickaxe_crafts_when_missing(monkeypatch):
+    from baritone_client.common import inventory as inv
+    from baritone_client.common import resources
+
+    have = {"pick": False}
+    monkeypatch.setattr(
+        inv,
+        "count_item",
+        lambda _c, item_id: 1
+        if (item_id == "minecraft:wooden_pickaxe" and have["pick"])
+        else 0,
+    )
+
+    def ensure(*_a, **_k):
+        have["pick"] = True
+        return SimpleNamespace(success=True)
+
+    monkeypatch.setattr(resources, "ensure_supplies", ensure)
+    client = SimpleNamespace(transport=SimpleNamespace())
+
+    assert death_recovery_action._bootstrap_starter_pickaxe(client) is True
+
+
+def test_bootstrap_starter_pickaxe_fails_when_craft_yields_nothing(monkeypatch):
+    from baritone_client.common import inventory as inv
+    from baritone_client.common import resources
+
+    monkeypatch.setattr(inv, "count_item", lambda _c, _item: 0)
+    monkeypatch.setattr(
+        resources,
+        "ensure_supplies",
+        lambda *_a, **_k: SimpleNamespace(success=True),  # claims ok but no pickaxe
+    )
+    client = SimpleNamespace(transport=SimpleNamespace())
+
+    # Success must be gated on a pickaxe actually appearing, not just the claim.
+    assert death_recovery_action._bootstrap_starter_pickaxe(client) is False
+
+
+def test_lost_grave_bootstraps_starter_tools(monkeypatch):
+    context = _context(
+        {"x": -70, "y": 62, "z": -120, "dimension": "minecraft:overworld"}
+    )
+    # Grave unreachable -> _reach_overworld_grave fails on every approach.
+    monkeypatch.setattr(death_recovery_action, "goto", lambda *_a, **_k: False)
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _s: None)
+    boot = []
+    monkeypatch.setattr(
+        death_recovery_action,
+        "_bootstrap_starter_pickaxe",
+        lambda _client: boot.append(True) or True,
+    )
+
+    result = DeathRecoveryAction().execute(context)
+
+    assert result.success
+    assert result.data["bootstrapped_tools"]
+    assert not result.data["recovered"]
+    assert boot == [True]
+
+
+def test_lost_grave_still_fails_when_bootstrap_fails(monkeypatch):
+    context = _context(
+        {"x": -70, "y": 62, "z": -120, "dimension": "minecraft:overworld"}
+    )
+    monkeypatch.setattr(death_recovery_action, "goto", lambda *_a, **_k: False)
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        death_recovery_action, "_bootstrap_starter_pickaxe", lambda _client: False
+    )
+
+    result = DeathRecoveryAction().execute(context)
+
+    assert not result.success

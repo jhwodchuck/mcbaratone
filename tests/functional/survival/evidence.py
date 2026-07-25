@@ -379,7 +379,7 @@ def _portal_verified(evidence: ProgressionEvidence) -> bool:
         (x - 1, y, z),
     )
     return any(
-        evidence.block_id(position) in {"minecraft:obsidian", "minecraft:nether_portal"}
+        evidence.block_id(position) == "minecraft:nether_portal"
         for position in nearby
     )
 
@@ -486,7 +486,13 @@ PROGRESSION_GATES: Tuple[ProgressionGate, ...] = (
         "Eyes of Ender Ready",
         "Enderman hunting or bartering plus blaze conversion produced 12 Eyes.",
         "WORLD_UNLOCK",
-        (GateCheck("at least 12 Eyes of Ender observed", lambda e: e.observed_count("minecraft:eye_of_ender") >= 12),),
+        (
+            GateCheck(
+                "at least 12 Eyes of Ender observed",
+                lambda e: e.observed_count("minecraft:ender_eye") >= 12
+                or int(e.phase_payload("WORLD_UNLOCK").get("eyes_ready", 0) or 0) >= 12,
+            ),
+        ),
     ),
     ProgressionGate(
         "T1209",

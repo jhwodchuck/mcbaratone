@@ -538,3 +538,15 @@ def test_loot_chest_does_not_shift_click_player_inventory(monkeypatch):
 
     assert base.loot_nearby_chests(client, radius=16)
     assert clicks == list(range(27))
+
+
+def test_base_handler_has_bounded_full_house_repair_budget():
+    import inspect
+
+    from baritone_client.automator.phases.base_construction import (
+        BaseConstructionHandler,
+    )
+
+    source = inspect.getsource(BaseConstructionHandler.execute)
+    assert "repair_attempt >= 5" in source
+    assert "base_construction_degraded" in source

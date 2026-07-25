@@ -295,6 +295,62 @@ def test_boot_wood_check_counts_real_plank_ids(monkeypatch):
     assert result.success
 
 
+def test_boot_wood_check_counts_carried_logs_as_convertible_planks(monkeypatch):
+    def count(_client, item_id):
+        if item_id == "minecraft:spruce_log":
+            return 2
+        if item_id == "minecraft:dark_oak_planks":
+            return 8
+        return 0
+
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.count_item",
+        count,
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.gather_wood",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("convertible logs and planks must satisfy the wood check")
+        ),
+    )
+
+    result = ConditionalWoodGatheringAction(needed_logs=4).execute(
+        SimpleNamespace(client=SimpleNamespace())
+    )
+
+    assert result.success
+
+
+def test_boot_wood_check_defers_reserve_on_ledge_with_nearby_table(monkeypatch):
+    def count(_client, item_id):
+        if item_id == "minecraft:spruce_log":
+            return 2
+        if item_id == "minecraft:dark_oak_planks":
+            return 2
+        return 0
+
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.count_item",
+        count,
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.find_nearby_block",
+        lambda *_args, **_kwargs: (5, 101, -10),
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.gather_wood",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stone recovery must run before the larger wood reserve")
+        ),
+    )
+
+    result = ConditionalWoodGatheringAction(needed_logs=4).execute(
+        SimpleNamespace(client=SimpleNamespace())
+    )
+
+    assert result.success
+
+
 def test_boot_base_recovery_prefers_checkpointed_house(monkeypatch):
     calls = []
 

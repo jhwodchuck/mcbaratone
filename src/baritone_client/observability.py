@@ -40,12 +40,33 @@ _PLAYER_DEAD = False
 _LAST_POSITION: Optional[Dict[str, Any]] = None
 _LAST_CHUNK: Optional[tuple[int, int]] = None
 _LAST_ENTITY_SAMPLE_NS = 0
+_EVENT_MAX_BYTES = int(
+    os.environ.get("MC_EVENT_JOURNAL_MAX_BYTES", str(16 * 1024 * 1024))
+)
+_EVENT_BACKUPS = max(1, int(os.environ.get("MC_EVENT_JOURNAL_BACKUPS", "3")))
 
 
 def _event_path() -> Path:
     path = _OUTPUT_DIR / "telemetry" / "events.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _rotate_event_journal(path: Path, incoming_bytes: int) -> None:
+    """Keep each event-journal segment within the configured byte budget."""
+    try:
+        current_bytes = path.stat().st_size
+    except FileNotFoundError:
+        return
+    if current_bytes + incoming_bytes <= _EVENT_MAX_BYTES:
+        return
+    oldest = path.with_name(f"{path.name}.{_EVENT_BACKUPS}")
+    oldest.unlink(missing_ok=True)
+    for index in range(_EVENT_BACKUPS - 1, 0, -1):
+        source = path.with_name(f"{path.name}.{index}")
+        if source.exists():
+            source.replace(path.with_name(f"{path.name}.{index + 1}"))
+    path.replace(path.with_name(f"{path.name}.1"))
 
 
 def _safe(value: Any, depth: int = 0) -> Any:
@@ -86,7 +107,9 @@ def emit_event(event: str, **fields: Any) -> None:
         line = json.dumps(record, separators=(",", ":"), sort_keys=True)
         with _LOCK:
             _RECENT_EVENTS.append(record)
-            with _event_path().open("a", encoding="utf-8") as handle:
+            path = _event_path()
+            _rotate_event_journal(path, len(line.encode("utf-8")) + 1)
+            with path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
     except Exception:
         pass

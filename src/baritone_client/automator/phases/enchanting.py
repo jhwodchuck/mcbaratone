@@ -6,7 +6,7 @@ import time
 
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
-from ..state_manager import StateManager
+from ..state_manager import Phase, StateManager
 from ...common import TaskResult, SequentialTask, ActionTask, harness_ops
 from ...common.inventory import (
     craft,
@@ -77,8 +77,14 @@ class EnchantingPipelineHandler(PhaseHandler):
                 "Craft 15 bookshelves",
                 lambda c: self._craft_bookshelves(c, state),
             ),
-            ActionTask("Build enchanting room", self._build_enchanting_room),
-            ActionTask("Begin rolling enchants", self._roll_enchants),
+            ActionTask(
+                "Build enchanting room",
+                lambda c: self._build_enchanting_room(c, state),
+            ),
+            ActionTask(
+                "Verify level-30 enchanting capability",
+                lambda c: self._roll_enchants(c, state),
+            ),
         ]
         
         executor = SequentialTask("Enchanting Core", tasks)
@@ -880,7 +886,23 @@ class EnchantingPipelineHandler(PhaseHandler):
 
     def _craft_enchanting_table(self, client, state: StateManager) -> bool:
         """Craft the table only when its survival-obtained inputs are verified."""
-        if count_item(client, "minecraft:enchanting_table") >= 1:
+        table_needed = count_item(client, "minecraft:enchanting_table") < 1
+        if count_item(client, "minecraft:diamond_pickaxe") < 1:
+            diamond_target = 3 + (2 if table_needed else 0)
+            self._withdraw_at_home(
+                client,
+                state,
+                {"minecraft:diamond": diamond_target},
+            )
+            if count_item(client, "minecraft:diamond") < diamond_target:
+                print(
+                    f"  Need {diamond_target} diamonds for the required pickaxe"
+                    + (" and enchanting table." if table_needed else ".")
+                )
+                return False
+            if not _craft_with_table(client, "minecraft:diamond_pickaxe", 1):
+                return False
+        if not table_needed:
             return True
         self._withdraw_at_home(
             client,
@@ -892,12 +914,6 @@ class EnchantingPipelineHandler(PhaseHandler):
             },
         )
         if count_item(client, "minecraft:obsidian") < 4:
-            if count_item(client, "minecraft:diamond_pickaxe") < 1:
-                if count_item(client, "minecraft:diamond") < 5:
-                    print("  Need five diamonds for pickaxe plus enchanting table.")
-                    return False
-                if not _craft_with_table(client, "minecraft:diamond_pickaxe", 1):
-                    return False
             if not self._wait_for_daylight(client, state):
                 return False
             if not self._leave_starter_house(client, state):
@@ -1257,12 +1273,120 @@ class EnchantingPipelineHandler(PhaseHandler):
         client.transport.dispatch("cancel", {})
         return count_item(client, "minecraft:sugar_cane") >= target
 
-    def _build_enchanting_room(self, client) -> bool:
-        """Place enchanting table surrounded by bookshelves."""
-        print("  Enchanting-station placement is not implemented yet.")
-        return False
+    @staticmethod
+    def _enchanting_layout(center):
+        x, y, z = (int(value) for value in center)
+        shelves = []
+        for dx in range(-2, 3):
+            shelves.append((x + dx, y, z - 2))
+            shelves.append((x + dx, y, z + 2))
+        for dz in range(-1, 2):
+            shelves.append((x - 2, y, z + dz))
+            shelves.append((x + 2, y, z + dz))
+        # Leave one cardinal opening as the player's entrance.
+        shelves.remove((x, y, z + 2))
+        return shelves
 
-    def _roll_enchants(self, client) -> bool:
-        """Begin enchanting primary tools."""
-        print("  Level-30 enchanting verification is not implemented yet.")
-        return False
+    @staticmethod
+    def _block_id(client, position) -> str:
+        response = client.transport.dispatch(
+            "get_block",
+            {"x": int(position[0]), "y": int(position[1]), "z": int(position[2])},
+        )
+        return str(response.get("id") or response.get("block") or "")
+
+    def _station_verified(self, client, center) -> bool:
+        if not isinstance(center, (list, tuple)) or len(center) != 3:
+            return False
+        x, y, z = (int(value) for value in center)
+        if self._block_id(client, (x, y, z)) != "minecraft:enchanting_table":
+            return False
+        shelves = self._enchanting_layout((x, y, z))
+        if any(
+            self._block_id(client, position) != "minecraft:bookshelf"
+            for position in shelves
+        ):
+            return False
+        air = {"minecraft:air", "minecraft:cave_air", "minecraft:void_air", ""}
+        for sx, sy, sz in shelves:
+            gap = (x + (sx - x) // 2, sy, z + (sz - z) // 2)
+            if self._block_id(client, gap) not in air:
+                return False
+        return True
+
+    def _build_enchanting_room(self, client, state: StateManager) -> bool:
+        """Place and verify a table with exactly fifteen powered shelves."""
+        structures = state.custom_data.setdefault("structures", {})
+        existing = structures.get("enchanting_station", {})
+        if isinstance(existing, dict) and self._station_verified(
+            client, existing.get("table")
+        ):
+            existing["verified"] = True
+            return True
+
+        house = structures.get("starter_house", {})
+        origin = house.get("origin") or state.custom_data.get("base_location")
+        if not isinstance(origin, (list, tuple)) or len(origin) != 3:
+            return False
+        ox, oy, oz = (int(value) for value in origin)
+        candidates = (
+            (ox + 10, oy + 1, oz + 3),
+            (ox - 4, oy + 1, oz + 3),
+            (ox + 3, oy + 1, oz + 10),
+            (ox + 3, oy + 1, oz - 4),
+        )
+        air = {"minecraft:air", "minecraft:cave_air", "minecraft:void_air", ""}
+        center = None
+        for candidate in candidates:
+            targets = [candidate, *self._enchanting_layout(candidate)]
+            if any(self._block_id(client, target) not in air for target in targets):
+                continue
+            if any(self._block_id(client, (x, y - 1, z)) in air for x, y, z in targets):
+                continue
+            center = candidate
+            break
+        if center is None:
+            return False
+        if not goto(client, *center, timeout=180, tolerance=3.0):
+            return False
+        if not harness_ops.place_block_exact(
+            client, *center, "minecraft:enchanting_table", allow_break=False
+        ):
+            return False
+        for position in self._enchanting_layout(center):
+            if not harness_ops.place_block_exact(
+                client, *position, "minecraft:bookshelf", allow_break=False
+            ):
+                return False
+        if not self._station_verified(client, center):
+            return False
+        structures["enchanting_station"] = {
+            "table": list(center),
+            "bookshelves": [list(value) for value in self._enchanting_layout(center)],
+            "verified": True,
+        }
+        state.add_location(
+            "enchanting_station",
+            *center,
+            dimension="overworld",
+            tags=["level_30", "verified"],
+        )
+        self._persist_enchanting_state(client, state)
+        return True
+
+    def _roll_enchants(self, client, state: StateManager) -> bool:
+        """Verify and persist that the station has level-30 shelf power."""
+        station = state.custom_data.get("structures", {}).get(
+            "enchanting_station", {}
+        )
+        center = station.get("table") if isinstance(station, dict) else None
+        if not self._station_verified(client, center):
+            return False
+        state.custom_data.setdefault("capabilities", {})[
+            "level_30_enchanting"
+        ] = True
+        payload = state.get_phase_payload(Phase.ENCHANTING_PIPELINE)
+        payload.update({"station_verified": True, "level_30_ready": True})
+        state.record_phase_payload(Phase.ENCHANTING_PIPELINE, payload)
+        self._persist_enchanting_state(client, state)
+        return True

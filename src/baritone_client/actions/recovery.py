@@ -50,7 +50,12 @@ class DimensionRecoveryStrategy:
                 success = goto(context.client, *portal_coords, timeout=300)
                 if success:
                     from ..common import enter_nether_portal
-                    if enter_nether_portal(context.client, timeout=60):
+                    if enter_nether_portal(
+                        context.client,
+                        timeout=60,
+                        target_dimension="minecraft:overworld",
+                        portal=portal_coords,
+                    ):
                         print("Returned to Overworld via portal")
                         return True
                     else:

@@ -12,7 +12,7 @@ import logging
 import time
 from typing import Dict, List, Optional
 
-from .combat import get_nearby_entities, hunt_mobs
+from .combat import entity_position, get_nearby_entities, hunt_mobs
 from .inventory import count_item, select_item
 from .navigation import goto
 
@@ -70,6 +70,72 @@ def count_herd(client, animal_type: str, radius: int = 16) -> int:
     """Total animals (adult + baby) of a type in range -- the herd-size signal
     used to confirm a breed actually produced offspring."""
     return len(_animals_of_type(client, animal_type, radius, adults_only=False))
+
+
+def discover_herd(
+    client,
+    animal_type: str = "cow",
+    *,
+    radius: int = 64,
+    timeout: float = 300.0,
+    minimum_size: int = 2,
+    max_distance: float = 384.0,
+) -> Optional[tuple[int, int, int]]:
+    """Explore until a renewable-size herd is observed, then verify it nearby."""
+    state = client.transport.dispatch("get_state", {})
+    position = state.get("block_position", state.get("position", {}))
+    origin_x = float(position.get("x", state.get("x", 0)) or 0)
+    origin_z = float(position.get("z", state.get("z", 0)) or 0)
+    deadline = time.monotonic() + max(1.0, float(timeout))
+    exploring = False
+
+    def stop() -> None:
+        nonlocal exploring
+        if exploring:
+            client.transport.dispatch("cancel", {})
+            client.transport.dispatch("chat", {"message": "#stop"})
+            exploring = False
+
+    try:
+        while time.monotonic() < deadline:
+            live = client.transport.dispatch("get_state", {})
+            live_pos = live.get("block_position", live.get("position", {}))
+            current_x = float(live_pos.get("x", live.get("x", origin_x)) or origin_x)
+            current_z = float(live_pos.get("z", live.get("z", origin_z)) or origin_z)
+            distance = ((current_x - origin_x) ** 2 + (current_z - origin_z) ** 2) ** 0.5
+            if distance > float(max_distance):
+                return None
+
+            animals = _animals_of_type(client, animal_type, radius, adults_only=True)
+            positioned = [entity_position(animal) for animal in animals]
+            positioned = [value for value in positioned if value is not None]
+            if len(positioned) >= int(minimum_size):
+                stop()
+                x = round(sum(value[0] for value in positioned) / len(positioned))
+                y = round(sum(value[1] for value in positioned) / len(positioned))
+                z = round(sum(value[2] for value in positioned) / len(positioned))
+                if goto(
+                    client,
+                    x,
+                    y,
+                    z,
+                    timeout=180,
+                    check_interval=0.5,
+                    tolerance=8.0,
+                ) and count_herd(client, animal_type, radius=32) >= int(minimum_size):
+                    return (x, y, z)
+                return None
+
+            if not exploring:
+                client.transport.dispatch(
+                    "explore",
+                    {"x": int(origin_x), "z": int(origin_z)},
+                )
+                exploring = True
+            time.sleep(3.0)
+    finally:
+        stop()
+    return None
 
 
 def feed_animal(client, animal: dict, food_item: str) -> bool:
@@ -206,6 +272,9 @@ def visit_known_herd_for_loot(
     client,
     required_loot: Dict[str, int],
     animal_type: str = "cow",
+    *,
+    preserve_breeding_pair: bool = False,
+    location=None,
 ) -> bool:
     """Travel to a known distant herd and hunt it for food/leather.
 
@@ -220,7 +289,7 @@ def visit_known_herd_for_loot(
     at call time would always read zero gain, wrongly reporting "still
     missing" for loot already banked.
     """
-    location = KNOWN_HERD_WAYPOINTS.get(animal_type)
+    location = location or KNOWN_HERD_WAYPOINTS.get(animal_type)
     if location is None:
         logger.warning("No known herd waypoint for %s", animal_type)
         return False
@@ -233,7 +302,7 @@ def visit_known_herd_for_loot(
             if count_item(client, item) < target
         }
 
-    if not deficits():
+    if not deficits() and not preserve_breeding_pair:
         return True
 
     if not goto(client, lx, ly, lz, timeout=900, check_interval=0.5, tolerance=6.0):
@@ -245,16 +314,46 @@ def visit_known_herd_for_loot(
     breed_pair(client, animal_type)
 
     missing = deficits()
-    if not missing:
+    max_kills = None
+    if preserve_breeding_pair:
+        herd_size = count_herd(client, animal_type, radius=32)
+        max_kills = max(0, herd_size - 2)
+        if missing and max_kills == 0:
+            logger.warning(
+                "Known herd at %s has no safely huntable animals beyond its pair",
+                location,
+            )
+            return False
+    if missing:
+        result = hunt_mobs(
+            client,
+            mob_types=[animal_type],
+            required_loot=missing,
+            search_radius=32,
+            timeout=300,
+            heal_threshold=10.0,
+            max_distance_from_origin=48.0,
+            max_kills=max_kills,
+        )
+        if not result or not result.success:
+            return False
+
+    if not preserve_breeding_pair:
         return True
 
-    result = hunt_mobs(
-        client,
-        mob_types=[animal_type],
-        required_loot=missing,
-        search_radius=32,
-        timeout=300,
-        heal_threshold=10.0,
-        max_distance_from_origin=48.0,
-    )
-    return bool(result and result.success)
+    # Hunting can pull the player away from the waypoint. Return before
+    # counting so a remote or unloaded survivor is not mistaken for a
+    # renewable source. Two nearby adults are the minimum future breeding
+    # population; anything less is a one-shot food cache.
+    if not goto(client, lx, ly, lz, timeout=300, check_interval=0.5, tolerance=8.0):
+        return False
+    remaining = count_herd(client, animal_type, radius=32)
+    if remaining < 2:
+        logger.warning(
+            "Known herd at %s is not renewable: only %s %s remain",
+            location,
+            remaining,
+            animal_type,
+        )
+        return False
+    return True

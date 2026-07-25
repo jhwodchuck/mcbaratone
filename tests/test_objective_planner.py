@@ -111,6 +111,17 @@ class NonFatalFailureTest(unittest.TestCase):
 
 class CompletionAndResumeTest(unittest.TestCase):
 
+    def test_yield_requeues_without_consuming_attempt(self):
+        planner = ObjectivePlanner(default_objectives())
+        objective = planner.select(planner.runnable())
+        planner.mark_active(objective)
+
+        planner.mark_yielded(objective)
+
+        self.assertEqual(objective.status, ObjStatus.PENDING)
+        self.assertEqual(objective.attempts, 0)
+        self.assertIs(planner.select(planner.runnable()), objective)
+
     def test_is_complete_only_when_terminal_done(self):
         planner = ObjectivePlanner(default_objectives())
         # Complete everything except the terminal MEGABASE_INIT.

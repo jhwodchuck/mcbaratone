@@ -317,13 +317,20 @@ def test_defense_consumes_atomic_bridge_snapshot_without_split_reads():
                     },
                     "entities": [],
                 }
+            # The drowning reflex reads the head block (dry here); this is a
+            # deliberate safety read, not a split of the atomic threat snapshot.
+            if route == "get_block":
+                return {"id": "minecraft:air"}
             raise AssertionError(f"unexpected split observation: {route}")
 
     client = SimpleNamespace(transport=Transport())
 
     assert not combat.defend_or_flee(client)
+    # Threat state still comes solely from the atomic snapshot; the only
+    # additional read is the head-block check for drowning.
     assert client.transport.calls == [
-        ("get_combat_snapshot", {"radius": 16})
+        ("get_combat_snapshot", {"radius": 16}),
+        ("get_block", {"x": 0, "y": 65, "z": 0}),
     ]
 
 

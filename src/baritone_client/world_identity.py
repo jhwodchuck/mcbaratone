@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import gzip
 import json
+import struct
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping, Optional
 
 
@@ -102,3 +105,87 @@ def _clean(value: Any) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+class _NbtReader:
+    """Small, dependency-free reader for the scalar data in ``level.dat``."""
+
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.offset = 0
+
+    def take(self, size: int) -> bytes:
+        end = self.offset + size
+        if size < 0 or end > len(self.payload):
+            raise ValueError("truncated NBT payload")
+        value = self.payload[self.offset:end]
+        self.offset = end
+        return value
+
+    def unpack(self, pattern: str):
+        size = struct.calcsize(pattern)
+        return struct.unpack(pattern, self.take(size))[0]
+
+    def string(self) -> str:
+        length = self.unpack(">H")
+        return self.take(length).decode("utf-8")
+
+    def value(self, tag: int):
+        if tag == 1:
+            return self.unpack(">b")
+        if tag == 2:
+            return self.unpack(">h")
+        if tag == 3:
+            return self.unpack(">i")
+        if tag == 4:
+            return self.unpack(">q")
+        if tag == 5:
+            return self.unpack(">f")
+        if tag == 6:
+            return self.unpack(">d")
+        if tag == 7:
+            return self.take(self.unpack(">i"))
+        if tag == 8:
+            return self.string()
+        if tag == 9:
+            element_tag = self.unpack(">B")
+            length = self.unpack(">i")
+            if length < 0:
+                raise ValueError("negative NBT list length")
+            return [self.value(element_tag) for _ in range(length)]
+        if tag == 10:
+            compound = {}
+            while True:
+                child_tag = self.unpack(">B")
+                if child_tag == 0:
+                    return compound
+                child_name = self.string()
+                compound[child_name] = self.value(child_tag)
+        if tag == 11:
+            length = self.unpack(">i")
+            if length < 0:
+                raise ValueError("negative NBT int-array length")
+            return [self.unpack(">i") for _ in range(length)]
+        if tag == 12:
+            length = self.unpack(">i")
+            if length < 0:
+                raise ValueError("negative NBT long-array length")
+            return [self.unpack(">q") for _ in range(length)]
+        raise ValueError(f"unsupported NBT tag {tag}")
+
+
+def read_level_dat_seed(path: str | Path) -> Optional[int]:
+    """Read the authoritative Java-world seed from a gzipped ``level.dat``."""
+    try:
+        with gzip.open(Path(path), "rb") as handle:
+            reader = _NbtReader(handle.read())
+        if reader.unpack(">B") != 10:
+            return None
+        reader.string()  # Root compound name, normally empty.
+        root = reader.value(10)
+        data = root.get("Data", {}) if isinstance(root, Mapping) else {}
+        settings = data.get("WorldGenSettings", {}) if isinstance(data, Mapping) else {}
+        seed = settings.get("seed") if isinstance(settings, Mapping) else None
+        return int(seed) if seed is not None else None
+    except (OSError, EOFError, UnicodeDecodeError, ValueError, struct.error):
+        return None

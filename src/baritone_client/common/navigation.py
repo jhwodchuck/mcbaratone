@@ -42,16 +42,28 @@ def goto(
                 on_tick()
                 
             state = client.transport.dispatch("get_state", {})
+
+            # Central survival reflex: surface before drowning. Pathing across
+            # water is the fleet's #1 drowning scenario, and this loop is where
+            # the bot spends that time. survival_tick surfaces and cancels the
+            # path, so re-issue the goto afterward to resume toward the target.
+            from .combat import survival_tick
+
+            if survival_tick(client, state):
+                client.transport.dispatch("goto", {"x": x, "y": y, "z": z})
+                time.sleep(check_interval)
+                continue
+
             position = state.get("block_position", state.get("position", {}))
             px = position.get("x", state.get("x", 0))
             py = position.get("y", state.get("y", 0))
             pz = position.get("z", state.get("z", 0))
-            
+
             distance = ((px - x)**2 + (py - y)**2 + (pz - z)**2) ** 0.5
             if distance <= tolerance:
                 client.transport.dispatch("cancel", {})
                 return True
-            
+
             time.sleep(check_interval)
         
         client.transport.dispatch("cancel", {})
@@ -103,6 +115,15 @@ def explore_until(
             
             # Check distance from origin
             state = client.transport.dispatch("get_state", {})
+
+            # Central survival reflex: exploration wanders into open water.
+            from .combat import survival_tick
+
+            if survival_tick(client, state):
+                client.transport.dispatch("explore", {"x": origin_x, "z": origin_z})
+                time.sleep(1.0)
+                continue
+
             position = state.get("block_position", state.get("position", {}))
             px = position.get("x", state.get("x", 0))
             pz = position.get("z", state.get("z", 0))

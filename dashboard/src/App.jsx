@@ -38,6 +38,77 @@ const barColor = (pct, warn, danger) => {
   return 'fill-green';
 };
 
+function SystemOverview({ system, fleet, onScaleFleet, onUpgradeAll, scalingMsg }) {
+  const mem = system?.memory || {};
+  const cpu = system?.cpu || {};
+  const sysFleet = system?.fleet || {};
+  const activeCount = sysFleet?.active_bot_count ?? 0;
+  const loadPct = mem?.load_percent ?? 0;
+  const cpuPct = cpu?.load_percent ?? 0;
+  const latestBuiltJar = fleet?.latest_built_bridge_jar;
+  const anyUpgradeAvailable = fleet?.bots?.some((b) => b.upgrade_available);
+
+  return (
+    <section className="system-overview card">
+      <div className="server-title-row">
+        <div className="card-header font-glow" style={{ border: 'none', padding: 0, margin: 0 }}>
+          💻 System Headroom & Fleet Scaling (WFH Mode)
+        </div>
+        <div className="wfh-badge-group" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {latestBuiltJar && (
+            <div className="jar-badge">
+              <span>Latest Bridge: <strong>{latestBuiltJar}</strong></span>
+            </div>
+          )}
+          <div className="wfh-badge">
+            <span>WFH Limit: <strong>{sysFleet?.wfh_recommended_max ?? 4} Max Bots Recommended</strong></span>
+          </div>
+        </div>
+      </div>
+
+      <div className="system-metrics-grid">
+        <div className="system-metric-card">
+          <div className="metric-label"><span>CPU Utilization</span><strong>{cpuPct}%</strong></div>
+          <div className="bar-container">
+            <div className={`bar-fill ${barColor(100 - cpuPct, 50, 25)}`} style={{ width: `${cpuPct}%` }} />
+          </div>
+        </div>
+
+        <div className="system-metric-card">
+          <div className="metric-label">
+            <span>RAM Load</span>
+            <strong>{mem.used_gb || 0} / {mem.total_gb || 0} GB ({loadPct}%)</strong>
+          </div>
+          <div className="bar-container">
+            <div className={`bar-fill ${barColor(100 - loadPct, 50, 25)}`} style={{ width: `${loadPct}%` }} />
+          </div>
+          <div className="metric-sub">Free RAM: <strong>{mem.available_gb || 0} GB</strong></div>
+        </div>
+
+        <div className="scale-controls-card">
+          <div className="scale-label">
+            <span>Active Bot Count: <strong className="neon-value">{activeCount}</strong></span>
+          </div>
+          <div className="scale-button-group">
+            <button className="btn btn-secondary btn-sm" onClick={() => onScaleFleet(Math.max(0, activeCount - 1))}>- Ramp Down</button>
+            <button className="btn btn-primary btn-sm" onClick={() => onScaleFleet(activeCount + 1)}>+ Ramp Up</button>
+            <div className="preset-divider" />
+            <button className="btn btn-outline btn-xs" onClick={() => onScaleFleet(1)}>1 Bot</button>
+            <button className="btn btn-outline btn-xs" onClick={() => onScaleFleet(2)}>2 Bots (WFH Safe)</button>
+            <button className="btn btn-outline btn-xs" onClick={() => onScaleFleet(4)}>4 Bots (Full)</button>
+            {anyUpgradeAvailable && (
+              <button className="btn btn-success btn-xs" onClick={onUpgradeAll} style={{ marginLeft: 'auto' }}>
+                🚀 Roll Out Upgrade to All Bots
+              </button>
+            )}
+          </div>
+          {scalingMsg && <div className="scaling-msg">{scalingMsg}</div>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function ServerOverview({ server }) {
   const online = server?.online;
   const players = server?.player_names || [];
@@ -75,7 +146,7 @@ function ServerOverview({ server }) {
 
 // ---- fleet overview ------------------------------------------------------
 
-function BotCard({ bot, selected, onSelect }) {
+function BotCard({ bot, selected, onSelect, onToggleBot, onUpgradeBot }) {
   const health = bot.health ?? null;
   const food = bot.food ?? null;
   const healthPct = health != null ? (health / 20) * 100 : 0;
@@ -84,6 +155,8 @@ function BotCard({ bot, selected, onSelect }) {
   const running = bot.runtime_state === 'active';
   const age = bot.heartbeat_age_seconds;
   const failure = bot.current_failures?.length ? bot.current_failures[bot.current_failures.length - 1] : "";
+  const jarVer = bot.installed_bridge_version ? `v${bot.installed_bridge_version}` : "no JAR";
+  const upgradeAvail = bot.upgrade_available;
 
   return (
     <div
@@ -92,12 +165,34 @@ function BotCard({ bot, selected, onSelect }) {
     >
       <div className="bot-card-head">
         <span className="bot-card-name font-glow">{bot.bot}</span>
+        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+          <button
+            className={`btn btn-xs ${running ? 'btn-danger' : 'btn-primary'}`}
+            style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem' }}
+            onClick={(e) => { e.stopPropagation(); onToggleBot?.(bot); }}
+          >
+            {running ? 'Stop' : 'Start'}
+          </button>
+          {upgradeAvail && (
+            <button
+              className="btn btn-xs btn-success"
+              style={{ padding: '0.2rem 0.4rem', fontSize: '0.7rem' }}
+              title="New bridge JAR built! Click to upgrade."
+              onClick={(e) => { e.stopPropagation(); onUpgradeBot?.(bot); }}
+            >
+              🚀 Upgrade
+            </button>
+          )}
+        </div>
         <span className={`bot-card-status ${fresh && running ? 'ok' : (running ? 'warn' : 'stopped')}`}>
           {running ? (fresh ? 'LIVE' : 'STALE') : 'STOPPED'}
         </span>
       </div>
 
-      <div className="bot-card-phase">{bot.phase || '—'}</div>
+      <div className="bot-card-phase" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span>{bot.phase || '—'}</span>
+        <span className={`jar-ver-chip ${upgradeAvail ? 'upgrade-needed' : ''}`}>{jarVer}</span>
+      </div>
 
       <div className="bot-card-bars">
         <div className="mini-bar">
@@ -120,7 +215,7 @@ function BotCard({ bot, selected, onSelect }) {
   );
 }
 
-function FleetOverview({ fleet, selectedName, onSelect }) {
+function FleetOverview({ fleet, selectedName, onSelect, onToggleBot, onUpgradeBot }) {
   const bots = fleet?.bots || [];
   return (
     <section className="fleet-overview card">
@@ -139,7 +234,7 @@ function FleetOverview({ fleet, selectedName, onSelect }) {
       <div className="bot-card-grid">
         {bots.length === 0 && <div className="telemetry-fallback">No bots discovered yet…</div>}
         {bots.map((bot) => (
-          <BotCard key={bot.bot} bot={bot} selected={bot.bot === selectedName} onSelect={onSelect} />
+          <BotCard key={bot.bot} bot={bot} selected={bot.bot === selectedName} onSelect={onSelect} onToggleBot={onToggleBot} onUpgradeBot={onUpgradeBot} />
         ))}
       </div>
 
@@ -446,8 +541,10 @@ function BotDetail({ bot }) {
 function App() {
   const [fleet, setFleet] = useState(null);
   const [mcServer, setMcServer] = useState(null);
+  const [system, setSystem] = useState(null);
   const [selectedName, setSelectedName] = useState(null);
   const [serverError, setServerError] = useState("");
+  const [scalingMsg, setScalingMsg] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -489,6 +586,87 @@ function App() {
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const fetchSystem = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/system`);
+        const data = await res.json();
+        if (!cancelled) setSystem(data);
+      } catch {}
+    };
+    fetchSystem();
+    const interval = setInterval(fetchSystem, 4000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  const handleScaleFleet = async (targetCount) => {
+    setScalingMsg(`Scaling fleet to ${targetCount} bots…`);
+    try {
+      const res = await fetch(`${API_BASE}/api/scale`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "scale_fleet", target_count: targetCount }),
+      });
+      const data = await res.json();
+      setScalingMsg(data.message || "Done");
+      setTimeout(() => setScalingMsg(""), 5000);
+    } catch {
+      setScalingMsg("Network error scaling fleet");
+    }
+  };
+
+  const handleToggleBot = async (bot) => {
+    const botNum = parseInt(bot.bot.replace(/\D/g, ''));
+    const action = bot.runtime_state === "active" ? "stop_bot" : "start_bot";
+    setScalingMsg(`${action === "start_bot" ? "Starting" : "Stopping"} ${bot.bot}…`);
+    try {
+      const res = await fetch(`${API_BASE}/api/scale`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, bot_number: botNum }),
+      });
+      const data = await res.json();
+      setScalingMsg(data.message || "Done");
+      setTimeout(() => setScalingMsg(""), 5000);
+    } catch {
+      setScalingMsg(`Network error toggling ${bot.bot}`);
+    }
+  };
+
+  const handleUpgradeBot = async (bot) => {
+    const botNum = parseInt(bot.bot.replace(/\D/g, ''));
+    setScalingMsg(`Upgrading Bridge JAR for ${bot.bot}…`);
+    try {
+      const res = await fetch(`${API_BASE}/api/upgrade_bridge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bot_number: botNum }),
+      });
+      const data = await res.json();
+      setScalingMsg(data.message || "Done");
+      setTimeout(() => setScalingMsg(""), 6000);
+    } catch {
+      setScalingMsg(`Network error upgrading ${bot.bot}`);
+    }
+  };
+
+  const handleUpgradeAll = async () => {
+    setScalingMsg("Rolling out Bridge JAR upgrade to ALL bots…");
+    try {
+      const res = await fetch(`${API_BASE}/api/upgrade_bridge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bot_number: "all" }),
+      });
+      const data = await res.json();
+      setScalingMsg(data.message || "Done");
+      setTimeout(() => setScalingMsg(""), 8000);
+    } catch {
+      setScalingMsg("Network error upgrading all bots");
+    }
+  };
+
   const selectedBot = fleet?.bots?.find(b => b.bot === selectedName) || null;
 
   return (
@@ -511,9 +689,11 @@ function App() {
         </div>
       </header>
 
+      <SystemOverview system={system} fleet={fleet} onScaleFleet={handleScaleFleet} onUpgradeAll={handleUpgradeAll} scalingMsg={scalingMsg} />
+
       <ServerOverview server={mcServer} />
 
-      <FleetOverview fleet={fleet} selectedName={selectedName} onSelect={(b) => setSelectedName(b.bot)} />
+      <FleetOverview fleet={fleet} selectedName={selectedName} onSelect={(b) => setSelectedName(b.bot)} onToggleBot={handleToggleBot} onUpgradeBot={handleUpgradeBot} />
 
       {selectedBot
         ? <BotDetail bot={selectedBot} />

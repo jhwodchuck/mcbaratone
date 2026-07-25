@@ -26,22 +26,35 @@ import baritone_client.actions.crafting as crafting
 import baritone_client.common.combat as combat_mod
 import baritone_client.actions.initial_gathering as ig
 
-# Global patch for CraftingAction.ensure_crafting_table
-crafting.CraftingAction.ensure_crafting_table = lambda self, ctx: True
-
-# Global patches for gathering and combat utilities
-common.gather_wood = lambda client, count: True
-common.gather_stone = lambda client, count: True
-common.hunt_mobs = lambda *args, **kwargs: ActionResult.ok("Mocked hunt")
-combat_mod.hunt_mobs = lambda *args, **kwargs: ActionResult.ok("Mocked hunt")
-combat_mod.hunt_passive_mobs = lambda *args, **kwargs: ActionResult.ok("Mocked passive hunt")
-
-# Ensure these are also patched in initial_gathering just in case they were already imported
-ig.gather_wood = lambda client, count: True
-ig.gather_stone = lambda client, count: True
-ig.hunt_mobs = lambda *args, **kwargs: ActionResult.ok("Mocked hunt")
-ig.hunt_passive_mobs = lambda *args, **kwargs: ActionResult.ok("Mocked passive hunt")
+# NOTE: These gathering/combat helpers are mocked so the action tests below do
+# not perform real hunting/gathering. They are applied via an AUTOUSE FIXTURE
+# (see _mock_heavy_actions) rather than module-level assignment: assigning them
+# at import time permanently replaced the production functions for the whole
+# pytest session (import runs once, at collection), so later suites -- e.g.
+# test_combat_safety.py's real hunt_mobs tests -- silently got these stubs and
+# failed. The fixture restores every patch after each test, containing them.
 # ============================================================================
+
+
+@pytest.fixture(autouse=True)
+def _mock_heavy_actions(monkeypatch):
+    """Stub gathering/combat helpers for the action tests, restored afterwards.
+
+    raising=False mirrors the original module-level assignment, which created
+    the attribute if the module had not imported that name.
+    """
+    _hunt = lambda *a, **k: ActionResult.ok("Mocked hunt")
+    _passive = lambda *a, **k: ActionResult.ok("Mocked passive hunt")
+    monkeypatch.setattr(
+        crafting.CraftingAction, "ensure_crafting_table", lambda self, ctx: True
+    )
+    for module in (common, ig):
+        monkeypatch.setattr(module, "gather_wood", lambda client, count: True, raising=False)
+        monkeypatch.setattr(module, "gather_stone", lambda client, count: True, raising=False)
+        monkeypatch.setattr(module, "hunt_mobs", _hunt, raising=False)
+        monkeypatch.setattr(module, "hunt_passive_mobs", _passive, raising=False)
+    monkeypatch.setattr(combat_mod, "hunt_mobs", _hunt, raising=False)
+    monkeypatch.setattr(combat_mod, "hunt_passive_mobs", _passive, raising=False)
 
 @dataclass
 class ActionResult:

@@ -68,8 +68,9 @@ def safe_goto(client, x: int, y: int, z: int, timeout: float = 120.0):
         response = client.transport.dispatch("get_state", {})
         pos = response.get("block_position", response.get("position", {}))
         px = pos.get("x", response.get("x", 0))
+        py = pos.get("y", response.get("y", 0))
         pz = pos.get("z", response.get("z", 0))
-        dist_sq = (px - x) ** 2 + (pz - z) ** 2
+        dist_sq = (px - x) ** 2 + (py - y) ** 2 + (pz - z) ** 2
         if dist_sq < 4:  # Within 2 blocks
             return True
 

@@ -63,6 +63,7 @@ def test_catalog_replaces_stale_slot_snapshot(tmp_path):
 
     assert catalog.find_item("minecraft:cobblestone")[0]["count"] == 20
     assert catalog.find_item("minecraft:iron_ingot") == []
+    assert catalog.inventory_totals() == {"minecraft:cobblestone": 20}
     container = catalog.list_containers()[0]
     assert container["capacity_slots"] == 27
     assert container["occupied_slots"] == 1
@@ -135,3 +136,33 @@ def test_checkpoint_landmarks_seed_without_claiming_inventory(tmp_path):
         (20, 70, -5),
     }
     assert all(row["last_inventory_scan"] is None for row in containers)
+
+
+def test_missing_container_is_hidden_and_not_revived_by_checkpoint_seed(tmp_path):
+    state = _State(tmp_path)
+    state.custom_data = {
+        "locations": {
+            "chest": [
+                {"x": 3, "y": 65, "z": 8, "dimension": "overworld"}
+            ]
+        }
+    }
+    seed_from_state(_Client(), state)
+    catalog = catalog_for(_Client(), state)
+    catalog.observe_inventory(
+        (3, 65, 8),
+        [_slot(0, "minecraft:bread", 8)],
+        dimension="minecraft:overworld",
+        capacity_slots=27,
+    )
+    catalog.mark_missing((3, 65, 8), dimension="minecraft:overworld")
+
+    assert catalog.list_containers() == []
+    assert catalog.find_item("minecraft:bread") == []
+    assert catalog.item_count("minecraft:bread") == 0
+    assert catalog.inventory_totals() == {}
+
+    # Restart seeding imports the checkpoint landmark as merely ``known``;
+    # that must not override stronger live evidence that the chest is gone.
+    seed_from_state(_Client(), state)
+    assert catalog.list_containers() == []

@@ -1,8 +1,11 @@
 import inspect
 from types import SimpleNamespace
 
+import pytest
+
 from baritone_client.automator.phases import iron_age
 from baritone_client.common import resources
+from baritone_client.common.tasks import SurvivalRecoveryRequired
 
 
 def test_iron_phase_stabilizes_low_hunger_before_mining(monkeypatch):
@@ -22,6 +25,52 @@ def test_iron_phase_stabilizes_low_hunger_before_mining(monkeypatch):
 
     assert iron_age.FoodAndIronHandler()._stabilize_hunger(client)
     assert calls == [12]
+
+
+def test_iron_phase_checks_cataloged_food_before_hunting(monkeypatch):
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = SimpleNamespace(custom_data={}, checkpoint_dir="test-run")
+    calls = []
+    monkeypatch.setattr(
+        iron_age,
+        "withdraw_required_from_catalog",
+        lambda _client, requirements, state=None, max_travel_distance=None: calls.append(
+            (requirements, max_travel_distance)
+        )
+        or 1,
+    )
+    monkeypatch.setattr(
+        iron_age,
+        "eat_until_hunger",
+        lambda _client, minimum_food: minimum_food == 12,
+    )
+
+    assert handler._recover_food_from_known_sources(SimpleNamespace())
+    assert calls and calls[0][0]["minecraft:bread"] == 8
+    assert calls[0][1] == 96.0
+
+
+def test_expedition_pickaxe_restores_banked_iron_tool(monkeypatch):
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = SimpleNamespace(custom_data={}, checkpoint_dir="test-run")
+    durability = {"value": 0}
+    withdrawals = []
+    monkeypatch.setattr(
+        iron_age,
+        "remaining_pickaxe_durability",
+        lambda _client, _items: durability["value"],
+    )
+
+    def withdraw(_client, requirements, state=None, **_kwargs):
+        withdrawals.append(requirements)
+        if "minecraft:iron_pickaxe" in requirements:
+            durability["value"] = 200
+        return 1
+
+    monkeypatch.setattr(iron_age, "withdraw_required_from_catalog", withdraw)
+
+    assert handler._ensure_expedition_pickaxe(SimpleNamespace())
+    assert withdrawals == [{"minecraft:iron_pickaxe": 1}]
 
 
 def test_iron_phase_resume_counts_existing_ingots_before_mining(monkeypatch):
@@ -85,7 +134,45 @@ def test_iron_phase_holds_when_health_recovery_stays_critical(monkeypatch):
     monkeypatch.setattr(iron_age, "recover_health", lambda *_a, **_k: False)
     monkeypatch.setattr(iron_age, "acquire_emergency_food", lambda *_a, **_k: False)
 
-    assert iron_age.FoodAndIronHandler()._stabilize_hunger(client) is False
+    with pytest.raises(SurvivalRecoveryRequired):
+        iron_age.FoodAndIronHandler()._stabilize_hunger(client)
+
+
+def test_armored_critical_recovery_tries_known_herd_before_blind_search(
+    monkeypatch,
+):
+    class Transport:
+        def __init__(self):
+            self.health = 3.5
+            self.food = 10
+
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                return {"health": self.health, "food_level": self.food}
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    handler = iron_age.FoodAndIronHandler()
+    order = []
+    monkeypatch.setattr(iron_age, "has_full_armor", lambda *_a, **_k: True)
+    monkeypatch.setattr(iron_age, "recover_health", lambda *_a, **_k: False)
+
+    def known(_client):
+        order.append("known")
+        transport.health = 12.0
+        transport.food = 12
+        return True
+
+    monkeypatch.setattr(handler, "_recover_food_from_known_sources", known)
+    monkeypatch.setattr(
+        iron_age,
+        "acquire_emergency_food",
+        lambda *_a, **_k: order.append("blind") or False,
+    )
+
+    assert handler._stabilize_hunger(client)
+    assert order == ["known"]
 
 
 def test_iron_phase_skips_hunt_on_minimum_food(monkeypatch):
@@ -263,8 +350,8 @@ def test_mine_initial_iron_withdraws_owned_supplies_before_mining(monkeypatch):
     def count_item(_client, item_id):
         return counts.get(item_id, 0)
 
-    def withdraw_required(_client, chest_pos, requirements):
-        captured_withdrawals.append((tuple(chest_pos), dict(requirements)))
+    def withdraw_required(_client, requirements, state=None):
+        captured_withdrawals.append(dict(requirements))
         if "minecraft:raw_iron" in requirements:
             need = max(0, 15 - (counts["minecraft:iron_ingot"] + counts["minecraft:raw_iron"]))
             counts["minecraft:raw_iron"] = min(64, counts["minecraft:raw_iron"] + min(requirements["minecraft:raw_iron"], need))
@@ -280,7 +367,7 @@ def test_mine_initial_iron_withdraws_owned_supplies_before_mining(monkeypatch):
         custom_data={"structures": {"starter_house": {"supply_chest": (-524, 66, 665)}}}
     )
     monkeypatch.setattr(iron_age, "count_item", count_item)
-    monkeypatch.setattr(iron_age, "withdraw_required_from_chest", withdraw_required)
+    monkeypatch.setattr(iron_age, "withdraw_required_from_catalog", withdraw_required)
     monkeypatch.setattr(
         iron_age,
         "gather_ores",
@@ -289,9 +376,7 @@ def test_mine_initial_iron_withdraws_owned_supplies_before_mining(monkeypatch):
 
     assert handler._mine_initial_iron(client)
     assert not gathered
-    assert captured_withdrawals == [
-        ((-524, 66, 665), {"minecraft:raw_iron": 15}),
-    ]
+    assert captured_withdrawals == [{"minecraft:raw_iron": 15}]
 
 
 def test_mine_initial_iron_uses_checkpointed_chest_not_arbitrary_nearby_locations(monkeypatch):
@@ -307,8 +392,8 @@ def test_mine_initial_iron_uses_checkpointed_chest_not_arbitrary_nearby_location
     def count_item(_client, item_id):
         return counts.get(item_id, 0)
 
-    def withdraw_required(_client, chest_pos, requirements):
-        captured_withdrawals.append((tuple(chest_pos), dict(requirements)))
+    def withdraw_required(_client, requirements, state=None):
+        captured_withdrawals.append(dict(requirements))
         for item_id, needed in requirements.items():
             counts[item_id] = max(
                 count_item(_client, item_id), counts.get(item_id, 0) + needed
@@ -327,7 +412,7 @@ def test_mine_initial_iron_uses_checkpointed_chest_not_arbitrary_nearby_location
         ),
     )
     monkeypatch.setattr(iron_age, "count_item", count_item)
-    monkeypatch.setattr(iron_age, "withdraw_required_from_chest", withdraw_required)
+    monkeypatch.setattr(iron_age, "withdraw_required_from_catalog", withdraw_required)
     monkeypatch.setattr(
         resources,
         "gather_ores",
@@ -335,7 +420,7 @@ def test_mine_initial_iron_uses_checkpointed_chest_not_arbitrary_nearby_location
     )
 
     assert handler._mine_initial_iron(client)
-    assert captured_withdrawals == [((-523, 66, 665), {"minecraft:raw_iron": 1})]
+    assert captured_withdrawals == [{"minecraft:raw_iron": 1}]
 
 
 def test_mine_initial_iron_shortfall_transitions_once_and_retries(monkeypatch):
@@ -797,6 +882,67 @@ def test_completed_diamond_and_iron_gear_skip_all_deep_mining(monkeypatch):
     assert handler._bulk_mine(client)
 
 
+def test_return_to_base_prefers_verified_storage_over_stale_house_chest(monkeypatch):
+    client = SimpleNamespace()
+    state = SimpleNamespace(
+        custom_data={
+            "structures": {
+                "starter_house": {
+                    "origin": [-142, 65, 84],
+                    "supply_chest": [-141, 66, 86],
+                }
+            }
+        }
+    )
+    handler = iron_age.FoodAndIronHandler()
+    monkeypatch.setattr(
+        handler,
+        "_resolve_initial_iron_supply_chest",
+        lambda _client, _state: (-40, 69, 28),
+    )
+    destinations = []
+    monkeypatch.setattr(
+        iron_age,
+        "goto",
+        lambda _client, x, y, z, **_kwargs: destinations.append((x, y, z))
+        or True,
+    )
+
+    assert handler._return_to_base(client, state)
+    assert destinations == [(-40, 69, 28)]
+
+
+def test_return_to_base_accepts_verified_operational_chest_in_interaction_range(
+    monkeypatch,
+):
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                return {"block_position": {"x": -39, "y": 66, "z": 26}}
+            if route == "get_block":
+                assert (payload["x"], payload["y"], payload["z"]) == (-40, 69, 28)
+                return {"id": "minecraft:chest"}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    state = SimpleNamespace(
+        custom_data={
+            "structures": {
+                "starter_house": {"supply_chest": [-141, 66, 86]}
+            }
+        }
+    )
+    handler = iron_age.FoodAndIronHandler()
+    monkeypatch.setattr(
+        handler,
+        "_resolve_initial_iron_supply_chest",
+        lambda _client, _state: (-40, 69, 28),
+    )
+    monkeypatch.setattr(iron_age, "goto", lambda *_args, **_kwargs: False)
+
+    assert handler._return_to_base(client, state)
+
+
 def test_return_to_base_uses_checkpointed_house_not_mutable_waypoint(monkeypatch):
     class Transport:
         def dispatch(self, route, _payload):
@@ -1029,6 +1175,66 @@ def test_armor_phase_fails_closed_until_full_set_is_equipped(monkeypatch):
     assert not iron_age.FoodAndIronHandler()._equip_iron_armor(client)
 
 
+def test_affordable_armor_is_equipped_before_deep_descent(monkeypatch):
+    handler = iron_age.FoodAndIronHandler()
+    client = SimpleNamespace()
+    calls = []
+    monkeypatch.setattr(iron_age, "has_full_armor", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(handler, "_read_state", lambda *_args: {"health": 20})
+    monkeypatch.setattr(
+        iron_age,
+        "count_item",
+        lambda _client, item_id: 24 if item_id == "minecraft:iron_ingot" else 0,
+    )
+    monkeypatch.setattr(
+        handler,
+        "_craft_iron_armor",
+        lambda _client: calls.append("craft") or True,
+    )
+    monkeypatch.setattr(
+        handler,
+        "_equip_iron_armor",
+        lambda _client: calls.append("equip") or True,
+    )
+
+    assert handler._equip_affordable_pre_descent_armor(client)
+    assert calls == ["craft", "equip"]
+
+
+def test_critical_health_armor_uses_stationary_crafting(monkeypatch):
+    handler = iron_age.FoodAndIronHandler()
+    handler._cached_state = {"health": 3.5}
+    client = SimpleNamespace()
+    crafted = []
+    monkeypatch.setattr(iron_age, "has_full_armor", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(handler, "_read_state", lambda *_args: {"health": 3.5})
+    monkeypatch.setattr(
+        iron_age,
+        "count_item",
+        lambda _client, item_id: 34 if item_id == "minecraft:iron_ingot" else 0,
+    )
+    monkeypatch.setattr(
+        handler,
+        "_ensure_mining_workstation",
+        lambda _client: True,
+    )
+    monkeypatch.setattr(iron_age, "_ensure_raw_planks", lambda *_args: True)
+    monkeypatch.setattr(
+        iron_age,
+        "_craft_with_table",
+        lambda _client, item_id, count: crafted.append((item_id, count)) or True,
+    )
+    monkeypatch.setattr(handler, "_equip_iron_armor", lambda _client: True)
+
+    assert handler._equip_affordable_pre_descent_armor(client)
+    assert [item_id for item_id, _count in crafted] == [
+        "minecraft:iron_helmet",
+        "minecraft:iron_chestplate",
+        "minecraft:iron_leggings",
+        "minecraft:iron_boots",
+    ]
+
+
 def test_initial_pickaxe_is_skipped_when_iron_target_is_already_carried(monkeypatch):
     counts = {"minecraft:iron_ingot": 15}
     handler = iron_age.FoodAndIronHandler()
@@ -1051,6 +1257,29 @@ def test_initial_pickaxe_is_skipped_when_iron_target_is_already_carried(monkeypa
     )
 
     assert handler._ensure_initial_mining_pickaxe(SimpleNamespace())
+
+
+def test_phase_retry_rechecks_initial_iron_storage(monkeypatch):
+    handler = iron_age.FoodAndIronHandler()
+    handler._initial_iron_supplies_withdrawn = True
+    observed = []
+
+    class CapturingSequence:
+        def __init__(self, _name, _tasks):
+            pass
+
+        def run(self, _client):
+            observed.append(handler._initial_iron_supplies_withdrawn)
+            return True
+
+    monkeypatch.setattr(iron_age, "SequentialTask", CapturingSequence)
+
+    assert handler.execute(
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+    assert observed == [False]
 
 
 def test_initial_pickaxe_gathers_wood_once_after_bounded_craft_failure(monkeypatch):
@@ -1076,11 +1305,14 @@ def test_initial_pickaxe_gathers_wood_once_after_bounded_craft_failure(monkeypat
     )
 
     assert handler._ensure_initial_mining_pickaxe(SimpleNamespace())
+    # The first craft attempt is intentionally short (fail fast when wood
+    # dependencies are absent instead of idling two minutes every phase
+    # retry); a small wood reserve is gathered, then one longer retry runs.
     assert attempts == [
-        ({"minecraft:stone_pickaxe": 1}, 120),
-        ({"minecraft:stone_pickaxe": 1}, 120),
+        ({"minecraft:stone_pickaxe": 1}, 30),
+        ({"minecraft:stone_pickaxe": 1}, 60),
     ]
-    assert wood == [(4, 180)]
+    assert wood == [(2, 90)]
 
 
 def test_initial_smelt_defers_carried_raw_iron_when_deep_kit_exists(monkeypatch):
@@ -1094,6 +1326,9 @@ def test_initial_smelt_defers_carried_raw_iron_when_deep_kit_exists(monkeypatch)
         iron_age,
         "count_item",
         lambda _client, item_id: counts.get(item_id, 0),
+    )
+    monkeypatch.setattr(
+        iron_age, "remaining_pickaxe_durability", lambda *_args, **_kwargs: 250
     )
     monkeypatch.setattr(
         iron_age,
@@ -1416,8 +1651,7 @@ def test_stabilize_hunger_falls_back_to_farm_when_local_search_fails(monkeypatch
 
 
 def test_stabilize_hunger_falls_back_to_known_herd_when_no_farm_established(monkeypatch):
-    """With no wheat farm yet established, the fallback must go straight to
-    the operator-known herd instead of erroring on a missing farm."""
+    """A verified persisted herd is reusable when no farm is established."""
     class Transport:
         def dispatch(self, route, _payload):
             if route == "get_state":
@@ -1426,7 +1660,16 @@ def test_stabilize_hunger_falls_back_to_known_herd_when_no_farm_established(monk
 
     client = SimpleNamespace(transport=Transport())
     handler = iron_age.FoodAndIronHandler()
-    handler.state = SimpleNamespace(custom_data={})
+    handler.state = SimpleNamespace(
+        custom_data={
+            "structures": {
+                "food_source": {
+                    "location": [30, 70, 40],
+                    "verified": True,
+                }
+            }
+        }
+    )
 
     visited = []
     fed_by_herd = {"v": False}
@@ -1434,8 +1677,8 @@ def test_stabilize_hunger_falls_back_to_known_herd_when_no_farm_established(monk
     def eat_until_hunger_stub(_client, minimum_food):
         return fed_by_herd["v"]
 
-    def visit_herd(_client, required_loot, animal_type):
-        visited.append((dict(required_loot), animal_type))
+    def visit_herd(_client, required_loot, animal_type, **kwargs):
+        visited.append((dict(required_loot), animal_type, kwargs))
         fed_by_herd["v"] = True
         return True
 
@@ -1450,7 +1693,68 @@ def test_stabilize_hunger_falls_back_to_known_herd_when_no_farm_established(monk
     monkeypatch.setattr(iron_age, "visit_known_herd_for_loot", visit_herd)
 
     assert handler._stabilize_hunger(client) is True
-    assert visited == [({"minecraft:beef": 3}, "cow")]
+    assert visited == [
+        (
+            {"minecraft:beef": 3},
+            "cow",
+            {"preserve_breeding_pair": True, "location": [30, 70, 40]},
+        )
+    ]
+
+
+def test_y_descent_yields_instead_of_mining_at_critical_health(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "block_position": {"x": 10, "y": 30, "z": 5},
+                    "health": 6,
+                    "food_level": 16,
+                }
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    monkeypatch.setattr(
+        "baritone_client.common.combat.recover_health",
+        lambda *_args, **_kwargs: False,
+    )
+
+    with pytest.raises(SurvivalRecoveryRequired):
+        resources.go_to_y_level(client, -58, timeout=10)
+
+    routes = [route for route, _payload in client.transport.calls]
+    assert "cancel" in routes
+    assert "break_block" not in routes
+
+
+def test_ensure_supplies_yields_before_handler_at_critical_health(monkeypatch):
+    calls = []
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            calls.append(route)
+            if route == "get_state":
+                return {"health": 2.5, "food_level": 16}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    monkeypatch.setattr(resources, "_missing_requirements", lambda *_a: {"x": 1})
+    monkeypatch.setattr(
+        "baritone_client.common.combat.recover_health",
+        lambda *_args, **_kwargs: False,
+    )
+    handlers = {
+        "x": lambda *_a: (_ for _ in ()).throw(AssertionError("unsafe handler"))
+    }
+
+    with pytest.raises(SurvivalRecoveryRequired):
+        resources.ensure_supplies(client, {"x": 1}, strategies=handlers)
+
+    assert "cancel" in calls
 
 
 def test_stabilize_hunger_still_degrades_when_farm_and_herd_both_fail(monkeypatch):
@@ -1472,5 +1776,244 @@ def test_stabilize_hunger_still_degrades_when_farm_and_herd_both_fail(monkeypatc
 
     # food_level (3) is below safe_hunger_floor (6), so it must fail closed
     # until the failure counter reaches its threshold.
-    assert handler._stabilize_hunger(client) is False
+    with pytest.raises(SurvivalRecoveryRequired):
+        handler._stabilize_hunger(client)
     assert handler._stabilize_hunger_failures == 1
+
+
+def test_stabilize_hunger_health_branch_falls_back_to_known_sources(monkeypatch):
+    """A critically low-health bot whose local emergency search fails must try
+    the persisted farm/herd before yielding, not starve in place. Confirmed
+    live: Bot10 died here because the health-critical branch never consulted
+    the known food sources the hunger branch below already uses."""
+    fed = {"v": False}
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                # Health only recovers once the farm harvest + eat has run.
+                return {
+                    "health": 20.0 if fed["v"] else 6.0,
+                    "food_level": 20 if fed["v"] else 5,
+                }
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = SimpleNamespace(
+        custom_data={"wheat_farm": {"origin": [10, 70, 20]}}
+    )
+
+    harvested = []
+
+    def harvest_then_allow_regen(_c, x, y, z):
+        harvested.append((x, y, z))
+        fed["v"] = True
+        return True
+
+    # recover_health cannot restore health with no carried food; only the
+    # farm harvest + eat below makes natural regen (and thus recovery) possible.
+    monkeypatch.setattr(iron_age, "recover_health", lambda *_a, **_k: fed["v"])
+    monkeypatch.setattr(iron_age, "acquire_emergency_food", lambda *_a, **_k: False)
+    monkeypatch.setattr(iron_age, "harvest_wheat_farm", harvest_then_allow_regen)
+    monkeypatch.setattr(iron_age, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        iron_age,
+        "visit_known_herd_for_loot",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("farm already restored health; no herd trip needed")
+        ),
+    )
+
+    assert handler._stabilize_hunger(client) is True
+    assert harvested == [(10, 70, 20)]
+    assert handler._stabilize_hunger_failures == 0
+
+
+def test_stabilize_hunger_health_branch_still_yields_when_no_food_source(monkeypatch):
+    """With no farm/herd and a failed local search, the critically low-health
+    bot must still yield for survival recovery (unchanged safety behavior)."""
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                return {"health": 6.0, "food_level": 5}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = SimpleNamespace(custom_data={})
+
+    monkeypatch.setattr(iron_age, "recover_health", lambda *_a, **_k: False)
+    monkeypatch.setattr(iron_age, "acquire_emergency_food", lambda *_a, **_k: False)
+    monkeypatch.setattr(iron_age, "harvest_wheat_farm", lambda *_a, **_k: False)
+    monkeypatch.setattr(iron_age, "visit_known_herd_for_loot", lambda *_a, **_k: False)
+    monkeypatch.setattr(iron_age, "eat_until_hunger", lambda *_a, **_k: False)
+
+    with pytest.raises(SurvivalRecoveryRequired):
+        handler._stabilize_hunger(client)
+
+
+def test_stabilize_hunger_does_not_release_worker_at_food_ten(monkeypatch):
+    """Gatherers stop at food <= 10, so the phase must not claim readiness."""
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                return {"health": 20.0, "food_level": 10}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = SimpleNamespace(custom_data={})
+    monkeypatch.setattr(iron_age, "eat_until_hunger", lambda *_a, **_k: False)
+    monkeypatch.setattr(iron_age, "visit_known_herd_for_loot", lambda *_a, **_k: False)
+    monkeypatch.setattr(iron_age, "acquire_emergency_food", lambda *_a, **_k: False)
+
+    with pytest.raises(SurvivalRecoveryRequired):
+        handler._stabilize_hunger(client)
+    assert handler._stabilize_hunger_failures == 1
+
+
+def test_durable_food_persists_only_verified_renewable_source(monkeypatch):
+    class FakeState:
+        def __init__(self):
+            self.custom_data = {}
+            self.locations = []
+
+        def add_location(self, category, x, y, z, **kwargs):
+            self.locations.append((category, x, y, z, kwargs))
+
+    client = SimpleNamespace()
+    state = FakeState()
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = state
+    monkeypatch.setattr(iron_age, "discover_herd", lambda *_a, **_k: (40, 70, 50))
+    monkeypatch.setattr(
+        iron_age,
+        "count_item",
+        lambda _client, item: 16 if item == "minecraft:cooked_beef" else 0,
+    )
+    verified = []
+
+    def verify_source(_client, required_loot, animal_type, **kwargs):
+        verified.append((required_loot, animal_type, kwargs))
+        return True
+
+    monkeypatch.setattr(iron_age, "visit_known_herd_for_loot", verify_source)
+
+    assert handler._ensure_durable_food(client) is True
+    assert verified == [
+        (
+            {},
+            "cow",
+            {"preserve_breeding_pair": True, "location": (40, 70, 50)},
+        )
+    ]
+    assert state.custom_data["structures"]["food_source"]["verified"] is True
+    assert state.locations[0][0] == "farm"
+
+
+def test_observed_food_group_persists_generalized_renewable_source():
+    class FakeState:
+        def __init__(self):
+            self.custom_data = {}
+            self.locations = []
+
+        def add_location(self, category, x, y, z, **kwargs):
+            self.locations.append((category, x, y, z, kwargs))
+
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = FakeState()
+    handler._remember_renewable_food_source("chicken", (12, 70, -4))
+
+    source = handler.state.custom_data["structures"]["food_source"]
+    assert source["animal_type"] == "chicken"
+    assert source["raw_item"] == "minecraft:chicken"
+    assert source["cooked_item"] == "minecraft:cooked_chicken"
+    assert source["verified"] is True
+    assert "observed" in handler.state.locations[0][4]["tags"]
+
+
+def test_initial_smelting_targets_only_starter_kit(monkeypatch):
+    inventory = {
+        "minecraft:raw_iron": 15,
+        "minecraft:iron_ingot": 0,
+        "minecraft:furnace": 1,
+    }
+    requested = []
+    monkeypatch.setattr(
+        iron_age,
+        "count_item",
+        lambda _client, item_id: inventory.get(item_id, 0),
+    )
+    monkeypatch.setattr(iron_age, "find_nearby_block", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        iron_age,
+        "ensure_supplies",
+        lambda _client, requirements, **_kwargs: (
+            requested.append(dict(requirements))
+            or SimpleNamespace(success=True)
+        ),
+    )
+
+    assert iron_age.FoodAndIronHandler()._smelt_iron(SimpleNamespace())
+
+
+def test_initial_smelt_does_not_defer_raw_iron_for_nearly_broken_pick(monkeypatch):
+    counts = {
+        "minecraft:iron_ingot": 0,
+        "minecraft:raw_iron": 16,
+        "minecraft:iron_pickaxe": 1,
+        "minecraft:bucket": 1,
+        "minecraft:furnace": 1,
+    }
+    requested = []
+    monkeypatch.setattr(
+        iron_age, "count_item", lambda _client, item_id: counts.get(item_id, 0)
+    )
+    monkeypatch.setattr(
+        iron_age, "remaining_pickaxe_durability", lambda *_args, **_kwargs: 59
+    )
+    monkeypatch.setattr(iron_age, "find_nearby_block", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        iron_age,
+        "ensure_supplies",
+        lambda _client, requirements, **_kwargs: (
+            requested.append(dict(requirements)) or SimpleNamespace(success=True)
+        ),
+    )
+
+    assert iron_age.FoodAndIronHandler()._smelt_iron(SimpleNamespace())
+    assert requested == [{"minecraft:iron_ingot": 6}]
+    assert requested == [{"minecraft:iron_ingot": 6}]
+
+
+def test_loaded_furnace_starter_batch_unblocks_initial_smelting(monkeypatch):
+    inventory = {"minecraft:raw_iron": 0, "minecraft:iron_ingot": 0}
+    furnace_pos = (1, 64, 1)
+    monkeypatch.setattr(
+        iron_age,
+        "count_item",
+        lambda _client, item_id: inventory.get(item_id, 0),
+    )
+    monkeypatch.setattr(
+        iron_age,
+        "find_nearby_block",
+        lambda *_args, **_kwargs: furnace_pos,
+    )
+
+    def resume(*_args, **kwargs):
+        assert kwargs["minimum_output"] == 6
+        assert kwargs["timeout"] == 120.0
+        inventory["minecraft:iron_ingot"] = 6
+        return True
+
+    monkeypatch.setattr(iron_age, "resume_active_furnace", resume)
+    monkeypatch.setattr(
+        iron_age,
+        "ensure_supplies",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("starter batch should already satisfy initial smelting")
+        ),
+    )
+
+    assert iron_age.FoodAndIronHandler()._smelt_iron(SimpleNamespace())

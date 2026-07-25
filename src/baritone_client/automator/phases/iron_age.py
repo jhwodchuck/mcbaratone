@@ -32,6 +32,7 @@ from ...common.inventory import (
     free_inventory_slots,
     has_full_armor,
     resolve_storage_location,
+    withdraw_required_from_catalog,
     withdraw_required_from_chest,
 )
 from ...common.navigation import find_nearby_block, goto
@@ -280,18 +281,43 @@ class FoodAndIronHandler(PhaseHandler):
         result = ensure_supplies(
             client,
             {"minecraft:stone_pickaxe": 1},
-            timeout=120,
+            timeout=30,
         )
         if result.success:
             return True
 
+        if self.state is not None:
+            withdraw_required_from_catalog(
+                client,
+                {
+                    "minecraft:stone_pickaxe": 1,
+                    "minecraft:wooden_pickaxe": 1,
+                    "minecraft:stick": 4,
+                    "minecraft:oak_planks": 8,
+                    "minecraft:spruce_planks": 8,
+                    "minecraft:birch_planks": 8,
+                    "minecraft:oak_log": 2,
+                    "minecraft:spruce_log": 2,
+                    "minecraft:birch_log": 2,
+                    "minecraft:cobblestone": 3,
+                },
+                state=self.state,
+            )
+            result = ensure_supplies(
+                client,
+                {"minecraft:stone_pickaxe": 1},
+                timeout=30,
+            )
+            if result.success:
+                return True
+
         print("  Pickaxe craft lacked usable dependencies; gathering a wood reserve...")
-        if not gather_wood(client, count=4, timeout=180):
+        if not gather_wood(client, count=4, timeout=90):
             return False
         return ensure_supplies(
             client,
             {"minecraft:stone_pickaxe": 1},
-            timeout=120,
+            timeout=60,
         ).success
 
     def _dig_staircase(self, client) -> bool:

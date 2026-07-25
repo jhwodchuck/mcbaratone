@@ -29,7 +29,11 @@ from .combat import attack_nearest, safe_combat, heal_if_needed, hunt_passive_mo
 from .tasks import Task, TaskResult, SequentialTask, RetryTask, ActionTask
 from .nether import (
     build_nether_portal,
+    enter_portal,
     enter_nether_portal,
+    ignite_portal,
+    verify_portal,
+    find_nearest_portal,
     find_nether_fortress,
     hunt_blazes,
     hunt_endermen,
@@ -128,7 +132,11 @@ __all__ = [
     "LambdaTask",
     # Nether
     "build_nether_portal",
+    "enter_portal",
     "enter_nether_portal",
+    "ignite_portal",
+    "verify_portal",
+    "find_nearest_portal",
     "find_nether_fortress",
     "hunt_blazes",
     "hunt_endermen",

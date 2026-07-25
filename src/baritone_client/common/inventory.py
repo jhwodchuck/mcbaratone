@@ -10,6 +10,23 @@ logger = logging.getLogger(__name__)
 
 _last_inventory: Dict[str, int] = {}
 
+
+def reset_inventory_cache() -> None:
+    """Discard the last-known inventory snapshot.
+
+    ``get_inventory`` falls back to ``_last_inventory`` when the bridge read
+    fails.  Across a death that fallback is actively dangerous: the player
+    drops its whole inventory on death, so a stale snapshot still lists tools
+    the bot no longer has.  A failed post-respawn read then reports a phantom
+    pickaxe, ``_ensure_mining_pickaxe`` believes it is equipped, never
+    recrafts, and the naked bot loops forever trying to mine with nothing.
+    Clearing the cache on respawn makes a failed read fail safe -- "assume no
+    tools", which triggers a recraft -- instead of hallucinating dropped gear.
+    """
+    global _last_inventory
+    _last_inventory = {}
+
+
 def get_inventory(client) -> Dict[str, int]:
     """
     Get aggregated inventory counts.
@@ -570,6 +587,13 @@ _MANUAL_GRID_RECIPES: Dict[str, Dict] = {
             ("minecraft:ender_pearl", 2),
         ],
     },
+    "minecraft:shulker_box": {
+        "placements": [
+            ("minecraft:shulker_shell", 2),
+            ("minecraft:chest", 5),
+            ("minecraft:shulker_shell", 8),
+        ],
+    },
     "minecraft:bow": {
         "placements": [
             ("minecraft:stick", 2),
@@ -888,6 +912,7 @@ def resolve_storage_location(
     if legacy_position is not None and legacy_position not in candidates:
         candidates.append(legacy_position)
 
+    unloaded_candidate = None
     for position in candidates:
         if not verify:
             return position
@@ -907,10 +932,24 @@ def resolve_storage_location(
         # the stronger open-container verification.
         if block_id == "minecraft:void_air":
             print(f"STORAGE: saved chest at {position} is in an unloaded chunk; retaining landmark")
-            return position
+            if unloaded_candidate is None:
+                unloaded_candidate = position
+            continue
         print(f"STORAGE: ignoring stale saved location {position} ({block_id or 'unknown'})")
+        try:
+            from .storage_catalog import catalog_for
 
-    return None
+            dimension = client.transport.dispatch("get_state", {}).get(
+                "dimension", "minecraft:overworld"
+            )
+            catalog_for(client, state).mark_missing(
+                position,
+                dimension=str(dimension),
+            )
+        except Exception as exc:
+            print(f"STORAGE: missing-container catalog update deferred ({exc})")
+
+    return unloaded_candidate
 
 
 def persist_storage_location(client, chest_pos, state=None) -> bool:
@@ -1060,7 +1099,7 @@ PROGRESSION_BANK_ITEMS = EARLY_GAME_EXCESS_ITEMS | {
     "minecraft:lapis_lazuli",
     "minecraft:obsidian",
     "minecraft:ender_pearl",
-    "minecraft:eye_of_ender",
+    "minecraft:ender_eye",
     "minecraft:blaze_rod",
     "minecraft:blaze_powder",
     "minecraft:coal",
@@ -1488,6 +1527,162 @@ def withdraw_required_from_chest(
         return moved
     finally:
         client.transport.dispatch("close_screen", {})
+
+
+def withdraw_required_from_catalog(
+    client,
+    requirements: Dict[str, int],
+    *,
+    state=None,
+    max_containers: int = 8,
+    max_snapshot_age: float = 300.0,
+    max_travel_distance: Optional[float] = None,
+) -> int:
+    """Find and withdraw required items across known storage containers.
+
+    Fresh catalog hits are tried first.  Containers whose contents have not
+    yet been observed are then inspected so checkpoint-imported landmarks can
+    become useful without claiming that their contents are known.  Every open
+    updates the catalog through :func:`withdraw_required_from_chest`.
+
+    Returns the number of moved stacks, ``0`` when nothing needs moving, and
+    ``-1`` when no known container could be reached and opened.
+    """
+    from . import harness_ops
+    from .storage_catalog import catalog_for
+
+    outstanding = {
+        item_id: max(0, int(required) - count_item(client, item_id))
+        for item_id, required in requirements.items()
+    }
+    outstanding = {item_id: count for item_id, count in outstanding.items() if count}
+    if not outstanding:
+        return 0
+
+    try:
+        catalog = catalog_for(client, state)
+        live_state = client.transport.dispatch("get_state", {})
+        current_dimension = str(live_state.get("dimension", "minecraft:overworld"))
+        current_position = live_state.get("block_position", {})
+    except Exception as exc:
+        print(f"STORAGE: catalog lookup unavailable ({exc})")
+        return -1
+
+    candidates = []
+    seen = set()
+
+    def add_candidate(entry) -> None:
+        if str(entry.get("dimension", current_dimension)) != current_dimension:
+            return
+        try:
+            position = (
+                int(entry["x"]),
+                int(entry["y"]),
+                int(entry["z"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return
+        if position not in seen:
+            seen.add(position)
+            candidates.append(position)
+
+    # Prefer containers last observed with a requested item.  A single chest
+    # may satisfy several items, hence the de-duplication above.
+    for item_id in outstanding:
+        for entry in catalog.find_item(item_id):
+            add_candidate(entry)
+    now = time.time()
+    for entry in catalog.list_containers():
+        last_scan = entry.get("last_inventory_scan")
+        # A recent complete snapshot with no requested item is authoritative
+        # negative knowledge. Reinspect unscanned/stale containers, while item
+        # hits above remain eligible regardless of snapshot age.
+        if last_scan is not None:
+            try:
+                if now - float(last_scan) <= max(0.0, float(max_snapshot_age)):
+                    continue
+            except (TypeError, ValueError):
+                pass
+        add_candidate(entry)
+
+    if not candidates:
+        print("STORAGE: fresh catalog snapshots contain none of the requested items")
+        return 0
+
+    moved_total = 0
+    opened_any = False
+    for position in candidates[: max(0, int(max_containers))]:
+        if max_travel_distance is not None and all(
+            axis in current_position for axis in ("x", "y", "z")
+        ):
+            travel_distance = (
+                (float(current_position["x"]) - position[0]) ** 2
+                + (float(current_position["y"]) - position[1]) ** 2
+                + (float(current_position["z"]) - position[2]) ** 2
+            ) ** 0.5
+            if travel_distance > max(0.0, float(max_travel_distance)):
+                print(
+                    "STORAGE: skipping cataloged container at "
+                    f"{position}; {travel_distance:.1f}m exceeds the "
+                    f"{float(max_travel_distance):.1f}m recovery radius"
+                )
+                continue
+        try:
+            block_id = client.transport.dispatch(
+                "get_block",
+                {"x": position[0], "y": position[1], "z": position[2]},
+            ).get("id", "")
+        except Exception:
+            block_id = ""
+        if block_id == "minecraft:void_air":
+            from .navigation import goto
+
+            print(f"STORAGE: loading cataloged chest chunk at {position}")
+            if not goto(
+                client,
+                *position,
+                timeout=120.0,
+                check_interval=0.5,
+                tolerance=3.0,
+            ):
+                print(f"STORAGE: could not load cataloged container at {position}")
+                continue
+        try:
+            state_resp = client.transport.dispatch("get_state", {})
+            live_position = state_resp.get("block_position") or state_resp.get("position") or {}
+            already_near = all(axis in live_position for axis in ("x", "y", "z")) and (
+                (float(live_position["x"]) - position[0]) ** 2
+                + (float(live_position["y"]) - position[1]) ** 2
+                + (float(live_position["z"]) - position[2]) ** 2
+            ) ** 0.5 <= 4.5
+        except (AttributeError, TypeError, ValueError):
+            already_near = False
+        if not already_near and not harness_ops.move_near(
+            client, *position, timeout=90.0
+        ):
+            print(f"STORAGE: could not reach cataloged container at {position}")
+            continue
+        moved = withdraw_required_from_chest(
+            client,
+            position,
+            outstanding,
+            state=state,
+        )
+        if moved < 0:
+            continue
+        opened_any = True
+        moved_total += moved
+        outstanding = {
+            item_id: max(0, required - count_item(client, item_id))
+            for item_id, required in requirements.items()
+        }
+        outstanding = {
+            item_id: count for item_id, count in outstanding.items() if count
+        }
+        if not outstanding:
+            break
+
+    return moved_total if opened_any else -1
 
 
 def check_craft(client, output_item: str, count: int = 1) -> Dict:

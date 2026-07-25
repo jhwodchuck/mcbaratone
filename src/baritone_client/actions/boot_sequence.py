@@ -175,13 +175,36 @@ class ConditionalWoodGatheringAction(BaseAction):
 
     def execute(self, context: ActionContext) -> ActionResult:
         """Check inventory and gather wood if needed."""
-        if _count_family(context.client, _BOOT_LOGS) >= self.needed_logs:
+        logs = _count_family(context.client, _BOOT_LOGS)
+        if logs >= self.needed_logs:
             print("Sufficient logs present; skipping wood gathering.")
             return ActionResult.ok("Already have sufficient logs")
 
-        if _count_family(context.client, _BOOT_PLANKS) >= self.needed_logs * 4:
-            print("Sufficient planks present; skipping wood gathering.")
-            return ActionResult.ok("Already have sufficient planks")
+        planks = _count_family(context.client, _BOOT_PLANKS)
+        if planks + logs * 4 >= self.needed_logs * 4:
+            print("Sufficient convertible wood present; skipping wood gathering.")
+            return ActionResult.ok("Already have sufficient convertible wood")
+
+        # Four convertible planks are enough to make the sticks for the stone
+        # tool set when a table is already available. This lets a bot stranded
+        # on a narrow pillar reach the stone/descent recovery before demanding
+        # the larger base-building wood reserve; it can gather that reserve
+        # safely after reaching terrain.
+        table_available = count_item(
+            context.client, "minecraft:crafting_table"
+        ) > 0 or bool(
+            find_nearby_block(
+                context.client,
+                ["minecraft:crafting_table"],
+                radius=4,
+            )
+        )
+        if table_available and planks + logs * 4 >= 4:
+            print(
+                "Bootstrap wood and a crafting table are available; "
+                "deferring the larger wood reserve until after stone recovery."
+            )
+            return ActionResult.ok("Enough wood to bootstrap stone recovery")
 
         # Gather minimal wood
         success = gather_wood(context.client, count=self.needed_logs)

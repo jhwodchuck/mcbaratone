@@ -558,6 +558,7 @@ public class CommandDispatcher {
 
             case "place_block":
             case "break_block":
+            case "dig_block":
             case "interact_block":
             case "attack_block":
                 validations.put("coordinates", ParameterValidator.coordinates());
