@@ -2017,3 +2017,63 @@ def test_loaded_furnace_starter_batch_unblocks_initial_smelting(monkeypatch):
     )
 
     assert iron_age.FoodAndIronHandler()._smelt_iron(SimpleNamespace())
+
+
+def _starving_descent_client(food_level):
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "block_position": {"x": 10, "y": 60, "z": 5},
+                    "health": 20,
+                    "food_level": food_level,
+                }
+            if route == "get_block":
+                return {"id": "minecraft:stone"}
+            return {}
+
+    transport = Transport()
+    return SimpleNamespace(transport=transport), transport
+
+
+def test_descent_refuses_to_commit_below_regen_threshold_with_no_carried_food(
+    monkeypatch, capsys
+):
+    """Minecraft only regenerates health at food >= 18. Descending under that
+    line with nothing edible carried is a one-way trip: the bot cannot heal at
+    depth and cannot lift itself back over the line. Confirmed live -- Bot08
+    descended at food=9 with an empty larder, arrived around Y=40 already
+    wounded, lost every flee attempt (a mineshaft has no terrain-safe escape
+    endpoints) and died 9 times in one hour, respawning and walking straight
+    back down each time."""
+    from baritone_client.common import combat
+
+    client, transport = _starving_descent_client(9)
+    monkeypatch.setattr(combat, "eat_until_hunger", lambda *_a, **_k: False)
+    monkeypatch.setattr(combat, "_emergency_food_count", lambda _c: 0)
+    monkeypatch.setattr(resources.time, "sleep", lambda _s: None)
+
+    assert resources.go_to_y_level(client, -58, timeout=10) is False
+    assert "refusing a descent that cannot be healed out of" in capsys.readouterr().out
+
+
+def test_descent_still_proceeds_below_regen_threshold_when_food_is_carried(
+    monkeypatch, capsys
+):
+    """Carrying food means the bot can lift itself back over the regen line at
+    depth, so a low current hunger bar alone must not block the descent."""
+    from baritone_client.common import combat
+
+    client, _transport = _starving_descent_client(9)
+    monkeypatch.setattr(combat, "eat_until_hunger", lambda *_a, **_k: False)
+    monkeypatch.setattr(combat, "_emergency_food_count", lambda _c: 4)
+    monkeypatch.setattr(resources.time, "sleep", lambda _s: None)
+
+    resources.go_to_y_level(client, -58, timeout=1)
+    output = capsys.readouterr().out
+    assert "refusing a descent that cannot be healed out of" not in output
+    assert "continuing with fallback food=9" in output

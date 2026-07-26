@@ -124,6 +124,11 @@ _ORE_FALLBACK_LIMIT = 3
 # was stalling bots with safe-but-low food.
 _SAFE_MINING_FOOD = 6
 _MINING_HUNGER_TARGET = 12
+# Minecraft only regenerates health at food >= 18. Below that line a bot that
+# takes any damage cannot heal at all, so committing to a deep descent under
+# it -- with nothing edible carried to lift back over it -- is a one-way trip
+# into a hostile area it can never recover in. See the descent gate below.
+_MINING_REGEN_FOOD = 18
 
 
 def _serialized_dispatch(
@@ -1826,6 +1831,30 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                     )
                     if fallback_food < _SAFE_MINING_FOOD:
                         print("Y navigation aborted: could not restore hunger")
+                        return False
+                    # eat_until_hunger has already failed by this point, so if
+                    # nothing edible is carried the bot cannot lift itself over
+                    # the health-regen line at any stage of the descent. It
+                    # would commit to a deep, hostile, no-regen trip it cannot
+                    # heal out of. Confirmed live: Bot08 descended at food=9
+                    # with an empty larder, arrived around Y=40 already wounded,
+                    # lost every flee attempt (a mineshaft has no terrain-safe
+                    # escape endpoints) and died 9 times in one hour -- each
+                    # time respawning and walking straight back down to the same
+                    # spot. Abort here so the caller runs a surface food hunt
+                    # first instead.
+                    from .combat import _emergency_food_count
+
+                    if (
+                        fallback_food < _MINING_REGEN_FOOD
+                        and _emergency_food_count(client) == 0
+                    ):
+                        print(
+                            "Y navigation aborted: food="
+                            f"{fallback_food} below the health-regen threshold "
+                            f"({_MINING_REGEN_FOOD}) with no carried food; "
+                            "refusing a descent that cannot be healed out of"
+                        )
                         return False
                     print(
                         "Y navigation: could not reach target food before descent; "
