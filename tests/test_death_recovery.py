@@ -109,6 +109,26 @@ def test_alive_operator_restart_abandons_exhausted_pending_grave(monkeypatch):
     )
 
 
+def test_alive_player_clears_noncritical_stale_grave(monkeypatch):
+    context = _context({})
+    context.client.transport.dead = False
+    context.state.custom_data["death_recovery"] = {
+        "pending_location": [21, 53, 113],
+        "pending_dimension": "minecraft:overworld",
+        "expected_critical": {},
+    }
+    monkeypatch.setattr(death_recovery_action, "get_inventory", lambda _client: {})
+
+    result = DeathRecoveryAction().execute(context)
+
+    assert result.success
+    assert result.data["grave_abandoned"]
+    assert "death_recovery" not in context.state.custom_data
+    assert context.state.custom_data["last_abandoned_death_recovery"][
+        "reason"
+    ] == "alive_with_no_critical_items_pending"
+
+
 def test_death_recovery_falls_back_to_pre_respawn_position(monkeypatch):
     context = _context({"has_death_location": False})
     destinations = []
@@ -515,6 +535,53 @@ def test_lost_grave_still_fails_when_bootstrap_fails(monkeypatch):
     result = DeathRecoveryAction().execute(context)
 
     assert not result.success
+    assert context.state.custom_data["death_recovery"]["unsafe_failures"] == 1
+    assert context.state.custom_data["death_recovery"]["location"] == [
+        -70,
+        62,
+        -120,
+    ]
+
+
+def test_relaunch_abandons_lethal_grave_before_replaying_route(monkeypatch):
+    """A dead relaunch must not repeat a grave route that already killed it."""
+    context = _context({})
+    context.state.custom_data["death_recovery"] = {
+        "pending_location": [65, 53, -242],
+        "pending_dimension": "minecraft:overworld",
+        "expected_critical": {},
+        "unsafe_failures": 1,
+        "location": [65, 53, -242],
+    }
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        death_recovery_action,
+        "goto",
+        lambda *_a, **_k: pytest.fail("lethal grave route must not be replayed"),
+    )
+    rebuild_states = []
+
+    def rebuild(client):
+        rebuild_states.append(client.transport.dead)
+        return True
+
+    monkeypatch.setattr(
+        death_recovery_action, "_bootstrap_starter_pickaxe", rebuild
+    )
+
+    result = DeathRecoveryAction().execute(context)
+
+    assert result.success
+    assert result.data["grave_abandoned"]
+    assert result.data["bootstrapped_tools"]
+    assert rebuild_states == [False]
+    assert "death_recovery" not in context.state.custom_data
+    assert context.state.custom_data["last_abandoned_death_recovery"] == {
+        "location": [65, 53, -242],
+        "dimension": "minecraft:overworld",
+        "unsafe_failures": 1,
+        "reason": "repeated_unsafe_grave_route",
+    }
 
 
 def test_repeated_incomplete_grave_is_abandoned_instead_of_looping(monkeypatch):

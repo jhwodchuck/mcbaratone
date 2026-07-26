@@ -7,6 +7,47 @@ from typing import Any, Callable, Dict, Optional
 from ..core.interfaces import ActionResult
 
 
+def abandon_repeated_unsafe_pending_recovery(
+    state: Any,
+    inventory: Dict[str, int],
+) -> Optional[Dict[str, Any]]:
+    """Open the circuit before replaying a persisted lethal grave route.
+
+    ``unsafe_failures`` is written only after an approach ended dead or could
+    not reach the grave.  A supervisor relaunch can therefore abandon that
+    exact route without risking another naked traversal through the same
+    hazard.
+    """
+    custom_data = getattr(state, "custom_data", {})
+    recovery = custom_data.get("death_recovery")
+    if not isinstance(recovery, dict):
+        return None
+    location = recovery.get("pending_location")
+    failures = int(recovery.get("unsafe_failures", 0))
+    if (
+        not isinstance(location, (list, tuple))
+        or len(location) != 3
+        or failures < 1
+    ):
+        return None
+
+    abandoned = {
+        "location": [int(value) for value in location],
+        "dimension": str(
+            recovery.get("pending_dimension", "minecraft:overworld")
+        ),
+        "unsafe_failures": failures,
+        "reason": "repeated_unsafe_grave_route",
+    }
+    custom_data["last_abandoned_death_recovery"] = abandoned
+    custom_data.pop("death_recovery", None)
+
+    save = getattr(state, "save_checkpoint", None)
+    if callable(save):
+        save(inventory)
+    return abandoned
+
+
 def abandon_exhausted_pending_recovery(
     state: Any,
     inventory: Dict[str, int],
@@ -41,6 +82,47 @@ def abandon_exhausted_pending_recovery(
     custom_data["last_abandoned_death_recovery"] = abandoned
     custom_data.pop("death_recovery", None)
 
+    save = getattr(state, "save_checkpoint", None)
+    if callable(save):
+        save(inventory)
+    return abandoned
+
+
+def abandon_noncritical_alive_pending_recovery(
+    state: Any,
+    inventory: Dict[str, int],
+) -> Optional[Dict[str, Any]]:
+    """Clear a stale naked grave while the player is already alive.
+
+    A failed approach used to leave ``pending_location`` with an empty
+    ``expected_critical`` mapping. Because the alive path ignored that record,
+    the next unrelated death resumed the old grave. There is nothing valuable
+    to recover from an empty expectation, so preserving that target only adds
+    risk.
+    """
+    custom_data = getattr(state, "custom_data", {})
+    recovery = custom_data.get("death_recovery")
+    if not isinstance(recovery, dict):
+        return None
+    location = recovery.get("pending_location")
+    expected = recovery.get("expected_critical", {})
+    if (
+        not isinstance(location, (list, tuple))
+        or len(location) != 3
+        or not isinstance(expected, dict)
+        or expected
+    ):
+        return None
+    abandoned = {
+        "location": [int(value) for value in location],
+        "dimension": str(
+            recovery.get("pending_dimension", "minecraft:overworld")
+        ),
+        "unsafe_failures": int(recovery.get("unsafe_failures", 0)),
+        "reason": "alive_with_no_critical_items_pending",
+    }
+    custom_data["last_abandoned_death_recovery"] = abandoned
+    custom_data.pop("death_recovery", None)
     save = getattr(state, "save_checkpoint", None)
     if callable(save):
         save(inventory)
@@ -97,13 +179,18 @@ def handle_alive_pending_recovery(
         inventory_loader(context.client),
     )
     if abandoned is None:
+        abandoned = abandon_noncritical_alive_pending_recovery(
+            context.state,
+            inventory_loader(context.client),
+        )
+    if abandoned is None:
         return ActionResult.ok("No death detected")
     print(
-        "RECOVERY_CIRCUIT: operator restart abandoned exhausted grave "
-        f"{tuple(abandoned['location'])}"
+        "RECOVERY_CIRCUIT: abandoned stale or exhausted grave "
+        f"{tuple(abandoned['location'])} ({abandoned['reason']})"
     )
     return ActionResult.ok(
-        "Exhausted pending grave abandoned after operator restart",
+        "Stale or exhausted pending grave abandoned while alive",
         grave_abandoned=True,
         location=abandoned["location"],
     )

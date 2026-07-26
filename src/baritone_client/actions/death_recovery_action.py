@@ -13,6 +13,7 @@ from ..common.combat import secure_recovery_area
 from ..common.inventory import get_inventory, reset_inventory_cache
 from ..automator.state_manager import Phase
 from .death_recovery_state import (
+    abandon_repeated_unsafe_pending_recovery,
     abandon_unrecoverable_grave,
     handle_alive_pending_recovery,
 )
@@ -211,7 +212,7 @@ def _reach_overworld_grave(
     client,
     death_coords: Tuple[int, int, int],
     *,
-    attempts: int = 3,
+    attempts: int = 2,
 ) -> bool:
     """Reach a grave across repeated naked deaths without losing its target."""
     for attempt in range(1, max(1, int(attempts)) + 1):
@@ -239,6 +240,11 @@ def _reach_overworld_grave(
         print(
             f"RECOVERY: grave approach {attempt}/{attempts} did not finish alive"
         )
+        # Replaying the identical naked route after it just killed the player
+        # compounds the loss without adding information. Persist the failure
+        # in execute() and let the circuit/bootstrap path choose a new action.
+        if not alive:
+            return False
     return False
 
 
@@ -271,6 +277,93 @@ def _persist_pending_recovery(state, expected: Dict[str, int]) -> None:
         print(f"RECOVERY: pending grave checkpoint deferred ({exc})")
 
 
+def _remember_death(
+    context: ActionContext,
+    recovery_state: Dict,
+    death_coords: Tuple[int, int, int],
+    death_dimension: str,
+    expected_critical: Dict[str, int],
+) -> None:
+    """Persist one canonical death target before attempting recovery."""
+    context.state.custom_data["last_death_location"] = {
+        "x": death_coords[0],
+        "y": death_coords[1],
+        "z": death_coords[2],
+        "dimension": death_dimension,
+    }
+    recovery_state.update(
+        {
+            "pending_location": list(death_coords),
+            "pending_dimension": death_dimension,
+            "expected_critical": expected_critical,
+        }
+    )
+    _persist_pending_recovery(context.state, expected_critical)
+
+
+def _recover_nether_death(
+    context: ActionContext,
+    death_coords: Tuple[int, int, int],
+    current_phase: Phase,
+) -> ActionResult:
+    """Recover in the Nether or return through a verified portal."""
+    client = context.client
+    if current_phase in (Phase.NETHER_AND_BLAZE, Phase.WORLD_UNLOCK):
+        print("Recovering items in Nether...")
+        if goto(client, *death_coords, timeout=600):
+            time.sleep(2.0)
+            return ActionResult.ok(
+                "Recovery completed in Nether", recovered_in_nether=True
+            )
+        return ActionResult.fail("Failed to reach Nether death location")
+
+    print("Recovering items in Nether before returning to Overworld...")
+    if goto(client, *death_coords, timeout=600):
+        time.sleep(2.0)
+    portal = find_nearest_portal(client, "nether")
+    if portal is None:
+        return ActionResult.fail("Could not find Nether portal")
+    print(f"Found Nether portal at {portal}")
+    if not goto(client, *portal, timeout=300):
+        return ActionResult.fail("Failed to reach Nether portal")
+    from ..common import enter_nether_portal
+
+    if not enter_nether_portal(
+        client,
+        timeout=60,
+        target_dimension="minecraft:overworld",
+        portal=portal,
+    ):
+        return ActionResult.fail("Failed to enter portal back to Overworld")
+    context.state.set_phase(Phase.BOOT_SEQUENCE)
+    return ActionResult.ok(
+        "Reset to bootstrap phase after Nether recovery", reset_phase=True
+    )
+
+
+def _rebuild_after_lethal_grave(context: ActionContext, abandoned: Dict) -> ActionResult:
+    """Respawn and rebuild after opening a repeated grave-route circuit."""
+    print(
+        "RECOVERY_CIRCUIT: refusing to replay lethal grave route "
+        f"{tuple(abandoned['location'])}; respawning to rebuild"
+    )
+    context.client.transport.dispatch("respawn", {})
+    reset_inventory_cache()
+    time.sleep(2.0)
+    if _bootstrap_starter_pickaxe(context.client):
+        return ActionResult.ok(
+            "Abandoned lethal grave route and rebuilt starter tools",
+            recovered=False,
+            grave_abandoned=True,
+            bootstrapped_tools=True,
+            reset_phase=False,
+        )
+    return ActionResult.fail(
+        "Lethal grave route abandoned but starter rebuild failed",
+        grave_abandoned=True,
+    )
+
+
 class DeathRecoveryAction(BaseAction):
     """
     Action to handle player death and recovery.
@@ -279,13 +372,8 @@ class DeathRecoveryAction(BaseAction):
     """
 
     def execute(self, context: ActionContext) -> ActionResult:
-        """
-        Execute death recovery sequence.
-
-        Returns True if recovery was needed and performed.
-        """
+        """Recover a death or return a bounded failure."""
         try:
-            # Check for death
             try:
                 state = context.client.transport.dispatch("get_state", {})
             except TransportError as exc:
@@ -296,17 +384,9 @@ class DeathRecoveryAction(BaseAction):
                 return ActionResult.ok("Death recovery deferred due transport timeout")
             if not state.get("is_dead", False) and state.get("health", 20) > 0:
                 return handle_alive_pending_recovery(context, state, get_inventory)
-
-            # The player position remains available on the death screen.  Save
-            # it before respawning because some bridge versions clear their
-            # get_death_location cache as soon as respawn completes.
             death_position = state.get("block_position", state.get("position", {}))
             death_dimension = state.get("dimension", "minecraft:overworld")
-            # The death screen still exposes the inventory.  Capture valuable
-            # counts before respawn so reaching the coordinates alone can
-            # never be mistaken for a complete item recovery.
             expected_critical = _critical_inventory(get_inventory(context.client))
-
             recovery_state = context.state.custom_data.setdefault(
                 "death_recovery", {}
             )
@@ -316,6 +396,12 @@ class DeathRecoveryAction(BaseAction):
                 and len(pending_location) == 3
             )
             if resuming_pending:
+                abandoned = abandon_repeated_unsafe_pending_recovery(
+                    context.state,
+                    {},
+                )
+                if abandoned is not None:
+                    return _rebuild_after_lethal_grave(context, abandoned)
                 stored_expected = recovery_state.get("expected_critical", {})
                 if isinstance(stored_expected, dict):
                     expected_critical = {
@@ -343,15 +429,11 @@ class DeathRecoveryAction(BaseAction):
                     }
                 )
                 _persist_pending_recovery(context.state, expected_critical)
-
             print("\n!!! PLAYER DIED !!!")
             print("Starting recovery sequence...")
-
-            # Respawn
             context.client.transport.dispatch("respawn", {})
             reset_inventory_cache()  # dropped-on-death items must not linger in cache
             time.sleep(2.0)
-
             # Get death location and recover items
             try:
                 response = context.client.transport.dispatch("get_death_location", {})
@@ -373,88 +455,31 @@ class DeathRecoveryAction(BaseAction):
                 death_x = death_position.get("x")
                 death_y = death_position.get("y")
                 death_z = death_position.get("z")
-
             if death_x is not None:
-                context.state.custom_data["last_death_location"] = {
-                    "x": int(death_x),
-                    "y": int(death_y),
-                    "z": int(death_z),
-                    "dimension": death_dim,
-                }
-                recovery_state.update(
-                    {
-                        "pending_location": [
-                            int(death_x),
-                            int(death_y),
-                            int(death_z),
-                        ],
-                        "pending_dimension": death_dim,
-                        "expected_critical": expected_critical,
-                    }
+                death_coords = (
+                    int(death_x),
+                    int(death_y),
+                    int(death_z),
                 )
-                _persist_pending_recovery(context.state, expected_critical)
-
+                _remember_death(
+                    context,
+                    recovery_state,
+                    death_coords,
+                    death_dim,
+                    expected_critical,
+                )
                 print(f"Death location: ({death_x}, {death_y}, {death_z}) in {death_dim}")
-
-                # Dimension-aware recovery logic
                 current_phase = context.state.get_current_phase()
 
                 if "nether" in death_dim:
-                        # Died in Nether - decide whether to recover in Nether or return to Overworld
-                        nether_phases = [Phase.NETHER_AND_BLAZE, Phase.WORLD_UNLOCK]
-
-                        if current_phase in nether_phases:
-                            # Can continue in Nether - recover items here
-                            print("Recovering items in Nether...")
-                            success = goto(context.client, int(death_x), int(death_y), int(death_z), timeout=600)
-                            if success:
-                                print("Recovered items from Nether death location")
-                                time.sleep(2.0)
-                                return ActionResult.ok("Recovery completed in Nether", recovered_in_nether=True)
-                            else:
-                                print("Failed to reach Nether death location")
-                                return ActionResult.fail("Failed to reach Nether death location")
-                        else:
-                            # Need to return to Overworld - recover items in Nether first, then traverse
-                            print("Recovering items in Nether before returning to Overworld...")
-                            success = goto(context.client, int(death_x), int(death_y), int(death_z), timeout=600)
-                            if success:
-                                print("Recovered items from Nether death location")
-                                time.sleep(2.0)
-
-                            # Now find portal and return to Overworld
-                            portal_coords = find_nearest_portal(context.client, "nether")
-                            if portal_coords:
-                                print(f"Found Nether portal at {portal_coords}")
-                                success = goto(context.client, portal_coords[0], portal_coords[1], portal_coords[2], timeout=300)
-                                if success:
-                                    # Enter portal to return to Overworld
-                                    from ..common import enter_nether_portal
-                                    if enter_nether_portal(
-                                        context.client,
-                                        timeout=60,
-                                        target_dimension="minecraft:overworld",
-                                        portal=portal_coords,
-                                    ):
-                                        print("Returned to Overworld via portal")
-                                        # Reset to bootstrap since we're back at spawn area
-                                        context.state.set_phase(Phase.BOOT_SEQUENCE)
-                                        return ActionResult.ok("Reset to bootstrap phase after Nether recovery", reset_phase=True)
-                                    else:
-                                        print("Failed to enter portal back to Overworld")
-                                        return ActionResult.fail("Failed to enter portal back to Overworld")
-                                else:
-                                    print("Failed to reach Nether portal")
-                                    return ActionResult.fail("Failed to reach Nether portal")
-                            else:
-                                print("Could not find Nether portal for return trip")
-                                return ActionResult.fail("Could not find Nether portal")
+                    return _recover_nether_death(
+                        context, death_coords, current_phase
+                    )
 
                 else:
                     # Died in Overworld - standard recovery.  Resume the
                     # interrupted phase after pickup; completed earlier phases
                     # remain valid and should not be replayed.
-                    death_coords = (int(death_x), int(death_y), int(death_z))
                     success = _reach_overworld_grave(
                         context.client,
                         death_coords,
@@ -570,6 +595,16 @@ class DeathRecoveryAction(BaseAction):
                             reset_phase=False,
                         )
                     print("Failed to reach death location")
+                    failures = _record_unsafe_recovery(
+                        context.state, death_coords
+                    )
+                    _persist_pending_recovery(
+                        context.state, expected_critical
+                    )
+                    print(
+                        "RECOVERY_CIRCUIT: unreachable or lethal grave "
+                        f"failure {failures} at {death_coords}"
+                    )
                     # Grave unreachable/despawned: bootstrap starter tools so a
                     # single bad death does not wedge the bot toolless forever.
                     if _bootstrap_starter_pickaxe(context.client):
