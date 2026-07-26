@@ -375,10 +375,12 @@ def test_emergency_food_hunts_passive_target_then_recovers(monkeypatch):
         {**sheep, "id": 12 + index, "distance": 8.0 + index}
         for index in range(3)
     ]
+    # health=5.0 is below _CRITICAL_HUNT_HEALTH, so the target search uses
+    # the shrunk 16-block radius rather than the normal 64.
     monkeypatch.setattr(
         combat,
         "get_nearby_entities",
-        lambda _client, radius: herd if radius == 64 else [],
+        lambda _client, radius: herd if radius == 16 else [],
     )
     monkeypatch.setattr(combat, "safe_combat", lambda *_args, **_kwargs: hunted.append(True) or True)
     monkeypatch.setattr(combat, "heal_if_needed", lambda *_args, **_kwargs: True)
@@ -423,8 +425,10 @@ def test_emergency_food_explores_until_passive_target_loads(monkeypatch):
         for index in range(3)
     ]
 
+    # health=5.0 is below _CRITICAL_HUNT_HEALTH, so the target search uses
+    # the shrunk 16-block radius rather than the normal 64.
     def nearby(_client, radius):
-        if radius != 64:
+        if radius != 16:
             return []
         land_scans["count"] += 1
         return herd if land_scans["count"] >= 3 else []
@@ -1191,3 +1195,36 @@ def test_safe_combat_still_retreats_by_default_at_low_health(monkeypatch):
     assert combat.safe_combat(client, 5, retreat_health=6.0) is False
     assert ("cancel", {}) in transport.calls
     assert not any(call[0] == "attack_entity" for call in transport.calls)
+
+
+def test_emergency_food_does_not_chase_distant_target_at_critical_health(monkeypatch):
+    """Regression: must_hold_for_critical_food only holds below health 6.0, so
+    a bot at e.g. 7.3hp is treated as "safe enough" to proceed and would
+    otherwise walk toward the nearest singleton target regardless of distance
+    -- with no further health check until arrival. Confirmed live: Bot08
+    repeatedly walked 48-64m toward a chicken/salmon at ~7hp and died to
+    combat or drowning partway there. Below _CRITICAL_HUNT_HEALTH the search
+    radius shrinks to 16 (the same perimeter already trusted for the
+    immediate-threat scan), so a distant-only target must not be selected."""
+    transport = CombatTransport(health=7.3)
+    client = SimpleNamespace(transport=transport)
+    distant_chicken = {
+        "id": 40,
+        "type": "minecraft:chicken",
+        "distance": 60.0,
+        "position": {"x": 60, "y": 64, "z": 0},
+    }
+    monkeypatch.setattr(combat, "recover_health", lambda *_a, **_k: False)
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [])
+    hunted = []
+    monkeypatch.setattr(
+        combat,
+        "get_nearby_entities",
+        lambda _client, radius: [distant_chicken] if radius == 64 else [],
+    )
+    monkeypatch.setattr(combat, "safe_combat", lambda *_a, **_k: hunted.append(True) or True)
+    monkeypatch.setattr(combat.time, "sleep", lambda _s: None)
+
+    combat.acquire_emergency_food(client, minimum_health=12.0, timeout=1.0)
+
+    assert not hunted

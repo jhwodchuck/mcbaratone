@@ -580,6 +580,11 @@ EMERGENCY_FOOD_ITEMS = [
 # a way back to a stable hunger level.
 _FOOD_YIELDING_MOBS = ("cow", "mooshroom", "sheep", "pig", "chicken", "rabbit")
 
+# Below this health, acquire_emergency_food restricts its passive-food target
+# search to a short radius rather than committing to a long unprotected trek.
+# See the hunt_radius comment at its call site for the live failure this fixes.
+_CRITICAL_HUNT_HEALTH = 10.0
+
 
 def _emergency_food_count(client) -> int:
     return sum(count_item(client, item_id) for item_id in EMERGENCY_FOOD_ITEMS)
@@ -892,7 +897,24 @@ def acquire_emergency_food(
             return False
 
         current_food = int(state.get("food_level", state.get("food", 20)))
-        nearby = get_nearby_entities(client, radius=64)
+        current_health = float(state.get("health", 20) or 0)
+        # must_hold_for_critical_food only holds below health 6.0 (deliberately
+        # low -- see its docstring for the soft-lock bug that floor fixes), so
+        # a bot at e.g. 7.3hp is treated as "safe enough" to proceed here and
+        # will otherwise commit to a full 64-block, sprint-suppressed hike
+        # toward the nearest singleton target with no further health check
+        # until it arrives. Confirmed live: Bot08 repeatedly walked 48-64m
+        # toward a chicken/salmon while sitting at ~7hp and died to combat or
+        # drowning partway there, since a single stray hit or a few seconds
+        # submerged is fatal at that health and the outer threat/hostile
+        # checks only run once per loop iteration (~every 15s of travel).
+        # Below _CRITICAL_HUNT_HEALTH, shrink the search radius to match the
+        # same perimeter already trusted for the immediate-threat scan above
+        # (16 blocks) so a wounded bot only ever commits to food it can reach
+        # quickly; anything farther falls through to the existing bounded
+        # hold-then-explore path instead of a long unprotected trek.
+        hunt_radius = 16.0 if current_health < _CRITICAL_HUNT_HEALTH else 64.0
+        nearby = get_nearby_entities(client, radius=hunt_radius)
 
         def food_group(animal_type: str) -> List[dict]:
             return [
