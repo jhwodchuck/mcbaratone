@@ -441,7 +441,11 @@ def test_emergency_food_explores_until_passive_target_loads(monkeypatch):
 
     assert combat.acquire_emergency_food(client, minimum_health=12.0)
     assert hunted == [True]
-    assert ("explore", {"x": 0, "z": 0}) in transport.calls
+    exploration_calls = [
+        payload for route, payload in transport.calls if route == "explore"
+    ]
+    assert exploration_calls
+    assert all(payload != {"x": 0, "z": 0} for payload in exploration_calls)
     assert ("chat", {"message": "#stop"}) in transport.calls
 
 

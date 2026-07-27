@@ -11,17 +11,15 @@ from .food_recovery import (
     must_hold_for_critical_food,
 )
 from .combat_targeting import matches_requested_mob
+from .emergency_food import EmergencyExploration, hunt_target, select_target
 
 from ..core.exceptions import TransportError
 
 from .defense import (
-    AttackStyle,
     DefenseMode,
     DefenseRuntime,
-    ThreatAssessment,
     assess_threats,
     choose_defense_action,
-    plan_escape_candidates,
 )
 
 from .inventory import (
@@ -782,33 +780,21 @@ def acquire_emergency_food(
         exploration_center,
         max_exploration_distance,
     )
-    exploring = False
-    sprint_suppressed = False
+    exploration = EmergencyExploration(
+        origin_x,
+        origin_z,
+        max_exploration_distance,
+    )
+    exploration.movement.reset(state)
 
     def stop_exploring() -> None:
-        nonlocal exploring, sprint_suppressed
-        if exploring:
-            client.transport.dispatch("cancel", {})
-            client.transport.dispatch("chat", {"message": "#stop"})
-            exploring = False
-        if sprint_suppressed:
-            client.transport.dispatch(
-                "chat", {"message": "#set allowSprint true"}
-            )
-            sprint_suppressed = False
+        exploration.stop(client)
 
     # Emergency exploration values remaining hunger more than travel speed.
     # Live Bot10 burned food 9 -> 6 in roughly 35 seconds while sprinting and
     # died before a source loaded. Restore the normal setting on every bounded
     # exit through ``stop_exploring``.
-    client.transport.dispatch("chat", {"message": "#set allowSprint false"})
-    sprint_suppressed = True
-
-    # Prefer the more nourishing land animals during emergency recovery, and
-    # search the full set of loaded chunks after waiting safely for dawn.
-    primary_land_food = ["cow", "pig"]
-    secondary_land_food = ["sheep", "chicken", "rabbit"]
-    water_food = ["salmon", "cod", "tropical_fish"]
+    exploration.suppress_sprint(client)
     # A bot already near death cannot regenerate without eating, and cannot
     # eat without exploring: holding indefinitely guarantees it never
     # recovers. Give the hold a short, bounded grace period (a genuinely new
@@ -832,6 +818,7 @@ def acquire_emergency_food(
                 time.sleep(1.0)
                 continue
         ensure_alive(client, state)
+        exploration.observe(state)
         if recovery_complete(state):
             stop_exploring()
             return True
@@ -893,6 +880,15 @@ def acquire_emergency_food(
                 )
                 time.sleep(5)
                 continue
+            if run_away(client, immediate_threat):
+                print(
+                    "RECOVERY: escaped nearby hostile; resuming bounded "
+                    "food search"
+                )
+                exploration.movement.reset(
+                    client.transport.dispatch("get_state", {})
+                )
+                continue
             print("RECOVERY: hostile nearby and no enclosure; aborting food run")
             return False
 
@@ -916,60 +912,14 @@ def acquire_emergency_food(
         hunt_radius = 16.0 if current_health < _CRITICAL_HUNT_HEALTH else 64.0
         nearby = get_nearby_entities(client, radius=hunt_radius)
 
-        def food_group(animal_type: str) -> List[dict]:
-            return [
-                entity
-                for entity in nearby
-                if animal_type in str(entity.get("type", "")).lower()
-                and not entity.get("is_baby", False)
-            ]
-
-        target = None
-        for animal_type in primary_land_food + secondary_land_food:
-            group = food_group(animal_type)
-            if len(group) >= 3:
-                positions = [entity_position(entity) for entity in group]
-                positions = [position for position in positions if position is not None]
-                if positions and renewable_source_callback is not None:
-                    centroid = (
-                        round(sum(position[0] for position in positions) / len(positions)),
-                        round(sum(position[1] for position in positions) / len(positions)),
-                        round(sum(position[2] for position in positions) / len(positions)),
-                    )
-                    renewable_source_callback(animal_type, centroid)
-                # Kill at most the animals beyond a breeding pair. The next
-                # loop sees only two and leaves them intact.
-                target = min(group, key=lambda entity: float(entity.get("distance", 999)))
-                break
-            if len(group) == 1 and current_food <= 8:
-                # A singleton is not a renewable herd. Use it before hunger
-                # becomes critical rather than spending the remaining safety
-                # margin wandering past a non-renewable food source.
-                target = group[0]
-                break
-            if len(group) == 2 and current_food <= 2:
-                # Preserve a viable breeding pair unless starvation is
-                # immediately life-threatening.
-                target = min(group, key=lambda entity: float(entity.get("distance", 999)))
-                break
-        # Water-mob drops are substantially harder to collect reliably: the
-        # target can vanish below the player while its item floats elsewhere.
-        # When hunger is still stable, spend the first part of the bounded
-        # search loading land animals instead. Keep fish as a last-resort path
-        # for genuinely critical hunger or after land exploration had time to
-        # work.
-        land_search_elapsed = time.time() - start
-        water_fallback_after = min(90.0, max(15.0, timeout / 2.0))
-        if target is None and (
-            current_food <= 6
-            or land_search_elapsed >= water_fallback_after
-        ):
-            # A distant fish is not emergency food: the follow path spends the
-            # remaining hunger margin and repeatedly pulled live bots into
-            # water without ever reaching melee/loot range. Restrict aquatic
-            # fallback to a genuinely nearby target; otherwise keep the
-            # bounded land search active.
-            target = find_entity_by_type(client, water_food, radius=16)
+        target = select_target(
+            client,
+            nearby,
+            current_food=current_food,
+            elapsed=time.time() - start,
+            timeout=timeout,
+            renewable_source_callback=renewable_source_callback,
+        )
         if target is None:
             if (
                 must_hold_for_critical_food(
@@ -988,74 +938,24 @@ def acquire_emergency_food(
                 )
                 time.sleep(3)
                 continue
-            if not exploring:
-                print(
-                    "RECOVERY: no passive food source loaded; starting bounded "
-                    "daylight exploration"
-                )
-                client.transport.dispatch(
-                    "explore",
-                    {"x": int(origin_x), "z": int(origin_z)},
-                )
-                exploring = True
+
+            if exploration.try_surface_egress(client, state):
+                continue
+            if exploration.needs_rotation(state):
+                exploration.start(client, state)
             time.sleep(3)
             continue
 
         stop_exploring()
-
-        target_id = target.get("id")
-        target_pos = entity_position(target)
-        if target_id is None or target_pos is None:
-            time.sleep(1)
-            continue
-
-        print(
-            f"RECOVERY: safely hunting {target.get('type')} at "
-            f"{target.get('distance', 999):.1f}m"
-        )
-        target_type = str(target.get("type", ""))
-        if any(water_type in target_type for water_type in water_food) and float(
-            target.get("distance", 999)
-        ) >= 4.5:
-            if not _approach_aquatic_food(
-                client,
-                target_id,
-                target_type,
-                timeout=8.0,
-            ):
-                print("RECOVERY: aquatic target could not be reached safely")
-                time.sleep(1)
-                continue
-        aquatic_target = any(
-            water_type in target_type for water_type in water_food
-        )
-        if not safe_combat(
+        outcome = hunt_target(
             client,
-            target_id,
-            retreat_health=1.0,
-            max_duration=35,
-            abort_on_other_hostiles=True,
-        ):
+            target,
+            minimum_health=minimum_health,
+            recovery_complete=recovery_complete,
+        )
+        if outcome is False:
             return False
-
-        if aquatic_target:
-            if not _surface_after_aquatic_hunt(client):
-                print("RECOVERY: could not prove breathing air after aquatic hunt")
-                return False
-        else:
-            from .navigation import goto
-            goto(
-                client,
-                int(target_pos[0]),
-                int(target_pos[1]),
-                int(target_pos[2]),
-                timeout=45,
-                tolerance=1.5,
-            )
-        time.sleep(2)
-        heal_if_needed(client, threshold=minimum_health)
-        recover_health(client, minimum_health=minimum_health, timeout=25.0)
-        if recovery_complete():
+        if outcome is True:
             return True
 
     stop_exploring()
@@ -1438,26 +1338,6 @@ def secure_recovery_area(
     return False
 
 
-_ESCAPE_HAZARDS = (
-    "lava",
-    "fire",
-    "cactus",
-    "magma_block",
-    "campfire",
-    "pointed_dripstone",
-    "sweet_berry_bush",
-)
-_ESCAPE_NON_GROUND = ("air", "water", "lava", "cave_air", "void_air")
-_ESCAPE_PASSABLE = (
-    "air",
-    "grass",
-    "fern",
-    "flower",
-    "snow",
-    "vine",
-)
-
-
 def _defense_runtime(client) -> DefenseRuntime:
     """Return state attached to the client without module-global bot mixing."""
     runtime = getattr(client, "_mcbaratone_defense_runtime", None)
@@ -1480,48 +1360,16 @@ def _stop_for_defense(client) -> None:
     client.transport.dispatch("cancel", {})
 
 
-def _block_id(client, x: int, y: int, z: int) -> Optional[str]:
-    try:
-        result = client.transport.dispatch("get_block", {"x": x, "y": y, "z": z})
-    except Exception as exc:
-        logger.debug("Escape terrain probe failed at %s,%s,%s: %s", x, y, z, exc)
-        return None
-    if not isinstance(result, dict):
-        return None
-    block_id = result.get("id", result.get("block"))
-    return str(block_id).lower() if block_id else None
-
-
 def _escape_destination_safe(client, x: int, y: int, z: int) -> bool:
-    """Reject an obvious hazard or unsupported endpoint using existing reads."""
-    feet = _block_id(client, x, y, z)
-    head = _block_id(client, x, y + 1, z)
-    below = _block_id(client, x, y - 1, z)
-    known = tuple(value for value in (feet, head, below) if value)
-    if any(token in block for block in known for token in _ESCAPE_HAZARDS):
-        return False
-    if feet and not any(token in feet for token in _ESCAPE_PASSABLE):
-        return False
-    if head and not any(token in head for token in _ESCAPE_PASSABLE):
-        return False
-    if below and any(token in below for token in _ESCAPE_NON_GROUND):
-        return False
-    # Unknown probes are neutral: refusing every route during partial bridge
-    # degradation is worse than using the best directional fallback.
-    return True
+    from .escape_recovery import destination_safe
+
+    return destination_safe(client, x, y, z)
 
 
 def _separation_from(entity: Dict, player_position: Dict) -> float:
-    position = entity_position(entity)
-    if position is None:
-        return float(entity.get("distance", 0) or 0)
-    try:
-        return (
-            (float(position[0]) - float(player_position.get("x", 0))) ** 2
-            + (float(position[2]) - float(player_position.get("z", 0))) ** 2
-        ) ** 0.5
-    except (TypeError, ValueError):
-        return float(entity.get("distance", 0) or 0)
+    from .escape_recovery import separation_from
+
+    return separation_from(entity, player_position)
 
 
 def _verify_escape(
@@ -1532,25 +1380,15 @@ def _verify_escape(
     timeout: float,
     minimum_gain: float,
 ) -> bool:
-    """Confirm that the selected route actually increases separation."""
-    deadline = time.monotonic() + max(0.5, timeout)
-    while time.monotonic() < deadline:
-        ensure_alive(client)
-        try:
-            entities = get_nearby_entities(client, 40, raise_on_error=True)
-        except EntityQueryError:
-            time.sleep(0.5)
-            continue
-        target = next((entity for entity in entities if entity.get("id") == threat_id), None)
-        if target is None:
-            return True
-        state = client.transport.dispatch("get_state", {})
-        position = state.get("block_position", state.get("position", {})) or {}
-        separation = _separation_from(target, position)
-        if separation >= max(14.0, initial_distance + minimum_gain):
-            return True
-        time.sleep(0.5)
-    return False
+    from .escape_recovery import verify_escape
+
+    return verify_escape(
+        client,
+        threat_id,
+        initial_distance,
+        timeout=timeout,
+        minimum_gain=minimum_gain,
+    )
 
 
 def run_away(
@@ -1560,73 +1398,14 @@ def run_away(
     timeout: float = 6.0,
     minimum_gain: float = 5.0,
 ) -> bool:
-    """Choose a terrain-screened route and verify increasing separation."""
-    try:
-        state = client.transport.dispatch("get_state", {})
-        position = state.get("block_position", state.get("position", {})) or {}
-        try:
-            nearby = scan_for_threats(
-                client,
-                radius=16,
-                raise_on_error=True,
-                player_state=state,
-            )
-        except EntityQueryError:
-            nearby = [threat]
-        if not any(item.get("id") == threat.get("id") for item in nearby):
-            nearby.append(threat)
-        assessments = assess_threats(nearby, state)
-        if not assessments:
-            assessments = [
-                ThreatAssessment(
-                    entity=threat,
-                    entity_type=str(threat.get("type", "unknown")),
-                    distance=float(threat.get("distance", 0) or 0),
-                    closing_speed=0.0,
-                    score=1.0,
-                    style=AttackStyle.MELEE,
-                    always_evade=True,
-                )
-            ]
-        initial_distance = _separation_from(threat, position)
-        candidates = plan_escape_candidates(position, assessments)
-        safe_candidates = [
-            candidate
-            for candidate in candidates[:3]
-            if _escape_destination_safe(client, candidate.x, candidate.y, candidate.z)
-        ]
-        if not safe_candidates:
-            print("FLEE: no terrain-safe escape endpoint found")
-            return False
+    from .escape_recovery import run_away as implementation
 
-        per_candidate = max(1.5, timeout / len(safe_candidates))
-        for candidate in safe_candidates:
-            print(
-                f"FLEE: pathing to {candidate.x},{candidate.y},{candidate.z}; "
-                f"initial separation {initial_distance:.1f}m"
-            )
-            client.transport.dispatch(
-                "goal",
-                {"x": candidate.x, "y": candidate.y, "z": candidate.z},
-            )
-            client.transport.dispatch("chat", {"message": "#path"})
-            if _verify_escape(
-                client,
-                threat.get("id"),
-                initial_distance,
-                timeout=per_candidate,
-                minimum_gain=minimum_gain,
-            ):
-                print("FLEE: separation verified")
-                return True
-            client.transport.dispatch("cancel", {})
-        print("FLEE: candidate routes did not increase separation")
-        return False
-    except PlayerDeathDetected:
-        raise
-    except Exception as exc:
-        print(f"Run away failed: {exc}")
-        return False
+    return implementation(
+        client,
+        threat,
+        timeout=timeout,
+        minimum_gain=minimum_gain,
+    )
 
 
 def ensure_alive(client, state: Optional[Dict] = None) -> bool:
