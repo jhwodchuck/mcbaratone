@@ -977,6 +977,31 @@ def test_satisfied_stone_target_does_not_discard_inventory(monkeypatch):
     assert resources.gather_stone(client, count=32)
 
 
+def test_stone_gathering_does_not_resume_underwater_mine_after_surfacing(
+    monkeypatch,
+):
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport, _submersion_ticks=1)
+    monkeypatch.setattr(resources, "count_item", lambda _c, _i: 0)
+    monkeypatch.setattr(resources, "_reserve_gathering_inventory", lambda _c: True)
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _c: True)
+    monkeypatch.setattr(resources, "free_inventory_slots", lambda _c: 10)
+
+    def surface(_client):
+        _client._submersion_ticks = 0
+        return True
+
+    monkeypatch.setattr(
+        "baritone_client.common.combat.defend_or_flee",
+        surface,
+    )
+
+    assert not resources.gather_stone(client, count=9, timeout=30)
+    mining = [call for call in transport.calls if call[0] == "mine"]
+    assert len(mining) == 1
+    assert transport.calls[-1] == ("cancel", {})
+
+
 def test_descend_to_stone_layer_tunnels_down_from_surface(monkeypatch):
     transport = RecordingTransport()
     client = SimpleNamespace(transport=transport)
