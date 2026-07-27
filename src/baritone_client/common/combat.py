@@ -16,6 +16,7 @@ from .emergency_food import EmergencyExploration, hunt_target, select_target
 from ..core.exceptions import TransportError
 
 from .defense import (
+    AttackStyle,
     DefenseMode,
     DefenseRuntime,
     assess_threats,
@@ -1360,6 +1361,68 @@ def _stop_for_defense(client) -> None:
     client.transport.dispatch("cancel", {})
 
 
+def _relocate_away_from(
+    client,
+    threat: Dict,
+    *,
+    distance: int = 28,
+    timeout: int = 30,
+) -> bool:
+    """Walk decisively away from a threat that must never be fought.
+
+    run_away's escape candidates are deliberately short-range -- they are
+    picked from blocks immediately around the player and then rejected unless
+    they gain ``minimum_gain`` (5m) of separation. Against a threat that is
+    already ~5m away in open terrain there is often no such candidate, so
+    run_away fails every single time while the threat neither closes nor
+    leaves. Confirmed live: Bot07 and Bot08 each spent 24+ hours cycling
+    "evade creeper at 5.5m" -> "candidate routes did not increase separation"
+    -> "Wood gathering interrupted by defense logic" without dying OR making
+    any progress (~1700 cancelled actions each, zero wood gathered).
+
+    Fighting is not an option for these threats by policy (a meleed creeper
+    detonates), so break the standoff the only remaining way: pick a point a
+    full ``distance`` blocks along the vector directly away from the threat
+    and let normal pathing take the bot there, out of the mob's aggro range
+    and away from the contested work area.
+    """
+    from .navigation import goto
+
+    try:
+        state = client.transport.dispatch("get_state", {})
+    except Exception:
+        return False
+    position = state.get("block_position", state.get("position", {})) or {}
+    threat_position = entity_position(threat)
+    if threat_position is None or not position:
+        return False
+    px = float(position.get("x", 0) or 0)
+    py = float(position.get("y", 64) or 64)
+    pz = float(position.get("z", 0) or 0)
+    dx = px - float(threat_position[0])
+    dz = pz - float(threat_position[2])
+    norm = (dx * dx + dz * dz) ** 0.5
+    if norm < 0.5:
+        # Standing essentially on top of the threat gives no usable bearing.
+        return False
+    target_x = int(px + dx / norm * distance)
+    target_z = int(pz + dz / norm * distance)
+    print(
+        f"DEFENSE: relocating {distance} blocks away from "
+        f"{threat.get('type')} to ({target_x}, {int(py)}, {target_z})"
+    )
+    return bool(
+        goto(
+            client,
+            target_x,
+            int(py),
+            target_z,
+            timeout=timeout,
+            tolerance=4.0,
+        )
+    )
+
+
 def _escape_destination_safe(client, x: int, y: int, z: int) -> bool:
     from .escape_recovery import destination_safe
 
@@ -1515,6 +1578,25 @@ def defend_or_flee(client) -> bool:
         runtime.record_evade_result(threat_id, escaped)
         if escaped or not runtime.should_escalate_to_combat(threat_id):
             runtime.hold_recovery(8.0 if escaped else 12.0)
+            return True
+        # Some threats must never be meleed no matter how badly evasion is
+        # going: a creeper detonates when you close on it, and an early-game
+        # bot cannot trade with a boss. Those carry EXPLOSIVE/BOSS styles, and
+        # escalating against them turns a stalemate into a death. This branch
+        # originally escalated on ANY failed evasion, which live-fired against
+        # creepers 364x on Bot07 and 367x on Bot08 -- it never killed them only
+        # because abort_on_other_hostiles kept bailing out first. Relocate out
+        # of the contested area instead; that is the one remaining move that
+        # both respects the no-fight policy and actually ends the standoff.
+        if primary.style in (AttackStyle.EXPLOSIVE, AttackStyle.BOSS):
+            print(
+                f"DEFENSE: evasion failed {runtime.evade_failures}x against "
+                f"{primary.entity.get('type')}; relocating (never melee "
+                f"{primary.style.value} threats)"
+            )
+            relocated = _relocate_away_from(client, primary.entity)
+            runtime.record_evade_result(threat_id, relocated)
+            runtime.hold_recovery(8.0 if relocated else 15.0)
             return True
         # Repeated evasion against this exact threat has failed every time
         # (see DefenseRuntime.record_evade_result) -- continuing to hold that

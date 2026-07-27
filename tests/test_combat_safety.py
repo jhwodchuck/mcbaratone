@@ -1232,3 +1232,82 @@ def test_emergency_food_does_not_chase_distant_target_at_critical_health(monkeyp
     combat.acquire_emergency_food(client, minimum_health=12.0, timeout=1.0)
 
     assert not hunted
+
+
+def _evade_client(monkeypatch, mob_type, *, escaped=False):
+    """Client wired so defend_or_flee always takes the EVADE branch and
+    run_away always fails, so repeated ticks accumulate evade failures."""
+    transport = CombatTransport(health=20.0)
+    client = SimpleNamespace(transport=transport)
+    threat = {
+        "id": 77,
+        "type": f"minecraft:{mob_type}",
+        "distance": 5.5,
+        "position": {"x": 5, "y": 64, "z": 0},
+    }
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [threat])
+    monkeypatch.setattr(combat, "get_equipped_armor", lambda _c: {})
+    monkeypatch.setattr(combat, "run_away", lambda *_a, **_k: escaped)
+    monkeypatch.setattr(combat.time, "sleep", lambda _s: None)
+    return client, transport
+
+
+def test_repeated_evasion_never_melees_a_creeper(monkeypatch):
+    """A meleed creeper detonates -- that is exactly why its ThreatProfile is
+    always_evade/EXPLOSIVE. The evade-escalation added for cornered zombies
+    originally fired on ANY failed evasion, so it live-fired against creepers
+    364x on Bot07 and 367x on Bot08. It must relocate instead of fighting."""
+    client, _t = _evade_client(monkeypatch, "creeper")
+    fought = []
+    relocated = []
+    monkeypatch.setattr(combat, "safe_combat", lambda *_a, **_k: fought.append(True) or True)
+    monkeypatch.setattr(
+        combat, "_relocate_away_from", lambda *_a, **_k: relocated.append(True) or True
+    )
+
+    for _ in range(5):
+        assert combat.defend_or_flee(client)
+
+    assert not fought, "must never melee an EXPLOSIVE threat"
+    assert relocated, "should break the standoff by relocating"
+
+
+def test_repeated_evasion_still_fights_back_against_a_zombie(monkeypatch):
+    """The escalation's original purpose: a zombie is only in EVADE because of
+    the armor_count<3 gate, not because it is unfightable by policy. That case
+    must still escalate."""
+    client, _t = _evade_client(monkeypatch, "zombie")
+    fought = []
+    relocated = []
+    monkeypatch.setattr(combat, "safe_combat", lambda *_a, **_k: fought.append(True) or True)
+    monkeypatch.setattr(
+        combat, "_relocate_away_from", lambda *_a, **_k: relocated.append(True) or True
+    )
+
+    for _ in range(5):
+        assert combat.defend_or_flee(client)
+
+    assert fought, "a cornered zombie should still be fought as a last resort"
+    assert not relocated
+
+
+def test_relocate_away_from_targets_a_point_opposite_the_threat(monkeypatch):
+    """The relocation endpoint must be far enough to leave the contested area
+    (run_away's own candidates top out a few blocks away, which is why the
+    creeper standoff never resolved) and directly away from the threat."""
+    transport = CombatTransport(health=20.0)
+    client = SimpleNamespace(transport=transport)
+    # Player at origin, threat 5 blocks to the +x side.
+    threat = {"id": 5, "type": "minecraft:creeper", "position": {"x": 5, "y": 64, "z": 0}}
+    captured = {}
+
+    def fake_goto(_client, x, y, z, **kwargs):
+        captured.update({"x": x, "y": y, "z": z})
+        return True
+
+    monkeypatch.setattr("baritone_client.common.navigation.goto", fake_goto)
+
+    assert combat._relocate_away_from(client, threat, distance=28)
+    # Directly away means -x, and a full 28 blocks out.
+    assert captured["x"] == -28
+    assert captured["z"] == 0
