@@ -107,7 +107,10 @@ class _Evidence:
         path = self.manager.checkpoint_dir / self.manager.CHECKPOINT_FILE
         try:
             checkpoint = json.loads(path.read_text(encoding="utf-8"))
-            previous = checkpoint.get("inventory_summary", {})
+            previous = checkpoint.get(
+                "inventory_observations",
+                checkpoint.get("inventory_summary", {}),
+            )
         except (OSError, ValueError, AttributeError):
             previous = {}
         if isinstance(previous, Mapping):

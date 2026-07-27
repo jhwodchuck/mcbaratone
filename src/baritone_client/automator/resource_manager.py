@@ -290,7 +290,6 @@ class ResourceManager:
         self.cached_inventory: Dict[str, int] = {}
         self.crafting_queue: List[CraftingTask] = []
         self.recipes = self.DEFAULT_RECIPES.copy()
-
         # Create validator for requirement checking
         self.validator = ResourceRequirementValidator(self.recipes, self.EQUIVALENCIES)
 
@@ -446,8 +445,9 @@ class ResourceManager:
                 count = item.get("count", 0)
                 if item_id and count > 0:
                     counts[item_id] = counts.get(item_id, 0) + count
-
         self.cached_inventory = counts
+        if observer := getattr(self, "inventory_observer", None):
+            observer(counts)
         self._update_efficiency_stats(counts)
         return counts
         

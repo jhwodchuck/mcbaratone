@@ -2,6 +2,8 @@ from types import SimpleNamespace
 
 from baritone_client.automator.phase_executor import PhaseExecutor, PhaseHandler
 from baritone_client.automator.phase_verifier import PhaseVerifier
+from baritone_client.automator.automator import EndGameAutomator
+from baritone_client.automator.objective import ObjectivePlanner, default_objectives
 from baritone_client.automator.resource_manager import ResourceManager
 from baritone_client.automator.state_manager import Phase, StateManager
 from baritone_client.automator.phases.iron_farm import IronFarmHandler
@@ -135,3 +137,80 @@ def test_unimplemented_handlers_fail_explicitly(tmp_path):
         result = handler.execute(client, resources, state)
         assert not result.success
         assert "not implemented" in result.reason
+
+
+def test_resume_audit_rewinds_pre_verifier_completion(tmp_path):
+    client, resources, state, verifier = make_verifier(tmp_path)
+    state.has_durable_inventory_observations = True
+    state.phase_progress.update(
+        {
+            Phase.BRIDGE_CHECK: 1.0,
+            Phase.SPAWN_BOOTSTRAP: 1.0,
+            Phase.INITIAL_GATHERING: 1.0,
+            Phase.BASE_CONSTRUCTION: 1.0,
+            Phase.BOOT_SEQUENCE: 1.0,
+            Phase.FOOD_AND_IRON: 1.0,
+        }
+    )
+    planner = ObjectivePlanner(default_objectives())
+    planner.restore(
+        {
+            Phase.BRIDGE_CHECK,
+            Phase.SPAWN_BOOTSTRAP,
+            Phase.INITIAL_GATHERING,
+            Phase.BASE_CONSTRUCTION,
+            Phase.BOOT_SEQUENCE,
+            Phase.FOOD_AND_IRON,
+        }
+    )
+    automator = SimpleNamespace(
+        planner=planner,
+        state=state,
+        phase_verifier=verifier,
+    )
+
+    EndGameAutomator._revalidate_completed_objectives(automator)
+
+    assert planner.completed_phases() == {
+        Phase.BRIDGE_CHECK,
+        Phase.SPAWN_BOOTSTRAP,
+    }
+    assert state.get_current_phase() is Phase.INITIAL_GATHERING
+    assert state.get_progress(Phase.INITIAL_GATHERING) == 0.0
+
+
+def test_resume_audit_preserves_legacy_checkpoint_completion(tmp_path):
+    _client, _resources, state, verifier = make_verifier(tmp_path)
+    completed = {
+        Phase.BRIDGE_CHECK,
+        Phase.SPAWN_BOOTSTRAP,
+        Phase.INITIAL_GATHERING,
+        Phase.BASE_CONSTRUCTION,
+        Phase.BOOT_SEQUENCE,
+        Phase.FOOD_AND_IRON,
+    }
+    planner = ObjectivePlanner(default_objectives())
+    planner.restore(completed)
+    automator = SimpleNamespace(
+        planner=planner,
+        state=state,
+        phase_verifier=verifier,
+    )
+
+    EndGameAutomator._revalidate_completed_objectives(automator)
+
+    assert planner.completed_phases() == completed
+
+
+def test_resource_refresh_reports_inventory_for_durable_observation(tmp_path):
+    inventory = [{"id": "minecraft:cobblestone", "count": 32}]
+    _client, resources, state, _verifier = make_verifier(
+        tmp_path,
+        inventory,
+    )
+    observed = []
+    resources.inventory_observer = lambda counts: observed.append(dict(counts))
+
+    resources.refresh_inventory()
+
+    assert observed == [{"minecraft:cobblestone": 32}]

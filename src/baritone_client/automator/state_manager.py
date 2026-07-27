@@ -14,6 +14,7 @@ from .versioning import VersionManager, SemanticVersion
 from .migration import MigrationManager, create_default_checkpoint_migration_registry
 from .serialization_multi import FileSerializer, SerializationFormat
 from .storage import DistributedStorageManager, create_filesystem_storage, StorageMetadata
+from .phase_condition import PhaseCondition
 from ..world_identity import WorldIdentity
 from ..observability import emit_event
 
@@ -47,33 +48,6 @@ class Checkpoint:
     inventory_summary: Dict[str, int]
     timestamp: float
     custom_data: Dict[str, Any]
-
-
-@dataclass
-class PhaseCondition:
-    """
-    Weighted condition for phase transition.
-    
-    Attributes:
-        name: Identifier for the condition
-        description: Human readable description
-        weight: Importance (0.0 to 1.0, or relative)
-        is_optional: If true, failure doesn't block transition (just affects score)
-        check_fn: Optional callable returning (bool, float_score)
-    """
-    name: str
-    description: str
-    weight: float = 1.0
-    is_optional: bool = False
-    
-    def evaluate(self, context: Any) -> float:
-        """
-        Evaluate condition against context.
-        Returns weighted score (0.0 to weight).
-        """
-        # Checks would need to be injected or registered.
-        # For simple data carrying, we might rely on the caller to check value.
-        return 0.0
 
 
 class StateManager:
@@ -131,6 +105,8 @@ class StateManager:
         self.phase_progress: Dict[Phase, float] = {p: 0.0 for p in Phase}
         self.custom_data: Dict[str, Any] = {}
         self.phase_payloads: Dict[str, Dict[str, Any]] = {}
+        self.inventory_observations: Dict[str, int] = {}
+        self.has_durable_inventory_observations = False
         self._last_position: tuple[float, float, float] = (0, 64, 0)
 
         # Phase Readiness Scores
@@ -337,12 +313,22 @@ class StateManager:
         effective_seed = world_seed
         if effective_seed is None and effective_identity is not None:
             effective_seed = effective_identity.seed
+        normalized_inventory = {
+            str(item_id): max(0, int(count or 0))
+            for item_id, count in inventory_summary.items()
+        }
+        for item_id, count in normalized_inventory.items():
+            self.inventory_observations[item_id] = max(
+                self.inventory_observations.get(item_id, 0),
+                count,
+            )
 
         # Create checkpoint data with version metadata
         checkpoint = {
             "phase": self.current_phase.name,
             "position": list(self._last_position),
-            "inventory_summary": inventory_summary,
+            "inventory_summary": normalized_inventory,
+            "inventory_observations": dict(self.inventory_observations),
             "timestamp": time.time(),
             "phase_progress": {p.name: v for p, v in self.phase_progress.items()},
             "custom_data": self.custom_data,
@@ -352,6 +338,7 @@ class StateManager:
             "world_signature": effective_identity.stable_hash if effective_identity else None,
             "schema_version": str(self.current_schema_version)
         }
+        self.has_durable_inventory_observations = True
 
         # Use distributed storage system
         try:
@@ -712,6 +699,18 @@ class StateManager:
             for name, val in data.get("phase_progress", {}).items()
         }
         self.custom_data = data.get("custom_data", {})
+        self.has_durable_inventory_observations = (
+            "inventory_observations" in data
+        )
+        observed = data.get(
+            "inventory_observations",
+            data.get("inventory_summary", {}),
+        )
+        if isinstance(observed, dict):
+            self.inventory_observations = {
+                str(item_id): max(0, int(count or 0))
+                for item_id, count in observed.items()
+            }
         payloads = data.get("phase_payloads", {})
         if isinstance(payloads, dict):
             self.phase_payloads = {name: dict(value) for name, value in payloads.items()}

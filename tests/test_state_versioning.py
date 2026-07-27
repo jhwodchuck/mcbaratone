@@ -262,6 +262,55 @@ class TestStateManagerIntegration:
             assert new_state_manager.current_phase == expected_phase
             assert new_state_manager.get_progress() == 0.75
 
+    def test_inventory_observations_survive_consumption_and_restart(self):
+        """Milestone evidence must not shrink when carried items are consumed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_manager = StateManager(checkpoint_dir=tmpdir)
+            state_manager.save_checkpoint(
+                {
+                    "minecraft:oak_log": 16,
+                    "minecraft:cobblestone": 32,
+                }
+            )
+            state_manager.save_checkpoint({"minecraft:oak_log": 1})
+
+            resumed = StateManager(checkpoint_dir=tmpdir)
+            assert resumed.load_checkpoint()
+            assert resumed.has_durable_inventory_observations
+            assert resumed.inventory_observations == {
+                "minecraft:oak_log": 16,
+                "minecraft:cobblestone": 32,
+            }
+
+            with open(
+                Path(tmpdir) / StateManager.CHECKPOINT_FILE,
+                encoding="utf-8",
+            ) as handle:
+                checkpoint = json.load(handle)
+            assert checkpoint["inventory_summary"] == {
+                "minecraft:oak_log": 1
+            }
+            assert checkpoint["inventory_observations"][
+                "minecraft:cobblestone"
+            ] == 32
+
+    def test_legacy_inventory_summary_is_not_marked_durable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original = StateManager(checkpoint_dir=tmpdir)
+            original.set_phase(Phase.FOOD_AND_IRON)
+            original.save_checkpoint({"minecraft:iron_ingot": 7})
+            path = Path(tmpdir) / StateManager.CHECKPOINT_FILE
+            checkpoint = json.loads(path.read_text(encoding="utf-8"))
+            checkpoint.pop("inventory_observations")
+            path.write_text(json.dumps(checkpoint), encoding="utf-8")
+
+            resumed = StateManager(checkpoint_dir=tmpdir)
+            assert resumed.load_checkpoint()
+            assert not resumed.has_durable_inventory_observations
+            assert resumed.inventory_observations == {
+                "minecraft:iron_ingot": 7
+            }
+
     def test_checkpoint_validation(self):
         """Test checkpoint validation."""
         # Isolated dir: a default StateManager() points at the repo root and

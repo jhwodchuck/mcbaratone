@@ -13,6 +13,7 @@ from .coordination_hub import CoordinationHub, SystemEvent, EventType
 from .systems import SafetySystem, HungerSystem, MappingSystem
 from .telemetry import TelemetrySystem
 from ..common.nether import find_nearest_portal
+from ..common.tasks import TaskResult
 from ..actions.death_recovery_action import DeathRecoveryAction
 from ..core.interfaces import ActionContext, ActionResult
 from ..actions.base import BaseAction
@@ -68,6 +69,7 @@ class EndGameAutomator:
         self.world_seed_override = world_seed_override
         self.state = StateManager(checkpoint_dir)
         self.resources = ResourceManager(client)
+        self.resources.inventory_observer = self._observe_inventory
         self.coordination = CoordinationHub()
         self.systems = [
             SafetySystem(client, self.coordination, resources=self.resources),
@@ -99,6 +101,14 @@ class EndGameAutomator:
         self.on_phase_complete: Optional[Callable[[Phase], None]] = None
         self.on_phase_fail: Optional[Callable[[Phase], None]] = None
         self.on_complete: Optional[Callable[[], None]] = None
+
+    def _observe_inventory(self, inventory: dict[str, int]) -> None:
+        """Retain inventory high-water marks until the next checkpoint write."""
+        for item_id, count in inventory.items():
+            self.state.inventory_observations[item_id] = max(
+                self.state.inventory_observations.get(item_id, 0),
+                int(count or 0),
+            )
     
     def register_handler(self, phase: Phase, handler: PhaseHandler) -> None:
         """Register a phase handler."""
@@ -205,6 +215,7 @@ class EndGameAutomator:
             if seed:
                 print(f"  World seed: {seed}")
             self._restore_planner()
+            self._revalidate_completed_objectives()
         else:
             print("Starting fresh automation")
 
@@ -472,6 +483,51 @@ class EndGameAutomator:
             self.planner.restore(completed)
         else:
             self.planner.restore_linear(self.state.get_current_phase())
+
+    def _revalidate_completed_objectives(self) -> None:
+        """Drop stale pre-verifier completions that no longer have evidence."""
+        if not self.state.has_durable_inventory_observations:
+            print(
+                "CHECKPOINT AUDIT: preserving legacy objective completion "
+                "until durable inventory observations are available"
+            )
+            return
+        completed = self.planner.completed_phases()
+        valid = {
+            phase
+            for phase in (Phase.BRIDGE_CHECK, Phase.SPAWN_BOOTSTRAP)
+            if phase in completed
+        }
+        removed = []
+        for objective in self.planner.objectives:
+            phase = objective.phase
+            if phase not in completed or phase in valid:
+                continue
+            if not set(objective.requires).issubset(valid):
+                removed.append((phase, "prerequisite evidence is missing"))
+                continue
+            verification = self.phase_verifier.verify(
+                phase,
+                TaskResult.ok("checkpoint revalidation"),
+            )
+            if verification.success:
+                valid.add(phase)
+            else:
+                removed.append((phase, verification.reason))
+        if not removed:
+            return
+        self.planner.restore(valid)
+        for phase, _reason in removed:
+            self.state.update_progress(0.0, phase=phase)
+        self.state.custom_data["completed_objectives"] = [
+            phase.name for phase in valid
+        ]
+        runnable = self.planner.select(self.planner.runnable())
+        if runnable is not None:
+            self.state.set_phase(runnable.phase)
+        print("CHECKPOINT AUDIT: removed unverified objective completion:")
+        for phase, reason in removed:
+            print(f"  - {phase.name}: {reason}")
 
     def _persist_objective_progress(self) -> None:
         """Record completed objectives into custom_data so they survive a restart."""

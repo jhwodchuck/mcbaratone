@@ -189,10 +189,18 @@ class ProgressionEvidence:
 
     @property
     def checkpoint_inventory(self) -> Dict[str, int]:
-        raw = self.checkpoint.get("inventory_summary", {})
+        current = self.checkpoint.get("inventory_summary", {})
+        raw = self.checkpoint.get("inventory_observations", current)
         if not isinstance(raw, dict):
             return {}
-        return {str(key): int(value or 0) for key, value in raw.items()}
+        result = {str(key): int(value or 0) for key, value in raw.items()}
+        if isinstance(current, dict):
+            for item_id, count in current.items():
+                result[str(item_id)] = max(
+                    result.get(str(item_id), 0),
+                    int(count or 0),
+                )
+        return result
 
     @property
     def observed_inventory(self) -> Dict[str, int]:
