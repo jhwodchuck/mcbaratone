@@ -231,6 +231,12 @@ def _reach_overworld_grave(
             death_coords[2],
             timeout=120,
         )
+        if getattr(client, "_last_navigation_survival_abort", False):
+            print(
+                "RECOVERY: abandoning submerged grave approach after "
+                "surfacing intervention"
+            )
+            return False
         final_state = client.transport.dispatch("get_state", {})
         alive = not final_state.get("is_dead", False) and float(
             final_state.get("health", 20) or 0

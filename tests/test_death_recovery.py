@@ -522,6 +522,25 @@ def test_lost_grave_bootstraps_starter_tools(monkeypatch):
     assert boot == [True]
 
 
+def test_submerged_grave_approach_stops_after_first_survival_abort(monkeypatch):
+    transport = RecoveryTransport({})
+    transport.dead = False
+    client = SimpleNamespace(transport=transport)
+    approaches = []
+
+    def survival_aborted_goto(active_client, *_args, **_kwargs):
+        approaches.append(True)
+        active_client._last_navigation_survival_abort = True
+        return False
+
+    monkeypatch.setattr(death_recovery_action, "goto", survival_aborted_goto)
+
+    assert not death_recovery_action._reach_overworld_grave(
+        client, (-70, 52, -120), attempts=2
+    )
+    assert approaches == [True]
+
+
 def test_lost_grave_still_fails_when_bootstrap_fails(monkeypatch):
     context = _context(
         {"x": -70, "y": 62, "z": -120, "dimension": "minecraft:overworld"}

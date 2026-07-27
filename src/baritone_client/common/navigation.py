@@ -34,6 +34,7 @@ def goto(
         True if reached destination
     """
     try:
+        client._last_navigation_survival_abort = False
         client.transport.dispatch("goto", {"x": x, "y": y, "z": z})
         
         start = time.time()
@@ -43,16 +44,16 @@ def goto(
                 
             state = client.transport.dispatch("get_state", {})
 
-            # Central survival reflex: surface before drowning. Pathing across
-            # water is the fleet's #1 drowning scenario, and this loop is where
-            # the bot spends that time. survival_tick surfaces and cancels the
-            # path, so re-issue the goto afterward to resume toward the target.
+            # Central survival reflex: surface before drowning. Surfacing
+            # cancels the path, and the target may itself be underwater. Do not
+            # immediately replay that same goal: live grave recovery repeatedly
+            # dived back to a submerged death point until the bot drowned.
             from .combat import survival_tick
 
             if survival_tick(client, state):
-                client.transport.dispatch("goto", {"x": x, "y": y, "z": z})
-                time.sleep(check_interval)
-                continue
+                client._last_navigation_survival_abort = True
+                client.transport.dispatch("cancel", {})
+                return False
 
             position = state.get("block_position", state.get("position", {}))
             px = position.get("x", state.get("x", 0))

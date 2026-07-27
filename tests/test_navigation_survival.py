@@ -21,7 +21,7 @@ class SubmergedNavTransport:
         return {}
 
 
-def test_goto_surfaces_and_reissues_path_when_submerged(monkeypatch):
+def test_goto_surfaces_and_aborts_submerged_path_without_replay(monkeypatch):
     client = SimpleNamespace(
         transport=SubmergedNavTransport(), _submersion_ticks=1
     )
@@ -32,13 +32,12 @@ def test_goto_surfaces_and_reissues_path_when_submerged(monkeypatch):
         lambda _c, **_k: surfaced.append(True) or True,
     )
     monkeypatch.setattr(navigation.time, "sleep", lambda _s: None)
-    # start=0, two in-bounds iterations, then exceed the timeout.
-    clock = iter([0.0, 1.0, 2.0, 100.0])
+    clock = iter([0.0, 1.0])
     monkeypatch.setattr(navigation.time, "time", lambda: next(clock))
 
     result = navigation.goto(client, 100, 62, 100, timeout=10, check_interval=0)
 
-    assert result is False  # never reached the (unreachable, mocked) target
+    assert result is False
     assert surfaced == [True]  # drowning reflex fired mid-path
-    # Initial dispatch + at least one re-issue after surfacing.
-    assert client.transport.gotos >= 2
+    assert client.transport.gotos == 1
+    assert client._last_navigation_survival_abort is True
