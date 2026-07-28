@@ -8,7 +8,12 @@ from pprint import pformat
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 
 from .state_manager import Phase, StateManager
-from ..common.tasks import PlayerDeathDetected, SurvivalRecoveryRequired, TaskResult
+from ..common.tasks import (
+    PlayerDeathDetected,
+    SurvivalRecoveryRequired,
+    TaskResult,
+    normalize_task_result,
+)
 from .resource_manager import ResourceManager
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
 import logging
@@ -156,11 +161,7 @@ class PhaseExecutor:
     
     def _coerce_result(self, result: Any) -> TaskResult:
         """Normalize handler return values to TaskResult."""
-        if isinstance(result, TaskResult):
-            return result
-        if isinstance(result, bool):
-            return TaskResult.ok() if result else TaskResult.fail("Phase handler returned False")
-        return TaskResult.ok(data={"result": result})
+        return normalize_task_result(result)
     
     def execute_phase(self, phase: Phase) -> bool:
         """

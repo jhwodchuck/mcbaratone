@@ -9,6 +9,7 @@ from .resource_manager import ResourceManager
 from .phase_executor import PhaseExecutor, PhaseHandler
 from .phase_verifier import PhaseVerifier
 from .objective import ObjectivePlanner, default_objectives
+from .progress_control import progression_fingerprint
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
 from .systems import SafetySystem, HungerSystem, MappingSystem
 from .telemetry import TelemetrySystem
@@ -295,6 +296,7 @@ class EndGameAutomator:
 
                 phase = obj.phase
                 self.planner.mark_active(obj)
+                self._persist_objective_progress()
                 self.state.set_phase(phase)  # keeps checkpoint / Suite 1200 current_phase meaningful
 
                 if self.on_phase_start:
@@ -309,17 +311,32 @@ class EndGameAutomator:
                     and self.executor.interruption_reason
                     in {"player_death", "survival_recovery"}
                 ):
-                    self.planner.mark_yielded(obj)
                     interruption = self.executor.interruption_reason
-                    print(
-                        f"Phase {phase.name} yielded to {interruption}; "
-                        "objective attempt was not consumed."
+                    self.planner.record_evidence(
+                        obj, progression_fingerprint(self.state)
                     )
+                    requeued = self.planner.mark_yielded(obj, interruption)
+                    self._persist_objective_progress()
+                    self._save_checkpoint()
+                    if requeued:
+                        print(
+                            f"Phase {phase.name} yielded to {interruption}; "
+                            f"recovery budget {obj.interruptions}/"
+                            f"{obj.max_interruptions}."
+                        )
+                    else:
+                        print(
+                            f"Phase {phase.name} exhausted its recovery/no-progress "
+                            "budget and was abandoned for this checkpoint."
+                        )
                     if interruption == "survival_recovery":
                         time.sleep(max(1.0, min(5.0, self.executor.retry_delay)))
                     continue
 
                 if success:
+                    self.planner.record_evidence(
+                        obj, progression_fingerprint(self.state)
+                    )
                     self.planner.mark_done(obj)
                     if self.on_phase_complete:
                         self.on_phase_complete(phase)
@@ -336,6 +353,10 @@ class EndGameAutomator:
 
                     # Non-fatal: re-queue for a later pass, or abandon and move on to
                     # other objectives instead of killing the whole run.
+                    self.planner.record_evidence(
+                        obj, progression_fingerprint(self.state)
+                    )
+                    obj.last_failure = "phase_failed"
                     requeued = self.planner.mark_failed(obj)
                     if requeued:
                         print(f"\nPhase {phase.name} failed (attempt {obj.attempts}/"
@@ -343,6 +364,8 @@ class EndGameAutomator:
                     else:
                         print(f"\nPhase {phase.name} abandoned after {obj.attempts} "
                               f"attempts; continuing with remaining objectives.")
+                    self._persist_objective_progress()
+                    self._save_checkpoint()
 
             if self.planner.is_complete():
                 self.state.set_phase(Phase.COMPLETE)
@@ -480,7 +503,10 @@ class EndGameAutomator:
                     completed.append(Phase[name])
                 except KeyError:
                     continue  # phase renamed/removed across versions -> ignore
-            self.planner.restore(completed)
+            self.planner.restore(
+                completed,
+                runtime=self.state.custom_data.get("objective_runtime"),
+            )
         else:
             self.planner.restore_linear(self.state.get_current_phase())
 
@@ -516,7 +542,10 @@ class EndGameAutomator:
                 removed.append((phase, verification.reason))
         if not removed:
             return
-        self.planner.restore(valid)
+        self.planner.restore(
+            valid,
+            runtime=self.state.custom_data.get("objective_runtime"),
+        )
         for phase, _reason in removed:
             self.state.update_progress(0.0, phase=phase)
         self.state.custom_data["completed_objectives"] = [
@@ -534,6 +563,7 @@ class EndGameAutomator:
         self.state.custom_data["completed_objectives"] = [
             p.name for p in self.planner.completed_phases()
         ]
+        self.state.custom_data["objective_runtime"] = self.planner.runtime_state()
     
     def _handle_death_recovery(self) -> bool:
         """Handle death and stop the run if recovery cannot be proven safe."""

@@ -276,6 +276,33 @@ def test_boot_infrastructure_repairs_only_missing_world_block(monkeypatch):
     assert result.success
 
 
+def test_boot_infrastructure_can_precede_full_house(monkeypatch):
+    state = SimpleNamespace(custom_data={})
+    client = SimpleNamespace(transport=SimpleNamespace())
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.find_flat_ground",
+        lambda *_args, **_kwargs: (20, 64, 30),
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.setup_base",
+        lambda *_args, **_kwargs: (True, (20, 64, 30)),
+    )
+
+    result = InfrastructurePlacementAction().execute(
+        SimpleNamespace(client=client, state=state)
+    )
+
+    assert result.success
+    assert state.custom_data["bootstrap_base_location"] == [20, 64, 30]
+    assert state.custom_data["structures"]["bootstrap_base"] == {
+        "origin": [20, 64, 30],
+        "crafting_table": [21, 64, 31],
+        "furnace": [22, 64, 31],
+        "supply_chest": [21, 64, 32],
+        "verified": True,
+    }
+
+
 def test_boot_wood_check_counts_real_plank_ids(monkeypatch):
     monkeypatch.setattr(
         "baritone_client.actions.boot_sequence.count_item",

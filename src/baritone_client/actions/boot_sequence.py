@@ -13,7 +13,12 @@ from .inventory import InventoryAction
 from ..core.interfaces import ActionContext, ActionResult
 from ..common.inventory import count_item, craft
 from ..common.resources import gather_wood, gather_stone, ensure_supplies
-from ..common.base import setup_base, sleep_through_night, wait_for_safe_daylight
+from ..common.base import (
+    find_flat_ground,
+    setup_base,
+    sleep_through_night,
+    wait_for_safe_daylight,
+)
 from ..common.combat import hunt_passive_mobs
 from ..common.navigation import find_nearby_block, goto
 
@@ -438,7 +443,36 @@ class InfrastructurePlacementAction(BaseAction):
                 house_target = (int(origin[0]), int(origin[1]) + 1, int(origin[2]))
 
         if not isinstance(house_target, (list, tuple)) or len(house_target) != 3:
-            return ActionResult.fail("Checkpointed house location is unavailable")
+            # BOOT_SEQUENCE now establishes survival capabilities before the
+            # full starter house. Build a compact verified infrastructure
+            # anchor near the player instead of requiring T1203 up front.
+            bootstrap_site = find_flat_ground(
+                context.client,
+                radius=12,
+                footprint=3,
+            )
+            if bootstrap_site is None:
+                return ActionResult.fail(
+                    "No safe site found for bootstrap infrastructure"
+                )
+            success, location = setup_base(context.client, bootstrap_site)
+            if not success or location is None:
+                return ActionResult.fail(
+                    "Bootstrap infrastructure setup remained incomplete"
+                )
+            x, y, z = (int(value) for value in location)
+            custom_data = getattr(context.state, "custom_data", {})
+            custom_data["bootstrap_base_location"] = [x, y, z]
+            custom_data.setdefault("structures", {})["bootstrap_base"] = {
+                "origin": [x, y, z],
+                "crafting_table": [x + 1, y, z + 1],
+                "furnace": [x + 2, y, z + 1],
+                "supply_chest": [x + 1, y, z + 2],
+                "verified": True,
+            }
+            return ActionResult.ok(
+                "Bootstrap infrastructure established before house construction"
+            )
 
         print(f"Traveling to checkpointed house at {tuple(house_target)}...")
         if not goto(
@@ -537,10 +571,24 @@ class StorageOrganizationAction(BaseAction):
     """Organize items into chests."""
 
     def execute(self, context: ActionContext) -> ActionResult:
-        """Organize inventory into storage."""
-        # TODO: Implement storage organization
-        print("Organizing storage...")
-        return ActionResult.ok("Storage organization placeholder")
+        """Verify that durable storage exists for later organization."""
+        structures = getattr(context.state, "custom_data", {}).get(
+            "structures", {}
+        )
+        record = structures.get("starter_house") or structures.get(
+            "bootstrap_base", {}
+        )
+        position = record.get("supply_chest") if isinstance(record, dict) else None
+        if not isinstance(position, (list, tuple)) or len(position) != 3:
+            return ActionResult.fail("No persisted supply chest to organize")
+        block = self.run_command(
+            context,
+            "get_block",
+            {"x": position[0], "y": position[1], "z": position[2]},
+        ).get("id", "")
+        if block not in {"minecraft:chest", "minecraft:trapped_chest"}:
+            return ActionResult.fail("Persisted supply chest is not present")
+        return ActionResult.ok("Durable storage verified")
 
 
 class FinalSleepAction(BaseAction):

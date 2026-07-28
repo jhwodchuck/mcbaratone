@@ -48,7 +48,11 @@ def normalize_task_result(result: Any) -> TaskResult:
         if not isinstance(data, dict):
             data = {"result": result}
         return TaskResult(bool(result.success), str(reason or ""), data)
-    return TaskResult.ok(data={"result": result})
+    return TaskResult.fail(
+        f"Action returned unsupported result type: {type(result).__name__}",
+        result_type=type(result).__name__,
+        result_repr=repr(result),
+    )
 
 
 class Task(ABC):

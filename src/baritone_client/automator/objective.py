@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Callable, Dict, Iterable, List, Optional, Set
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Set
 
 from .state_manager import Phase
 
@@ -47,6 +47,8 @@ class Objective:
     requires: List[Phase] = field(default_factory=list)
     priority: int = 0
     max_attempts: int = 3
+    max_interruptions: int = 6
+    max_no_progress: int = 3
     terminal: bool = False
     # --- deferred: the utility-planner era fills these in once telemetry is real ---
     # est_cost: Optional[float] = None
@@ -56,6 +58,10 @@ class Objective:
 
     status: ObjStatus = ObjStatus.PENDING
     attempts: int = 0
+    interruptions: int = 0
+    no_progress_streak: int = 0
+    last_evidence: str = ""
+    last_failure: str = ""
 
 
 def default_objectives() -> List[Objective]:
@@ -69,9 +75,12 @@ def default_objectives() -> List[Objective]:
         Objective(Phase.BRIDGE_CHECK),
         Objective(Phase.SPAWN_BOOTSTRAP, requires=[Phase.BRIDGE_CHECK]),
         Objective(Phase.INITIAL_GATHERING, requires=[Phase.SPAWN_BOOTSTRAP]),
-        Objective(Phase.BASE_CONSTRUCTION, requires=[Phase.INITIAL_GATHERING]),
-        Objective(Phase.BOOT_SEQUENCE, requires=[Phase.BASE_CONSTRUCTION]),
-        Objective(Phase.FOOD_AND_IRON, requires=[Phase.BOOT_SEQUENCE]),
+        # Stabilize tools, food, storage, and a starter farm before committing
+        # to a full 7x7 house. A starving bot must not be gated behind a
+        # cosmetic construction objective.
+        Objective(Phase.BOOT_SEQUENCE, requires=[Phase.INITIAL_GATHERING]),
+        Objective(Phase.BASE_CONSTRUCTION, requires=[Phase.BOOT_SEQUENCE]),
+        Objective(Phase.FOOD_AND_IRON, requires=[Phase.BASE_CONSTRUCTION]),
         # Nether progression is the shortest critical path to end-game.
         # Keep it ahead of enchanting so stalled bots don't re-enter the
         # enchanting branch before building and traversing a nether portal.
@@ -160,10 +169,19 @@ class ObjectivePlanner:
     def mark_done(self, obj: Objective) -> None:
         obj.status = ObjStatus.DONE
 
-    def mark_yielded(self, obj: Objective) -> None:
-        """Requeue an interrupted objective without consuming an attempt."""
-        obj.status = ObjStatus.PENDING
+    def mark_yielded(self, obj: Objective, reason: str = "") -> bool:
+        """Budget an interrupted objective instead of retrying it forever."""
+        obj.interruptions += 1
+        obj.last_failure = str(reason or "interrupted")
         obj.attempts = max(0, obj.attempts - 1)
+        if (
+            obj.interruptions >= obj.max_interruptions
+            or obj.no_progress_streak >= obj.max_no_progress
+        ):
+            obj.status = ObjStatus.ABANDONED
+            return False
+        obj.status = ObjStatus.BLOCKED
+        return True
 
     def mark_failed(self, obj: Objective) -> bool:
         """Record a failed attempt.
@@ -172,27 +190,84 @@ class ObjectivePlanner:
             True if the objective was re-queued (BLOCKED, will retry after other
             goals advance); False if it was ABANDONED.
         """
-        if obj.attempts >= obj.max_attempts:
+        if (
+            obj.attempts >= obj.max_attempts
+            or obj.no_progress_streak >= obj.max_no_progress
+        ):
             obj.status = ObjStatus.ABANDONED
             return False
         obj.status = ObjStatus.BLOCKED
         return True
 
+    def record_evidence(self, obj: Objective, fingerprint: str) -> bool:
+        """Record whether an attempt changed durable capability evidence."""
+        if not fingerprint:
+            return True
+        if obj.last_evidence and obj.last_evidence == fingerprint:
+            obj.no_progress_streak += 1
+            return False
+        obj.last_evidence = fingerprint
+        obj.no_progress_streak = 0
+        return True
+
+    def runtime_state(self) -> Dict[str, dict]:
+        """Serialize failure budgets and progress evidence for checkpoints."""
+        return {
+            objective.phase.name: {
+                "status": objective.status.name,
+                "attempts": objective.attempts,
+                "interruptions": objective.interruptions,
+                "no_progress_streak": objective.no_progress_streak,
+                "last_evidence": objective.last_evidence,
+                "last_failure": objective.last_failure,
+            }
+            for objective in self.objectives
+        }
+
     # -- resume --------------------------------------------------------------
 
-    def restore(self, completed: Iterable[Phase]) -> None:
+    def restore(
+        self,
+        completed: Iterable[Phase],
+        runtime: Optional[Mapping[str, dict]] = None,
+    ) -> None:
         """Mark the given phases DONE (checkpoint resume).
 
         Objectives not listed are reset to PENDING so the graph re-derives what is
         runnable from the restored completion set.
         """
         completed_set = set(completed)
+        runtime = runtime if isinstance(runtime, Mapping) else {}
         for o in self.objectives:
             if o.phase in completed_set:
                 o.status = ObjStatus.DONE
             else:
-                o.status = ObjStatus.PENDING
-                o.attempts = 0
+                saved = runtime.get(o.phase.name, {})
+                if not isinstance(saved, Mapping):
+                    saved = {}
+                status_name = str(saved.get("status", "PENDING"))
+                try:
+                    saved_status = ObjStatus[status_name]
+                except KeyError:
+                    saved_status = ObjStatus.PENDING
+                # Runtime data carries budgets, not completion authority.
+                # A killed process cannot still own ACTIVE, and DONE is only
+                # restored from the separately verified completion set.
+                if saved_status is ObjStatus.ACTIVE:
+                    o.status = ObjStatus.BLOCKED
+                elif saved_status is ObjStatus.DONE:
+                    o.status = ObjStatus.PENDING
+                else:
+                    o.status = saved_status
+                o.attempts = max(0, int(saved.get("attempts", 0) or 0))
+                o.interruptions = max(
+                    0, int(saved.get("interruptions", 0) or 0)
+                )
+                o.no_progress_streak = max(
+                    0, int(saved.get("no_progress_streak", 0) or 0)
+                )
+                o.last_evidence = str(saved.get("last_evidence", "") or "")
+                o.last_failure = str(saved.get("last_failure", "") or "")
 
     def restore_linear(self, current_phase: Phase) -> None:
         """Back-compat resume for old checkpoints that only persisted a single

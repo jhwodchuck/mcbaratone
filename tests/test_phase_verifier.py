@@ -3,7 +3,11 @@ from types import SimpleNamespace
 from baritone_client.automator.phase_executor import PhaseExecutor, PhaseHandler
 from baritone_client.automator.phase_verifier import PhaseVerifier
 from baritone_client.automator.automator import EndGameAutomator
-from baritone_client.automator.objective import ObjectivePlanner, default_objectives
+from baritone_client.automator.objective import (
+    ObjectivePlanner,
+    ObjStatus,
+    default_objectives,
+)
 from baritone_client.automator.resource_manager import ResourceManager
 from baritone_client.automator.state_manager import Phase, StateManager
 from baritone_client.automator.phases.iron_farm import IronFarmHandler
@@ -24,6 +28,7 @@ class FakeTransport:
         if route == "get_state":
             return {
                 "health": 20,
+                "food_level": 20,
                 "is_dead": False,
                 "dimension": "minecraft:overworld",
             }
@@ -76,6 +81,31 @@ def test_food_and_iron_requires_live_items_and_persisted_food_source(tmp_path):
     verified = verifier.verify(Phase.FOOD_AND_IRON, TaskResult.ok())
     assert verified.success
     assert verified.gate_ids == ("T1204",)
+
+
+def test_boot_requires_real_survival_capabilities(tmp_path):
+    inventory = [{"id": "minecraft:stone_pickaxe", "count": 1}]
+    _client, _resources, state, verifier = make_verifier(tmp_path, inventory)
+    state.record_phase_payload(
+        Phase.BOOT_SEQUENCE,
+        {"completed_actions": 10, "sequence_result": "boot ready"},
+    )
+    state.custom_data["structures"] = {
+        "bootstrap_base": {"verified": True},
+    }
+
+    missing = verifier.verify(Phase.BOOT_SEQUENCE, TaskResult.ok())
+    assert not missing.success
+    assert "renewable starter food source persisted" in missing.reason
+
+    state.custom_data["structures"]["food_source"] = {
+        "verified": True,
+        "type": "starter_crop_farm",
+    }
+    verified = verifier.verify(Phase.BOOT_SEQUENCE, TaskResult.ok())
+
+    assert verified.success
+    assert verified.gate_ids == ("BOOT",)
 
 
 def test_initial_gathering_counts_items_deposited_in_verified_storage(tmp_path):
@@ -200,6 +230,31 @@ def test_resume_audit_preserves_legacy_checkpoint_completion(tmp_path):
     EndGameAutomator._revalidate_completed_objectives(automator)
 
     assert planner.completed_phases() == completed
+
+
+def test_automator_persists_and_restores_objective_failure_budget(tmp_path):
+    _client, _resources, state, _verifier = make_verifier(tmp_path)
+    planner = ObjectivePlanner(default_objectives())
+    planner.restore({Phase.BRIDGE_CHECK, Phase.SPAWN_BOOTSTRAP})
+    objective = planner._by_phase[Phase.INITIAL_GATHERING]
+    objective.status = ObjStatus.BLOCKED
+    objective.attempts = 2
+    objective.interruptions = 5
+    objective.no_progress_streak = 2
+    objective.last_evidence = "durable-evidence"
+
+    writer = SimpleNamespace(planner=planner, state=state)
+    EndGameAutomator._persist_objective_progress(writer)
+
+    restored = ObjectivePlanner(default_objectives())
+    reader = SimpleNamespace(planner=restored, state=state)
+    EndGameAutomator._restore_planner(reader)
+    recovered = restored._by_phase[Phase.INITIAL_GATHERING]
+
+    assert recovered.attempts == 2
+    assert recovered.interruptions == 5
+    assert recovered.no_progress_streak == 2
+    assert recovered.last_evidence == "durable-evidence"
 
 
 def test_resource_refresh_reports_inventory_for_durable_observation(tmp_path):

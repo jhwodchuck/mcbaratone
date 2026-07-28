@@ -25,8 +25,8 @@ class SiblingOrderingTest(unittest.TestCase):
         planner = ObjectivePlanner(default_objectives())
         # Drive the chain up to and including FOOD_AND_IRON.
         for phase in (Phase.BRIDGE_CHECK, Phase.SPAWN_BOOTSTRAP,
-                      Phase.INITIAL_GATHERING, Phase.BASE_CONSTRUCTION,
-                      Phase.BOOT_SEQUENCE, Phase.FOOD_AND_IRON):
+                      Phase.INITIAL_GATHERING, Phase.BOOT_SEQUENCE,
+                      Phase.BASE_CONSTRUCTION, Phase.FOOD_AND_IRON):
             ready = planner.runnable()
             obj = planner.select(ready)
             self.assertEqual(obj.phase, phase,
@@ -44,8 +44,8 @@ class SiblingOrderingTest(unittest.TestCase):
     def test_priority_breaks_the_sibling_tie(self):
         planner = ObjectivePlanner(default_objectives())
         for phase in (Phase.BRIDGE_CHECK, Phase.SPAWN_BOOTSTRAP,
-                      Phase.INITIAL_GATHERING, Phase.BASE_CONSTRUCTION,
-                      Phase.BOOT_SEQUENCE, Phase.FOOD_AND_IRON):
+                      Phase.INITIAL_GATHERING, Phase.BOOT_SEQUENCE,
+                      Phase.BASE_CONSTRUCTION, Phase.FOOD_AND_IRON):
             obj = planner.select(planner.runnable())
             planner.mark_active(obj)
             planner.mark_done(obj)
@@ -111,16 +111,79 @@ class NonFatalFailureTest(unittest.TestCase):
 
 class CompletionAndResumeTest(unittest.TestCase):
 
-    def test_yield_requeues_without_consuming_attempt(self):
-        planner = ObjectivePlanner(default_objectives())
-        objective = planner.select(planner.runnable())
+    def test_yield_budget_eventually_abandons_repeated_recovery(self):
+        objective = Objective(
+            Phase.BRIDGE_CHECK,
+            max_interruptions=2,
+        )
+        planner = ObjectivePlanner([objective])
+
         planner.mark_active(objective)
+        self.assertTrue(planner.mark_yielded(objective, "survival_recovery"))
+        self.assertEqual(objective.status, ObjStatus.BLOCKED)
+        self.assertEqual(objective.interruptions, 1)
 
-        planner.mark_yielded(objective)
+        planner.mark_active(objective)
+        self.assertFalse(planner.mark_yielded(objective, "survival_recovery"))
+        self.assertEqual(objective.status, ObjStatus.ABANDONED)
+        self.assertEqual(objective.interruptions, 2)
 
-        self.assertEqual(objective.status, ObjStatus.PENDING)
-        self.assertEqual(objective.attempts, 0)
-        self.assertIs(planner.select(planner.runnable()), objective)
+    def test_runtime_state_survives_restore(self):
+        planner = ObjectivePlanner(default_objectives())
+        objective = planner._by_phase[Phase.INITIAL_GATHERING]
+        objective.status = ObjStatus.BLOCKED
+        objective.attempts = 2
+        objective.interruptions = 4
+        objective.no_progress_streak = 2
+        objective.last_evidence = "same-evidence"
+
+        restored = ObjectivePlanner(default_objectives())
+        restored.restore(
+            [Phase.BRIDGE_CHECK, Phase.SPAWN_BOOTSTRAP],
+            runtime=planner.runtime_state(),
+        )
+        recovered = restored._by_phase[Phase.INITIAL_GATHERING]
+
+        self.assertEqual(recovered.status, ObjStatus.BLOCKED)
+        self.assertEqual(recovered.attempts, 2)
+        self.assertEqual(recovered.interruptions, 4)
+        self.assertEqual(recovered.no_progress_streak, 2)
+        self.assertEqual(recovered.last_evidence, "same-evidence")
+
+    def test_runtime_status_cannot_restore_unverified_completion(self):
+        planner = ObjectivePlanner(default_objectives())
+        planner.restore(
+            [],
+            runtime={
+                "BRIDGE_CHECK": {
+                    "status": "DONE",
+                    "attempts": 1,
+                }
+            },
+        )
+
+        self.assertNotIn(Phase.BRIDGE_CHECK, planner.completed_phases())
+        self.assertEqual(
+            planner._by_phase[Phase.BRIDGE_CHECK].status,
+            ObjStatus.PENDING,
+        )
+
+    def test_default_graph_stabilizes_survival_before_full_house(self):
+        planner = ObjectivePlanner(default_objectives())
+        for phase in (
+            Phase.BRIDGE_CHECK,
+            Phase.SPAWN_BOOTSTRAP,
+            Phase.INITIAL_GATHERING,
+        ):
+            objective = planner.select(planner.runnable())
+            self.assertEqual(objective.phase, phase)
+            planner.mark_active(objective)
+            planner.mark_done(objective)
+
+        self.assertEqual(
+            planner.select(planner.runnable()).phase,
+            Phase.BOOT_SEQUENCE,
+        )
 
     def test_is_complete_only_when_terminal_done(self):
         planner = ObjectivePlanner(default_objectives())

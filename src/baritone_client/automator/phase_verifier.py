@@ -317,6 +317,31 @@ def _specs() -> Dict[Phase, _Spec]:
                     e.payload(Phase.BOOT_SEQUENCE).get("sequence_result")
                 ),
             ),
+            _check(
+                "survival working margin established",
+                lambda e: float(e.state.get("health", 0) or 0) >= 12
+                and int(e.state.get("food_level", e.state.get("food", 0)) or 0)
+                >= 14,
+            ),
+            _check(
+                "stone tool observed",
+                lambda e: e.total(STONE_TOOLS) >= 1,
+            ),
+            _check(
+                "verified bootstrap infrastructure persisted",
+                lambda e: bool(
+                    e.custom("structures", "bootstrap_base", "verified")
+                    or _house_record(e)
+                ),
+            ),
+            _check(
+                "renewable starter food source persisted",
+                lambda e: bool(
+                    e.custom("structures", "food_source", "verified")
+                    or e.custom("farm_location")
+                    or e.has_location("farm")
+                ),
+            ),
         )),
         Phase.FOOD_AND_IRON: _Spec(("T1204",), (
             _check("at least 16 durable food items observed", lambda e: e.total(FOOD_ITEMS) >= 16),
