@@ -29,8 +29,13 @@ def select_target(
     renewable_source_callback: Optional[
         Callable[[str, tuple[int, int, int]], None]
     ],
+    in_water: bool = False,
 ) -> Optional[Dict]:
-    """Choose a renewable land target, with nearby fish as late fallback."""
+    """Choose a renewable land target, with nearby fish as fallback.
+
+    ``in_water`` reports that the player is already submerged, which lifts the
+    normal restrictions on aquatic targets -- see the fallback below.
+    """
     from . import combat as api
 
     for animal_type in PRIMARY_LAND_FOOD + SECONDARY_LAND_FOOD:
@@ -54,6 +59,18 @@ def select_target(
             return group[0]
         if len(group) == 2 and current_food <= 2:
             return min(group, key=lambda entity: float(entity.get("distance", 999)))
+
+    # Standing in water changes the calculus. The 16-block cap exists so a
+    # bot on land is not dragged into water chasing a distant fish it can
+    # never reach -- but a bot already submerged has nothing left to be
+    # dragged into, and in a lush cave there are no land animals to wait for,
+    # so the land-search delay is pure starvation. Live: Bot07 and Bot08 sat
+    # at 8.0/7.3 health in lush caves, feet in water, with 8-10 tropical fish
+    # inside 128 blocks -- their only food source -- and never targeted one.
+    if in_water:
+        target = api.find_entity_by_type(client, list(WATER_FOOD), radius=32)
+        if target is not None:
+            return target
 
     water_fallback_after = min(90.0, max(15.0, timeout / 2.0))
     if current_food <= 6 or elapsed >= water_fallback_after:

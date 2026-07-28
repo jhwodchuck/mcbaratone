@@ -461,6 +461,35 @@ def _head_block_is_water(client, state) -> bool:
     return "water" in str(head)
 
 
+_WATER_FEET_BLOCKS = ("water", "seagrass", "kelp")
+
+
+def _player_is_in_water(client, state) -> bool:
+    """Whether the player's feet are in water (or water-logged plants).
+
+    Used to relax the aquatic-food restrictions: a bot already submerged
+    cannot be "dragged into water" by chasing a fish, which is the risk the
+    normal 16-block cap guards against.
+    """
+    position = state.get("block_position", state.get("position", {})) or {}
+    if not all(axis in position for axis in ("x", "y", "z")):
+        return False
+    try:
+        block = str(
+            client.transport.dispatch(
+                "get_block",
+                {
+                    "x": int(position["x"]),
+                    "y": int(position["y"]),
+                    "z": int(position["z"]),
+                },
+            ).get("id", "")
+        )
+    except Exception:
+        return False
+    return any(token in block for token in _WATER_FEET_BLOCKS)
+
+
 def _submerged_too_long(client, state, *, max_seconds: float) -> bool:
     """Track continuous head-underwater TIME; True once it exceeds max_seconds.
 
@@ -920,6 +949,7 @@ def acquire_emergency_food(
             elapsed=time.time() - start,
             timeout=timeout,
             renewable_source_callback=renewable_source_callback,
+            in_water=_player_is_in_water(client, state),
         )
         if target is None:
             if (

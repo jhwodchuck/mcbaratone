@@ -1342,3 +1342,68 @@ def test_relocate_reports_failure_when_separation_never_grows(monkeypatch):
     threat = {"id": 5, "type": "minecraft:creeper", "position": {"x": 5, "y": 64, "z": 0}}
 
     assert not combat._relocate_away_from(client, threat, distance=28, timeout=3)
+
+
+def test_submerged_bot_targets_nearby_fish_immediately(monkeypatch):
+    """Live: Bot07/Bot08 sat at 8.0/7.3 health in lush caves, feet in water,
+    with 8-10 tropical fish inside 128 blocks -- their only available food --
+    and never targeted one. The 16-block aquatic cap plus the land-search
+    delay exist to stop a bot on LAND being dragged into water after a fish it
+    cannot reach; a bot already submerged has nothing left to be dragged into,
+    and a lush cave has no land animals to wait for."""
+    from baritone_client.common import emergency_food
+
+    looked = []
+
+    def fake_find(_client, types, radius):
+        looked.append((tuple(types), radius))
+        return {"id": 7, "type": "minecraft:tropical_fish", "distance": 24.0}
+
+    monkeypatch.setattr(combat, "find_entity_by_type", fake_find)
+
+    target = emergency_food.select_target(
+        SimpleNamespace(transport=CombatTransport()),
+        [],
+        current_food=17,          # well above the <=6 emergency gate
+        elapsed=0.0,              # and far below the land-search delay
+        timeout=240.0,
+        renewable_source_callback=None,
+        in_water=True,
+    )
+
+    assert target is not None and "tropical_fish" in target["type"]
+    assert looked and looked[0][1] == 32, "submerged search should widen to 32"
+
+
+def test_dry_bot_still_waits_before_chasing_fish(monkeypatch):
+    """The original restriction must survive for a bot on land."""
+    from baritone_client.common import emergency_food
+
+    monkeypatch.setattr(
+        combat, "find_entity_by_type", lambda *_a, **_k: {"id": 1, "type": "cod"}
+    )
+
+    assert emergency_food.select_target(
+        SimpleNamespace(transport=CombatTransport()),
+        [],
+        current_food=17,
+        elapsed=0.0,
+        timeout=240.0,
+        renewable_source_callback=None,
+        in_water=False,
+    ) is None
+
+
+def test_player_is_in_water_reads_the_feet_block():
+    class WaterTransport(CombatTransport):
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {"health": 8.0, "block_position": {"x": 0, "y": 62, "z": 0}}
+            if route == "get_block":
+                return {"id": "minecraft:water"}
+            return {}
+
+    client = SimpleNamespace(transport=WaterTransport())
+    state = {"block_position": {"x": 0, "y": 62, "z": 0}}
+    assert combat._player_is_in_water(client, state)
