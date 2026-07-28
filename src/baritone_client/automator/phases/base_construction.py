@@ -345,8 +345,26 @@ class BaseConstructionHandler(PhaseHandler):
         saved_origin = state.custom_data.get("base_build_origin")
         if isinstance(saved_origin, (list, tuple)) and len(saved_origin) == 3:
             location = tuple(int(value) for value in saved_origin)
-            print(f"  Resuming starter house at {location}")
-            return location
+            from ...common.build_site_recovery import (
+                unprovisioned_remote_build_site,
+            )
+
+            inventory = resources.get_summary()["inventory"]
+            if not unprovisioned_remote_build_site(
+                client,
+                site=location,
+                inventory_summary=inventory,
+            ):
+                print(f"  Resuming starter house at {location}")
+                return location
+            state.custom_data.pop("base_build_origin", None)
+            state.custom_data.pop("base_construction_repair_attempts", None)
+            state.custom_data.pop("base_site_return_failures", None)
+            state.save_checkpoint(inventory)
+            print(
+                "  Persisted starter house is too remote to return to without "
+                "carried food; preserving that shell and selecting a local site."
+            )
 
         location = find_flat_ground(client, radius=24, footprint=7)
         if location is None:

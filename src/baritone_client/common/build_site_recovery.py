@@ -20,6 +20,31 @@ _GROUND_BLOCKS = [
 ]
 
 
+def unprovisioned_remote_build_site(
+    client: Any,
+    *,
+    site: tuple[int, int, int],
+    inventory_summary: dict[str, int],
+    max_distance: float = 384.0,
+) -> bool:
+    """Reject a long house return that cannot be completed without starving."""
+    from .combat import EMERGENCY_FOOD_ITEMS
+
+    transport = getattr(client, "transport", None)
+    if transport is None:
+        return False
+    current = block_position(transport.dispatch("get_state", {}))
+    horizontal_distance_sq = (
+        (current[0] - site[0]) ** 2 + (current[2] - site[2]) ** 2
+    )
+    if horizontal_distance_sq <= max_distance**2:
+        return False
+    return not any(
+        int(inventory_summary.get(item_id, 0) or 0) > 0
+        for item_id in EMERGENCY_FOOD_ITEMS
+    )
+
+
 def relocate_build_site_search(
     client: Any,
     *,

@@ -226,6 +226,32 @@ def test_build_site_relocation_loads_a_different_dry_view(monkeypatch):
     assert destinations == [(24, 64, 0)]
 
 
+def test_unprovisioned_remote_build_site_is_unsafe_to_return_to():
+    from baritone_client.common.build_site_recovery import (
+        unprovisioned_remote_build_site,
+    )
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: {
+                "block_position": {"x": 63, "y": 61, "z": 507},
+                "food_level": 20,
+            }
+        )
+    )
+
+    assert unprovisioned_remote_build_site(
+        client,
+        site=(-214, 68, 135),
+        inventory_summary={"minecraft:iron_ingot": 67},
+    )
+    assert not unprovisioned_remote_build_site(
+        client,
+        site=(-214, 68, 135),
+        inventory_summary={"minecraft:bread": 4},
+    )
+
+
 def test_base_phase_relocates_when_local_view_has_no_build_site(monkeypatch):
     class Resources:
         phase_ready_result = lambda *_args, **_kwargs: None
@@ -276,6 +302,56 @@ def test_base_phase_relocates_when_local_view_has_no_build_site(monkeypatch):
     assert result.success
     assert relocated == [True]
     assert state.custom_data["base_location"] == (100, 64, 100)
+
+
+def test_base_phase_retires_unprovisioned_remote_origin(monkeypatch):
+    class Resources:
+        get_summary = lambda *_args, **_kwargs: {
+            "inventory": {"minecraft:iron_ingot": 67}
+        }
+
+    class State:
+        def __init__(self):
+            self.custom_data = {
+                "base_build_origin": [-214, 68, 135],
+                "base_construction_repair_attempts": 2,
+            }
+            self.saved = 0
+
+        def update_position(self, *_args):
+            return None
+
+        def save_checkpoint(self, *_args):
+            self.saved += 1
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: {
+                "block_position": {"x": 63, "y": 61, "z": 507},
+                "food_level": 20,
+            }
+        )
+    )
+    monkeypatch.setattr(
+        base_construction,
+        "find_flat_ground",
+        lambda *_args, **_kwargs: (64, 63, 508),
+    )
+    monkeypatch.setattr(
+        base_construction, "get_player_pos", lambda *_args: (63, 61, 507)
+    )
+
+    state = State()
+    location = BaseConstructionHandler._resolve_build_location(
+        client,
+        Resources(),
+        state,
+    )
+
+    assert location == (64, 63, 508)
+    assert state.custom_data["base_build_origin"] == [64, 63, 508]
+    assert "base_construction_repair_attempts" not in state.custom_data
+    assert state.saved == 2
 
 
 def test_build_survival_margin_rejects_low_food():
