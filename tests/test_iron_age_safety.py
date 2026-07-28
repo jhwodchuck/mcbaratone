@@ -453,7 +453,7 @@ def test_mine_initial_iron_shortfall_transitions_once_and_retries(monkeypatch):
 
     assert iron_age.FoodAndIronHandler()._mine_initial_iron(client)
     assert gather_attempts == [1, 1]
-    assert descent_calls == [-58]
+    assert descent_calls == [15]
 
 
 def test_mine_initial_iron_transition_failure_returns_false_without_infinite_loop(monkeypatch):
@@ -486,7 +486,7 @@ def test_mine_initial_iron_transition_failure_returns_false_without_infinite_loo
 
     assert not iron_age.FoodAndIronHandler()._mine_initial_iron(client)
     assert len(gather_attempts) == 2
-    assert descent_calls == [-58]
+    assert descent_calls == [15]
 
 
 def test_ensure_supplies_never_loots_owned_surface_storage(monkeypatch):

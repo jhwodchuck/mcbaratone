@@ -15,6 +15,7 @@ from .inventory import (
 from . import inventory
 _DEFAULT_INVENTORY_ENSURE_RAW_PLANKS = inventory._ensure_raw_planks
 from .tasks import PlayerDeathDetected, SurvivalRecoveryRequired, TaskResult
+from .furnace_recovery import resume_active_furnace
 from .combat import hunt_mobs
 from .navigation import find_nearby_block, goto
 from .movement_recovery import (
@@ -1567,6 +1568,18 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
             if state.get("is_dead", False) or float(state.get("health", 20) or 0) <= 0:
                 print("Y navigation aborted: player is dead")
                 return False
+            health = float(state.get("health", 20) or 0)
+            if health < 12.0:
+                from .combat import recover_health
+
+                client.transport.dispatch("cancel", {})
+                if not recover_health(
+                    client, minimum_health=12.0, timeout=10.0
+                ):
+                    raise SurvivalRecoveryRequired(
+                        f"health remains {health:.1f}/20 during Y navigation"
+                    )
+                continue
 
             food_level = int(state.get("food_level", state.get("food", 20)))
             if food_level <= 10:
@@ -1616,6 +1629,11 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                         "Y navigation: could not reach target food before descent; "
                         f"continuing with fallback food={fallback_food}."
                     )
+                    # Food exists, so this is not the one-way starvation case,
+                    # but an unsuccessful eat action is still not permission to
+                    # excavate. Yield this bounded descent attempt for a clean
+                    # retry instead of entering an unbounded supply loop.
+                    return False
             
             if current_y <= y + 3:
                 print(f"DEBUG: Reached target Y={y}!")
@@ -1889,6 +1907,8 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
         
         client.transport.dispatch("cancel", {})
         return False
+    except (PlayerDeathDetected, SurvivalRecoveryRequired):
+        raise
     except Exception as exc:
         print(f"Y level navigation error: {exc}")
         return False
@@ -2625,115 +2645,6 @@ def _prepare_safe_furnace_fuel(client, smelt_count: int) -> Optional[str]:
             return None
 
     return fuel_id
-
-
-def resume_active_furnace(
-    client,
-    furnace_pos,
-    input_item: str,
-    output_item: str,
-    timeout: float = 600.0,
-) -> bool:
-    """Drain a previously loaded furnace and collect every finished item.
-
-    An interrupted controller can leave all ore and fuel in the block entity.
-    Those stacks disappear from player inventory, so treating ``raw == 0`` as
-    completed work sends the next run mining again.  Return ``True`` only when
-    matching pending/output work was found and fully drained.
-    """
-    from . import harness_ops
-
-    try:
-        opened = harness_ops.available() and harness_ops.open_container(
-            client, tuple(furnace_pos), timeout=4.0
-        )
-    except Exception as exc:
-        print(f"  Could not inspect loaded furnace: {exc}")
-        opened = False
-    if not opened:
-        return False
-
-    def furnace_slots():
-        screen = client.transport.dispatch("get_screen", {})
-        data = screen.get("data", screen)
-        by_slot = {
-            int(slot.get("slot", -1)): slot for slot in data.get("slots", [])
-        }
-        return data, by_slot
-
-    data, slots = furnace_slots()
-    input_slot = slots.get(0, {})
-    output_slot = slots.get(2, {})
-    had_work = (
-        input_slot.get("id") == input_item
-        or output_slot.get("id") == output_item
-    )
-    if not had_work:
-        client.transport.dispatch("close_screen", {})
-        return False
-
-    initial_input = int(input_slot.get("count", 0))
-    deadline = time.monotonic() + min(
-        timeout, max(20.0, initial_input * 10.5 + 30.0)
-    )
-    empty_polls = 0
-    print(
-        f"  Resuming loaded furnace at {tuple(furnace_pos)} "
-        f"({initial_input} {input_item} pending)..."
-    )
-
-    while time.monotonic() < deadline:
-        data, slots = furnace_slots()
-        output_slot = slots.get(2, {})
-        if (
-            output_slot.get("id") == output_item
-            and int(output_slot.get("count", 0)) > 0
-        ):
-            payload = {"slot": 2, "type": "QUICK_MOVE", "button": 0}
-            sync_id = data.get("sync_id")
-            if sync_id is not None:
-                payload["sync_id"] = sync_id
-            client.transport.dispatch("inventory_click", payload)
-            empty_polls = 0
-            time.sleep(0.2)
-            continue
-
-        input_slot = slots.get(0, {})
-        input_empty = (
-            input_slot.get("id") in (None, "minecraft:air")
-            or int(input_slot.get("count", 0)) <= 0
-        )
-        if input_empty:
-            empty_polls += 1
-            if empty_polls >= 2:
-                client.transport.dispatch("close_screen", {})
-                print("  Loaded furnace batch is fully collected.")
-                return True
-        else:
-            empty_polls = 0
-            fuel_slot = slots.get(1, {})
-            block = client.transport.dispatch(
-                "get_block",
-                {
-                    "x": int(furnace_pos[0]),
-                    "y": int(furnace_pos[1]),
-                    "z": int(furnace_pos[2]),
-                },
-            )
-            lit = str(block.get("state", {}).get("lit", "false")).lower() == "true"
-            fuel_empty = (
-                fuel_slot.get("id") in (None, "minecraft:air")
-                or int(fuel_slot.get("count", 0)) <= 0
-            )
-            if not lit and fuel_empty:
-                client.transport.dispatch("close_screen", {})
-                print("  Loaded furnace stalled without fuel.")
-                return False
-        time.sleep(0.5)
-
-    client.transport.dispatch("close_screen", {})
-    print("  Timed out while resuming loaded furnace.")
-    return False
 
 
 def _smelt_with_furnace(

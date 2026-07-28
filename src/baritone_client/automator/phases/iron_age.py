@@ -9,6 +9,7 @@ from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import StateManager
 from ...common import TaskResult, SequentialTask, ActionTask
+from ...common.tasks import SurvivalRecoveryRequired
 from ...common.resources import (
     _craft_with_table,
     _read_state_with_retry,
@@ -34,18 +35,20 @@ from ...common.inventory import (
     resolve_storage_location,
     withdraw_required_from_catalog,
     withdraw_required_from_chest,
+    _ensure_raw_planks,
 )
 from ...common.navigation import find_nearby_block, goto
 from ...common import harness_ops
 from ...common import base as house_utils
 from ...common.combat import acquire_emergency_food, eat_until_hunger, recover_health
 from ...common.farming import harvest_wheat_farm
-from ...common.husbandry import visit_known_herd_for_loot
+from ...common.husbandry import discover_herd, visit_known_herd_for_loot
+from .iron_age_food import persisted_food_source, remember_food_source
 
 class FoodAndIronHandler(PhaseHandler):
     """Phase 2: Iron & Diamond mining - Hour 1-2."""
     _INITIAL_IRON_TARGET = 15
-    _IRON_BANK_TARGET = 64
+    _IRON_BANK_TARGET = 30
     _IRON_BANK_BATCH = 8
     _INITIAL_IRON_TRANSITION_Y = 15
 
@@ -79,6 +82,9 @@ class FoodAndIronHandler(PhaseHandler):
     
     def execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
         self.state = state
+        # Each phase attempt must re-read durable storage. Keeping this flag
+        # across retries hid iron and tools banked by the previous attempt.
+        self._initial_iron_supplies_withdrawn = False
         tasks = [
             # Best-effort, non-blocking: if a bed exists and it happens to be
             # night right now, sleep to anchor the respawn point near base.
@@ -117,6 +123,15 @@ class FoodAndIronHandler(PhaseHandler):
                 "Bank starter iron before deep expedition",
                 lambda c: self._bank_progression_at_home(c, state),
             ),
+            ActionTask("Establish renewable food source", self._ensure_durable_food),
+            ActionTask(
+                "Equip affordable armor before deep descent",
+                self._equip_affordable_pre_descent_armor,
+            ),
+            ActionTask(
+                "Restore expedition pickaxe",
+                self._ensure_expedition_pickaxe,
+            ),
             
             # Phase 2b: Now mine deep diamonds with iron tools
             ActionTask("Dig to diamond level Y-58", self._dig_staircase),
@@ -149,12 +164,27 @@ class FoodAndIronHandler(PhaseHandler):
             print(f"  Health critical ({health:.1f}/20) - recovering before mining...")
             recovered = recover_health(client, minimum_health=12.0, timeout=10.0)
             if not recovered:
-                acquire_emergency_food(
-                    client,
-                    minimum_health=12.0,
-                    minimum_food=14,
-                    timeout=300.0,
-                )
+                # Armored workers can safely travel to a durable supply before
+                # blind local hunting. Unarmored workers try the local bounded
+                # recovery first, then a known source.
+                if has_full_armor(client, minimum_material="iron"):
+                    recovered = self._recover_food_from_known_sources(client)
+                    if not recovered:
+                        recovered = acquire_emergency_food(
+                            client,
+                            minimum_health=12.0,
+                            minimum_food=14,
+                            timeout=300.0,
+                        )
+                else:
+                    recovered = acquire_emergency_food(
+                        client,
+                        minimum_health=12.0,
+                        minimum_food=14,
+                        timeout=300.0,
+                    )
+                    if not recovered:
+                        recovered = self._recover_food_from_known_sources(client)
             recovery_state = self._read_state(client, "Stabilize hunger recovery") or {}
             health = float(recovery_state.get("health", 20) or 0)
             if health < 12.0:
@@ -162,20 +192,16 @@ class FoodAndIronHandler(PhaseHandler):
                     "  Emergency recovery did not restore safe health; "
                     "holding before mining."
                 )
-                return False
+                raise SurvivalRecoveryRequired(
+                    f"health remains {health:.1f}/20 before iron mining"
+                )
             state = self._read_state(client, "Stabilize hunger post-feed") or {}
 
         food_level = int(state.get("food_level", state.get("food", 20)))
-        # At this stage, very low hunger can still be survivable if the
-        # player is sheltered and nearby threats are contained. Requiring 12+ bars
-        # here caused repeated false dead-ends; 6+ is treated as a bounded
-        # recovery floor for now.
-        safe_hunger_floor = 6
-        # The original 14-hunger requirement was strict enough to stall
-        # on deep recovery runs where food can be hard to gather in the
-        # short term. Requiring a safer but lower bar keeps progression from
-        # soft-locking while still preventing high-risk hunger deaths.
-        if food_level > safe_hunger_floor:
+        # Gathering helpers stop at food <= 10 and health regeneration starts
+        # at 18. Twelve is the minimum useful expedition handoff: below it the
+        # next action immediately aborts or cannot heal.
+        if food_level >= 12:
             self._stabilize_hunger_failures = 0
             return True
         print(f"  Hunger low ({food_level}/20) - eating before mining...")
@@ -201,37 +227,14 @@ class FoodAndIronHandler(PhaseHandler):
             self._stabilize_hunger_failures = 0
             return True
 
-        if food_level >= safe_hunger_floor:
-            self._stabilize_hunger_failures = 0
-            print(
-                "  Emergency food search failed, but hunger is still "
-                f"at or above fallback floor {safe_hunger_floor}; proceeding."
-            )
-            return True
-
         self._stabilize_hunger_failures += 1
         print(
             "  Emergency food search failed "
             f"(failures={self._stabilize_hunger_failures})."
         )
-        if self._stabilize_hunger_failures < 3:
-            return False
-
-        # Bounded fallback: one low-risk pass keeps automation moving after
-        # repeated no-food loops while still guarding against immediate death.
-        fallback_state = self._read_state(client, "Stabilize hunger fallback") or {}
-        fallback_food = int(fallback_state.get("food_level", fallback_state.get("food", 20)))
-        if fallback_food >= safe_hunger_floor:
-            print(
-                "  Hunger still low, but repeated recovery attempts are blocked;"
-                " continuing with minimal safe food bar to avoid hard-lock."
-            )
-            return True
-        print(
-            "  Repeated hunger recovery failures and food still below 8;"
-            " holding before mining to avoid unsafe death."
+        raise SurvivalRecoveryRequired(
+            f"food remains {food_level}/20 before iron mining"
         )
-        return False
 
     def _recover_food_from_known_sources(self, client) -> bool:
         """Harvest the established wheat farm, or hunt the operator-known
@@ -240,6 +243,22 @@ class FoodAndIronHandler(PhaseHandler):
         herd trip is a genuine expedition and only worth it once the farm
         can't (or doesn't yet) supply enough.
         """
+        if self.state is not None:
+            moved = withdraw_required_from_catalog(
+                client,
+                {
+                    "minecraft:bread": 8,
+                    "minecraft:cooked_beef": 8,
+                    "minecraft:cooked_porkchop": 8,
+                    "minecraft:cooked_chicken": 8,
+                    "minecraft:baked_potato": 8,
+                },
+                state=self.state,
+                max_travel_distance=96.0,
+            )
+            if moved > 0 and eat_until_hunger(client, minimum_food=12):
+                return True
+
         farm = (self.state.custom_data.get("wheat_farm") if self.state else None) or {}
         origin = farm.get("origin")
         if isinstance(origin, (list, tuple)) and len(origin) == 3:
@@ -249,9 +268,50 @@ class FoodAndIronHandler(PhaseHandler):
             ):
                 return True
 
+        source = persisted_food_source(self.state)
+        if not source:
+            return False
+        kwargs = {"preserve_breeding_pair": True}
+        animal_type = str(source.get("animal_type", "cow"))
+        kwargs["location"] = source["location"]
         return visit_known_herd_for_loot(
-            client, {"minecraft:beef": 3}, "cow"
+            client,
+            {"minecraft:beef": 3},
+            animal_type,
+            **kwargs,
         ) and eat_until_hunger(client, minimum_food=12)
+
+    def _remember_renewable_food_source(
+        self,
+        animal_type: str,
+        location: Tuple[int, int, int],
+    ) -> None:
+        """Record a herd only after it has been observed and verified."""
+        remember_food_source(self.state, animal_type, location)
+
+    def _ensure_durable_food(self, client) -> bool:
+        """Prove a renewable source instead of crediting carried food alone."""
+        if self.state is None:
+            return False
+        if self.state.custom_data.get("wheat_farm", {}).get("origin"):
+            return True
+        if persisted_food_source(self.state):
+            return True
+
+        location = discover_herd(client, "cow")
+        if location is None:
+            return False
+        verified = visit_known_herd_for_loot(
+            client,
+            {},
+            "cow",
+            preserve_breeding_pair=True,
+            location=location,
+        )
+        if not verified:
+            return False
+        self._remember_renewable_food_source("cow", location)
+        return True
 
     def _initial_iron_target_satisfied(self, client) -> bool:
         return (
@@ -312,7 +372,7 @@ class FoodAndIronHandler(PhaseHandler):
                 return True
 
         print("  Pickaxe craft lacked usable dependencies; gathering a wood reserve...")
-        if not gather_wood(client, count=4, timeout=90):
+        if not gather_wood(client, count=2, timeout=90):
             return False
         return ensure_supplies(
             client,
@@ -436,9 +496,72 @@ class FoodAndIronHandler(PhaseHandler):
         return True
 
     def _return_to_base(self, client, state: StateManager) -> bool:
-        """Return to the checkpointed starter-house interior."""
+        """Return to verified operational storage, then the house if needed."""
         structures = state.custom_data.get("structures", {})
         house = structures.get("starter_house", {})
+        if house.get("supply_chest") is not None:
+            try:
+                storage = self._resolve_initial_iron_supply_chest(client, state)
+            except Exception:
+                storage = None
+            if storage is not None:
+                try:
+                    current = self._read_state(
+                        client, "Return to storage current state"
+                    )
+                except Exception:
+                    current = None
+                position = (
+                    current.get("block_position", current.get("position", {}))
+                    if current
+                    else {}
+                )
+                distance = (
+                    (float(position.get("x", storage[0])) - storage[0]) ** 2
+                    + (float(position.get("y", storage[1])) - storage[1]) ** 2
+                    + (float(position.get("z", storage[2])) - storage[2]) ** 2
+                ) ** 0.5
+                if current and distance <= 4.5:
+                    try:
+                        block = client.transport.dispatch(
+                            "get_block",
+                            {"x": storage[0], "y": storage[1], "z": storage[2]},
+                        )
+                    except Exception:
+                        block = {}
+                    if "chest" in str(block.get("id", "")):
+                        print(f"  Already beside verified storage at {storage}.")
+                        return True
+                reached_storage = goto(
+                    client,
+                    storage[0],
+                    storage[1],
+                    storage[2],
+                    timeout=300,
+                    check_interval=1.0,
+                    tolerance=4.5,
+                )
+                if reached_storage:
+                    transport = getattr(client, "transport", None)
+                    if transport is None:
+                        # Lightweight callers can supply an already-verified
+                        # resolver without a live bridge.
+                        return True
+                    try:
+                        block = transport.dispatch(
+                            "get_block",
+                            {"x": storage[0], "y": storage[1], "z": storage[2]},
+                        )
+                    except Exception:
+                        block = {}
+                    if "chest" in str(block.get("id", "")):
+                        print(f"  Returned to verified storage at {storage}.")
+                        return True
+                    print(
+                        f"  Storage target {storage} is not operational; "
+                        "falling back to the starter house."
+                    )
+
         origin = house.get("origin") or state.custom_data.get("base_location")
         if not isinstance(origin, (list, tuple)) or len(origin) != 3:
             print("  No checkpointed starter-house location; refusing blind waypoint travel.")
@@ -843,35 +966,34 @@ class FoodAndIronHandler(PhaseHandler):
         if self._initial_iron_supplies_withdrawn:
             return
 
-        chest_pos = self._resolve_initial_iron_supply_chest(client)
         self._initial_iron_supplies_withdrawn = True
-        if chest_pos is None:
+        if self.state is None:
             return
 
         carried_ingots = count_item(client, "minecraft:iron_ingot")
         carried_raw = count_item(client, "minecraft:raw_iron")
         shortfall = max(0, self._INITIAL_IRON_TARGET - (carried_ingots + carried_raw))
         if shortfall > 0:
-            withdraw_required_from_chest(
+            withdraw_required_from_catalog(
                 client,
-                chest_pos,
                 {"minecraft:raw_iron": shortfall},
+                state=self.state,
             )
             carried_raw = count_item(client, "minecraft:raw_iron")
             carried_ingots = count_item(client, "minecraft:iron_ingot")
             remaining = max(0, self._INITIAL_IRON_TARGET - (carried_raw + carried_ingots))
             if remaining > 0:
-                withdraw_required_from_chest(
+                withdraw_required_from_catalog(
                     client,
-                    chest_pos,
                     {"minecraft:iron_ingot": remaining},
+                    state=self.state,
                 )
 
         if count_item(client, "minecraft:bucket") < 1:
-            withdraw_required_from_chest(
+            withdraw_required_from_catalog(
                 client,
-                chest_pos,
                 {"minecraft:bucket": 1},
+                state=self.state,
             )
 
         if not any(
@@ -882,10 +1004,10 @@ class FoodAndIronHandler(PhaseHandler):
                 "minecraft:iron_pickaxe",
             )
         ):
-            withdraw_required_from_chest(
+            withdraw_required_from_catalog(
                 client,
-                chest_pos,
                 {"minecraft:stone_pickaxe": 1},
+                state=self.state,
             )
 
     def _transition_to_iron_level_once(self, client) -> bool:
@@ -951,6 +1073,8 @@ class FoodAndIronHandler(PhaseHandler):
             nearby_furnace,
             "minecraft:raw_iron",
             "minecraft:iron_ingot",
+            minimum_output=None if force else 6,
+            timeout=600.0 if force else 120.0,
         ):
             current_ingots = count_item(client, "minecraft:iron_ingot")
             raw_iron = count_item(client, "minecraft:raw_iron")
@@ -958,14 +1082,24 @@ class FoodAndIronHandler(PhaseHandler):
             count_item(client, "minecraft:iron_pickaxe") >= 1
             and count_item(client, "minecraft:bucket") >= 1
         )
+        durable_pickaxe = False
         if essentials_ready and raw_iron > 0 and not force:
+            durable_pickaxe = remaining_pickaxe_durability(
+                client,
+                [
+                    "minecraft:iron_pickaxe",
+                    "minecraft:diamond_pickaxe",
+                    "minecraft:netherite_pickaxe",
+                ],
+            ) >= 200
+        if essentials_ready and durable_pickaxe:
             print(
                 f"  Deferring {raw_iron} raw iron until the bulk-mining "
                 "fuel pass is complete."
             )
             return True
         if raw_iron == 0:
-            if current_ingots >= 15 or essentials_ready:
+            if current_ingots >= 6 or essentials_ready:
                 print(f"  Iron already smelted ({current_ingots} ingots).")
                 return True
             print("  No raw iron to smelt!")
@@ -1000,9 +1134,14 @@ class FoodAndIronHandler(PhaseHandler):
         # prepares daylight wood fuel.  It never sends an unarmored bot into
         # a cave solely to fuel the furnace.
         print(f"  Smelting {raw_iron} raw iron...")
+        output_target = (
+            current_ingots + raw_iron
+            if force
+            else max(current_ingots, 6)
+        )
         return ensure_supplies(
             client,
-            {"minecraft:iron_ingot": current_ingots + raw_iron},
+            {"minecraft:iron_ingot": output_target},
             strategies=smelt_strategies,
         ).success
 
@@ -1080,6 +1219,53 @@ class FoodAndIronHandler(PhaseHandler):
 
         return kit_ready()[0]
 
+    def _ensure_expedition_pickaxe(self, client) -> bool:
+        """Restore a banked iron pick before committing to deep mining."""
+        mining_pickaxes = [
+            "minecraft:iron_pickaxe",
+            "minecraft:diamond_pickaxe",
+            "minecraft:netherite_pickaxe",
+        ]
+        if remaining_pickaxe_durability(client, mining_pickaxes) >= 200:
+            return True
+        if self.state is None:
+            return False
+        withdraw_required_from_catalog(
+            client,
+            {"minecraft:iron_pickaxe": 1},
+            state=self.state,
+            max_travel_distance=96.0,
+        )
+        return remaining_pickaxe_durability(client, mining_pickaxes) >= 200
+
+    def _equip_affordable_pre_descent_armor(self, client) -> bool:
+        """Turn available iron into protection before the hazardous descent."""
+        if has_full_armor(client, minimum_material="iron"):
+            return True
+        if count_item(client, "minecraft:iron_ingot") < 24:
+            return True
+
+        state = self._read_state(client, "Pre-descent armor") or {}
+        health = float(state.get("health", 20) or 0)
+        if health >= 12.0:
+            return self._craft_iron_armor(client) and self._equip_iron_armor(client)
+
+        # At critical health, avoid broad ensure-supplies handlers that may
+        # navigate for dependencies. Use a verified local workstation only.
+        if not self._ensure_mining_workstation(client):
+            return False
+        for item_id in (
+            "minecraft:iron_helmet",
+            "minecraft:iron_chestplate",
+            "minecraft:iron_leggings",
+            "minecraft:iron_boots",
+        ):
+            if count_item(client, item_id) < 1 and not _craft_with_table(
+                client, item_id, 1
+            ):
+                return False
+        return self._equip_iron_armor(client)
+
     def _ensure_mining_workstation(self, client) -> bool:
         """Create a nearby survival crafting table without leaving the mine."""
         if not self._reserve_inventory_space(client, minimum_free_slots=2):
@@ -1139,68 +1325,52 @@ class FoodAndIronHandler(PhaseHandler):
         return manage_inventory(client, minimum_free_slots=required)
 
     def _bulk_mine(self, client) -> bool:
-        """Mine remaining resources with iron pickaxe."""
+        """Mine the smallest complete deep haul, stopping on first failure."""
         if self._deep_mining_objectives_complete(client):
             print("  Deep-mining objectives already complete; skipping ore search.")
             return True
 
-        if self.state is None:
-            return False
+        objectives = (
+            ("diamond", "minecraft:diamond", 5),
+            ("iron", "minecraft:raw_iron", self._IRON_BANK_TARGET),
+        )
+        for ore_type, carried_item, target in objectives:
+            if ore_type == "iron":
+                owned = (
+                    self._total_owned(client, "minecraft:raw_iron")
+                    + self._total_owned(client, "minecraft:iron_ingot")
+                )
+            else:
+                owned = self._total_owned(client, carried_item)
+            if owned >= target:
+                continue
 
-        while (
-            self._total_owned(client, "minecraft:raw_iron")
-            + self._total_owned(client, "minecraft:iron_ingot")
-            < self._IRON_BANK_TARGET
-        ):
-            owned = (
-                self._total_owned(client, "minecraft:raw_iron")
-                + self._total_owned(client, "minecraft:iron_ingot")
-            )
-            remaining = self._IRON_BANK_TARGET - owned
-            carried_raw = count_item(client, "minecraft:raw_iron")
-            batch_target = carried_raw + min(self._IRON_BANK_BATCH, remaining)
-            print(
-                f"  Mining iron bank batch: owned={owned}/"
-                f"{self._IRON_BANK_TARGET}, carried target={batch_target}"
-            )
-            if not gather_ores(client, "iron", count=batch_target, timeout=600):
-                return False
-            if not self._bank_mining_progression(
-                client,
-                self.state,
-                deposit_items={"minecraft:raw_iron", "minecraft:iron_ingot"},
-                retain_counts={
-                    "minecraft:raw_iron": 0,
-                    "minecraft:iron_ingot": 0,
-                },
-            ):
-                return False
-            if (
-                self._total_owned(client, "minecraft:raw_iron")
-                + self._total_owned(client, "minecraft:iron_ingot")
-                < self._IRON_BANK_TARGET
-                and not go_to_y_level(client, -58)
-            ):
-                return False
-
-        if self._total_owned(client, "minecraft:diamond") < 5:
-            if not go_to_y_level(client, -58):
-                return False
-            carried_diamonds = count_item(client, "minecraft:diamond")
-            needed = max(1, 5 - self._total_owned(client, "minecraft:diamond"))
+            carried = count_item(client, carried_item)
+            absolute_target = carried + (target - owned)
             if not gather_ores(
                 client,
-                "diamond",
-                count=carried_diamonds + needed,
+                ore_type,
+                count=absolute_target,
                 timeout=600,
             ):
+                client.transport.dispatch("cancel", {})
                 return False
+
+            if self.state is None:
+                continue
+            deposit_items = (
+                {"minecraft:raw_iron", "minecraft:iron_ingot"}
+                if ore_type == "iron"
+                else {"minecraft:diamond"}
+            )
+            retain_counts = {item_id: 0 for item_id in deposit_items}
             if not self._bank_mining_progression(
                 client,
                 self.state,
-                deposit_items={"minecraft:diamond"},
-                retain_counts={"minecraft:diamond": 0},
+                deposit_items=deposit_items,
+                retain_counts=retain_counts,
             ):
+                client.transport.dispatch("cancel", {})
                 return False
         return True
 
