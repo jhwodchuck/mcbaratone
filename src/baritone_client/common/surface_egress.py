@@ -29,6 +29,7 @@ def try_lower_surface_egress(
     search_radius: int = 40,
     attempt_limit: int = 8,
     timeout_per_candidate: float = 24.0,
+    minimum_altitude: int = 96,
 ) -> Optional[Tuple[int, int, int]]:
     """Walk to nearby lower terrain before attempting a vertical tunnel.
 
@@ -36,9 +37,17 @@ def try_lower_surface_egress(
     connect horizontally to the mountain.  Faraway base/storage goals often
     fail path calculation from that shelf; short local surface candidates give
     Baritone a solvable first leg.
+
+    ``minimum_altitude`` guards the original high-shelf/spawn-platform use so
+    routine low-altitude work never triggers a descent. Callers that have
+    *already proven* the bot is marooned (idle, not pathing, and not moving)
+    should lower it: being stranded is a property of the local terrain, not of
+    absolute height. Live: Bot07 sat motionless for hours on a single block at
+    y=85 with air on every side -- the default gate refused to help precisely
+    because it was not high enough.
     """
     origin = block_position(initial_state)
-    if origin[1] < 96:
+    if origin[1] < minimum_altitude:
         return None
     try:
         below_floor = client.transport.dispatch(

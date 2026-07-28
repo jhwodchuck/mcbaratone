@@ -23,6 +23,7 @@ from .movement_recovery import (
     recover_stalled_gathering,
 )
 from .mining_safety import run_mining_defense
+from .surface_egress import try_lower_surface_egress
 from .automation_utils import get_player_pos
 from ..core.exceptions import CommandError, TransportError
 
@@ -582,6 +583,8 @@ def gather_wood(
         # site below. Capped at one extra `timeout` so a permanently contested
         # area still terminates instead of looping forever.
         defense_seconds = 0.0
+        # One bounded escape attempt per gather; see the marooned branch below.
+        marooned_egress_attempted = False
 
         while time.time() - start - defense_seconds < timeout:
             if free_inventory_slots(client) < 2:
@@ -686,6 +689,37 @@ def gather_wood(
 
             if not is_pathing:
                 idle_checks += 1
+                # Baritone idle + no displacement means the bot cannot reach
+                # anything from where it stands, not that trees are scarce.
+                # Live: Bot07 sat motionless for hours on a single block at
+                # y=85 with air on all four sides -- every flee, relocate,
+                # explore and log-approach silently no-op'd, so it burned
+                # ~4000 cancelled actions at wood=0/64. Re-issuing mine or
+                # explore can never fix that; the bot has to get off the
+                # island first.
+                if (
+                    idle_checks >= 6
+                    and not marooned_egress_attempted
+                    and movement.stalled(4)
+                ):
+                    marooned_egress_attempted = True
+                    print(
+                        "DEBUG: Idle and stationary; treating as marooned and "
+                        "attempting lower-surface egress"
+                    )
+                    reached = try_lower_surface_egress(
+                        client,
+                        state,
+                        minimum_altitude=0,
+                    )
+                    movement.reset(state)
+                    idle_checks = 0
+                    stalled_checks = 0
+                    if reached is not None:
+                        _start_mine_process(client, LOG_BLOCKS, needed + 4)
+                        exploring = False
+                        continue
+                    print("DEBUG: Lower-surface egress found no way off; continuing")
                 if idle_checks >= 3:
                     if not exploring:
                         if idle_checks == 3:

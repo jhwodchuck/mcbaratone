@@ -1454,3 +1454,66 @@ def test_wood_gathering_does_not_charge_defense_time_to_its_budget(monkeypatch):
     )
     # ...but the credit is capped, so a permanently contested area terminates.
     assert len(defense_calls) < 12, "budget credit must remain bounded"
+
+
+def test_marooned_wood_gatherer_attempts_lower_surface_egress(monkeypatch):
+    """Baritone idle + zero displacement means the bot cannot reach anything
+    from where it stands, not that trees are scarce. Live: Bot07 sat motionless
+    for hours on a single block at y=85 with air on all four sides, while every
+    flee, relocate, explore and log-approach silently no-op'd -- ~4000
+    cancelled actions at wood=0/64. Re-issuing mine/explore can never fix that;
+    it has to get off the island first."""
+    from baritone_client.common import resources as res
+
+    class StuckTransport(RecordingTransport):
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "world_time": 1000,
+                    "health": 20,
+                    "food_level": 20,
+                    "is_pathing": False,  # Baritone gave up
+                    "block_position": {"x": -9, "y": 85, "z": -7},  # never moves
+                }
+            return {}
+
+    transport = StuckTransport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(res, "count_item", lambda *_a, **_k: 0)
+    monkeypatch.setattr(res, "_ensure_outdoor_daylight", lambda *_a: True)
+    monkeypatch.setattr(res, "_start_mine_process", lambda *_a: None)
+    monkeypatch.setattr(res, "_reserve_gathering_inventory", lambda *_a: True)
+    monkeypatch.setattr(res, "free_inventory_slots", lambda *_a: 32)
+    monkeypatch.setattr(res, "_find_blocks_optional", lambda *_a, **_k: {"found": []})
+    monkeypatch.setattr(res.time, "sleep", lambda _s: None)
+
+    egress_calls = []
+
+    def fake_egress(_client, _state, **kwargs):
+        egress_calls.append(kwargs)
+        return None  # no way off; gather still ends, but it must have TRIED
+
+    monkeypatch.setattr(res, "try_lower_surface_egress", fake_egress)
+
+    res.gather_wood(client, count=6, timeout=40)
+
+    assert egress_calls, "a marooned gatherer must attempt surface egress"
+    # The altitude gate must be lowered: being stranded is a property of local
+    # terrain, not height. y=85 would be refused by the default 96 floor.
+    assert egress_calls[0].get("minimum_altitude") == 0
+    # Bounded: exactly one attempt per gather, not once per idle tick.
+    assert len(egress_calls) == 1
+
+
+def test_surface_egress_altitude_gate_is_configurable():
+    """The default keeps the original high-shelf behaviour for existing
+    callers; only a caller that has proven the bot is marooned lowers it."""
+    from baritone_client.common import surface_egress
+
+    low_state = {"block_position": {"x": 0, "y": 85, "z": 0}}
+    client = SimpleNamespace(transport=RecordingTransport())
+
+    # Default gate refuses at y=85 without touching the bridge.
+    assert surface_egress.try_lower_surface_egress(client, low_state) is None
+    assert not client.transport.calls
