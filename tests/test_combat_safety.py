@@ -1433,4 +1433,4 @@ def test_aquatic_approach_window_scales_with_distance(monkeypatch):
     )
 
     assert seen["timeout"] > 8.0, "window must grow for a distant fish"
-    assert seen["timeout"] <= 30.0, "and stay bounded"
+    assert seen["timeout"] <= 45.0, "and stay bounded"

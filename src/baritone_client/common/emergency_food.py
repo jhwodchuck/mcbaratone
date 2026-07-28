@@ -195,8 +195,13 @@ def hunt_target(
         # starved beside its only food source. Bounded so a fish that keeps
         # swimming away still ends the attempt. The drowning reflex inside
         # the follow loop remains the safety net for the longer swim.
+        # Swimming is roughly 2.2 blocks/s, so a 46m target needs ~21s of pure
+        # travel before any pathing overhead -- a 0.5x factor capped at 30s put
+        # the deadline right on that edge and it still timed out live
+        # ("aquatic target could not be reached safely" on every attempt).
+        # Give the swim real margin.
         approach_timeout = min(
-            30.0, max(8.0, float(target.get("distance", 8.0)) * 0.5)
+            45.0, max(8.0, float(target.get("distance", 8.0)) * 0.75)
         )
         if not api._approach_aquatic_food(
             client, target_id, target_type, timeout=approach_timeout
