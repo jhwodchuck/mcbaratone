@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from baritone_client.common import inventory, resources
+from baritone_client.common import inventory, resources, stone_descent
 
 
 class RecordingTransport:
@@ -1091,11 +1091,85 @@ def test_stranded_gatherer_descends_before_relocating(monkeypatch):
         "_relocate_to_checkpointed_stone_source",
         lambda _c, **_k: order.append("relocate") or False,
     )
+    monkeypatch.setattr(
+        resources,
+        "_relocate_to_dry_stone_terrain",
+        lambda _c, **_k: order.append("dry") or False,
+    )
 
     assert not resources.gather_stone(client, count=9, timeout=5)
     # Descent is attempted, and strictly before relocation.
     assert order[0] == "descend"
     assert order.index("descend") < order.index("relocate")
+    assert order.index("relocate") < order.index("dry")
+
+
+def test_stranded_gatherer_retries_descent_after_dry_relocation(monkeypatch):
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+    attempts = []
+
+    monkeypatch.setattr(
+        resources,
+        "count_item",
+        lambda _c, _i: 9 if len(attempts) > 1 else 0,
+    )
+    monkeypatch.setattr(resources, "_reserve_gathering_inventory", lambda _c: True)
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _c: True)
+    monkeypatch.setattr(resources, "free_inventory_slots", lambda _c: 10)
+    monkeypatch.setattr(
+        resources, "_read_state_optional", lambda *_a, **_k: {"is_pathing": False}
+    )
+    monkeypatch.setattr(resources, "_find_safe_nearby_stone", lambda _c, **_k: None)
+    monkeypatch.setattr(
+        "baritone_client.common.combat.defend_or_flee", lambda _c: False
+    )
+    monkeypatch.setattr(resources.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        resources,
+        "_descend_to_stone_layer",
+        lambda _c, **_k: attempts.append("descend") or len(attempts) > 1,
+    )
+    monkeypatch.setattr(
+        resources, "_relocate_to_checkpointed_stone_source", lambda _c: False
+    )
+    monkeypatch.setattr(
+        resources, "_relocate_to_dry_stone_terrain", lambda _c: True
+    )
+
+    assert resources.gather_stone(client, count=9, timeout=30)
+    assert attempts == ["descend", "descend"]
+
+
+def test_dry_stone_relocation_requires_verified_displacement(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.state_reads = 0
+
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                self.state_reads += 1
+                x = 0 if self.state_reads == 1 else 16
+                return {"block_position": {"x": x, "y": 64, "z": 0}}
+            if route == "find_blocks":
+                return {"found": [{"x": 16, "y": 63, "z": 0}]}
+            return {}
+
+    destinations = []
+    monkeypatch.setattr(
+        "baritone_client.common.escape_recovery.destination_safe",
+        lambda *_args: True,
+    )
+    monkeypatch.setattr(
+        resources,
+        "goto",
+        lambda _client, *position, **_kwargs: destinations.append(position) or True,
+    )
+
+    assert stone_descent.relocate_to_dry_stone_terrain(
+        SimpleNamespace(transport=Transport())
+    )
+    assert destinations == [(16, 64, 0)]
 
 
 def test_high_altitude_stone_fallback_returns_to_checkpointed_storage(monkeypatch):

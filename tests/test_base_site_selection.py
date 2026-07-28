@@ -4,7 +4,7 @@ import pytest
 
 from baritone_client.automator.phases import base_construction
 from baritone_client.automator.phases.base_construction import BaseConstructionHandler
-from baritone_client.common import base
+from baritone_client.common import base, surface_recovery
 from baritone_client.common.base import _find_flat_site_in_view
 from baritone_client.common.tasks import SurvivalRecoveryRequired
 
@@ -74,6 +74,96 @@ def test_find_flat_ground_refuses_false_surface_arrival(monkeypatch):
         )
         is None
     )
+
+
+def test_find_flat_ground_uses_bounded_surface_recovery(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.state_reads = 0
+
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                self.state_reads += 1
+                y = 62 if self.state_reads == 1 else 70
+                return {"block_position": {"x": 12, "y": y, "z": 8}}
+            if route == "get_block":
+                return {"id": "minecraft:stone" if payload["y"] == 69 else "minecraft:air"}
+            if route == "get_view":
+                return {"voxels": _flat_patch(8, 4)}
+            if route == "chat":
+                return {}
+            raise AssertionError(route)
+
+    monkeypatch.setattr(
+        "baritone_client.common.automation_utils.safe_goto",
+        lambda *_args, **_kwargs: False,
+    )
+    recovered = []
+    monkeypatch.setattr(
+        "baritone_client.common.surface_recovery.reach_dry_surface",
+        lambda *_args, **_kwargs: recovered.append(True) or (12, 70, 8),
+    )
+
+    assert base.find_flat_ground(
+        SimpleNamespace(transport=Transport()), radius=24, footprint=7
+    ) == (9, 64, 5)
+    assert recovered == [True]
+
+
+def test_surface_recovery_aborts_if_surface_command_moves_downward(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.state_reads = 0
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                self.state_reads += 1
+                y = 62 if self.state_reads == 1 else 59
+                return {"block_position": {"x": 4, "y": y, "z": 4}}
+            return {}
+
+    transport = Transport()
+    monkeypatch.setattr(
+        surface_recovery.time,
+        "monotonic",
+        iter([0.0, 0.0, 1.0]).__next__,
+    )
+    monkeypatch.setattr(surface_recovery.time, "sleep", lambda _seconds: None)
+
+    assert surface_recovery.reach_dry_surface(
+        SimpleNamespace(transport=transport),
+        origin=(4, 62, 4),
+        expected_y=70,
+        goto=lambda *_args, **_kwargs: False,
+        command_timeout=10.0,
+    ) is None
+    assert ("cancel", {}) in transport.calls
+
+
+def test_surface_recovery_uses_loaded_dry_terrain_before_surface_command():
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "find_blocks":
+                return {"found": [{"x": 20, "y": 69, "z": 4}]}
+            if route == "get_state":
+                return {"block_position": {"x": 20, "y": 70, "z": 4}}
+            if route == "get_block":
+                return {"id": "minecraft:air"}
+            return {}
+
+    destinations = []
+    reached = surface_recovery.reach_dry_surface(
+        SimpleNamespace(transport=Transport()),
+        origin=(4, 62, 4),
+        expected_y=70,
+        goto=lambda _client, *position, **_kwargs: destinations.append(position)
+        or True,
+    )
+
+    assert reached == (20, 70, 4)
+    assert destinations == [(20, 70, 4)]
 
 
 def test_build_survival_margin_rejects_low_food():

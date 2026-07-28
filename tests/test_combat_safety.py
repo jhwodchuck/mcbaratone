@@ -218,6 +218,33 @@ def test_aquatic_hunt_surfaces_until_head_reaches_air(monkeypatch):
         ("chat", {"message": "#stop"}),
         ("cancel", {}),
     ]
+    assert client._aquatic_surface_failed is False
+
+
+def test_aquatic_surface_aborts_downward_route(monkeypatch):
+    class DownwardTransport(CombatTransport):
+        def __init__(self):
+            super().__init__(health=18.0)
+            self.states = iter((61, 61, 58))
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "health": self.health,
+                    "block_position": {"x": 4, "y": next(self.states), "z": 8},
+                }
+            if route == "get_block":
+                return {"id": "minecraft:water"}
+            return {}
+
+    client = SimpleNamespace(transport=DownwardTransport())
+    ticks = iter((0.0, 0.0, 1.0, 2.0))
+    monkeypatch.setattr(combat.time, "time", ticks.__next__)
+    monkeypatch.setattr(combat.time, "sleep", lambda _seconds: None)
+
+    assert combat._surface_after_aquatic_hunt(client, timeout=10.0) is False
+    assert client._aquatic_surface_failed is True
 
 
 class SubmergedTransport(CombatTransport):
@@ -1052,11 +1079,18 @@ def test_approach_aquatic_food_surfaces_when_submerged_too_long(monkeypatch):
     client = SimpleNamespace(transport=SubmergedTransport("minecraft:water"))
     monkeypatch.setattr(combat, "_submerged_too_long", lambda *_a, **_k: True)
     monkeypatch.setattr(combat.time, "sleep", lambda _s: None)
+    surfaced = []
+    monkeypatch.setattr(
+        combat,
+        "_surface_after_aquatic_hunt",
+        lambda _client, **_kwargs: surfaced.append(True) or True,
+    )
 
     assert (
         combat._approach_aquatic_food(client, target_id=7, entity_type="minecraft:cod")
         is False
     )
+    assert surfaced == [True]
 
 
 def test_repeated_failed_evasion_escalates_to_fighting_back(monkeypatch):
@@ -1506,3 +1540,27 @@ def test_hunt_target_records_the_unreachable_id(monkeypatch):
     )
 
     assert blocked == {9}
+
+
+def test_hunt_target_aborts_after_failed_aquatic_surface(monkeypatch):
+    from baritone_client.common import emergency_food
+
+    def fail_surface(client, *_args, **_kwargs):
+        client._aquatic_surface_failed = True
+        return False
+
+    monkeypatch.setattr(combat, "_approach_aquatic_food", fail_surface)
+    client = SimpleNamespace(transport=CombatTransport())
+
+    assert emergency_food.hunt_target(
+        client,
+        {
+            "id": 9,
+            "type": "minecraft:salmon",
+            "distance": 12.0,
+            "position": {"x": 12, "y": 49, "z": 0},
+        },
+        minimum_health=12.0,
+        recovery_complete=lambda _state=None: False,
+        unreachable=set(),
+    ) is False

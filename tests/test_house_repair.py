@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from baritone_client.common import base
+from baritone_client.common import door_recovery
 from tests.functional.shared import block_ops
 
 
@@ -48,6 +49,26 @@ def test_door_placement_clears_recovered_wall_from_both_doorway_cells(monkeypatc
     assert base._place_north_wall_door(client, *door, "minecraft:oak_door")
     assert transport.blocks[door] == "minecraft:oak_door"
     assert (door[0], door[1] + 1, door[2]) not in transport.blocks
+
+
+def test_door_staging_tries_inside_when_north_exterior_is_unreachable(monkeypatch):
+    attempted = []
+
+    def move_near(_client, x, y, z, **_kwargs):
+        attempted.append((x, y, z))
+        return z > 20
+
+    monkeypatch.setattr(
+        "baritone_client.common.harness_ops.move_near",
+        move_near,
+    )
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda *_args, **_kwargs: {})
+    )
+    assert door_recovery.move_to_door_staging(client, 13, 65, 20)
+    assert attempted[0] == (13, 65, 18)
+    assert attempted[-1] == (13, 65, 22)
 
 
 def test_good_house_repairs_existing_structure_instead_of_rebuilding(monkeypatch):

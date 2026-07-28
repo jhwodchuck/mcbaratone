@@ -882,9 +882,13 @@ def _relocate_to_checkpointed_stone_source(
 ) -> bool:
     from .stone_descent import relocate_to_checkpointed_stone_source
 
-    return relocate_to_checkpointed_stone_source(
-        client, minimum_y=minimum_y
-    )
+    return relocate_to_checkpointed_stone_source(client, minimum_y=minimum_y)
+
+
+def _relocate_to_dry_stone_terrain(client) -> bool:
+    from .stone_descent import relocate_to_dry_stone_terrain
+
+    return relocate_to_dry_stone_terrain(client)
 
 
 def _read_block_optional(client, x: int, y: int, z: int) -> Optional[str]:
@@ -898,9 +902,7 @@ def _choose_descent_offset(
 ) -> Optional[tuple[int, int]]:
     from .stone_descent import choose_descent_offset
 
-    return choose_descent_offset(
-        client, px, py, pz, probe_distance=probe_distance
-    )
+    return choose_descent_offset(client, px, py, pz, probe_distance=probe_distance)
 
 
 def _manual_column_descend(
@@ -911,10 +913,7 @@ def _manual_column_descend(
 ) -> bool:
     from .stone_descent import manual_column_descend
 
-    return manual_column_descend(
-        client, target_y=target_y, max_steps=max_steps
-    )
-
+    return manual_column_descend(client, target_y=target_y, max_steps=max_steps)
 
 
 def ensure_tunnel_lighting(client, state, last_torch_pos) -> tuple:
@@ -933,12 +932,16 @@ def _descend_to_stone_layer(
     from .stone_descent import descend_to_stone_layer
 
     return descend_to_stone_layer(
-        client,
-        target_depth=target_depth,
-        floor_y=floor_y,
-        timeout=timeout,
-        lateral_reach=lateral_reach,
+        client, target_depth=target_depth, floor_y=floor_y,
+        timeout=timeout, lateral_reach=lateral_reach,
     )
+
+
+def _restart_stone_mining(client, count: int) -> float:
+    client.transport.dispatch(
+        "mine", {"blocks": STONE_BLOCKS, "quantity": count + 10}
+    )
+    return time.time()
 
 
 def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
@@ -972,6 +975,7 @@ def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
         idle_checks = 0
         direct_failures = 0
         relocation_attempted = False
+        dry_relocation_attempted = False
         descent_attempted = False
         last_torch_pos = None
 
@@ -1053,36 +1057,31 @@ def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
                     f"({direct_failures}/3); retrying broad mine"
                 )
                 if direct_failures >= 3:
-                    # Primary recovery: the broad mine and exact-nearby search
-                    # both refuse to dig down, so a gatherer stranded on the
-                    # surface never reaches stone. Tunnel down to the stone
-                    # layer first -- this directly exposes abundant stone,
-                    # unlike relocating to the (also-surface) base.
+                    # Recover through descent, known terrain, then a new dry site.
                     if (
                         not descent_attempted
                         and _descend_to_stone_layer(client)
                     ):
                         descent_attempted = True
-                        direct_failures = 0
-                        idle_checks = 0
-                        stalled_checks = 0
-                        start = time.time()
-                        client.transport.dispatch(
-                            "mine", {"blocks": STONE_BLOCKS, "quantity": count + 10}
-                        )
+                        direct_failures = idle_checks = stalled_checks = 0
+                        start = _restart_stone_mining(client, count)
                         continue
                     if (
                         not relocation_attempted
                         and _relocate_to_checkpointed_stone_source(client)
                     ):
                         relocation_attempted = True
-                        direct_failures = 0
-                        idle_checks = 0
-                        stalled_checks = 0
-                        start = time.time()
-                        client.transport.dispatch(
-                            "mine", {"blocks": STONE_BLOCKS, "quantity": count + 10}
-                        )
+                        direct_failures = idle_checks = stalled_checks = 0
+                        start = _restart_stone_mining(client, count)
+                        continue
+                    if (
+                        not dry_relocation_attempted
+                        and _relocate_to_dry_stone_terrain(client)
+                    ):
+                        dry_relocation_attempted = True
+                        descent_attempted = False
+                        direct_failures = idle_checks = stalled_checks = 0
+                        start = _restart_stone_mining(client, count)
                         continue
                     print("DEBUG: No reachable nearby stone after 3 exact attempts")
                     return False

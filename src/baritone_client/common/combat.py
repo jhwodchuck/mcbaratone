@@ -385,12 +385,12 @@ def _approach_aquatic_food(
         )
         deadline = time.time() + max(0.0, float(timeout))
         while time.time() < deadline:
-            # #follow drives the bot into the water after the fish with no
-            # goto reflex to catch drowning -- this is exactly where Bot08
-            # drowned. Bail out to surface after a bounded dive.
+            # #follow has no goto drowning reflex; bail after a bounded dive.
             follow_state = client.transport.dispatch("get_state", {})
             if _submerged_too_long(client, follow_state, max_seconds=8.0):
                 print("SURVIVAL: submerged too long chasing aquatic food; surfacing")
+                _surface_after_aquatic_hunt(client, timeout=12.0)
+                client._submerged_since = None
                 return False
             entities = get_nearby_entities(client, radius=64)
             target = next(
@@ -423,29 +423,17 @@ def _approach_aquatic_food(
 
 def _surface_after_aquatic_hunt(client, *, timeout: float = 10.0) -> bool:
     """Reach breathing air after a fish kill without targeting its water block."""
-    try:
-        client.transport.dispatch("chat", {"message": "#surface"})
-        deadline = time.time() + max(0.0, float(timeout))
-        while time.time() < deadline:
-            state = client.transport.dispatch("get_state", {})
-            ensure_alive(client, state)
-            position = state.get("block_position", state.get("position", {}))
-            if all(axis in position for axis in ("x", "y", "z")):
-                head = client.transport.dispatch(
-                    "get_block",
-                    {
-                        "x": int(position["x"]),
-                        "y": int(position["y"]) + 1,
-                        "z": int(position["z"]),
-                    },
-                ).get("id", "")
-                if "water" not in str(head):
-                    return True
-            time.sleep(0.5)
-        return False
-    finally:
-        client.transport.dispatch("chat", {"message": "#stop"})
-        client.transport.dispatch("cancel", {})
+    from .surface_recovery import reach_breathing_air
+
+    reached = reach_breathing_air(
+        client,
+        timeout=timeout,
+        ensure_alive=ensure_alive,
+        sleep=time.sleep,
+        clock=time.time,
+    )
+    client._aquatic_surface_failed = not reached
+    return reached
 
 
 # Consecutive supervision ticks with the head underwater before forcing a

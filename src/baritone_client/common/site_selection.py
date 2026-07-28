@@ -212,6 +212,19 @@ def find_flat_ground(
                         surface_y = near_surface
                         break
             if not ascended:
+                from .surface_recovery import reach_dry_surface
+
+                recovered = reach_dry_surface(
+                    client,
+                    origin=(player_x, player_y, player_z),
+                    expected_y=surface_y,
+                    goto=safe_goto,
+                )
+                if recovered is not None:
+                    player_x, player_y, player_z = recovered
+                    surface_y = player_y
+                    ascended = True
+            if not ascended:
                 print(
                     "  Warning: could not reach the surface; refusing an "
                     "unreachable build site."

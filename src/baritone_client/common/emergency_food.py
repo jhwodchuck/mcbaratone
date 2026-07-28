@@ -243,6 +243,9 @@ def hunt_target(
             # while other, reachable food went unconsidered.
             if unreachable is not None and target_id is not None:
                 unreachable.add(target_id)
+            if getattr(client, "_aquatic_surface_failed", False):
+                print("RECOVERY: aborting aquatic hunt after failed surfacing")
+                return False
             time.sleep(1)
             return None
     if not api.safe_combat(

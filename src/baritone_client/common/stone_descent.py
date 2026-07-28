@@ -287,3 +287,62 @@ def relocate_to_checkpointed_stone_source(
     except Exception as exc:
         print(f"DEBUG: Checkpointed stone relocation failed: {exc}")
         return False
+
+
+def relocate_to_dry_stone_terrain(
+    client: Any,
+    *,
+    search_radius: int = 48,
+    attempt_limit: int = 6,
+) -> bool:
+    """Move a water-stranded gatherer to verified dry natural terrain."""
+    from . import resources as api
+    from .escape_recovery import destination_safe
+
+    try:
+        state = client.transport.dispatch("get_state", {})
+        origin = block_position(state)
+        response = client.transport.dispatch(
+            "find_blocks",
+            {
+                "blocks": [
+                    "minecraft:grass_block",
+                    "minecraft:dirt",
+                    "minecraft:coarse_dirt",
+                    "minecraft:podzol",
+                    "minecraft:stone",
+                ],
+                "radius": int(search_radius),
+                "limit": 4096,
+            },
+        )
+        candidates = []
+        for block in response.get("found", []):
+            candidate = (
+                int(block["x"]),
+                int(block["y"]) + 1,
+                int(block["z"]),
+            )
+            distance_sq = (
+                (candidate[0] - origin[0]) ** 2
+                + (candidate[2] - origin[2]) ** 2
+            )
+            if distance_sq >= 12**2 and destination_safe(client, *candidate):
+                candidates.append((distance_sq, candidate))
+        for _distance, candidate in sorted(candidates)[:attempt_limit]:
+            print(f"DEBUG: Relocating stone gatherer to dry terrain at {candidate}")
+            if not api.goto(client, *candidate, timeout=90.0, tolerance=2.0):
+                continue
+            current = block_position(client.transport.dispatch("get_state", {}))
+            moved_sq = (
+                (current[0] - origin[0]) ** 2
+                + (current[2] - origin[2]) ** 2
+            )
+            if moved_sq >= 8**2 and destination_safe(client, *current):
+                return True
+        return False
+    except api.PlayerDeathDetected:
+        raise
+    except Exception as exc:
+        print(f"DEBUG: Dry-terrain stone relocation failed: {exc}")
+        return False

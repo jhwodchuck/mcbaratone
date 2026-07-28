@@ -1264,13 +1264,13 @@ def _house_door_aligned(client, x: int, y: int, z: int) -> bool:
 
 def _place_north_wall_door(client, x: int, y: int, z: int, item_id: str) -> bool:
     """Place a door from outside the north wall with a north/south facing."""
-    from . import harness_ops
+    from .door_recovery import move_to_door_staging
 
     client.transport.dispatch("close_screen", {})
     client.transport.dispatch("chat", {"message": "#set allowBreak false"})
     try:
-        if not harness_ops.move_near(client, x, y, z - 2, timeout=20.0):
-            print("Door placement blocked: could not reach north exterior")
+        if not move_to_door_staging(client, x, y, z, timeout=20.0):
+            print("Door placement blocked: no reachable staging position")
             return False
         client.transport.dispatch("cancel", {})
 
