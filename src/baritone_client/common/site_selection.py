@@ -177,13 +177,41 @@ def find_flat_ground(
             from .automation_utils import safe_goto
 
             _restore_surface_navigation_policy(client)
-            if not safe_goto(
+            # Try the player's own column first, then nearby ones. Insisting on
+            # this exact column is what stranded Bot09: it stood in shallow
+            # water at y=62 under a vine canopy, surface_y_at returned the top
+            # of the vines (y=68), and Baritone cannot climb a vine column --
+            # so the only offered goal was unreachable and BASE_CONSTRUCTION
+            # failed on repeat. A couple of blocks sideways is usually ordinary
+            # walkable ground.
+            ascended = safe_goto(
                 client,
                 player_x,
                 surface_y,
                 player_z,
                 timeout=180.0,
-            ):
+            )
+            if not ascended:
+                for dx, dz in ((4, 0), (-4, 0), (0, 4), (0, -4), (6, 6), (-6, -6)):
+                    near_x, near_z = player_x + dx, player_z + dz
+                    near_surface = surface_y_at(client, near_x, near_z)
+                    if near_surface is None or near_surface < surface_y - 6:
+                        continue
+                    print(
+                        f"  Own column is unclimbable; trying surface at "
+                        f"({near_x}, {near_surface}, {near_z})..."
+                    )
+                    if safe_goto(
+                        client,
+                        near_x,
+                        near_surface,
+                        near_z,
+                        timeout=90.0,
+                    ):
+                        ascended = True
+                        surface_y = near_surface
+                        break
+            if not ascended:
                 print(
                     "  Warning: could not reach the surface; refusing an "
                     "unreachable build site."

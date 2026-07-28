@@ -1355,11 +1355,11 @@ def test_submerged_bot_targets_nearby_fish_immediately(monkeypatch):
 
     looked = []
 
-    def fake_find(_client, types, radius):
-        looked.append((tuple(types), radius))
-        return {"id": 7, "type": "minecraft:tropical_fish", "distance": 24.0}
+    def fake_nearby(_client, radius):
+        looked.append(radius)
+        return [{"id": 7, "type": "minecraft:tropical_fish", "distance": 24.0}]
 
-    monkeypatch.setattr(combat, "find_entity_by_type", fake_find)
+    monkeypatch.setattr(combat, "get_nearby_entities", fake_nearby)
 
     target = emergency_food.select_target(
         SimpleNamespace(transport=CombatTransport()),
@@ -1372,7 +1372,7 @@ def test_submerged_bot_targets_nearby_fish_immediately(monkeypatch):
     )
 
     assert target is not None and "tropical_fish" in target["type"]
-    assert looked and looked[0][1] == 64, "submerged search must reach fish ~48m out"
+    assert looked and looked[0] == 64, "submerged search must reach fish ~48m out"
 
 
 def test_dry_bot_still_waits_before_chasing_fish(monkeypatch):
@@ -1380,7 +1380,9 @@ def test_dry_bot_still_waits_before_chasing_fish(monkeypatch):
     from baritone_client.common import emergency_food
 
     monkeypatch.setattr(
-        combat, "find_entity_by_type", lambda *_a, **_k: {"id": 1, "type": "cod"}
+        combat,
+        "get_nearby_entities",
+        lambda *_a, **_k: [{"id": 1, "type": "minecraft:cod", "distance": 5.0}],
     )
 
     assert emergency_food.select_target(
@@ -1434,3 +1436,73 @@ def test_aquatic_approach_window_scales_with_distance(monkeypatch):
 
     assert seen["timeout"] > 8.0, "window must grow for a distant fish"
     assert seen["timeout"] <= 45.0, "and stay bounded"
+
+
+def test_aquatic_follow_abandons_a_target_that_never_gets_closer(monkeypatch):
+    """A fish in a sealed flooded chamber is not reachable, and burning the
+    whole follow window on it starves the bot. Live: Bot07 reported "safely
+    hunting tropical_fish at 46.4m" repeatedly with the distance frozen to the
+    decimal, never moving, at 8 health."""
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [])
+    monkeypatch.setattr(combat, "_submerged_too_long", lambda *_a, **_k: False)
+    monkeypatch.setattr(combat.time, "sleep", lambda _s: None)
+    # Distance never shrinks.
+    monkeypatch.setattr(
+        combat,
+        "get_nearby_entities",
+        lambda *_a, **_k: [
+            {"id": 9, "type": "minecraft:tropical_fish", "distance": 46.4}
+        ],
+    )
+    client = SimpleNamespace(transport=CombatTransport())
+
+    assert combat._approach_aquatic_food(
+        client, 9, "minecraft:tropical_fish", timeout=45.0
+    ) is False
+
+
+def test_unreachable_fish_is_not_selected_again(monkeypatch):
+    """Without a blacklist the next loop re-selects the same nearest fish and
+    retries forever, ignoring other reachable food."""
+    from baritone_client.common import emergency_food
+
+    monkeypatch.setattr(
+        combat,
+        "get_nearby_entities",
+        lambda *_a, **_k: [
+            {"id": 9, "type": "minecraft:tropical_fish", "distance": 46.4},
+            {"id": 10, "type": "minecraft:salmon", "distance": 55.0},
+        ],
+    )
+    client = SimpleNamespace(transport=CombatTransport())
+
+    first = emergency_food.select_target(
+        client, [], current_food=17, elapsed=0.0, timeout=240.0,
+        renewable_source_callback=None, in_water=True,
+    )
+    assert first["id"] == 9  # nearest wins initially
+
+    second = emergency_food.select_target(
+        client, [], current_food=17, elapsed=0.0, timeout=240.0,
+        renewable_source_callback=None, in_water=True, unreachable={9},
+    )
+    assert second["id"] == 10, "must fall through to the next viable fish"
+
+
+def test_hunt_target_records_the_unreachable_id(monkeypatch):
+    from baritone_client.common import emergency_food
+
+    monkeypatch.setattr(combat, "_approach_aquatic_food", lambda *_a, **_k: False)
+    monkeypatch.setattr(emergency_food.time, "sleep", lambda _s: None)
+    blocked = set()
+
+    emergency_food.hunt_target(
+        SimpleNamespace(transport=CombatTransport()),
+        {"id": 9, "type": "minecraft:tropical_fish", "distance": 46.4,
+         "position": {"x": 46, "y": 62, "z": 0}},
+        minimum_health=12.0,
+        recovery_complete=lambda _s=None: False,
+        unreachable=blocked,
+    )
+
+    assert blocked == {9}

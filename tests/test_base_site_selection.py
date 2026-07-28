@@ -645,3 +645,53 @@ def test_low_health_after_house_failure_yields_before_repair_attempt(monkeypatch
         BaseConstructionHandler()._recover_build_survival_or_yield(
             SimpleNamespace(transport=transport)
         )
+
+
+def test_surface_ascent_falls_back_to_a_nearby_column(monkeypatch):
+    """Insisting on the player's own column stranded Bot09: it stood in
+    shallow water at y=62 under a vine canopy, surface_y_at returned the top
+    of the vines (y=68), and Baritone cannot climb a vine column -- so the only
+    offered goal was unreachable and BASE_CONSTRUCTION failed on repeat. A
+    couple of blocks sideways is usually ordinary walkable ground."""
+    from baritone_client.common import site_selection
+
+    attempts = []
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                return {"block_position": {"x": 371, "y": 62, "z": 46}}
+            if route == "get_block":
+                x, y, z = payload["x"], payload["y"], payload["z"]
+                if (x, z) == (371, 46):           # the vine shaft
+                    if 63 <= y <= 67:
+                        return {"id": "minecraft:vine"}
+                    if y == 62:
+                        return {"id": "minecraft:water"}
+                    return {"id": "minecraft:air"}
+                return {"id": "minecraft:grass_block" if y == 67 else "minecraft:air"}
+            if route == "get_view":
+                return {"voxels": []}
+            return {}
+
+    def fake_goto(_client, x, y, z, **_kw):
+        attempts.append((x, y, z))
+        # Only the sideways column is reachable.
+        return (x, z) != (371, 46)
+
+    monkeypatch.setattr(
+        "baritone_client.common.automation_utils.safe_goto", fake_goto
+    )
+    monkeypatch.setattr(
+        site_selection, "_restore_surface_navigation_policy", lambda _c: None
+    )
+
+    site_selection.find_flat_ground(
+        SimpleNamespace(transport=Transport()), radius=8, footprint=1
+    )
+
+    assert attempts, "should have attempted an ascent"
+    assert attempts[0] == (371, 68, 46), "own column first"
+    assert any(a[0] != 371 or a[2] != 46 for a in attempts), (
+        "must fall back to a nearby column instead of giving up"
+    )

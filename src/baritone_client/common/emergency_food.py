@@ -30,13 +30,20 @@ def select_target(
         Callable[[str, tuple[int, int, int]], None]
     ],
     in_water: bool = False,
+    unreachable: Optional[set] = None,
 ) -> Optional[Dict]:
     """Choose a renewable land target, with nearby fish as fallback.
 
     ``in_water`` reports that the player is already submerged, which lifts the
     normal restrictions on aquatic targets -- see the fallback below.
+    ``unreachable`` holds entity ids already proven unapproachable.
     """
     from . import combat as api
+
+    blocked = unreachable or set()
+
+    def usable(entity: Dict) -> bool:
+        return entity.get("id") not in blocked
 
     for animal_type in PRIMARY_LAND_FOOD + SECONDARY_LAND_FOOD:
         group = [
@@ -44,6 +51,7 @@ def select_target(
             for entity in nearby
             if animal_type in str(entity.get("type", "")).lower()
             and not entity.get("is_baby", False)
+            and usable(entity)
         ]
         if len(group) >= 3:
             positions = [api.entity_position(entity) for entity in group]
@@ -67,17 +75,34 @@ def select_target(
     # so the land-search delay is pure starvation. Live: Bot07 and Bot08 sat
     # at 8.0/7.3 health in lush caves, feet in water, with 8-10 tropical fish
     # inside 128 blocks -- their only food source -- and never targeted one.
+    def nearest_fish(radius: int) -> Optional[Dict]:
+        # find_entity_by_type only ever returns the single nearest match, so a
+        # blocked fish would otherwise mask every one behind it. Scan and pick
+        # the nearest that is still viable.
+        candidates = [
+            entity
+            for entity in api.get_nearby_entities(client, radius=radius)
+            if any(
+                water_type in str(entity.get("type", "")).lower()
+                for water_type in WATER_FOOD
+            )
+            and usable(entity)
+        ]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda e: float(e.get("distance", 999)))
+
     if in_water:
         # 64, not something tighter: measured live, the nearest fish to a
         # starving bot in a lush cave sat at 48.7m, and a radius-48 query
         # returned nothing at all. A shorter leash simply means never eating.
-        target = api.find_entity_by_type(client, list(WATER_FOOD), radius=64)
+        target = nearest_fish(64)
         if target is not None:
             return target
 
     water_fallback_after = min(90.0, max(15.0, timeout / 2.0))
     if current_food <= 6 or elapsed >= water_fallback_after:
-        return api.find_entity_by_type(client, list(WATER_FOOD), radius=16)
+        return nearest_fish(16)
     return None
 
 
@@ -173,8 +198,13 @@ def hunt_target(
     *,
     minimum_health: float,
     recovery_complete: Callable[[Optional[Dict]], bool],
+    unreachable: Optional[set] = None,
 ) -> Optional[bool]:
-    """Hunt one selected target; return True recovered, False failed, None retry."""
+    """Hunt one selected target; return True recovered, False failed, None retry.
+
+    ``unreachable`` collects entity ids whose approach provably made no
+    progress, so the caller stops re-selecting them.
+    """
     from . import combat as api
 
     target_id = target.get("id")
@@ -207,6 +237,12 @@ def hunt_target(
             client, target_id, target_type, timeout=approach_timeout
         ):
             print("RECOVERY: aquatic target could not be reached safely")
+            # Without this the next loop re-selects the same nearest fish and
+            # retries forever. Live: Bot07 cycled "hunting tropical_fish at
+            # 46.4m" -> "could not be reached safely" indefinitely at 8 health
+            # while other, reachable food went unconsidered.
+            if unreachable is not None and target_id is not None:
+                unreachable.add(target_id)
             time.sleep(1)
             return None
     if not api.safe_combat(

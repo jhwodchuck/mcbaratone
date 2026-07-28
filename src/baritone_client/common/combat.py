@@ -371,6 +371,13 @@ def _approach_aquatic_food(
     combat takes ownership of movement.
     """
     command_type = str(entity_type).split(":")[-1]
+    # Separation at the start, and the best (smallest) seen since. If the gap
+    # never shrinks the target is simply not reachable -- a fish in a sealed
+    # flooded chamber, say -- and burning the whole window on it is wasted.
+    # Live: Bot07 reported "safely hunting tropical_fish at 46.4m" over and
+    # over with the distance frozen to the decimal, never moving, at 8 health.
+    best_distance = None
+    progress_deadline = time.time() + max(6.0, float(timeout) * 0.35)
     try:
         client.transport.dispatch(
             "chat",
@@ -392,8 +399,18 @@ def _approach_aquatic_food(
             )
             if target is None:
                 return True
-            if float(target.get("distance", 999)) < 4.5:
+            distance = float(target.get("distance", 999))
+            if distance < 4.5:
                 return True
+            if best_distance is None or distance < best_distance - 1.0:
+                best_distance = distance
+                progress_deadline = time.time() + max(6.0, float(timeout) * 0.35)
+            elif time.time() > progress_deadline:
+                print(
+                    f"FOLLOW: no closing progress on {command_type} "
+                    f"(held at {distance:.1f}m); treating it as unreachable"
+                )
+                return False
             threats = scan_for_threats(client, radius=12)
             if threats and float(threats[0].get("distance", 999)) <= 12:
                 return False
@@ -832,6 +849,9 @@ def acquire_emergency_food(
     # through to the same bounded, threat-checked exploration a merely-hurt
     # bot already uses -- it strictly dominates permanent inaction once no
     # threat is present.
+    # Entity ids whose approach provably made no progress this recovery, so
+    # the next loop does not re-select the same unreachable target forever.
+    unreachable_food: set = set()
     hold_cycles = 0
     max_hold_cycles = 3
     while time.time() - start < timeout:
@@ -950,6 +970,7 @@ def acquire_emergency_food(
             timeout=timeout,
             renewable_source_callback=renewable_source_callback,
             in_water=_player_is_in_water(client, state),
+            unreachable=unreachable_food,
         )
         if target is None:
             if (
@@ -983,6 +1004,7 @@ def acquire_emergency_food(
             target,
             minimum_health=minimum_health,
             recovery_complete=recovery_complete,
+            unreachable=unreachable_food,
         )
         if outcome is False:
             return False
