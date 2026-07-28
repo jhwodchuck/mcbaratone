@@ -2,7 +2,7 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.Minecraft;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -30,7 +30,7 @@ class AttackEntityCommandHandlerTest {
     void rejectsMissingEntityBeforeSchedulingMinecraftWork() throws Exception {
         CommandResult result = new AttackEntityCommandHandler().handle(
             new JsonObject(),
-            mock(MinecraftClient.class),
+            mock(Minecraft.class),
             mock(IBaritone.class),
             null
         ).get();

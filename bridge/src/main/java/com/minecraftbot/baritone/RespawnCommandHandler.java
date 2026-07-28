@@ -2,9 +2,8 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.screen.DeathScreen;
 import java.net.Socket;
+import net.minecraft.client.Minecraft;
 
 /**
  * Command handler for respawning the player.
@@ -17,10 +16,10 @@ public class RespawnCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         executeOnMainThread(client, () -> {
             if (client.player != null) {
-                client.player.requestRespawn();
+                client.player.respawn();
             }
         });
 

@@ -6,7 +6,6 @@ import com.google.gson.JsonObject;
 import com.minecraftbot.baritone.CommandDispatcher;
 import com.minecraftbot.baritone.CommandResult;
 import com.minecraftbot.baritone.EventManager;
-import net.minecraft.client.MinecraftClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -22,6 +21,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
+import net.minecraft.client.Minecraft;
 
 /**
  * Registry of MCP tools with their schemas and handlers.
@@ -33,7 +33,7 @@ public class McpToolRegistry {
     private static final long TOOL_TIMEOUT_SECONDS = 30;
 
     private final CommandDispatcher commandDispatcher;
-    private final MinecraftClient client;
+    private final Minecraft client;
     private final EventManager eventManager;
     
     // Tool definitions: name -> ToolDefinition
@@ -46,7 +46,7 @@ public class McpToolRegistry {
     public McpToolRegistry(CommandDispatcher commandDispatcher, EventManager eventManager) {
         this.commandDispatcher = commandDispatcher;
         this.eventManager = eventManager;
-        this.client = MinecraftClient.getInstance();
+        this.client = Minecraft.getInstance();
         registerAllTools();
     }
 
@@ -119,7 +119,7 @@ public class McpToolRegistry {
         }
 
         try {
-            if (tool.requiresMainThread && !client.isOnThread()) {
+            if (tool.requiresMainThread && !client.isSameThread()) {
                 // Marshal to main thread
                 return invokeOnMainThread(tool, arguments, session);
             } else {

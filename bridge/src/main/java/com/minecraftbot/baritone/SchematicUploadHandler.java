@@ -3,7 +3,6 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -13,6 +12,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
 
 /**
  * CommandHandler for schematic upload operations.
@@ -58,7 +58,7 @@ public class SchematicUploadHandler implements CommandHandler {
     }
     
     @Override
-    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, 
+    public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client,
             IBaritone baritone, Socket clientSocket) {
         return CompletableFuture.supplyAsync(() -> {
             try {

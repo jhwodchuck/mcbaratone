@@ -2,9 +2,8 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-
 import java.net.Socket;
+import net.minecraft.client.Minecraft;
 
 /**
  * Command handler for mission-related commands.
@@ -19,7 +18,7 @@ public class MissionCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         String action = params.has("action") ? params.get("action").getAsString() : "status";
 
         // Note: Mission commands are primarily handled by MissionController
@@ -37,7 +36,7 @@ public class MissionCommandHandler extends AbstractCommandHandler {
         }
     }
 
-    private CommandResult handleMissionStatus(MinecraftClient client) {
+    private CommandResult handleMissionStatus(Minecraft client) {
         // This is a simplified status - in the full implementation,
         // this would access the MissionController instance
         JsonObject data = new JsonObject();
@@ -46,14 +45,14 @@ public class MissionCommandHandler extends AbstractCommandHandler {
         return CommandResult.success(data);
     }
 
-    private CommandResult handleMissionQueue(MinecraftClient client) {
+    private CommandResult handleMissionQueue(Minecraft client) {
         JsonObject data = new JsonObject();
         data.addProperty("note", "Mission queue info requires access to MissionController instance");
         data.addProperty("queue_size", 0); // Placeholder
         return CommandResult.success(data);
     }
 
-    private CommandResult handleMissionCheckpoint(JsonObject params, MinecraftClient client) {
+    private CommandResult handleMissionCheckpoint(JsonObject params, Minecraft client) {
         String phase = params.has("phase") ? params.get("phase").getAsString() : "unknown";
         String note = params.has("note") ? params.get("note").getAsString() : "";
 

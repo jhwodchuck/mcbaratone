@@ -2,10 +2,10 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
 import java.net.Socket;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 
 public class AttackBlockCommandHandler extends AbstractCommandHandler {
 
@@ -15,7 +15,7 @@ public class AttackBlockCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         if (!params.has("x") || !params.has("y") || !params.has("z")) {
             return CommandResult.error("Missing coordinates");
         }
@@ -24,7 +24,7 @@ public class AttackBlockCommandHandler extends AbstractCommandHandler {
         int y = params.get("y").getAsInt();
         int z = params.get("z").getAsInt();
 
-        if (client.interactionManager == null) {
+        if (client.gameMode == null) {
             return CommandResult.error("Interaction manager not ready");
         }
         
@@ -32,8 +32,8 @@ public class AttackBlockCommandHandler extends AbstractCommandHandler {
         client.execute(() -> {
             BlockPos pos = new BlockPos(x, y, z);
             // Attack the block (Left Click)
-            client.interactionManager.attackBlock(pos, Direction.UP);
-            client.player.swingHand(client.player.getActiveHand());
+            client.gameMode.startDestroyBlock(pos, Direction.UP);
+            client.player.swing(client.player.getUsedItemHand());
         });
 
         return CommandResult.success();

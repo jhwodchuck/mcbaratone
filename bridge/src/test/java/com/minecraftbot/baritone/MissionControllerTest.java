@@ -3,7 +3,6 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
@@ -11,7 +10,7 @@ import org.mockito.MockitoAnnotations;
 
 import java.net.Socket;
 import java.util.Map;
-
+import net.minecraft.client.Minecraft;
 import org.junit.jupiter.api.Disabled;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -24,7 +23,7 @@ public class MissionControllerTest {
     private MissionBridgeAdapter mockBridge;
 
     @Mock
-    private MinecraftClient mockClient;
+    private Minecraft mockClient;
 
     @Mock
     private IBaritone mockBaritone;
@@ -58,12 +57,14 @@ public class MissionControllerTest {
         missionController = new MissionController(mockBridge);
 
         // Mock basic client state
-        var mockWorld = mock(net.minecraft.client.world.ClientWorld.class);
-        when(mockWorld.getRegistryKey()).thenReturn(net.minecraft.registry.RegistryKey.of(net.minecraft.registry.RegistryKeys.WORLD, net.minecraft.util.Identifier.of("minecraft", "overworld")));
-        TestUtils.setField(mockClient, "world", mockWorld);
+        var mockWorld = mock(net.minecraft.client.multiplayer.ClientLevel.class);
+        when(mockWorld.dimension()).thenReturn(net.minecraft.resources.ResourceKey.create(
+                net.minecraft.core.registries.Registries.DIMENSION,
+                net.minecraft.resources.Identifier.fromNamespaceAndPath("minecraft", "overworld")));
+        TestUtils.setField(mockClient, "level", mockWorld);
 
-        var mockPlayer = mock(net.minecraft.client.network.ClientPlayerEntity.class);
-        var mockNetworkHandler = mock(net.minecraft.client.network.ClientPlayNetworkHandler.class);
+        var mockPlayer = mock(net.minecraft.client.player.LocalPlayer.class);
+        var mockNetworkHandler = mock(net.minecraft.client.multiplayer.ClientPacketListener.class);
         TestUtils.setField(mockPlayer, "networkHandler", mockNetworkHandler);
         
         TestUtils.setField(mockClient, "player", mockPlayer);
@@ -197,7 +198,7 @@ public class MissionControllerTest {
         JsonObject result = data.getAsJsonObject("result");
         assertTrue(result.has("base"));
         assertEquals("base_established", missionController.getPhaseValue());
-        verify(mockBaritone.getBuilderProcess()).clearArea(any(net.minecraft.util.math.BlockPos.class), any(net.minecraft.util.math.BlockPos.class));
+        verify(mockBaritone.getBuilderProcess()).clearArea(any(net.minecraft.core.BlockPos.class), any(net.minecraft.core.BlockPos.class));
     }
     */
 
@@ -522,11 +523,11 @@ public class MissionControllerTest {
         setMissionPhase("stronghold_hunt");
 
         // Mock being in the End dimension - simplified mocking
-        var mockPlayer = mock(net.minecraft.client.network.ClientPlayerEntity.class);
+        var mockPlayer = mock(net.minecraft.client.player.LocalPlayer.class);
         TestUtils.setField(mockClient, "player", mockPlayer);
 
-        var mockWorld = mock(net.minecraft.client.world.ClientWorld.class);
-        TestUtils.setField(mockClient, "world", mockWorld);
+        var mockWorld = mock(net.minecraft.client.multiplayer.ClientLevel.class);
+        TestUtils.setField(mockClient, "level", mockWorld);
 
         // Since the exact Minecraft API is complex, we'll test the logic by setting up a scenario
         // where hasEndAccessItems returns true through mocking
@@ -716,9 +717,9 @@ public class MissionControllerTest {
     // ========== Helper Methods ==========
 
     private void mockPlayerAtPosition(int x, int y, int z) {
-        var mockPlayer = mock(net.minecraft.client.network.ClientPlayerEntity.class);
-        var mockPos = new net.minecraft.util.math.BlockPos(x, y, z);
-        when(mockPlayer.getBlockPos()).thenReturn(mockPos);
+        var mockPlayer = mock(net.minecraft.client.player.LocalPlayer.class);
+        var mockPos = new net.minecraft.core.BlockPos(x, y, z);
+        when(mockPlayer.blockPosition()).thenReturn(mockPos);
         TestUtils.setField(mockClient, "player", mockPlayer);
     }
 

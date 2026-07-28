@@ -8,13 +8,12 @@ import baritone.api.schematic.format.ISchematicFormat;
 import baritone.api.selection.ISelection;
 import baritone.api.utils.BetterBlockPos;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.math.Vec3i;
-
 import java.io.File;
 import java.io.FileInputStream;
 import java.net.Socket;
 import java.util.Optional;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.Vec3i;
 
 /**
  * Command handler for build operations: build, selection.
@@ -24,7 +23,7 @@ public class BuildCommandHandler extends AbstractCommandHandler {
     private final File schematicDir;
 
     public BuildCommandHandler() {
-        this.schematicDir = new File(MinecraftClient.getInstance().runDirectory, "schematics");
+        this.schematicDir = new File(Minecraft.getInstance().gameDirectory, "schematics");
     }
 
     @Override
@@ -33,7 +32,7 @@ public class BuildCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         String action = params.has("action") ? params.get("action").getAsString() : "build";
 
         switch (action) {
@@ -73,7 +72,7 @@ public class BuildCommandHandler extends AbstractCommandHandler {
             Optional<ISchematicFormat> format = BaritoneAPI.getProvider().getSchematicSystem().getByFile(file);
             if (format.isPresent()) {
                 ISchematic schematic = format.get().parse(new FileInputStream(file));
-                executeOnMainThread(MinecraftClient.getInstance(), () ->
+                executeOnMainThread(Minecraft.getInstance(), () ->
                     baritone.getBuilderProcess().build(name, schematic, new Vec3i(x, y, z)));
 
                 JsonObject data = new JsonObject();
@@ -99,7 +98,7 @@ public class BuildCommandHandler extends AbstractCommandHandler {
 
         String action = params.get("action").getAsString();
 
-        executeOnMainThread(MinecraftClient.getInstance(), () -> {
+        executeOnMainThread(Minecraft.getInstance(), () -> {
             if ("set".equals(action)) {
                 handleSelectionSet(params, baritone);
             } else if ("clear".equals(action)) {
@@ -141,7 +140,7 @@ public class BuildCommandHandler extends AbstractCommandHandler {
         }
 
         ISelection sel = sels[0]; // operate on first
-        var direction = net.minecraft.util.math.Direction.valueOf(params.get("direction").getAsString().toUpperCase());
+        var direction = net.minecraft.core.Direction.valueOf(params.get("direction").getAsString().toUpperCase());
         int blocks = params.get("blocks").getAsInt();
 
         if ("expand".equals(action)) {

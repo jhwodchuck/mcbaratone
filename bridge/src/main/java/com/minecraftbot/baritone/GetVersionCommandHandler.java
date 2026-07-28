@@ -3,8 +3,7 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
 import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.client.MinecraftClient;
-
+import net.minecraft.client.Minecraft;
 import java.net.Socket;
 
 /**
@@ -19,7 +18,7 @@ public class GetVersionCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         JsonObject data = new JsonObject();
         try {
             var loader = FabricLoader.getInstance();

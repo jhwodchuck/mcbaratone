@@ -3,10 +3,9 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-
 import java.net.Socket;
 import java.util.List;
+import net.minecraft.client.Minecraft;
 
 /**
  * Handler for the get_events command - polls buffered events from EventManager.
@@ -36,7 +35,7 @@ public class GetEventsCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         if (eventManager == null) {
             return CommandResult.error("EventManager not initialized");
         }

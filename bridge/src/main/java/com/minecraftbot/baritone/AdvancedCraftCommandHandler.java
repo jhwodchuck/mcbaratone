@@ -2,18 +2,6 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.item.ItemStack;
-import net.minecraft.block.Blocks;
-import net.minecraft.registry.Registries;
-import net.minecraft.screen.ScreenHandler;
-import net.minecraft.screen.slot.SlotActionType;
-import net.minecraft.util.Hand;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.Vec3d;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,6 +9,18 @@ import java.net.Socket;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.ContainerInput;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * Advanced crafting command handler with recipe validation and multi-step crafting support.
@@ -81,7 +81,7 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         // Parse command parameters
         String itemId = params.has("item") ? params.get("item").getAsString() : "";
         if (itemId.isEmpty()) {
@@ -119,7 +119,7 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
     /**
      * Plans the complete crafting sequence including intermediate steps.
      */
-    private List<CraftingStep> planCraftingSequence(MinecraftClient client, String targetItem, int quantity, boolean useWorkbench) {
+    private List<CraftingStep> planCraftingSequence(Minecraft client, String targetItem, int quantity, boolean useWorkbench) {
         List<CraftingStep> plan = new ArrayList<>();
         Queue<String> dependencyQueue = new LinkedList<>();
         Set<String> plannedItems = new HashSet<>();
@@ -176,7 +176,7 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
     /**
      * Executes the complete crafting sequence.
      */
-    private CommandResult executeCraftingSequence(MinecraftClient client, List<CraftingStep> plan, boolean useWorkbench) {
+    private CommandResult executeCraftingSequence(Minecraft client, List<CraftingStep> plan, boolean useWorkbench) {
         JsonObject result = new JsonObject();
         int totalCrafted = 0;
         List<String> errors = new ArrayList<>();
@@ -229,7 +229,7 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
     /**
      * Validates that all required ingredients are available.
      */
-    private Map<String, Integer> validateIngredients(MinecraftClient client, CraftRecipe recipe, int batches) {
+    private Map<String, Integer> validateIngredients(Minecraft client, CraftRecipe recipe, int batches) {
         Map<String, Integer> missing = new HashMap<>();
 
         for (Map.Entry<String, Integer> entry : recipe.ingredients.entrySet()) {
@@ -248,7 +248,7 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
     /**
      * Ensures workbench access when required.
      */
-    private boolean ensureWorkbenchAccess(MinecraftClient client, boolean useWorkbench) {
+    private boolean ensureWorkbenchAccess(Minecraft client, boolean useWorkbench) {
         if (isWorkbenchOpen(client)) {
             return true;
         }
@@ -257,7 +257,7 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
             return false; // Don't try to open workbench if not requested
         }
 
-        if (client.player == null || client.world == null || client.interactionManager == null) {
+        if (client.player == null || client.level == null || client.gameMode == null) {
             return false;
         }
 
@@ -273,7 +273,7 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
         // If invoked from the Minecraft thread, only accept an immediately-open
         // screen; waiting there would deadlock the client.
         try {
-            if (client.isOnThread()) {
+            if (client.isSameThread()) {
                 interactWithWorkbench(client, workbench);
                 return isWorkbenchOpen(client);
             }
@@ -302,35 +302,35 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
         }
     }
 
-    private BlockPos findReachableWorkbench(MinecraftClient client) {
-        BlockPos origin = client.player.getBlockPos();
-        Vec3d eyePosition = client.player.getEyePos();
+    private BlockPos findReachableWorkbench(Minecraft client) {
+        BlockPos origin = client.player.blockPosition();
+        Vec3 eyePosition = client.player.getEyePosition();
         BlockPos nearest = null;
         double nearestDistance = Double.MAX_VALUE;
 
-        for (BlockPos candidate : BlockPos.iterateOutwards(
+        for (BlockPos candidate : BlockPos.withinManhattan(
                 origin, WORKBENCH_SEARCH_RADIUS, WORKBENCH_SEARCH_RADIUS,
                 WORKBENCH_SEARCH_RADIUS)) {
-            if (!client.world.getBlockState(candidate).isOf(Blocks.CRAFTING_TABLE)) {
+            if (!client.level.getBlockState(candidate).is(Blocks.CRAFTING_TABLE)) {
                 continue;
             }
-            double distance = eyePosition.squaredDistanceTo(Vec3d.ofCenter(candidate));
+            double distance = eyePosition.distanceToSqr(Vec3.atCenterOf(candidate));
             if (distance <= WORKBENCH_SEARCH_RADIUS * WORKBENCH_SEARCH_RADIUS
                     && distance < nearestDistance) {
-                nearest = candidate.toImmutable();
+                nearest = candidate.immutable();
                 nearestDistance = distance;
             }
         }
         return nearest;
     }
 
-    private boolean interactWithWorkbench(MinecraftClient client, BlockPos workbench) {
+    private boolean interactWithWorkbench(Minecraft client, BlockPos workbench) {
         BlockHitResult hitResult = new BlockHitResult(
-            Vec3d.ofCenter(workbench), Direction.UP, workbench, false);
-        boolean accepted = client.interactionManager.interactBlock(
-            client.player, Hand.MAIN_HAND, hitResult).isAccepted();
+            Vec3.atCenterOf(workbench), Direction.UP, workbench, false);
+        boolean accepted = client.gameMode.useItemOn(
+            client.player, InteractionHand.MAIN_HAND, hitResult).consumesAction();
         if (accepted) {
-            client.player.swingHand(Hand.MAIN_HAND);
+            client.player.swing(InteractionHand.MAIN_HAND);
         }
         return accepted;
     }
@@ -338,7 +338,7 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
     /**
      * Performs the actual crafting operation.
      */
-    private int performCrafting(MinecraftClient client, CraftRecipe recipe, int batches) {
+    private int performCrafting(Minecraft client, CraftRecipe recipe, int batches) {
         int totalCrafted = 0;
 
         for (int batch = 0; batch < batches; batch++) {
@@ -365,7 +365,7 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
 
     // ================= Helper Methods =================
 
-    private int calculateBatchesNeeded(String item, int totalQuantity, MinecraftClient client) {
+    private int calculateBatchesNeeded(String item, int totalQuantity, Minecraft client) {
         CraftRecipe recipe = getRecipeDefinition(item);
         if (recipe == null) return 0;
 
@@ -374,13 +374,13 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
         return (int) Math.ceil((double) needed / recipe.outputCount);
     }
 
-    private boolean isWorkbenchOpen(MinecraftClient client) {
-        return client.player.currentScreenHandler instanceof net.minecraft.screen.CraftingScreenHandler;
+    private boolean isWorkbenchOpen(Minecraft client) {
+        return client.player.containerMenu instanceof net.minecraft.world.inventory.CraftingMenu;
     }
 
-    private void clearCraftingGrid(MinecraftClient client, boolean isTable) {
-        ScreenHandler handler = client.player.currentScreenHandler;
-        int syncId = handler.syncId;
+    private void clearCraftingGrid(Minecraft client, boolean isTable) {
+        AbstractContainerMenu handler = client.player.containerMenu;
+        int syncId = handler.containerId;
         int gridSize = isTable ? 9 : 4;
         int gridStart = 1;
 
@@ -388,7 +388,7 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
             final int slot = i;
             client.execute(() -> {
                 try {
-                    client.interactionManager.clickSlot(syncId, slot, 0, SlotActionType.QUICK_MOVE, client.player);
+                    client.gameMode.handleContainerInput(syncId, slot, 0, ContainerInput.QUICK_MOVE, client.player);
                 } catch (Exception e) {
                     logger.warn("Failed to clear grid slot {}", slot, e);
                 }
@@ -397,9 +397,9 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
         }
     }
 
-    private void placeIngredients(MinecraftClient client, CraftRecipe recipe) {
-        ScreenHandler handler = client.player.currentScreenHandler;
-        int syncId = handler.syncId;
+    private void placeIngredients(Minecraft client, CraftRecipe recipe) {
+        AbstractContainerMenu handler = client.player.containerMenu;
+        int syncId = handler.containerId;
         boolean isTable = recipe.requiresTable;
         int gridStart = 1;
 
@@ -423,11 +423,11 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
                 client.execute(() -> {
                     try {
                         // Pick up ingredient
-                        client.interactionManager.clickSlot(syncId, src, 0, SlotActionType.PICKUP, client.player);
+                        client.gameMode.handleContainerInput(syncId, src, 0, ContainerInput.PICKUP, client.player);
                         // Place in grid
-                        client.interactionManager.clickSlot(syncId, dst, 1, SlotActionType.PICKUP, client.player);
+                        client.gameMode.handleContainerInput(syncId, dst, 1, ContainerInput.PICKUP, client.player);
                         // Return remainder
-                        client.interactionManager.clickSlot(syncId, src, 0, SlotActionType.PICKUP, client.player);
+                        client.gameMode.handleContainerInput(syncId, src, 0, ContainerInput.PICKUP, client.player);
                     } catch (Exception e) {
                         logger.warn("Failed to place ingredient {} in slot {}", ingredient, dst, e);
                     }
@@ -438,14 +438,14 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
         }
     }
 
-    private boolean takeCraftingResult(MinecraftClient client) {
-        ScreenHandler handler = client.player.currentScreenHandler;
-        int syncId = handler.syncId;
+    private boolean takeCraftingResult(Minecraft client) {
+        AbstractContainerMenu handler = client.player.containerMenu;
+        int syncId = handler.containerId;
 
         try {
             client.execute(() -> {
                 try {
-                    client.interactionManager.clickSlot(syncId, 0, 0, SlotActionType.QUICK_MOVE, client.player);
+                    client.gameMode.handleContainerInput(syncId, 0, 0, ContainerInput.QUICK_MOVE, client.player);
                 } catch (Exception e) {
                     logger.warn("Failed to take crafting result", e);
                 }
@@ -457,16 +457,16 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
         }
     }
 
-    private int findIngredientSlot(MinecraftClient client, String ingredient, boolean isTable) {
-        ScreenHandler handler = client.player.currentScreenHandler;
+    private int findIngredientSlot(Minecraft client, String ingredient, boolean isTable) {
+        AbstractContainerMenu handler = client.player.containerMenu;
         int startSlot = isTable ? 10 : 9;
         int endSlot = isTable ? 46 : 45;
 
         for (int i = startSlot; i < endSlot; i++) {
-            ItemStack stack = handler.getSlot(i).getStack();
+            ItemStack stack = handler.getSlot(i).getItem();
             if (stack.isEmpty()) continue;
 
-            String id = Registries.ITEM.getId(stack.getItem()).toString();
+            String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
             if (matchesIngredient(ingredient, id)) {
                 return i;
             }
@@ -488,15 +488,15 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
         return false;
     }
 
-    private int countItemInInventory(MinecraftClient client, String itemId) {
-        PlayerInventory inv = client.player.getInventory();
+    private int countItemInInventory(Minecraft client, String itemId) {
+        Inventory inv = client.player.getInventory();
         int count = 0;
 
-        for (int i = 0; i < inv.size(); i++) {
-            ItemStack stack = inv.getStack(i);
+        for (int i = 0; i < inv.getContainerSize(); i++) {
+            ItemStack stack = inv.getItem(i);
             if (stack.isEmpty()) continue;
 
-            String id = Registries.ITEM.getId(stack.getItem()).toString();
+            String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
             if (matchesIngredient(itemId, id)) {
                 count += stack.getCount();
             }

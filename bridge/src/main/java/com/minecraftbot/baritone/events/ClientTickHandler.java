@@ -5,12 +5,6 @@ import baritone.api.IBaritone;
 import com.minecraftbot.baritone.BaritoneAPIBridge;
 import com.minecraftbot.baritone.EventManager;
 import com.google.gson.JsonObject;
-import net.minecraft.block.BlockState;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.damage.DamageSource;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.math.BlockPos;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -18,6 +12,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.block.state.BlockState;
 
 /**
  * Handles per-tick logic for the Baritone Bridge.
@@ -61,8 +61,8 @@ public class ClientTickHandler {
         this.eventManager = eventManager;
     }
 
-    public void onClientTick(MinecraftClient client) {
-        if (playerContext.isPlayerNull() || client.world == null) return;
+    public void onClientTick(Minecraft client) {
+        if (playerContext.isPlayerNull() || client.level == null) return;
 
         // Advance any in-progress manual (non-Baritone) block break. Cheap
         // no-op when idle; only active during a dig_block request.
@@ -98,20 +98,20 @@ public class ClientTickHandler {
         handleBlockUpdates(client);
     }
 
-    private void handleEntityTick(MinecraftClient client) {
+    private void handleEntityTick(Minecraft client) {
         try {
-            List<Entity> currentEntities = client.world.getOtherEntities(null, client.player.getBoundingBox().expand(64));
+            List<Entity> currentEntities = client.level.getEntities(null, client.player.getBoundingBox().inflate(64));
 
             // Check for new entities
             for (Entity entity : currentEntities) {
                 int id = entity.getId();
-                BlockPos currentPos = entity.getBlockPos();
+                BlockPos currentPos = entity.blockPosition();
 
                 if (!lastEntityPositions.containsKey(id)) {
                     // New entity spawned
                     JsonObject spawnData = new JsonObject();
                     spawnData.addProperty("entity_id", id);
-                    spawnData.addProperty("type", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
+                    spawnData.addProperty("type", BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString());
                     spawnData.addProperty("x", currentPos.getX());
                     spawnData.addProperty("y", currentPos.getY());
                     spawnData.addProperty("z", currentPos.getZ());
@@ -119,7 +119,7 @@ public class ClientTickHandler {
                 } else {
                     // Check for significant movement
                     BlockPos lastPos = lastEntityPositions.get(id);
-                    double distance = Math.sqrt(currentPos.getSquaredDistance(lastPos));
+                    double distance = Math.sqrt(currentPos.distSqr(lastPos));
                     if (distance > 10.0) { // Significant movement threshold
                         JsonObject moveData = new JsonObject();
                         moveData.addProperty("entity_id", id);
@@ -252,15 +252,15 @@ public class ClientTickHandler {
     }
 
     /** Publish health loss immediately, including the best available source metadata. */
-    private void trackPlayerDamage(MinecraftClient client) {
+    private void trackPlayerDamage(Minecraft client) {
         if (client.player == null) return;
         observePlayerDamage(
             client.player,
-            client.world.getRegistryKey().getValue().toString()
+            client.level.dimension().identifier().toString()
         );
     }
 
-    void observePlayerDamage(net.minecraft.client.network.ClientPlayerEntity player, String dimension) {
+    void observePlayerDamage(net.minecraft.client.player.LocalPlayer player, String dimension) {
         if (player == null) return;
 
         JsonObject data = new JsonObject();
@@ -269,11 +269,11 @@ public class ClientTickHandler {
         data.addProperty("z", player.getZ());
         data.addProperty("dimension", dimension);
 
-        DamageSource source = player.getRecentDamageSource();
+        DamageSource source = player.getLastDamageSource();
         if (source != null) {
-            data.addProperty("damage_type", source.getName());
-            Entity attacker = source.getAttacker();
-            Entity directSource = source.getSource();
+            data.addProperty("damage_type", source.getMsgId());
+            Entity attacker = source.getEntity();
+            Entity directSource = source.getDirectEntity();
             if (attacker != null) {
                 addDamageEntity(data, "attacker", attacker);
                 addDamageDirection(data, attacker, player);
@@ -307,8 +307,8 @@ public class ClientTickHandler {
 
     private void addDamageEntity(JsonObject data, String prefix, Entity entity) {
         data.addProperty(prefix + "_id", entity.getId());
-        data.addProperty(prefix + "_uuid", entity.getUuidAsString());
-        data.addProperty(prefix + "_type", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
+        data.addProperty(prefix + "_uuid", entity.getStringUUID());
+        data.addProperty(prefix + "_type", BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString());
     }
 
     private void addDamageDirection(JsonObject data, Entity source, Entity player) {
@@ -321,12 +321,12 @@ public class ClientTickHandler {
         }
     }
 
-    private void checkWeatherChanges(MinecraftClient client) {
-        if (client.world == null) return;
+    private void checkWeatherChanges(Minecraft client) {
+        if (client.level == null) return;
 
-        boolean currentRaining = client.world.isRaining();
-        boolean currentThundering = client.world.isThundering();
-        float currentRainGradient = client.world.getRainGradient(1.0f);
+        boolean currentRaining = client.level.isRaining();
+        boolean currentThundering = client.level.isThundering();
+        float currentRainGradient = client.level.getRainLevel(1.0f);
 
         boolean weatherChanged = (lastRaining != currentRaining) ||
                                 (lastThundering != currentThundering) ||
@@ -364,10 +364,10 @@ public class ClientTickHandler {
         }
     }
 
-    private void checkTimeChanges(MinecraftClient client) {
-        if (client.world == null) return;
+    private void checkTimeChanges(Minecraft client) {
+        if (client.level == null) return;
 
-        long currentTime = client.world.getTime();
+        long currentTime = client.level.getGameTime();
         String currentPhase = (currentTime % 24000) < 12000 ? "day" : "night";
         boolean phaseChanged = !lastTimePhase.equals(currentPhase);
 
@@ -385,19 +385,19 @@ public class ClientTickHandler {
         lastTime = currentTime;
     }
 
-    private void handleBlockUpdates(MinecraftClient client) {
-        if (client.player == null || client.world == null) return;
+    private void handleBlockUpdates(Minecraft client) {
+        if (client.player == null || client.level == null) return;
 
         if (tickCounter % 20 != 0) return;
 
-        BlockPos playerPos = client.player.getBlockPos();
+        BlockPos playerPos = client.player.blockPosition();
 
         // Check blocks in 3x3x3 area around player for natural changes
         for (int dx = -1; dx <= 1; dx++) {
             for (int dy = -1; dy <= 1; dy++) {
                 for (int dz = -1; dz <= 1; dz++) {
-                    BlockPos pos = playerPos.add(dx, dy, dz);
-                    BlockState currentState = client.world.getBlockState(pos);
+                    BlockPos pos = playerPos.offset(dx, dy, dz);
+                    BlockState currentState = client.level.getBlockState(pos);
                     BlockState previousState = previousBlockStates.get(pos);
 
                     if (previousState != null && !currentState.equals(previousState)) {
@@ -405,9 +405,9 @@ public class ClientTickHandler {
                         data.addProperty("x", pos.getX());
                         data.addProperty("y", pos.getY());
                         data.addProperty("z", pos.getZ());
-                        data.addProperty("old_state", Registries.BLOCK.getId(previousState.getBlock()).toString());
-                        data.addProperty("new_state", Registries.BLOCK.getId(currentState.getBlock()).toString());
-                        data.addProperty("dimension", client.world.getRegistryKey().getValue().toString());
+                        data.addProperty("old_state", BuiltInRegistries.BLOCK.getKey(previousState.getBlock()).toString());
+                        data.addProperty("new_state", BuiltInRegistries.BLOCK.getKey(currentState.getBlock()).toString());
+                        data.addProperty("dimension", client.level.dimension().identifier().toString());
                         eventManager.publishEvent(EventManager.EventType.BLOCK_UPDATE, data, EventManager.Priority.LOW, "block_update");
                     }
 

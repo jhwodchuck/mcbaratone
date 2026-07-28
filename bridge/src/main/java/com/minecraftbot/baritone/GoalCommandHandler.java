@@ -3,9 +3,8 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import baritone.api.pathing.goals.GoalYLevel;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-
 import java.net.Socket;
+import net.minecraft.client.Minecraft;
 
 /**
  * Handler for the goal command - sets pathfinding goal.
@@ -18,7 +17,7 @@ public class GoalCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         String type = params.has("type") ? params.get("type").getAsString() : "yLevel";
         int value = params.has("value") ? params.get("value").getAsInt() : 64;
 

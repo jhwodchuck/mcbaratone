@@ -2,12 +2,12 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
 
 public class ClickRecipeCommandHandler extends AsyncCommandHandler {
 
@@ -19,7 +19,7 @@ public class ClickRecipeCommandHandler extends AsyncCommandHandler {
     }
 
     @Override
-    public CompletableFuture<CommandResult> execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         String recipeId = params.has("recipe") ? params.get("recipe").getAsString() : "";
         if (recipeId.isEmpty()) {
             return CompletableFuture.completedFuture(CommandResult.error("Missing recipe ID"));

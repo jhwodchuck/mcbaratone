@@ -2,11 +2,6 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
-import net.minecraft.registry.Registries;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
@@ -14,7 +9,10 @@ import org.mockito.MockitoAnnotations;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-
+import net.minecraft.client.Minecraft;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import org.junit.jupiter.api.Disabled;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -23,13 +21,13 @@ import static org.mockito.Mockito.*;
 class AutoCraftCommandHandlerPhase4Test {
 
     @Mock
-    private MinecraftClient mockClient;
+    private Minecraft mockClient;
 
     @Mock
     private IBaritone mockBaritone;
 
     @Mock
-    private PlayerInventory mockInventory;
+    private Inventory mockInventory;
 
     private AutoCraftCommandHandler handler;
 
@@ -38,7 +36,7 @@ class AutoCraftCommandHandlerPhase4Test {
         MockitoAnnotations.openMocks(this);
         handler = new AutoCraftCommandHandler();
 
-        when(mockClient.player).thenReturn(mock(net.minecraft.client.network.ClientPlayerEntity.class));
+        when(mockClient.player).thenReturn(mock(net.minecraft.client.player.LocalPlayer.class));
         when(mockClient.player.getInventory()).thenReturn(mockInventory);
     }
 
@@ -51,9 +49,9 @@ class AutoCraftCommandHandlerPhase4Test {
     void testDiscoverRecipes_WithOakLogs() throws ExecutionException, InterruptedException {
         // Setup - Player has oak logs
         ItemStack oakLogStack = new ItemStack(Items.OAK_LOG, 4);
-        when(mockInventory.size()).thenReturn(46);
-        when(mockInventory.getStack(anyInt())).thenReturn(ItemStack.EMPTY);
-        when(mockInventory.getStack(0)).thenReturn(oakLogStack);
+        when(mockInventory.getContainerSize()).thenReturn(46);
+        when(mockInventory.getItem(anyInt())).thenReturn(ItemStack.EMPTY);
+        when(mockInventory.getItem(0)).thenReturn(oakLogStack);
 
         JsonObject params = new JsonObject();
         params.addProperty("action", "discover");
@@ -72,9 +70,9 @@ class AutoCraftCommandHandlerPhase4Test {
     void testDiscoverRecipes_WithCobblestone() throws ExecutionException, InterruptedException {
         // Setup - Player has cobblestone
         ItemStack cobbleStack = new ItemStack(Items.COBBLESTONE, 8);
-        when(mockInventory.size()).thenReturn(46);
-        when(mockInventory.getStack(anyInt())).thenReturn(ItemStack.EMPTY);
-        when(mockInventory.getStack(0)).thenReturn(cobbleStack);
+        when(mockInventory.getContainerSize()).thenReturn(46);
+        when(mockInventory.getItem(anyInt())).thenReturn(ItemStack.EMPTY);
+        when(mockInventory.getItem(0)).thenReturn(cobbleStack);
 
         JsonObject params = new JsonObject();
         params.addProperty("action", "discover");
@@ -93,9 +91,9 @@ class AutoCraftCommandHandlerPhase4Test {
     void testOptimizeCrafting_SimpleItem() throws ExecutionException, InterruptedException {
         // Setup - Player has enough materials for sticks
         ItemStack plankStack = new ItemStack(Items.OAK_PLANKS, 4);
-        when(mockInventory.size()).thenReturn(46);
-        when(mockInventory.getStack(anyInt())).thenReturn(ItemStack.EMPTY);
-        when(mockInventory.getStack(0)).thenReturn(plankStack);
+        when(mockInventory.getContainerSize()).thenReturn(46);
+        when(mockInventory.getItem(anyInt())).thenReturn(ItemStack.EMPTY);
+        when(mockInventory.getItem(0)).thenReturn(plankStack);
 
         JsonObject params = new JsonObject();
         params.addProperty("action", "optimize");
@@ -118,10 +116,10 @@ class AutoCraftCommandHandlerPhase4Test {
         // Setup - Player has enough materials for wooden pickaxe (needs planks and sticks)
         ItemStack plankStack = new ItemStack(Items.OAK_PLANKS, 12);
         ItemStack stickStack = new ItemStack(Items.STICK, 4);
-        when(mockInventory.size()).thenReturn(46);
-        when(mockInventory.getStack(anyInt())).thenReturn(ItemStack.EMPTY);
-        when(mockInventory.getStack(0)).thenReturn(plankStack);
-        when(mockInventory.getStack(1)).thenReturn(stickStack);
+        when(mockInventory.getContainerSize()).thenReturn(46);
+        when(mockInventory.getItem(anyInt())).thenReturn(ItemStack.EMPTY);
+        when(mockInventory.getItem(0)).thenReturn(plankStack);
+        when(mockInventory.getItem(1)).thenReturn(stickStack);
 
         JsonObject params = new JsonObject();
         params.addProperty("action", "optimize");
@@ -142,8 +140,8 @@ class AutoCraftCommandHandlerPhase4Test {
     @Test
     void testOptimizeCrafting_InsufficientMaterials() throws ExecutionException, InterruptedException {
         // Setup - Player has no materials
-        when(mockInventory.size()).thenReturn(46);
-        when(mockInventory.getStack(anyInt())).thenReturn(ItemStack.EMPTY);
+        when(mockInventory.getContainerSize()).thenReturn(46);
+        when(mockInventory.getItem(anyInt())).thenReturn(ItemStack.EMPTY);
 
         JsonObject params = new JsonObject();
         params.addProperty("action", "optimize");

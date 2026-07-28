@@ -2,13 +2,12 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.screen.AbstractFurnaceScreenHandler;
-import net.minecraft.screen.ScreenHandler;
-import net.minecraft.screen.slot.SlotActionType;
-
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.AbstractFurnaceMenu;
+import net.minecraft.world.inventory.ContainerInput;
 
 public class SmeltItemsCommandHandler extends AsyncCommandHandler {
 
@@ -18,14 +17,14 @@ public class SmeltItemsCommandHandler extends AsyncCommandHandler {
     }
 
     @Override
-    public CompletableFuture<CommandResult> execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         return executeOnMainThread(client, () -> {
-            if (client.player == null || client.interactionManager == null) {
+            if (client.player == null || client.gameMode == null) {
                 return CommandResult.error("Player not available");
             }
 
-            ScreenHandler handler = client.player.currentScreenHandler;
-            if (!(handler instanceof AbstractFurnaceScreenHandler)) {
+            AbstractContainerMenu handler = client.player.containerMenu;
+            if (!(handler instanceof AbstractFurnaceMenu)) {
                 return CommandResult.error("Not in a furnace screen");
             }
 
@@ -34,10 +33,10 @@ public class SmeltItemsCommandHandler extends AsyncCommandHandler {
             int fuelSlot = params.has("fuel_slot") ? params.get("fuel_slot").getAsInt() : -1;
 
             if (inputSlot != -1) {
-                client.interactionManager.clickSlot(handler.syncId, inputSlot, 0, SlotActionType.QUICK_MOVE, client.player);
+                client.gameMode.handleContainerInput(handler.containerId, inputSlot, 0, ContainerInput.QUICK_MOVE, client.player);
             }
             if (fuelSlot != -1) {
-                client.interactionManager.clickSlot(handler.syncId, fuelSlot, 0, SlotActionType.QUICK_MOVE, client.player);
+                client.gameMode.handleContainerInput(handler.containerId, fuelSlot, 0, ContainerInput.QUICK_MOVE, client.player);
             }
 
             JsonObject data = new JsonObject();

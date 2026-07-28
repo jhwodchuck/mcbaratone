@@ -3,11 +3,11 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import baritone.api.behavior.IPathingBehavior;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -20,7 +20,7 @@ class CancelCommandHandlerTest {
 
     @Test
     void schedulesCancellationOnMinecraftMainThread() throws Exception {
-        MinecraftClient client = mock(MinecraftClient.class);
+        Minecraft client = mock(Minecraft.class);
         IBaritone baritone = mock(IBaritone.class);
         IPathingBehavior pathing = mock(IPathingBehavior.class);
         when(baritone.getPathingBehavior()).thenReturn(pathing);

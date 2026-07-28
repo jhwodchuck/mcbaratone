@@ -7,15 +7,14 @@ import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.math.BlockPos;
-
 import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.net.Socket;
 import java.util.*;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
 
 /**
  * Advanced pathfinding handler with waypoint support, path optimization, and persistence.
@@ -40,7 +39,7 @@ public class PathCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         String action = params.has("action") ? params.get("action").getAsString() : "navigate";
 
         switch (action) {
@@ -344,7 +343,7 @@ public class PathCommandHandler extends AbstractCommandHandler {
 
         Waypoint waypoint = pathState.waypoints.get(pathState.currentIndex);
 
-        executeOnMainThread(MinecraftClient.getInstance(), () -> {
+        executeOnMainThread(Minecraft.getInstance(), () -> {
             BlockPos targetPos = new BlockPos(waypoint.x, waypoint.y, waypoint.z);
             if (waypoint.radius > 0) {
                 baritone.getCustomGoalProcess().setGoalAndPath(new GoalNear(targetPos, waypoint.radius));

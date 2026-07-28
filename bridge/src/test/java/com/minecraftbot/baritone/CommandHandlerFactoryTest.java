@@ -1,7 +1,6 @@
 package com.minecraftbot.baritone;
 
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
 import baritone.api.IBaritone;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -11,6 +10,7 @@ import org.mockito.MockitoAnnotations;
 
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -18,7 +18,7 @@ import static org.mockito.Mockito.*;
 public class CommandHandlerFactoryTest {
 
     @Mock
-    private MinecraftClient mockClient;
+    private Minecraft mockClient;
 
     @Mock
     private IBaritone mockBaritone;
@@ -29,7 +29,7 @@ public class CommandHandlerFactoryTest {
     public static class TestCommandHandler implements CommandHandler {
         public TestCommandHandler() {} // Explicit public constructor
         @Override
-        public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+        public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
             return CompletableFuture.completedFuture(CommandResult.success(new JsonObject()));
         }
 
@@ -163,7 +163,7 @@ public class CommandHandlerFactoryTest {
         }
 
         @Override
-        public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+        public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
             return CompletableFuture.completedFuture(null);
         }
 

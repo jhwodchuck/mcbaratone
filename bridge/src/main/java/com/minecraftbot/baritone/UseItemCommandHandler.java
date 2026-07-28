@@ -2,17 +2,16 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.hit.EntityHitResult;
-import net.minecraft.util.hit.HitResult;
-
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.EntityHitResult;
+import net.minecraft.world.phys.HitResult;
 
 /**
  * Handler for the use_item command.
@@ -28,7 +27,7 @@ public class UseItemCommandHandler extends AsyncCommandHandler {
     });
 
     @Override
-    public CompletableFuture<CommandResult> execute(JsonObject params, MinecraftClient client,
+    public CompletableFuture<CommandResult> execute(JsonObject params, Minecraft client,
             IBaritone baritone, Socket clientSocket) {
         int durationMs = params.has("duration_ms") ? params.get("duration_ms").getAsInt() : 0;
         if (durationMs < 0) {
@@ -45,10 +44,10 @@ public class UseItemCommandHandler extends AsyncCommandHandler {
             JsonObject data = new JsonObject();
             data.add("hit", hit);
             data.addProperty("hit_type", hit.get("type").getAsString());
-            data.addProperty("held_item", Registries.ITEM.getId(
-                client.player.getMainHandStack().getItem()).toString());
+            data.addProperty("held_item", BuiltInRegistries.ITEM.getKey(
+                client.player.getMainHandItem().getItem()).toString());
 
-            client.options.useKey.setPressed(true);
+            client.options.keyUse.setDown(true);
             if (durationMs > 0) {
                 scheduleRelease(client, durationMs);
                 data.addProperty("holding", true);
@@ -61,38 +60,38 @@ public class UseItemCommandHandler extends AsyncCommandHandler {
         });
     }
 
-    private void scheduleRelease(MinecraftClient client, int delayMs) {
+    private void scheduleRelease(Minecraft client, int delayMs) {
         scheduler.schedule(
-            () -> client.execute(() -> client.options.useKey.setPressed(false)),
+            () -> client.execute(() -> client.options.keyUse.setDown(false)),
             delayMs,
             TimeUnit.MILLISECONDS);
     }
 
-    private JsonObject describeCrosshairTarget(MinecraftClient client) {
+    private JsonObject describeCrosshairTarget(Minecraft client) {
         JsonObject hitData = new JsonObject();
-        HitResult hit = client.crosshairTarget;
+        HitResult hit = client.hitResult;
         if (hit == null) {
             hitData.addProperty("type", "unknown");
             return hitData;
         }
 
         hitData.addProperty("type", hit.getType().name().toLowerCase());
-        hitData.addProperty("x", hit.getPos().x);
-        hitData.addProperty("y", hit.getPos().y);
-        hitData.addProperty("z", hit.getPos().z);
+        hitData.addProperty("x", hit.getLocation().x);
+        hitData.addProperty("y", hit.getLocation().y);
+        hitData.addProperty("z", hit.getLocation().z);
 
         if (hit instanceof EntityHitResult entityHit) {
             hitData.addProperty("entity_id", entityHit.getEntity().getId());
-            hitData.addProperty("entity_type", Registries.ENTITY_TYPE.getId(
+            hitData.addProperty("entity_type", BuiltInRegistries.ENTITY_TYPE.getKey(
                 entityHit.getEntity().getType()).toString());
         } else if (hit instanceof BlockHitResult blockHit) {
             hitData.addProperty("block_x", blockHit.getBlockPos().getX());
             hitData.addProperty("block_y", blockHit.getBlockPos().getY());
             hitData.addProperty("block_z", blockHit.getBlockPos().getZ());
-            hitData.addProperty("side", blockHit.getSide().name().toLowerCase());
-            if (client.world != null) {
-                hitData.addProperty("block", Registries.BLOCK.getId(
-                    client.world.getBlockState(blockHit.getBlockPos()).getBlock()).toString());
+            hitData.addProperty("side", blockHit.getDirection().name().toLowerCase());
+            if (client.level != null) {
+                hitData.addProperty("block", BuiltInRegistries.BLOCK.getKey(
+                    client.level.getBlockState(blockHit.getBlockPos()).getBlock()).toString());
             }
         }
         return hitData;

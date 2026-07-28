@@ -3,18 +3,18 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.item.ItemStack;
-import net.minecraft.registry.Registries;
-import net.minecraft.screen.ScreenHandler;
-import net.minecraft.screen.slot.SlotActionType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.Socket;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.ContainerInput;
+import net.minecraft.world.item.ItemStack;
 
 public class AutoCraftCommandHandler extends AsyncCommandHandler {
 
@@ -192,7 +192,7 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
     }
 
     @Override
-    public CompletableFuture<CommandResult> execute(JsonObject params, MinecraftClient client, IBaritone baritone,
+    public CompletableFuture<CommandResult> execute(JsonObject params, Minecraft client, IBaritone baritone,
             Socket clientSocket) {
         // Support multiple modes: single item, queue items, get status, clear queue
         String action = params.has("action") ? params.get("action").getAsString() : "craft";
@@ -215,7 +215,7 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         }
     }
 
-    private CompletableFuture<CommandResult> handleCraftAction(JsonObject params, MinecraftClient client) {
+    private CompletableFuture<CommandResult> handleCraftAction(JsonObject params, Minecraft client) {
         String itemId = params.has("item") ? params.get("item").getAsString() : "";
         if (itemId.isEmpty()) {
             itemId = params.has("recipe_id") ? params.get("recipe_id").getAsString() : "";
@@ -325,7 +325,7 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
 
     // ================= New Crafting Methods =================
 
-    private CommandResult startQueueProcessing(MinecraftClient client) {
+    private CommandResult startQueueProcessing(Minecraft client) {
         if (isProcessingQueue) {
             JsonObject data = new JsonObject();
             data.addProperty("queued", true);
@@ -342,7 +342,7 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         return CommandResult.success(data);
     }
 
-    private void processQueue(MinecraftClient client) {
+    private void processQueue(Minecraft client) {
         isProcessingQueue = true;
         try {
             while (!craftingQueue.isEmpty()) {
@@ -382,7 +382,7 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         }
     }
 
-    private CommandResult craftItems(MinecraftClient client, String itemId, int quantity, CraftRecipe recipe) {
+    private CommandResult craftItems(Minecraft client, String itemId, int quantity, CraftRecipe recipe) {
         int crafted = 0;
 
         for (int i = 0; i < quantity; i += recipe.outputCount) {
@@ -408,7 +408,7 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         return CommandResult.success(data);
     }
 
-    private CommandResult craftItemsSync(MinecraftClient client, String itemId, int quantity, CraftRecipe recipe) {
+    private CommandResult craftItemsSync(Minecraft client, String itemId, int quantity, CraftRecipe recipe) {
         // Synchronous version for queue processing
         int crafted = 0;
 
@@ -434,7 +434,7 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         }
     }
 
-    private boolean hasIngredients(MinecraftClient client, CraftRecipe recipe) {
+    private boolean hasIngredients(Minecraft client, CraftRecipe recipe) {
         for (Map.Entry<String, Integer> entry : recipe.ingredients.entrySet()) {
             String ingredient = entry.getKey();
             int needed = entry.getValue();
@@ -445,16 +445,16 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         return true;
     }
 
-    private int countItemInInventory(MinecraftClient client, String itemId) {
-        PlayerInventory inv = client.player.getInventory();
+    private int countItemInInventory(Minecraft client, String itemId) {
+        Inventory inv = client.player.getInventory();
         int count = 0;
 
-        for (int i = 0; i < inv.size(); i++) {
-            ItemStack stack = inv.getStack(i);
+        for (int i = 0; i < inv.getContainerSize(); i++) {
+            ItemStack stack = inv.getItem(i);
             if (stack.isEmpty())
                 continue;
 
-            String stackId = Registries.ITEM.getId(stack.getItem()).toString();
+            String stackId = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
 
             if (itemId.equals("any_log")) {
                 if (stackId.endsWith("_log") || stackId.contains("_wood")) {
@@ -472,7 +472,7 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         return count;
     }
 
-    private boolean hasItemInInventory(MinecraftClient client, String itemId, int minCount) {
+    private boolean hasItemInInventory(Minecraft client, String itemId, int minCount) {
         return countItemInInventory(client, itemId) >= minCount;
     }
 
@@ -497,12 +497,12 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         return deps;
     }
 
-    private boolean performCrafting(MinecraftClient client, CraftRecipe recipe) {
-        ScreenHandler handler = client.player.currentScreenHandler;
-        int syncId = handler.syncId;
+    private boolean performCrafting(Minecraft client, CraftRecipe recipe) {
+        AbstractContainerMenu handler = client.player.containerMenu;
+        int syncId = handler.containerId;
 
-        boolean isTable = handler instanceof net.minecraft.screen.CraftingScreenHandler;
-        boolean isPlayer = handler instanceof net.minecraft.screen.PlayerScreenHandler;
+        boolean isTable = handler instanceof net.minecraft.world.inventory.CraftingMenu;
+        boolean isPlayer = handler instanceof net.minecraft.world.inventory.InventoryMenu;
 
         if (!isTable && !isPlayer)
             return false;
@@ -537,10 +537,10 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
             }
 
             try {
-                if (client.interactionManager != null) {
-                    client.interactionManager.clickSlot(syncId, sourceSlot, 0, SlotActionType.PICKUP, client.player);
-                    client.interactionManager.clickSlot(syncId, gridSlot, 1, SlotActionType.PICKUP, client.player);
-                    client.interactionManager.clickSlot(syncId, sourceSlot, 0, SlotActionType.PICKUP, client.player);
+                if (client.gameMode != null) {
+                    client.gameMode.handleContainerInput(syncId, sourceSlot, 0, ContainerInput.PICKUP, client.player);
+                    client.gameMode.handleContainerInput(syncId, gridSlot, 1, ContainerInput.PICKUP, client.player);
+                    client.gameMode.handleContainerInput(syncId, sourceSlot, 0, ContainerInput.PICKUP, client.player);
                 }
             } catch (Exception e) {
                 LOGGER.error("Crafting click failed", e);
@@ -550,7 +550,7 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
 
         // Take result
         try {
-            client.interactionManager.clickSlot(syncId, 0, 0, SlotActionType.QUICK_MOVE, client.player);
+            client.gameMode.handleContainerInput(syncId, 0, 0, ContainerInput.QUICK_MOVE, client.player);
         } catch (Exception e) {
             return false;
         }
@@ -558,15 +558,15 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         return true;
     }
 
-    private boolean performCrafting(MinecraftClient client, String[] ingredients) {
+    private boolean performCrafting(Minecraft client, String[] ingredients) {
         if (client.player == null)
             return false;
 
-        ScreenHandler handler = client.player.currentScreenHandler;
-        int syncId = handler.syncId;
+        AbstractContainerMenu handler = client.player.containerMenu;
+        int syncId = handler.containerId;
 
-        boolean isTable = handler instanceof net.minecraft.screen.CraftingScreenHandler;
-        boolean isPlayer = handler instanceof net.minecraft.screen.PlayerScreenHandler;
+        boolean isTable = handler instanceof net.minecraft.world.inventory.CraftingMenu;
+        boolean isPlayer = handler instanceof net.minecraft.world.inventory.InventoryMenu;
 
         if (!isTable && !isPlayer)
             return false;
@@ -608,12 +608,12 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
 
             try {
                 // PICKUP 1 item from source
-                if (client.interactionManager != null) {
-                    client.interactionManager.clickSlot(syncId, src, 0, SlotActionType.PICKUP, client.player);
+                if (client.gameMode != null) {
+                    client.gameMode.handleContainerInput(syncId, src, 0, ContainerInput.PICKUP, client.player);
                     // Place 1 item in grid (Right Click)
-                    client.interactionManager.clickSlot(syncId, dst, 1, SlotActionType.PICKUP, client.player);
+                    client.gameMode.handleContainerInput(syncId, dst, 1, ContainerInput.PICKUP, client.player);
                     // Return remainder to source
-                    client.interactionManager.clickSlot(syncId, src, 0, SlotActionType.PICKUP, client.player);
+                    client.gameMode.handleContainerInput(syncId, src, 0, ContainerInput.PICKUP, client.player);
                 }
             } catch (Exception e) {
                 LOGGER.error("Crafting click failed", e);
@@ -623,7 +623,7 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
 
         // Take result
         try {
-            client.interactionManager.clickSlot(syncId, 0, 0, SlotActionType.QUICK_MOVE, client.player);
+            client.gameMode.handleContainerInput(syncId, 0, 0, ContainerInput.QUICK_MOVE, client.player);
         } catch (Exception e) {
             return false;
         }
@@ -631,22 +631,22 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         return true;
     }
 
-    private int findIngredientSlot(MinecraftClient client, String ingredient) {
+    private int findIngredientSlot(Minecraft client, String ingredient) {
         if (client.player == null)
             return -1;
 
-        ScreenHandler handler = client.player.currentScreenHandler;
-        boolean isTable = handler instanceof net.minecraft.screen.CraftingScreenHandler;
+        AbstractContainerMenu handler = client.player.containerMenu;
+        boolean isTable = handler instanceof net.minecraft.world.inventory.CraftingMenu;
 
         int startSlot = isTable ? 10 : 9;
         int endSlot = isTable ? 46 : 45;
 
         for (int i = startSlot; i < endSlot; i++) {
-            ItemStack stack = handler.getSlot(i).getStack();
+            ItemStack stack = handler.getSlot(i).getItem();
             if (stack.isEmpty())
                 continue;
 
-            String id = Registries.ITEM.getId(stack.getItem()).toString();
+            String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
 
             if (ingredient.equals("planks")) {
                 if (id.endsWith("_planks"))
@@ -661,7 +661,7 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
 
     // ================= Queue Management Methods =================
 
-    private CompletableFuture<CommandResult> handleQueueAction(JsonObject params, MinecraftClient client) {
+    private CompletableFuture<CommandResult> handleQueueAction(JsonObject params, Minecraft client) {
         String itemId = params.has("item") ? params.get("item").getAsString() : "";
         if (itemId.isEmpty()) {
             return CompletableFuture.completedFuture(CommandResult.error("Missing item for queue"));
@@ -717,7 +717,7 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
 
     // ================= Phase 4: Enhanced Crafting Features =================
 
-    private CompletableFuture<CommandResult> handleDiscoverRecipes(MinecraftClient client) {
+    private CompletableFuture<CommandResult> handleDiscoverRecipes(Minecraft client) {
         return executeOnMainThread(client, () -> {
             // Discover available recipes from inventory items
             Set<String> craftableItems = discoverCraftableItems(client);
@@ -739,7 +739,7 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         });
     }
 
-    private CompletableFuture<CommandResult> handleOptimizeCrafting(JsonObject params, MinecraftClient client) {
+    private CompletableFuture<CommandResult> handleOptimizeCrafting(JsonObject params, Minecraft client) {
         String targetItem = params.has("target") ? params.get("target").getAsString() : "";
         int targetQuantity = params.has("quantity") ? params.get("quantity").getAsInt() : 1;
 
@@ -776,17 +776,17 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         });
     }
 
-    private Set<String> discoverCraftableItems(MinecraftClient client) {
+    private Set<String> discoverCraftableItems(Minecraft client) {
         Set<String> craftable = new HashSet<>();
-        PlayerInventory inv = client.player.getInventory();
+        Inventory inv = client.player.getInventory();
 
         // Check all inventory items to see what can be crafted
-        for (int i = 0; i < inv.size(); i++) {
-            ItemStack stack = inv.getStack(i);
+        for (int i = 0; i < inv.getContainerSize(); i++) {
+            ItemStack stack = inv.getItem(i);
             if (stack.isEmpty())
                 continue;
 
-            String itemId = Registries.ITEM.getId(stack.getItem()).toString();
+            String itemId = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
             int count = stack.getCount();
 
             // Check common crafting patterns
@@ -823,7 +823,7 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         int totalCost = 0;
     }
 
-    private CraftingPlan optimizeCraftingPlan(MinecraftClient client, String targetItem, int quantity) {
+    private CraftingPlan optimizeCraftingPlan(Minecraft client, String targetItem, int quantity) {
         CraftingPlan plan = new CraftingPlan();
 
         // Calculate dependencies and optimize crafting order
@@ -885,14 +885,14 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
         return requirements;
     }
 
-    private Map<String, Integer> getInventoryCounts(MinecraftClient client) {
+    private Map<String, Integer> getInventoryCounts(Minecraft client) {
         Map<String, Integer> counts = new HashMap<>();
-        PlayerInventory inv = client.player.getInventory();
+        Inventory inv = client.player.getInventory();
 
-        for (int i = 0; i < inv.size(); i++) {
-            ItemStack stack = inv.getStack(i);
+        for (int i = 0; i < inv.getContainerSize(); i++) {
+            ItemStack stack = inv.getItem(i);
             if (!stack.isEmpty()) {
-                String itemId = Registries.ITEM.getId(stack.getItem()).toString();
+                String itemId = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
                 counts.put(itemId, counts.getOrDefault(itemId, 0) + stack.getCount());
             }
         }

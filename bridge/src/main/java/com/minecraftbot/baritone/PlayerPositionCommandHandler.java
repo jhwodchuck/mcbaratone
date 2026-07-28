@@ -2,9 +2,8 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-
 import java.net.Socket;
+import net.minecraft.client.Minecraft;
 
 /** Lightweight position-only state query for callers that do not need a full snapshot. */
 public class PlayerPositionCommandHandler extends AbstractCommandHandler {
@@ -15,7 +14,7 @@ public class PlayerPositionCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client,
+    protected CommandResult execute(JsonObject params, Minecraft client,
             IBaritone baritone, Socket clientSocket) {
         if (client.player == null) {
             return CommandResult.error("Player not available");
@@ -24,8 +23,8 @@ public class PlayerPositionCommandHandler extends AbstractCommandHandler {
         position.addProperty("x", client.player.getX());
         position.addProperty("y", client.player.getY());
         position.addProperty("z", client.player.getZ());
-        position.addProperty("yaw", client.player.getYaw());
-        position.addProperty("pitch", client.player.getPitch());
+        position.addProperty("yaw", client.player.getYRot());
+        position.addProperty("pitch", client.player.getXRot());
 
         JsonObject data = new JsonObject();
         data.add("position", position);

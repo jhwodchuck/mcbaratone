@@ -2,7 +2,6 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
@@ -11,6 +10,7 @@ import org.mockito.MockitoAnnotations;
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import net.minecraft.client.Minecraft;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -25,7 +25,7 @@ public class CommandDispatcherTest {
     private LegacyCommandHandler mockLegacyHandler;
 
     @Mock
-    private MinecraftClient mockClient;
+    private Minecraft mockClient;
 
     @Mock
     private IBaritone mockBaritone;
@@ -542,7 +542,7 @@ public class CommandDispatcherTest {
     // Test implementation of CommandHandler for registry testing
     private static class TestCommandHandler implements CommandHandler {
         @Override
-        public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+        public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
             return CompletableFuture.completedFuture(CommandResult.success(new JsonObject()));
         }
 

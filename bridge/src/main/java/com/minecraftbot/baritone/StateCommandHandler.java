@@ -3,22 +3,20 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.entity.mob.MobEntity;
-import net.minecraft.entity.projectile.ProjectileEntity;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.math.Box;
-import net.minecraft.server.integrated.IntegratedServer;
-import net.minecraft.server.world.ServerWorld;
-import net.minecraft.world.World;
-
 import java.net.Socket;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.client.server.IntegratedServer;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.projectile.Projectile;
+import net.minecraft.world.phys.AABB;
 
 /**
  * Command handler for state queries: get_state, get_entities, and combat snapshots.
@@ -31,7 +29,7 @@ public class StateCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone,
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone,
             Socket clientSocket) {
         // Determine action from explicit 'action' param or check for entity-specific
         // params
@@ -56,7 +54,7 @@ public class StateCommandHandler extends AbstractCommandHandler {
         }
     }
 
-    private CommandResult handleGetState(MinecraftClient client, IBaritone baritone) {
+    private CommandResult handleGetState(Minecraft client, IBaritone baritone) {
         // Read most state directly - these are volatile or immutable and safe to read
         // off-thread
         try {
@@ -64,22 +62,22 @@ public class StateCommandHandler extends AbstractCommandHandler {
                 return CommandResult.error("Player not available");
             }
 
-            if (client.world == null) {
+            if (client.level == null) {
                 return CommandResult.error("World not available");
             }
 
-            ClientPlayerEntity player = client.player;
+            LocalPlayer player = client.player;
 
             // Position (volatile double fields, safe to read)
             JsonObject position = new JsonObject();
             position.addProperty("x", player.getX());
             position.addProperty("y", player.getY());
             position.addProperty("z", player.getZ());
-            position.addProperty("yaw", player.getYaw());
-            position.addProperty("pitch", player.getPitch());
+            position.addProperty("yaw", player.getYRot());
+            position.addProperty("pitch", player.getXRot());
 
             // Block position (BlockPos is computed from position)
-            var blockPos = player.getBlockPos();
+            var blockPos = player.blockPosition();
             JsonObject blockPosition = new JsonObject();
             blockPosition.addProperty("x", blockPos.getX());
             blockPosition.addProperty("y", blockPos.getY());
@@ -91,39 +89,39 @@ public class StateCommandHandler extends AbstractCommandHandler {
             data.add("block_position", blockPosition);
             data.addProperty("health", player.getHealth());
             data.addProperty("max_health", player.getMaxHealth());
-            data.addProperty("food_level", player.getHungerManager().getFoodLevel());
-            data.addProperty("saturation", player.getHungerManager().getSaturationLevel());
+            data.addProperty("food_level", player.getFoodData().getFoodLevel());
+            data.addProperty("saturation", player.getFoodData().getSaturationLevel());
             data.addProperty("experience_level", player.experienceLevel);
             data.addProperty("experience_total", player.totalExperience);
-            data.addProperty("is_dead", player.isDead());
+            data.addProperty("is_dead", player.isDeadOrDying());
             data.addProperty("entity_id", player.getId());
-            data.addProperty("entity_uuid", player.getUuidAsString());
+            data.addProperty("entity_uuid", player.getStringUUID());
 
             // Player Flags
             data.addProperty("is_sprinting", player.isSprinting());
-            data.addProperty("is_sneaking", player.isSneaking());
-            data.addProperty("is_on_ground", player.isOnGround());
-            data.addProperty("armor_points", player.getArmor());
+            data.addProperty("is_sneaking", player.isShiftKeyDown());
+            data.addProperty("is_on_ground", player.onGround());
+            data.addProperty("armor_points", player.getArmorValue());
             int armorCount = 0;
             for (int slot = 36; slot < 40; slot++) {
-                if (!player.getInventory().getStack(slot).isEmpty()) armorCount++;
+                if (!player.getInventory().getItem(slot).isEmpty()) armorCount++;
             }
             data.addProperty("armor_count", armorCount);
-            data.addProperty("main_hand", Registries.ITEM.getId(player.getMainHandStack().getItem()).toString());
-            data.addProperty("off_hand", Registries.ITEM.getId(player.getOffHandStack().getItem()).toString());
+            data.addProperty("main_hand", BuiltInRegistries.ITEM.getKey(player.getMainHandItem().getItem()).toString());
+            data.addProperty("off_hand", BuiltInRegistries.ITEM.getKey(player.getOffhandItem().getItem()).toString());
             data.addProperty("is_using_item", player.isUsingItem());
             data.addProperty("is_blocking", player.isBlocking());
-            data.addProperty("attack_cooldown", player.getAttackCooldownProgress(0.0f));
+            data.addProperty("attack_cooldown", player.getAttackStrengthScale(0.0f));
 
             // Active Effects
             JsonArray effects = new JsonArray();
-            player.getStatusEffects().forEach(effect -> {
+            player.getActiveEffects().forEach(effect -> {
                 JsonObject eff = new JsonObject();
                 // Fix: Handle RegistryEntry if needed, or check mappings.
                 // In 1.21, getEffectType() returns RegistryEntry<StatusEffect>.
                 // We need to call .value() to get the StatusEffect, or use getId() on the
                 // entry.
-                eff.addProperty("id", Registries.STATUS_EFFECT.getId(effect.getEffectType().value()).toString());
+                eff.addProperty("id", BuiltInRegistries.MOB_EFFECT.getKey(effect.getEffect().value()).toString());
                 eff.addProperty("duration", effect.getDuration());
                 eff.addProperty("amplifier", effect.getAmplifier());
                 effects.add(eff);
@@ -132,9 +130,9 @@ public class StateCommandHandler extends AbstractCommandHandler {
 
             // Velocity
             JsonObject velocity = new JsonObject();
-            velocity.addProperty("x", player.getVelocity().x);
-            velocity.addProperty("y", player.getVelocity().y);
-            velocity.addProperty("z", player.getVelocity().z);
+            velocity.addProperty("x", player.getDeltaMovement().x);
+            velocity.addProperty("y", player.getDeltaMovement().y);
+            velocity.addProperty("z", player.getDeltaMovement().z);
             data.add("velocity", velocity);
 
             // Baritone status - wrap in try/catch as it could throw
@@ -151,36 +149,36 @@ public class StateCommandHandler extends AbstractCommandHandler {
             }
 
             // World info (dimension key is immutable, time is volatile)
-            data.addProperty("dimension", client.world.getRegistryKey().getValue().toString());
-            data.addProperty("world_time", client.world.getTimeOfDay());
-            String biomeId = client.world.getBiome(blockPos).getKey()
-                .map(key -> key.getValue().toString())
+            data.addProperty("dimension", client.level.dimension().identifier().toString());
+            data.addProperty("world_time", client.level.getOverworldClockTime());
+            String biomeId = client.level.getBiome(blockPos).unwrapKey()
+                .map(key -> key.identifier().toString())
                 .orElse("unknown");
             data.addProperty("biome", biomeId);
 
             JsonObject worldIdentity = new JsonObject();
             worldIdentity.addProperty("version", 1);
-            worldIdentity.addProperty("dimension_context", client.world.getRegistryKey().getValue().toString());
+            worldIdentity.addProperty("dimension_context", client.level.dimension().identifier().toString());
 
             // Add world seed for reset detection (only available on integrated server)
-            if (client.getServer() != null) {
-                IntegratedServer server = client.getServer();
-                ServerWorld world = server.getOverworld();
+            if (client.getSingleplayerServer() != null) {
+                IntegratedServer server = client.getSingleplayerServer();
+                ServerLevel world = server.overworld();
                 if (world != null) {
                     data.addProperty("world_seed", world.getSeed());
                     worldIdentity.addProperty("seed", world.getSeed());
                 }
-                worldIdentity.addProperty("world_name", server.getSaveProperties().getLevelName());
+                worldIdentity.addProperty("world_name", server.getWorldData().getLevelName());
                 worldIdentity.addProperty("scope", "singleplayer");
-            } else if (client.getCurrentServerEntry() != null) {
-                worldIdentity.addProperty("server_address", client.getCurrentServerEntry().address);
+            } else if (client.getCurrentServer() != null) {
+                worldIdentity.addProperty("server_address", client.getCurrentServer().ip);
                 worldIdentity.addProperty("scope", "multiplayer");
             }
             data.add("world_identity", worldIdentity);
 
             // Screen info - may be slightly stale but acceptable
-            if (client.currentScreen != null) {
-                data.addProperty("screen", client.currentScreen.getClass().getSimpleName());
+            if (client.gui.screen() != null) {
+                data.addProperty("screen", client.gui.screen().getClass().getSimpleName());
                 data.addProperty("has_gui", true);
             } else {
                 data.addProperty("screen", "none");
@@ -193,7 +191,7 @@ public class StateCommandHandler extends AbstractCommandHandler {
         }
     }
 
-    private CommandResult handleGetEntities(MinecraftClient client, JsonObject params) {
+    private CommandResult handleGetEntities(Minecraft client, JsonObject params) {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<JsonObject> dataRef = new AtomicReference<>();
         AtomicReference<String> errorRef = new AtomicReference<>();
@@ -202,17 +200,17 @@ public class StateCommandHandler extends AbstractCommandHandler {
 
         client.execute(() -> {
             try {
-                if (client.world == null || client.player == null) {
+                if (client.level == null || client.player == null) {
                     errorRef.set("World or player not available");
                     return;
                 }
 
-                ClientPlayerEntity player = client.player;
-                Box box = new Box(
+                LocalPlayer player = client.player;
+                AABB box = new AABB(
                         player.getX() - radius, player.getY() - radius, player.getZ() - radius,
                         player.getX() + radius, player.getY() + radius, player.getZ() + radius);
 
-                var entities = client.world.getOtherEntities(null, box);
+                var entities = client.level.getEntities(null, box);
                 JsonArray entityList = new JsonArray();
                 JsonArray serializationErrors = new JsonArray();
                 int skippedEntities = 0;
@@ -270,14 +268,14 @@ public class StateCommandHandler extends AbstractCommandHandler {
      * Capture player readiness and nearby entities in one client-thread task so
      * combat policy never combines observations from different game ticks.
      */
-    private CommandResult handleCombatSnapshot(MinecraftClient client, IBaritone baritone, JsonObject params) {
+    private CommandResult handleCombatSnapshot(Minecraft client, IBaritone baritone, JsonObject params) {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<CommandResult> resultRef = new AtomicReference<>();
         int radius = Math.max(1, Math.min(64, params.has("radius") ? params.get("radius").getAsInt() : 16));
 
         client.execute(() -> {
             try {
-                if (client.world == null || client.player == null) {
+                if (client.level == null || client.player == null) {
                     resultRef.set(CommandResult.error("World or player not available"));
                     return;
                 }
@@ -288,12 +286,12 @@ public class StateCommandHandler extends AbstractCommandHandler {
                     return;
                 }
 
-                ClientPlayerEntity player = client.player;
-                Box box = player.getBoundingBox().expand(radius);
+                LocalPlayer player = client.player;
+                AABB box = player.getBoundingBox().inflate(radius);
                 JsonArray entityList = new JsonArray();
                 JsonArray serializationErrors = new JsonArray();
                 int skippedEntities = 0;
-                for (Entity entity : client.world.getOtherEntities(player, box)) {
+                for (Entity entity : client.level.getEntities(player, box)) {
                     if (entity.distanceTo(player) > radius) continue;
                     try {
                         entityList.add(serializeEntity(entity, player));
@@ -309,7 +307,7 @@ public class StateCommandHandler extends AbstractCommandHandler {
 
                 JsonObject data = new JsonObject();
                 data.addProperty("snapshot_version", 1);
-                data.addProperty("tick", client.world.getTime());
+                data.addProperty("tick", client.level.getGameTime());
                 data.addProperty("radius", radius);
                 data.add("player", stateResult.getData());
                 data.add("entities", entityList);
@@ -335,18 +333,18 @@ public class StateCommandHandler extends AbstractCommandHandler {
         return resultRef.get() != null ? resultRef.get() : CommandResult.error("Combat snapshot unavailable");
     }
 
-    private JsonObject serializeEntity(Entity entity, ClientPlayerEntity player) {
+    private JsonObject serializeEntity(Entity entity, LocalPlayer player) {
         JsonObject entityData = new JsonObject();
         entityData.addProperty("id", entity.getId());
-        entityData.addProperty("uuid", entity.getUuidAsString());
-        entityData.addProperty("type", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
+        entityData.addProperty("uuid", entity.getStringUUID());
+        entityData.addProperty("type", BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString());
         entityData.addProperty("name", entity.getDisplayName().getString());
         entityData.addProperty("distance", entity.distanceTo(player));
 
         JsonObject entityVelocity = new JsonObject();
-        entityVelocity.addProperty("x", entity.getVelocity().x);
-        entityVelocity.addProperty("y", entity.getVelocity().y);
-        entityVelocity.addProperty("z", entity.getVelocity().z);
+        entityVelocity.addProperty("x", entity.getDeltaMovement().x);
+        entityVelocity.addProperty("y", entity.getDeltaMovement().y);
+        entityVelocity.addProperty("z", entity.getDeltaMovement().z);
         entityData.add("velocity", entityVelocity);
 
         JsonObject position = new JsonObject();
@@ -365,42 +363,42 @@ public class StateCommandHandler extends AbstractCommandHandler {
             entityData.addProperty("is_baby", living.isBaby());
         }
 
-        if (entity instanceof MobEntity mob) {
+        if (entity instanceof Mob mob) {
             Entity target = mob.getTarget();
             if (target != null) {
                 entityData.addProperty("target_id", target.getId());
-                entityData.addProperty("target_uuid", target.getUuidAsString());
+                entityData.addProperty("target_uuid", target.getStringUUID());
                 entityData.addProperty("target_type", safeEntityType(target));
             }
             entityData.addProperty("is_aggressive", target == player);
-            entityData.addProperty("can_see_player", mob.canSee(player));
+            entityData.addProperty("can_see_player", mob.hasLineOfSight(player));
         }
 
-        if (entity instanceof ProjectileEntity projectile && projectile.getOwner() != null) {
+        if (entity instanceof Projectile projectile && projectile.getOwner() != null) {
             Entity owner = projectile.getOwner();
             entityData.addProperty("owner_id", owner.getId());
             entityData.addProperty("owner_type", safeEntityType(owner));
         }
 
-        if (entity instanceof net.minecraft.entity.passive.TameableEntity tameable) {
-            entityData.addProperty("is_tamed", tameable.isTamed());
+        if (entity instanceof net.minecraft.world.entity.TamableAnimal tameable) {
+            entityData.addProperty("is_tamed", tameable.isTame());
             if (tameable.getOwner() != null) {
-                entityData.addProperty("owner_uuid", tameable.getOwner().getUuid().toString());
+                entityData.addProperty("owner_uuid", tameable.getOwner().getUUID().toString());
             }
         }
 
-        if (entity instanceof net.minecraft.entity.passive.VillagerEntity villager) {
+        if (entity instanceof net.minecraft.world.entity.npc.villager.Villager villager) {
             var villagerData = villager.getVillagerData();
-            String profession = villagerData.profession().getKey()
-                .map(key -> key.getValue().toString())
+            String profession = villagerData.profession().unwrapKey()
+                .map(key -> key.identifier().toString())
                 .orElse("unknown");
             entityData.addProperty("profession", profession);
             entityData.addProperty("level", villagerData.level());
             entityData.addProperty("offers_count", villager.getOffers().size());
         }
 
-        if (entity instanceof net.minecraft.entity.projectile.FishingBobberEntity bobber) {
-            boolean hasCatch = bobber.getHookedEntity() != null || bobber.isInOpenWater();
+        if (entity instanceof net.minecraft.world.entity.projectile.FishingHook bobber) {
+            boolean hasCatch = bobber.getHookedIn() != null || bobber.isOpenWaterFishing();
             entityData.addProperty("has_catch", hasCatch);
         }
         return entityData;
@@ -408,7 +406,7 @@ public class StateCommandHandler extends AbstractCommandHandler {
 
     private String safeEntityType(Entity entity) {
         try {
-            return Registries.ENTITY_TYPE.getId(entity.getType()).toString();
+            return BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString();
         } catch (Exception ignored) {
             return "unknown";
         }

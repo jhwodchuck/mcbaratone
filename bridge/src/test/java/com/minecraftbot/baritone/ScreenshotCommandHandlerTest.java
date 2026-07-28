@@ -1,8 +1,6 @@
 package com.minecraftbot.baritone;
 
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.util.ScreenshotRecorder;
 import baritone.api.IBaritone;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
@@ -16,6 +14,8 @@ import java.net.Socket;
 import java.nio.file.Files;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.Screenshot;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -33,7 +33,7 @@ import static org.mockito.Mockito.*;
 public class ScreenshotCommandHandlerTest {
 
     @Mock
-    private MinecraftClient mockClient;
+    private Minecraft mockClient;
 
     @Mock
     private IBaritone mockBaritone;
@@ -95,7 +95,7 @@ public class ScreenshotCommandHandlerTest {
     @Disabled("Requires Minecraft Bootstrap (ScreenshotRecorder class initialization) which fails in unit test environment")
     void testSuccessfulScreenshot_FilenameParam() throws Exception {
         File runDir = Files.createTempDirectory("mc-run").toFile();
-        TestUtils.setField(mockClient, "runDirectory", runDir);
+        TestUtils.setField(mockClient, "gameDirectory", runDir);
         // Run main-thread tasks inline for the mock client.
         doAnswer(inv -> {
             ((Runnable) inv.getArgument(0)).run();
@@ -106,8 +106,8 @@ public class ScreenshotCommandHandlerTest {
         params.addProperty("filename", "phase_test");
         params.addProperty("include_metadata", false);
 
-        try (MockedStatic<ScreenshotRecorder> mockedScreenshot = mockStatic(ScreenshotRecorder.class)) {
-            mockedScreenshot.when(() -> ScreenshotRecorder.saveScreenshot(
+        try (MockedStatic<Screenshot> mockedScreenshot = mockStatic(Screenshot.class)) {
+            mockedScreenshot.when(() -> Screenshot.grab(
                     any(File.class), anyString(), any(), anyInt(), any()))
                     .thenAnswer(inv -> {
                         // Simulate the async IO worker: create the file at the
@@ -117,7 +117,7 @@ public class ScreenshotCommandHandlerTest {
                         File out = new File(new File(gameDir, "screenshots"), name);
                         out.getParentFile().mkdirs();
                         assertTrue(out.createNewFile());
-                        Consumer<net.minecraft.text.Text> callback = inv.getArgument(4);
+                        Consumer<net.minecraft.network.chat.Component> callback = inv.getArgument(4);
                         callback.accept(null);
                         return null;
                     });
@@ -140,7 +140,7 @@ public class ScreenshotCommandHandlerTest {
     @Disabled("Requires Minecraft Bootstrap (ScreenshotRecorder class initialization) which fails in unit test environment")
     void testFailedScreenshot_FileNotWritten() throws Exception {
         File runDir = Files.createTempDirectory("mc-run").toFile();
-        TestUtils.setField(mockClient, "runDirectory", runDir);
+        TestUtils.setField(mockClient, "gameDirectory", runDir);
         doAnswer(inv -> {
             ((Runnable) inv.getArgument(0)).run();
             return null;
@@ -148,12 +148,12 @@ public class ScreenshotCommandHandlerTest {
 
         JsonObject params = new JsonObject();
 
-        try (MockedStatic<ScreenshotRecorder> mockedScreenshot = mockStatic(ScreenshotRecorder.class)) {
-            mockedScreenshot.when(() -> ScreenshotRecorder.saveScreenshot(
+        try (MockedStatic<Screenshot> mockedScreenshot = mockStatic(Screenshot.class)) {
+            mockedScreenshot.when(() -> Screenshot.grab(
                     any(File.class), anyString(), any(), anyInt(), any()))
                     .thenAnswer(inv -> {
                         // Callback fires but no file was written.
-                        Consumer<net.minecraft.text.Text> callback = inv.getArgument(4);
+                        Consumer<net.minecraft.network.chat.Component> callback = inv.getArgument(4);
                         callback.accept(null);
                         return null;
                     });

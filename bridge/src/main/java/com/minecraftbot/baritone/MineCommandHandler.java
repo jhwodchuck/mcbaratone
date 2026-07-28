@@ -6,15 +6,13 @@ import baritone.api.utils.BlockOptionalMetaLookup;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.Identifier;
-import net.minecraft.block.Block;
-import net.minecraft.util.math.BlockPos;
-
 import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.level.block.Block;
 
 /**
  * Command handler for mining operations.
@@ -27,7 +25,7 @@ public class MineCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         int count = params.has("count") ? params.get("count").getAsInt() :
                    (params.has("quantity") ? params.get("quantity").getAsInt() : 0);
 
@@ -46,9 +44,9 @@ public class MineCommandHandler extends AbstractCommandHandler {
         int x = params.get("x").getAsInt();
         int y = params.get("y").getAsInt();
         int z = params.get("z").getAsInt();
-        net.minecraft.util.math.BlockPos pos = new net.minecraft.util.math.BlockPos(x, y, z);
+        net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(x, y, z);
         
-        executeOnMainThread(MinecraftClient.getInstance(), () -> {
+        executeOnMainThread(Minecraft.getInstance(), () -> {
             baritone.getBuilderProcess().clearArea(pos, pos);
         });
 
@@ -62,14 +60,14 @@ public class MineCommandHandler extends AbstractCommandHandler {
 
     private CommandResult handleSingleBlock(JsonObject params, IBaritone baritone, int count) {
         String blockId = params.get("block_type").getAsString();
-        Identifier id = Identifier.of(blockId);
+        Identifier id = Identifier.parse(blockId);
 
-        if (!Registries.BLOCK.containsId(id)) {
+        if (!BuiltInRegistries.BLOCK.containsKey(id)) {
             return CommandResult.error("Unknown block: " + blockId);
         }
 
-        Block block = Registries.BLOCK.get(id);
-        executeOnMainThread(MinecraftClient.getInstance(), () ->
+        Block block = BuiltInRegistries.BLOCK.getValue(id);
+        executeOnMainThread(Minecraft.getInstance(), () ->
             baritone.getMineProcess().mine(count, block));
 
         JsonObject data = new JsonObject();
@@ -89,9 +87,9 @@ public class MineCommandHandler extends AbstractCommandHandler {
         for (JsonElement element : blocksArray) {
             if (!element.isJsonPrimitive()) continue;
             String blockId = element.getAsString();
-            Identifier id = Identifier.of(blockId);
-            if (Registries.BLOCK.containsId(id)) {
-                lookup.add(new BlockOptionalMeta(Registries.BLOCK.get(id)));
+            Identifier id = Identifier.parse(blockId);
+            if (BuiltInRegistries.BLOCK.containsKey(id)) {
+                lookup.add(new BlockOptionalMeta(BuiltInRegistries.BLOCK.getValue(id)));
             }
         }
 
@@ -100,7 +98,7 @@ public class MineCommandHandler extends AbstractCommandHandler {
         }
 
         BlockOptionalMeta[] blockArray = lookup.toArray(new BlockOptionalMeta[0]);
-        executeOnMainThread(MinecraftClient.getInstance(), () ->
+        executeOnMainThread(Minecraft.getInstance(), () ->
             baritone.getMineProcess().mine(count, blockArray));
 
         JsonObject data = new JsonObject();

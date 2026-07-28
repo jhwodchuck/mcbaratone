@@ -3,18 +3,16 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import baritone.api.pathing.goals.GoalBlock;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.item.ItemStack;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.world.World;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.Socket;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.entity.player.Inventory;
 
 /**
  * Concrete implementations of rollback operations for different command types.
@@ -38,7 +36,7 @@ public class RollbackOperations {
         }
 
         @Override
-        public CompletableFuture<Void> rollback(MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+        public CompletableFuture<Void> rollback(Minecraft client, IBaritone baritone, Socket clientSocket) {
             return CompletableFuture.runAsync(() -> {
                 try {
                     LOGGER.info("Rolling back crafting of {} x{} of {}", countCrafted, recipeId);
@@ -64,7 +62,7 @@ public class RollbackOperations {
         }
 
         @Override
-        public boolean canRollback(MinecraftClient client) {
+        public boolean canRollback(Minecraft client) {
             // Crafting rollback is always possible (though may not be fully implemented)
             return true;
         }
@@ -84,7 +82,7 @@ public class RollbackOperations {
         }
 
         @Override
-        public CompletableFuture<Void> rollback(MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+        public CompletableFuture<Void> rollback(Minecraft client, IBaritone baritone, Socket clientSocket) {
             return CompletableFuture.runAsync(() -> {
                 try {
                     LOGGER.info("Rolling back block placement of {} at {}", blockId, blockPos);
@@ -109,12 +107,12 @@ public class RollbackOperations {
         }
 
         @Override
-        public boolean canRollback(MinecraftClient client) {
-            if (client.world == null) return false;
+        public boolean canRollback(Minecraft client) {
+            if (client.level == null) return false;
 
             // Check if the block is still there and is what we expect
-            var blockState = client.world.getBlockState(blockPos);
-            String currentBlockId = Registries.BLOCK.getId(blockState.getBlock()).toString();
+            var blockState = client.level.getBlockState(blockPos);
+            String currentBlockId = BuiltInRegistries.BLOCK.getKey(blockState.getBlock()).toString();
 
             return currentBlockId.equals(blockId);
         }
@@ -136,7 +134,7 @@ public class RollbackOperations {
         }
 
         @Override
-        public CompletableFuture<Void> rollback(MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+        public CompletableFuture<Void> rollback(Minecraft client, IBaritone baritone, Socket clientSocket) {
             return CompletableFuture.runAsync(() -> {
                 try {
                     LOGGER.info("Rolling back entity interaction {} on entity {}", interactionType, entityId);
@@ -157,7 +155,7 @@ public class RollbackOperations {
         }
 
         @Override
-        public boolean canRollback(MinecraftClient client) {
+        public boolean canRollback(Minecraft client) {
             // Entity rollback safety check is complex - assume it's possible for now
             return true;
         }
@@ -175,14 +173,14 @@ public class RollbackOperations {
         }
 
         @Override
-        public CompletableFuture<Void> rollback(MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+        public CompletableFuture<Void> rollback(Minecraft client, IBaritone baritone, Socket clientSocket) {
             return CompletableFuture.runAsync(() -> {
                 try {
                     LOGGER.info("Rolling back movement to original position {}", originalPosition);
 
                     if (baritone != null && client.player != null) {
                         // Check if we're not already at the original position
-                        BlockPos currentPos = client.player.getBlockPos();
+                        BlockPos currentPos = client.player.blockPosition();
                         if (!currentPos.equals(originalPosition)) {
                             baritone.getCustomGoalProcess().setGoalAndPath(new GoalBlock(originalPosition));
                         }
@@ -203,8 +201,8 @@ public class RollbackOperations {
         }
 
         @Override
-        public boolean canRollback(MinecraftClient client) {
-            return client.player != null && client.world != null;
+        public boolean canRollback(Minecraft client) {
+            return client.player != null && client.level != null;
         }
     }
 
@@ -220,7 +218,7 @@ public class RollbackOperations {
         }
 
         @Override
-        public CompletableFuture<Void> rollback(MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+        public CompletableFuture<Void> rollback(Minecraft client, IBaritone baritone, Socket clientSocket) {
             return CompletableFuture.runAsync(() -> {
                 try {
                     LOGGER.info("Rolling back inventory changes: {}", itemsToRestore);
@@ -242,14 +240,14 @@ public class RollbackOperations {
         }
 
         @Override
-        public boolean canRollback(MinecraftClient client) {
+        public boolean canRollback(Minecraft client) {
             // Check if there's space in inventory
             if (client.player == null) return false;
 
-            PlayerInventory inv = client.player.getInventory();
+            Inventory inv = client.player.getInventory();
             int emptySlots = 0;
-            for (int i = 0; i < inv.size(); i++) {
-                if (inv.getStack(i).isEmpty()) emptySlots++;
+            for (int i = 0; i < inv.getContainerSize(); i++) {
+                if (inv.getItem(i).isEmpty()) emptySlots++;
             }
 
             return emptySlots >= itemsToRestore.size();

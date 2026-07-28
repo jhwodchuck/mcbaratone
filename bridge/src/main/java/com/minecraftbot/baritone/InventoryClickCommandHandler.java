@@ -2,19 +2,18 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.screen.slot.SlotActionType;
-
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
+import net.minecraft.world.inventory.ContainerInput;
 
 public class InventoryClickCommandHandler implements CommandHandler {
 
     @Override
-    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         try {
             CommandResult result = client.submit(() -> {
-                if (client.player == null || client.interactionManager == null) {
+                if (client.player == null || client.gameMode == null) {
                     return CommandResult.error("Player not available");
                 }
                  
@@ -25,16 +24,16 @@ public class InventoryClickCommandHandler implements CommandHandler {
                 // Use current screen's sync_id if not provided
                 int syncId = params.has("sync_id") && params.get("sync_id").getAsInt() != 0 
                     ? params.get("sync_id").getAsInt() 
-                    : client.player.currentScreenHandler.syncId;
+                    : client.player.containerMenu.containerId;
                  
-                SlotActionType type;
+                ContainerInput type;
                 try {
-                    type = SlotActionType.valueOf(typeStr);
+                    type = ContainerInput.valueOf(typeStr);
                 } catch (Exception e) {
                     return CommandResult.error("Invalid type: " + typeStr);
                 }
                  
-                client.interactionManager.clickSlot(syncId, slot, button, type, client.player);
+                client.gameMode.handleContainerInput(syncId, slot, button, type, client.player);
                  
                 JsonObject data = new JsonObject();
                 data.addProperty("clicked", true);

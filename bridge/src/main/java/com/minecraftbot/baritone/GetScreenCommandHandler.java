@@ -3,13 +3,12 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.item.ItemStack;
-import net.minecraft.registry.Registries;
-import net.minecraft.screen.ScreenHandler;
-import net.minecraft.screen.slot.Slot;
-
 import java.net.Socket;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.ItemStack;
 
 /**
  * Handler for the get_screen command - returns current screen info.
@@ -22,26 +21,26 @@ public class GetScreenCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         if (client.player == null) {
             return CommandResult.error("Player not available");
         }
 
         try {
             return client.submit(() -> {
-                ScreenHandler handler = client.player.currentScreenHandler;
+                AbstractContainerMenu handler = client.player.containerMenu;
                 if (handler == null) {
                     return CommandResult.error("No screen handler");
                 }
 
                 JsonObject data = new JsonObject();
-                data.addProperty("sync_id", handler.syncId);
+                data.addProperty("sync_id", handler.containerId);
                 data.addProperty("type", handler.getClass().getSimpleName());
 
                 JsonArray slots = new JsonArray();
                 for (int i = 0; i < handler.slots.size(); i++) {
                     Slot slot = handler.slots.get(i);
-                    slots.add(serializeItemStack(slot.getStack(), i));
+                    slots.add(serializeItemStack(slot.getItem(), i));
                 }
                 data.add("slots", slots);
                 data.addProperty("total_slots", handler.slots.size());
@@ -61,10 +60,10 @@ public class GetScreenCommandHandler extends AbstractCommandHandler {
             itemData.addProperty("id", "minecraft:air");
             itemData.addProperty("count", 0);
         } else {
-            itemData.addProperty("id", Registries.ITEM.getId(stack.getItem()).toString());
+            itemData.addProperty("id", BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
             itemData.addProperty("count", stack.getCount());
-            itemData.addProperty("max_count", stack.getMaxCount());
-            itemData.addProperty("damage", stack.getDamage());
+            itemData.addProperty("max_count", stack.getMaxStackSize());
+            itemData.addProperty("damage", stack.getDamageValue());
             itemData.addProperty("max_damage", stack.getMaxDamage());
             itemData.addProperty("name", stack.getItem().toString());
         }

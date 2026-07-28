@@ -2,11 +2,9 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.math.BlockPos;
-
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
 
 /**
  * Interface for rollback operations that can undo state changes made by commands.
@@ -22,7 +20,7 @@ public interface RollbackOperation {
      * @param clientSocket Client socket
      * @return CompletableFuture that completes when rollback is done
      */
-    CompletableFuture<Void> rollback(MinecraftClient client, IBaritone baritone, Socket clientSocket);
+    CompletableFuture<Void> rollback(Minecraft client, IBaritone baritone, Socket clientSocket);
 
     /**
      * Get a description of what this rollback operation will do.
@@ -38,5 +36,5 @@ public interface RollbackOperation {
      * @param client Minecraft client
      * @return true if rollback can be executed safely
      */
-    boolean canRollback(MinecraftClient client);
+    boolean canRollback(Minecraft client);
 }

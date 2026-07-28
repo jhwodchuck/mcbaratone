@@ -2,10 +2,9 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.math.BlockPos;
-
 import java.net.Socket;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
 
 /**
  * Handler for the break_block command - breaks block at position using Baritone.
@@ -18,7 +17,7 @@ public class BreakBlockCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         CommandResult validation = validateCoordinates(params);
         if (validation != null) {
             return validation;

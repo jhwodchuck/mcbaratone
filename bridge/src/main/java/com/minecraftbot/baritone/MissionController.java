@@ -3,11 +3,10 @@ import baritone.api.IBaritone;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.math.BlockPos;
-
 import java.net.Socket;
 import java.util.*;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
 
 /**
  * MissionController handles high-level automation missions backed by simple macros.
@@ -49,7 +48,7 @@ public class MissionController {
     }
 
     private interface MissionHandler {
-        void handle(JsonObject params, JsonObject data, MinecraftClient client, IBaritone baritone, Socket socket);
+        void handle(JsonObject params, JsonObject data, Minecraft client, IBaritone baritone, Socket socket);
     }
 
     private final MissionBridgeAdapter bridge;
@@ -86,7 +85,7 @@ public class MissionController {
         String command,
         JsonObject params,
         JsonObject data,
-        MinecraftClient client,
+        Minecraft client,
         IBaritone baritone,
         Socket socket
     ) {
@@ -134,11 +133,11 @@ public class MissionController {
         return false;
     }
 
-    private void handleStatus(JsonObject params, JsonObject data, MinecraftClient client, IBaritone baritone, Socket socket) {
+    private void handleStatus(JsonObject params, JsonObject data, Minecraft client, IBaritone baritone, Socket socket) {
         data.add("mission", buildMissionStatus(client, baritone));
     }
 
-    private void handleCheckpoint(JsonObject params, JsonObject data, MinecraftClient client, IBaritone baritone, Socket socket) {
+    private void handleCheckpoint(JsonObject params, JsonObject data, Minecraft client, IBaritone baritone, Socket socket) {
         if (!ensureOwner(socket, data)) {
             return;
         }
@@ -153,7 +152,7 @@ public class MissionController {
         data.add("mission", buildMissionStatus(client, baritone));
     }
 
-    private void handleQueue(JsonObject params, JsonObject data, MinecraftClient client, IBaritone baritone, Socket socket) {
+    private void handleQueue(JsonObject params, JsonObject data, Minecraft client, IBaritone baritone, Socket socket) {
         boolean touchedQueue = false;
         if (params.has("clear") && params.get("clear").getAsBoolean()) {
             if (!ensureOwner(socket, data)) {
@@ -183,7 +182,7 @@ public class MissionController {
         }
     }
 
-    private void handleMacro(JsonObject params, JsonObject data, MinecraftClient client, IBaritone baritone, Socket socket) {
+    private void handleMacro(JsonObject params, JsonObject data, Minecraft client, IBaritone baritone, Socket socket) {
         if (!ensureOwner(socket, data)) {
             return;
         }
@@ -227,7 +226,7 @@ public class MissionController {
         bridge.publishMissionEvent("macro", payload);
     }
 
-    private JsonObject buildMissionStatus(MinecraftClient client, IBaritone baritone) {
+    private JsonObject buildMissionStatus(Minecraft client, IBaritone baritone) {
         JsonObject mission = new JsonObject();
         mission.addProperty("phase", phase.value());
         mission.addProperty("note", note);
@@ -298,7 +297,7 @@ public class MissionController {
         }
     }
 
-    private boolean runMacro(String macroName, JsonObject params, JsonObject result, MinecraftClient client, IBaritone baritone) {
+    private boolean runMacro(String macroName, JsonObject params, JsonObject result, Minecraft client, IBaritone baritone) {
         switch (macroName) {
             case "bootstrap":
                 runBootstrapMacro(params, result, client, baritone);
@@ -345,7 +344,7 @@ public class MissionController {
         }
     }
 
-    private void runBootstrapMacro(JsonObject params, JsonObject result, MinecraftClient client, IBaritone baritone) {
+    private void runBootstrapMacro(JsonObject params, JsonObject result, Minecraft client, IBaritone baritone) {
         Map<String, String> settings = new LinkedHashMap<>();
         settings.put("allowSprint", "true");
         settings.put("allowParkour", "true");
@@ -371,20 +370,20 @@ public class MissionController {
         result.add("telemetry", bridge.collectTelemetry(client, baritone));
     }
 
-    private void runScoutSpawnMacro(JsonObject params, JsonObject result, MinecraftClient client, IBaritone baritone) {
+    private void runScoutSpawnMacro(JsonObject params, JsonObject result, Minecraft client, IBaritone baritone) {
         if (client.player == null) {
             result.addProperty("error", "Player not available");
             return;
         }
         int radius = params.has("radius") ? params.get("radius").getAsInt() : 96;
         int samples = params.has("samples") ? params.get("samples").getAsInt() : 4;
-        BlockPos center = client.player.getBlockPos();
+        BlockPos center = client.player.blockPosition();
 
         JsonArray waypoints = new JsonArray();
         for (int i = 0; i < samples; i++) {
             int dx = (int) (Math.cos((2 * Math.PI / samples) * i) * radius);
             int dz = (int) (Math.sin((2 * Math.PI / samples) * i) * radius);
-            waypoints.add(blockPosToJson(center.add(dx, 0, dz)));
+            waypoints.add(blockPosToJson(center.offset(dx, 0, dz)));
         }
 
         result.add("origin", blockPosToJson(center));
@@ -400,7 +399,7 @@ public class MissionController {
         result.add("telemetry", bridge.collectTelemetry(client, baritone));
     }
 
-    private void runBaseMacro(JsonObject params, JsonObject result, MinecraftClient client, IBaritone baritone) {
+    private void runBaseMacro(JsonObject params, JsonObject result, Minecraft client, IBaritone baritone) {
         if (client.player == null) {
             result.addProperty("error", "Player not available");
             return;
@@ -408,9 +407,9 @@ public class MissionController {
         int size = params.has("size") ? params.get("size").getAsInt() : 13;
         int height = params.has("height") ? params.get("height").getAsInt() : 6;
 
-        BlockPos center = client.player.getBlockPos();
-        BlockPos corner1 = center.add(size / 2, 0, size / 2);
-        BlockPos corner2 = center.add(-size / 2, -height, -size / 2);
+        BlockPos center = client.player.blockPosition();
+        BlockPos corner1 = center.offset(size / 2, 0, size / 2);
+        BlockPos corner2 = center.offset(-size / 2, -height, -size / 2);
 
         JsonObject selParams = new JsonObject();
         selParams.addProperty("action", "set");
@@ -491,7 +490,7 @@ public class MissionController {
         return target;
     }
 
-    private void runNetherPrepMacro(JsonObject params, JsonObject result, MinecraftClient client) {
+    private void runNetherPrepMacro(JsonObject params, JsonObject result, Minecraft client) {
         JsonObject inventoryPayload = new JsonObject();
         bridge.handleGetInventory(client, inventoryPayload);
         Map<String, Integer> counts = summarizeInventory(inventoryPayload);
@@ -509,7 +508,7 @@ public class MissionController {
         result.addProperty("ready", hasObsidian && hasIgnitionPlan);
     }
 
-    private void runCraftEyesMacro(JsonObject params, JsonObject result, MinecraftClient client) {
+    private void runCraftEyesMacro(JsonObject params, JsonObject result, Minecraft client) {
         JsonObject inventoryPayload = new JsonObject();
         bridge.handleGetInventory(client, inventoryPayload);
         Map<String, Integer> counts = summarizeInventory(inventoryPayload);
@@ -526,7 +525,7 @@ public class MissionController {
         result.addProperty("ready", craftable >= required);
     }
 
-    private void runDragonPrepMacro(JsonObject result, MinecraftClient client) {
+    private void runDragonPrepMacro(JsonObject result, Minecraft client) {
         JsonObject inventoryPayload = new JsonObject();
         bridge.handleGetInventory(client, inventoryPayload);
         Map<String, Integer> counts = summarizeInventory(inventoryPayload);
@@ -544,16 +543,16 @@ public class MissionController {
         result.add("inventory_counts", mapToJson(counts));
     }
 
-    private void runStrongholdMacro(JsonObject result, MinecraftClient client) {
+    private void runStrongholdMacro(JsonObject result, Minecraft client) {
         if (client.player == null) {
             result.addProperty("error", "Player not available");
             return;
         }
-        client.execute(() -> client.player.networkHandler.sendChatMessage("#stronghold"));
+        client.execute(() -> client.player.connection.sendChat("#stronghold"));
         result.addProperty("command", "#stronghold");
     }
 
-    private void runFightDragonMacro(JsonObject result, MinecraftClient client, IBaritone baritone) {
+    private void runFightDragonMacro(JsonObject result, Minecraft client, IBaritone baritone) {
         JsonObject statePayload = new JsonObject();
         bridge.handleGetState(client, baritone, statePayload);
         result.add("state", statePayload);
@@ -593,7 +592,7 @@ public class MissionController {
 
     // ========== Enhanced Mission Handler Methods ==========
 
-    private void handleAdvance(JsonObject params, JsonObject data, MinecraftClient client, IBaritone baritone, Socket socket) {
+    private void handleAdvance(JsonObject params, JsonObject data, Minecraft client, IBaritone baritone, Socket socket) {
         if (!ensureOwner(socket, data)) {
             return;
         }
@@ -613,7 +612,7 @@ public class MissionController {
         data.add("mission", buildMissionStatus(client, baritone));
     }
 
-    private void handleRetry(JsonObject params, JsonObject data, MinecraftClient client, IBaritone baritone, Socket socket) {
+    private void handleRetry(JsonObject params, JsonObject data, Minecraft client, IBaritone baritone, Socket socket) {
         if (!ensureOwner(socket, data)) {
             return;
         }
@@ -641,7 +640,7 @@ public class MissionController {
         data.add("mission", buildMissionStatus(client, baritone));
     }
 
-    private void handleReset(JsonObject params, JsonObject data, MinecraftClient client, IBaritone baritone, Socket socket) {
+    private void handleReset(JsonObject params, JsonObject data, Minecraft client, IBaritone baritone, Socket socket) {
         if (!ensureOwner(socket, data)) {
             return;
         }
@@ -681,7 +680,7 @@ public class MissionController {
         }
     }
 
-    private boolean canAdvanceTo(MissionPhase nextPhase, MinecraftClient client, IBaritone baritone) {
+    private boolean canAdvanceTo(MissionPhase nextPhase, Minecraft client, IBaritone baritone) {
         // Check basic prerequisites based on current inventory and state
         switch (nextPhase) {
             case BASE_ESTABLISHED:
@@ -707,7 +706,7 @@ public class MissionController {
         }
     }
 
-    private boolean hasBasicSurvivalItems(MinecraftClient client) {
+    private boolean hasBasicSurvivalItems(Minecraft client) {
         if (client.player == null) return false;
         JsonObject inventoryPayload = new JsonObject();
         bridge.handleGetInventory(client, inventoryPayload);
@@ -716,7 +715,7 @@ public class MissionController {
                counts.getOrDefault("minecraft:stone_pickaxe", 0) >= 1;
     }
 
-    private boolean hasResourceGatheringItems(MinecraftClient client) {
+    private boolean hasResourceGatheringItems(Minecraft client) {
         if (client.player == null) return false;
         JsonObject inventoryPayload = new JsonObject();
         bridge.handleGetInventory(client, inventoryPayload);
@@ -725,7 +724,7 @@ public class MissionController {
                counts.getOrDefault("minecraft:iron_ingot", 0) >= 10;
     }
 
-    private boolean hasNetherMaterials(MinecraftClient client) {
+    private boolean hasNetherMaterials(Minecraft client) {
         if (client.player == null) return false;
         JsonObject inventoryPayload = new JsonObject();
         bridge.handleGetInventory(client, inventoryPayload);
@@ -735,7 +734,7 @@ public class MissionController {
                 (counts.getOrDefault("minecraft:flint", 0) > 0 && counts.getOrDefault("minecraft:iron_ingot", 0) > 0));
     }
 
-    private boolean hasEnderMaterials(MinecraftClient client) {
+    private boolean hasEnderMaterials(Minecraft client) {
         if (client.player == null) return false;
         JsonObject inventoryPayload = new JsonObject();
         bridge.handleGetInventory(client, inventoryPayload);
@@ -744,7 +743,7 @@ public class MissionController {
                counts.getOrDefault("minecraft:blaze_powder", 0) >= 12;
     }
 
-    private boolean hasEyesOfEnder(MinecraftClient client) {
+    private boolean hasEyesOfEnder(Minecraft client) {
         if (client.player == null) return false;
         JsonObject inventoryPayload = new JsonObject();
         bridge.handleGetInventory(client, inventoryPayload);
@@ -752,11 +751,11 @@ public class MissionController {
         return counts.getOrDefault("minecraft:ender_eye", 0) >= 1;
     }
 
-    private boolean hasEndAccessItems(MinecraftClient client) {
+    private boolean hasEndAccessItems(Minecraft client) {
         if (client.player == null) return false;
         // Check if in the End dimension or has end portal access
-        return client.world != null &&
-               "minecraft:the_end".equals(client.world.getRegistryKey().getValue().toString());
+        return client.level != null &&
+               "minecraft:the_end".equals(client.level.dimension().identifier().toString());
     }
 
 

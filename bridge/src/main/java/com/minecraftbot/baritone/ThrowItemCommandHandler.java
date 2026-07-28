@@ -2,9 +2,8 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-
 import java.net.Socket;
+import net.minecraft.client.Minecraft;
 
 /**
  * Handler for the throw_item command - throws item from inventory.
@@ -17,7 +16,7 @@ public class ThrowItemCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         if (client.player == null) {
             return CommandResult.error("Player not available");
         }
@@ -28,18 +27,18 @@ public class ThrowItemCommandHandler extends AbstractCommandHandler {
         executeOnMainThread(client, () -> {
             if (slot >= 0 && slot < 36) {
                 // Throw specific slot
-                client.player.getInventory().selectedSlot = slot % 9;
+                client.player.getInventory().selected = slot % 9;
                 if (all) {
-                    client.player.dropSelectedItem(true);
+                    client.player.drop(true);
                 } else {
-                    client.player.dropSelectedItem(false);
+                    client.player.drop(false);
                 }
             } else {
                 // Throw currently held item
                 if (all) {
-                    client.player.dropSelectedItem(true);
+                    client.player.drop(true);
                 } else {
-                    client.player.dropSelectedItem(false);
+                    client.player.drop(false);
                 }
             }
         });

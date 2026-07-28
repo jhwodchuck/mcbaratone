@@ -1,13 +1,13 @@
 package com.minecraftbot.baritone;
 
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.math.BlockPos;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
 
 /**
  * Base class for command handlers providing shared utility methods.
@@ -88,7 +88,7 @@ public abstract class AbstractBaseCommandHandler implements CommandHandler {
      * @param client The Minecraft client
      * @param task The runnable to execute
      */
-    protected void executeOnMainThread(MinecraftClient client, Runnable task) {
+    protected void executeOnMainThread(Minecraft client, Runnable task) {
         if (client != null) {
             client.execute(task);
         } else {
@@ -103,7 +103,7 @@ public abstract class AbstractBaseCommandHandler implements CommandHandler {
      * @param task The supplier to execute
      * @return CompletableFuture completing with the result
      */
-    protected CompletableFuture<CommandResult> executeOnMainThread(MinecraftClient client, Supplier<CommandResult> task) {
+    protected CompletableFuture<CommandResult> executeOnMainThread(Minecraft client, Supplier<CommandResult> task) {
         CompletableFuture<CommandResult> future = new CompletableFuture<>();
         if (client != null) {
             client.execute(() -> {

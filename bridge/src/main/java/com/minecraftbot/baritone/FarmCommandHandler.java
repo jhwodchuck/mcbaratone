@@ -3,11 +3,10 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import baritone.api.BaritoneAPI;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.math.BlockPos;
-
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
 
 /**
  * Handler for the farm command - starts farming process.
@@ -21,7 +20,7 @@ public class FarmCommandHandler extends AsyncCommandHandler {
 
     @Override
     public CompletableFuture<CommandResult> execute(
-            JsonObject params, MinecraftClient client, IBaritone baritone,
+            JsonObject params, Minecraft client, IBaritone baritone,
             Socket clientSocket) {
         if (params.has("crop")) {
             return CompletableFuture.completedFuture(CommandResult.error(

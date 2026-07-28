@@ -6,10 +6,9 @@ import baritone.api.pathing.goals.GoalNear;
 import baritone.api.utils.BlockOptionalMeta;
 import baritone.api.utils.BlockOptionalMetaLookup;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.math.BlockPos;
-
 import java.net.Socket;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
 
 /**
  * Handler for the tunnel command - starts tunnel mining.
@@ -22,7 +21,7 @@ public class TunnelCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         if (client.player == null) {
             return CommandResult.error("Player not available");
         }
@@ -74,7 +73,7 @@ public class TunnelCommandHandler extends AbstractCommandHandler {
                 tunnelCommand += " " + params.get("width").getAsInt();
             }
             final String finalCmd = tunnelCommand;
-            executeOnMainThread(client, () -> client.player.networkHandler.sendChatMessage(finalCmd));
+            executeOnMainThread(client, () -> client.player.connection.sendChat(finalCmd));
             data.addProperty("sent", true);
             data.addProperty("command", tunnelCommand);
             data.addProperty("note", "Using chat command fallback due to error: " + e.getMessage());

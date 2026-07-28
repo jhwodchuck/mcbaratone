@@ -2,8 +2,6 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.math.BlockPos;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -11,6 +9,8 @@ import java.net.Socket;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
 
 /**
  * Command handler for executing sequences of commands with rollback capabilities.
@@ -46,7 +46,7 @@ public class SequenceCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         // Extract the sequence string
         String sequence;
         if (params.has("sequence")) {
@@ -206,7 +206,7 @@ public class SequenceCommandHandler extends AbstractCommandHandler {
     /**
      * Validate the entire sequence before execution.
      */
-    private CommandResult validateSequence(List<SequenceCommand> commands, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    private CommandResult validateSequence(List<SequenceCommand> commands, Minecraft client, IBaritone baritone, Socket clientSocket) {
         JsonObject validationErrors = new JsonObject();
         boolean hasErrors = false;
 
@@ -233,7 +233,7 @@ public class SequenceCommandHandler extends AbstractCommandHandler {
     /**
      * Validate a single command.
      */
-    private CommandResult validateCommand(SequenceCommand cmd, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    private CommandResult validateCommand(SequenceCommand cmd, Minecraft client, IBaritone baritone, Socket clientSocket) {
         // Check if the command handler exists
         CommandHandler handler = CommandHandlerFactory.getHandler(cmd.command);
         if (handler == null) {
@@ -247,12 +247,12 @@ public class SequenceCommandHandler extends AbstractCommandHandler {
     /**
      * Execute the sequence with rollback capability.
      */
-    private CommandResult executeSequence(List<SequenceCommand> commands, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    private CommandResult executeSequence(List<SequenceCommand> commands, Minecraft client, IBaritone baritone, Socket clientSocket) {
         List<SequenceCommand> executedCommands = new ArrayList<>();
         JsonObject results = new JsonObject();
         JsonObject partialResults = new JsonObject();
 
-        BlockPos originalPosition = (client.player != null) ? client.player.getBlockPos() : null;
+        BlockPos originalPosition = (client.player != null) ? client.player.blockPosition() : null;
 
         try {
             for (int i = 0; i < commands.size(); i++) {
@@ -315,7 +315,7 @@ public class SequenceCommandHandler extends AbstractCommandHandler {
     /**
      * Execute a single command in the sequence.
      */
-    private CommandResult executeSingleCommand(SequenceCommand cmd, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    private CommandResult executeSingleCommand(SequenceCommand cmd, Minecraft client, IBaritone baritone, Socket clientSocket) {
         CommandHandler handler = CommandHandlerFactory.getHandler(cmd.command);
         if (handler == null) {
             return CommandResult.error("Handler not found for command: " + cmd.command);
@@ -367,7 +367,7 @@ public class SequenceCommandHandler extends AbstractCommandHandler {
     /**
      * Rollback all executed commands in reverse order.
      */
-    private CommandResult rollbackExecutedCommands(List<SequenceCommand> executedCommands, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    private CommandResult rollbackExecutedCommands(List<SequenceCommand> executedCommands, Minecraft client, IBaritone baritone, Socket clientSocket) {
         if (executedCommands.isEmpty()) {
             return CommandResult.success();
         }

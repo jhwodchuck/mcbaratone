@@ -2,11 +2,10 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.math.MathHelper;
-
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
+import net.minecraft.util.Mth;
 
 /**
  * Command handler for look_at: Points the camera at specific coordinates.
@@ -14,7 +13,7 @@ import java.util.concurrent.CompletableFuture;
 public class LookAtCommandHandler implements CommandHandler {
 
     @Override
-    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         try {
             CommandResult result = client.submit(() -> {
                 if (client.player == null) {
@@ -30,11 +29,11 @@ public class LookAtCommandHandler implements CommandHandler {
                 double dz = tz - client.player.getZ();
 
                 double dist = Math.sqrt(dx * dx + dz * dz);
-                float yaw = (float) (MathHelper.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0f;
-                float pitch = (float) -(MathHelper.atan2(dy, dist) * (180.0 / Math.PI));
+                float yaw = (float) (Mth.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0f;
+                float pitch = (float) -(Mth.atan2(dy, dist) * (180.0 / Math.PI));
 
-                client.player.setYaw(yaw);
-                client.player.setPitch(pitch);
+                client.player.setYRot(yaw);
+                client.player.setXRot(pitch);
 
                 JsonObject data = new JsonObject();
                 data.addProperty("yaw", yaw);

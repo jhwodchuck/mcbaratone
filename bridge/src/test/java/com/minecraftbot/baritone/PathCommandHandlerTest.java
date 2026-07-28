@@ -2,7 +2,6 @@ package com.minecraftbot.baritone;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
 import baritone.api.IBaritone;
 import baritone.api.pathing.goals.Goal;
 import org.junit.jupiter.api.AfterEach;
@@ -13,6 +12,7 @@ import org.mockito.MockitoAnnotations;
 
 import java.io.File;
 import java.net.Socket;
+import net.minecraft.client.Minecraft;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -20,7 +20,7 @@ import static org.mockito.Mockito.*;
 public class PathCommandHandlerTest {
 
     @Mock
-    private MinecraftClient mockClient;
+    private Minecraft mockClient;
 
     @Mock
     private IBaritone mockBaritone;

@@ -2,7 +2,7 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.Minecraft;
 import net.minecraft.server.MinecraftServer;
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
@@ -13,7 +13,7 @@ import java.lang.reflect.Method;
 
 public class ChatCommandHandler implements CommandHandler {
     @Override
-    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone,
+    public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone,
             Socket clientSocket) {
         if (client.player == null) {
             return CompletableFuture.completedFuture(CommandResult.error("Player not available"));
@@ -50,15 +50,15 @@ public class ChatCommandHandler implements CommandHandler {
                 String command = trimmed.substring(1);
                 return CompletableFuture.supplyAsync(() -> {
                     try {
-                        MinecraftServer server = client.getServer();
+                        MinecraftServer server = client.getSingleplayerServer();
                         if (server != null) {
                             CountDownLatch latch = new CountDownLatch(1);
                             AtomicReference<CommandResult> resultRef = new AtomicReference<>();
                             server.execute(() -> {
                                 try {
                                     String cmdToExecute = command;
-                                    var dispatcher = server.getCommandManager().getDispatcher();
-                                    var source = server.getCommandSource();
+                                    var dispatcher = server.getCommands().getDispatcher();
+                                    var source = server.createCommandSourceStack();
 
                                     System.out.println("[Bridge] Executing command: " + cmdToExecute);
 
@@ -118,15 +118,15 @@ public class ChatCommandHandler implements CommandHandler {
                             try {
                                 Method method;
                                 try {
-                                    method = client.player.networkHandler.getClass().getMethod("sendCommand",
+                                    method = client.player.connection.getClass().getMethod("sendCommand",
                                             String.class);
                                 } catch (NoSuchMethodException e) {
-                                    method = client.player.networkHandler.getClass().getMethod("sendChatCommand",
+                                    method = client.player.connection.getClass().getMethod("sendChatCommand",
                                             String.class);
                                 }
-                                method.invoke(client.player.networkHandler, command);
+                                method.invoke(client.player.connection, command);
                             } catch (ReflectiveOperationException e) {
-                                client.player.networkHandler.sendChatMessage("/" + command);
+                                client.player.connection.sendChat("/" + command);
                             }
                             return null;
                         }).get();
@@ -140,7 +140,7 @@ public class ChatCommandHandler implements CommandHandler {
                 return CompletableFuture.supplyAsync(() -> {
                     try {
                         client.submit(() -> {
-                            client.player.networkHandler.sendChatMessage(message);
+                            client.player.connection.sendChat(message);
                             return null;
                         }).get();
                         return CommandResult.success();

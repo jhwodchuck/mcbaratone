@@ -16,17 +16,15 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonArray;
 import net.fabricmc.api.ModInitializer;
 import com.minecraftbot.baritone.mcp.McpServer;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.entity.Entity;
-import net.minecraft.item.ItemStack;
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.Identifier;
-import net.minecraft.registry.Registries;
-import net.minecraft.block.Block;
-import net.minecraft.block.BlockState;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.Block;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -160,96 +158,96 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
         String getDimension();
 
-        ClientPlayerEntity getPlayer(); // For cases where we really need the entity, but try to avoid
+        LocalPlayer getPlayer(); // For cases where we really need the entity, but try to avoid
     }
 
     private class MinecraftPlayerContext implements IPlayerContext {
         @Override
         public boolean isPlayerNull() {
-            return MinecraftClient.getInstance().player == null;
+            return Minecraft.getInstance().player == null;
         }
 
         @Override
         public double getX() {
-            ClientPlayerEntity player = MinecraftClient.getInstance().player;
+            LocalPlayer player = Minecraft.getInstance().player;
             return player != null ? player.getX() : 0;
         }
 
         @Override
         public double getY() {
-            ClientPlayerEntity player = MinecraftClient.getInstance().player;
+            LocalPlayer player = Minecraft.getInstance().player;
             return player != null ? player.getY() : 0;
         }
 
         @Override
         public double getZ() {
-            ClientPlayerEntity player = MinecraftClient.getInstance().player;
+            LocalPlayer player = Minecraft.getInstance().player;
             return player != null ? player.getZ() : 0;
         }
 
         @Override
         public float getYaw() {
-            ClientPlayerEntity player = MinecraftClient.getInstance().player;
-            return player != null ? player.getYaw() : 0;
+            LocalPlayer player = Minecraft.getInstance().player;
+            return player != null ? player.getYRot() : 0;
         }
 
         @Override
         public float getPitch() {
-            ClientPlayerEntity player = MinecraftClient.getInstance().player;
-            return player != null ? player.getPitch() : 0;
+            LocalPlayer player = Minecraft.getInstance().player;
+            return player != null ? player.getXRot() : 0;
         }
 
         @Override
         public float getHealth() {
-            ClientPlayerEntity player = MinecraftClient.getInstance().player;
+            LocalPlayer player = Minecraft.getInstance().player;
             return player != null ? player.getHealth() : 0;
         }
 
         @Override
         public float getMaxHealth() {
-            ClientPlayerEntity player = MinecraftClient.getInstance().player;
+            LocalPlayer player = Minecraft.getInstance().player;
             return player != null ? player.getMaxHealth() : 0;
         }
 
         @Override
         public int getFoodLevel() {
-            ClientPlayerEntity player = MinecraftClient.getInstance().player;
-            return player != null ? player.getHungerManager().getFoodLevel() : 0;
+            LocalPlayer player = Minecraft.getInstance().player;
+            return player != null ? player.getFoodData().getFoodLevel() : 0;
         }
 
         @Override
         public float getSaturationLevel() {
-            ClientPlayerEntity player = MinecraftClient.getInstance().player;
-            return player != null ? player.getHungerManager().getSaturationLevel() : 0;
+            LocalPlayer player = Minecraft.getInstance().player;
+            return player != null ? player.getFoodData().getSaturationLevel() : 0;
         }
 
         @Override
         public float getArmor() {
-            ClientPlayerEntity player = MinecraftClient.getInstance().player;
-            return player != null ? player.getArmor() : 0;
+            LocalPlayer player = Minecraft.getInstance().player;
+            return player != null ? player.getArmorValue() : 0;
         }
 
         @Override
         public int getTotalExperience() {
-            ClientPlayerEntity player = MinecraftClient.getInstance().player;
+            LocalPlayer player = Minecraft.getInstance().player;
             return player != null ? player.totalExperience : 0;
         }
 
         @Override
         public BlockPos getBlockPos() {
-            ClientPlayerEntity player = MinecraftClient.getInstance().player;
-            return player != null ? player.getBlockPos() : BlockPos.ORIGIN;
+            LocalPlayer player = Minecraft.getInstance().player;
+            return player != null ? player.blockPosition() : BlockPos.ZERO;
         }
 
         @Override
-        public ClientPlayerEntity getPlayer() {
-            return MinecraftClient.getInstance().player;
+        public LocalPlayer getPlayer() {
+            return Minecraft.getInstance().player;
         }
 
         @Override
         public String getDimension() {
-            MinecraftClient client = MinecraftClient.getInstance();
-            return client.world != null ? client.world.getRegistryKey().getValue().toString() : "minecraft:overworld";
+            Minecraft client = Minecraft.getInstance();
+            return client.level != null ? client.level.dimension().identifier().toString() : "minecraft:overworld";
         }
     }
 
@@ -268,7 +266,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                 new LinkedBlockingQueue<>(100), // Queue up to 100 tasks
                 new ThreadPoolExecutor.CallerRunsPolicy() // Reject policy: run on calling thread if queue full
         );
-        schematicDir = new File(MinecraftClient.getInstance().runDirectory, "schematics");
+        schematicDir = new File(Minecraft.getInstance().gameDirectory, "schematics");
         if (!schematicDir.exists()) {
             schematicDir.mkdirs();
         }
@@ -539,7 +537,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
      */
     @Deprecated
     private CommandResult handleLegacyCommandInternal(String command, JsonObject params,
-            MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+            Minecraft client, IBaritone baritone, Socket clientSocket) {
         // All commands have been migrated to CommandHandler pattern
         // This fallback should never be reached
         LOGGER.warn("Legacy handler called for command that should have a handler: {}", command);
@@ -574,7 +572,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                 return response;
             }
 
-            MinecraftClient client = getMinecraftClient();
+            Minecraft client = getMinecraftClient();
             IBaritone baritone = getBaritone();
 
             // Basic precondition checks (rate limiting and other checks are handled by
@@ -668,7 +666,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     // --- Implementations ---
 
     @Override
-    public JsonObject collectTelemetry(MinecraftClient client, IBaritone baritone) {
+    public JsonObject collectTelemetry(Minecraft client, IBaritone baritone) {
         JsonObject telemetry = new JsonObject();
         if (!playerContext.isPlayerNull()) {
             telemetry.addProperty("health", playerContext.getHealth());
@@ -677,7 +675,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             telemetry.addProperty("armor", playerContext.getArmor());
             telemetry.addProperty("experience", playerContext.getTotalExperience());
             telemetry.addProperty("dimension",
-                    client.world != null ? client.world.getRegistryKey().getValue().toString() : "unknown");
+                    client.level != null ? client.level.dimension().identifier().toString() : "unknown");
 
             BlockPos pos = playerContext.getBlockPos();
             JsonObject position = new JsonObject();
@@ -710,7 +708,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         // Delegated to BuildCommandHandler
         CommandHandler handler = CommandHandlerFactory.getHandler("sel");
         if (handler != null) {
-            CommandResult result = handler.handle(params, MinecraftClient.getInstance(), baritone, null).join();
+            CommandResult result = handler.handle(params, Minecraft.getInstance(), baritone, null).join();
             if (result.isSuccess()) {
                 data.add("result", result.getData());
             } else {
@@ -730,10 +728,10 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
         if (params.has("block_type")) {
             String blockId = params.get("block_type").getAsString();
-            Identifier id = Identifier.of(blockId);
-            if (Registries.BLOCK.containsId(id)) {
-                Block block = Registries.BLOCK.get(id);
-                MinecraftClient.getInstance().execute(() -> baritone.getMineProcess().mine(count, block));
+            Identifier id = Identifier.parse(blockId);
+            if (BuiltInRegistries.BLOCK.containsKey(id)) {
+                Block block = BuiltInRegistries.BLOCK.getValue(id);
+                Minecraft.getInstance().execute(() -> baritone.getMineProcess().mine(count, block));
                 data.addProperty("started", true);
             } else {
                 data.addProperty("error", "Unknown block: " + blockId);
@@ -745,15 +743,15 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                 return;
             }
 
-            MinecraftClient.getInstance().execute(() -> {
+            Minecraft.getInstance().execute(() -> {
                 List<BlockOptionalMeta> lookup = new ArrayList<>();
                 for (JsonElement element : blocksArray) {
                     if (!element.isJsonPrimitive())
                         continue;
                     String blockId = element.getAsString();
-                    Identifier id = Identifier.of(blockId);
-                    if (Registries.BLOCK.containsId(id)) {
-                        lookup.add(new BlockOptionalMeta(Registries.BLOCK.get(id)));
+                    Identifier id = Identifier.parse(blockId);
+                    if (BuiltInRegistries.BLOCK.containsKey(id)) {
+                        lookup.add(new BlockOptionalMeta(BuiltInRegistries.BLOCK.getValue(id)));
                     }
                 }
 
@@ -899,7 +897,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             try {
                 // Run on main thread to be safe, though most settings can be set off-thread.
                 // Baritone settings are usually primitive wrappers or Enums.
-                MinecraftClient.getInstance().execute(() -> {
+                Minecraft.getInstance().execute(() -> {
                     baritone.api.Settings.Setting<?> setting = BaritoneAPI.getSettings().allSettings.stream()
                             .filter(s -> s.getName().equalsIgnoreCase(key))
                             .findFirst().orElse(null);
@@ -959,7 +957,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     // handleStop, handlePause, handleCancel, handleGoal removed.
 
     @Override
-    public void handleGetState(MinecraftClient client, IBaritone baritone, JsonObject data) {
+    public void handleGetState(Minecraft client, IBaritone baritone, JsonObject data) {
         try {
             // Using playerContext to allow testing without Entity class loading
             client.submit(() -> {
@@ -1020,7 +1018,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     // handleGetEntities deleted
 
     @Override
-    public void handleGetInventory(MinecraftClient client, JsonObject data) {
+    public void handleGetInventory(Minecraft client, JsonObject data) {
         try {
             client.submit(() -> {
                 if (client.player == null) {
@@ -1028,31 +1026,31 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                     return null;
                 }
 
-                PlayerInventory inv = client.player.getInventory();
+                Inventory inv = client.player.getInventory();
 
                 // Main Inventory (0-35)
                 JsonArray mainInventory = new JsonArray();
                 for (int i = 0; i < 36; i++) {
-                    mainInventory.add(serializeItemStack(inv.getStack(i), i));
+                    mainInventory.add(serializeItemStack(inv.getItem(i), i));
                 }
                 data.add("inventory", mainInventory);
 
                 // Armor (Slots 36-39)
                 JsonArray armorInventory = new JsonArray();
                 for (int i = 0; i < 4; i++) {
-                    armorInventory.add(serializeItemStack(inv.getStack(36 + i), i + 36));
+                    armorInventory.add(serializeItemStack(inv.getItem(36 + i), i + 36));
                 }
                 data.add("armor", armorInventory);
 
                 // Offhand (Slot 40)
                 JsonArray offhandInventory = new JsonArray();
-                offhandInventory.add(serializeItemStack(inv.getStack(40), 40));
+                offhandInventory.add(serializeItemStack(inv.getItem(40), 40));
                 data.add("offhand", offhandInventory);
 
-                data.addProperty("selected_slot", inv.selectedSlot);
+                data.addProperty("selected_slot", inv.selected);
 
                 Map<String, Integer> counts = flattenInventory(mainInventory, armorInventory, offhandInventory);
-                emitInventoryChangeEvent(counts, inv.selectedSlot);
+                emitInventoryChangeEvent(counts, inv.selected);
                 return null;
             }).get(2, TimeUnit.SECONDS);
         } catch (Exception e) {
@@ -1070,10 +1068,10 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             itemData.addProperty("count", 0);
         } else {
             // Safe off-thread access: ID and Count (primitives/registry lookup)
-            itemData.addProperty("id", Registries.ITEM.getId(stack.getItem()).toString());
+            itemData.addProperty("id", BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
             itemData.addProperty("count", stack.getCount());
-            itemData.addProperty("max_count", stack.getMaxCount());
-            itemData.addProperty("damage", stack.getDamage());
+            itemData.addProperty("max_count", stack.getMaxStackSize());
+            itemData.addProperty("damage", stack.getDamageValue());
             itemData.addProperty("max_damage", stack.getMaxDamage());
 
             // SKIP name translation to prevent deadlock/freeze on off-thread access
@@ -1226,20 +1224,20 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
     // ========== New Enhanced Handlers ==========
 
-    private void handleGetWorldInfo(MinecraftClient client, JsonObject data) {
-        if (client.world == null) {
+    private void handleGetWorldInfo(Minecraft client, JsonObject data) {
+        if (client.level == null) {
             data.addProperty("error", "World not available");
             return;
         }
 
-        data.addProperty("dimension", client.world.getRegistryKey().getValue().toString());
-        data.addProperty("time", client.world.getTime());
-        data.addProperty("difficulty", client.world.getDifficulty().getName());
-        data.addProperty("is_raining", client.world.isRaining());
-        data.addProperty("is_thundering", client.world.isThundering());
+        data.addProperty("dimension", client.level.dimension().identifier().toString());
+        data.addProperty("time", client.level.getGameTime());
+        data.addProperty("difficulty", client.level.getDifficulty().getSerializedName());
+        data.addProperty("is_raining", client.level.isRaining());
+        data.addProperty("is_thundering", client.level.isThundering());
 
-        if (client.world.getServer() != null) {
-            data.addProperty("server_brand", client.world.getServer().getServerModName());
+        if (client.level.getServer() != null) {
+            data.addProperty("server_brand", client.level.getServer().getServerModName());
         }
     }
 
@@ -1326,7 +1324,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     private void handleSetPathfindingSettings(IBaritone baritone, JsonObject params) {
         // This is now redundant with handleSettings but kept for backward compatibility
         // Iterate through all params and try to set them as Baritone settings
-        MinecraftClient.getInstance().execute(() -> {
+        Minecraft.getInstance().execute(() -> {
             for (Map.Entry<String, JsonElement> entry : params.entrySet()) {
                 String key = entry.getKey();
                 String val = entry.getValue().getAsString();
@@ -1389,7 +1387,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         }
     }
 
-    private void handleRetryCommand(JsonObject params, JsonObject data, MinecraftClient client, IBaritone baritone,
+    private void handleRetryCommand(JsonObject params, JsonObject data, Minecraft client, IBaritone baritone,
             Socket clientSocket) {
         String commandId = params.has("command_id") ? params.get("command_id").getAsString() : null;
         JsonObject originalParams = params.has("original_params") && params.get("original_params").isJsonObject()
@@ -1470,8 +1468,8 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         return BaritoneAPI.getProvider().getPrimaryBaritone();
     }
 
-    protected MinecraftClient getMinecraftClient() {
-        return MinecraftClient.getInstance();
+    protected Minecraft getMinecraftClient() {
+        return Minecraft.getInstance();
     }
 
     // Checking if this method is needed for testing

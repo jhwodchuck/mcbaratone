@@ -4,7 +4,6 @@ import baritone.api.IBaritone;
 import baritone.api.pathing.goals.GoalYLevel;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
@@ -12,7 +11,7 @@ import org.mockito.MockitoAnnotations;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-
+import net.minecraft.client.Minecraft;
 import org.junit.jupiter.api.Disabled;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -22,7 +21,7 @@ import static org.mockito.Mockito.*;
 class AdvancedGoalCommandHandlerTest {
 
     @Mock
-    private MinecraftClient mockClient;
+    private Minecraft mockClient;
 
     @Mock
     private IBaritone mockBaritone;

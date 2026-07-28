@@ -4,13 +4,13 @@ import baritone.api.IBaritone;
 import com.minecraftbot.baritone.BaritoneAPIBridge.IPlayerContext;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.Socket;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
+import net.minecraft.client.Minecraft;
 
 /**
  * RequestProcessor handles JSON request parsing and response formatting.
@@ -28,7 +28,7 @@ public class RequestProcessor {
     private final AtomicLong sequenceNumber = new AtomicLong(0);
     private final CommandDispatcher commandDispatcher;
     private final Supplier<IBaritone> baritoneSupplier;
-    private final Supplier<MinecraftClient> clientSupplier;
+    private final Supplier<Minecraft> clientSupplier;
     private final IPlayerContext playerContext;
     private final EventManager eventManager;
     
@@ -66,7 +66,7 @@ public class RequestProcessor {
     public RequestProcessor(
             CommandDispatcher commandDispatcher,
             Supplier<IBaritone> baritoneSupplier,
-            Supplier<MinecraftClient> clientSupplier,
+            Supplier<Minecraft> clientSupplier,
             IPlayerContext playerContext,
             EventManager eventManager,
             TickEventEmitter tickEventEmitter,
@@ -131,7 +131,7 @@ public class RequestProcessor {
                 return response;
             }
             
-            MinecraftClient client = clientSupplier.get();
+            Minecraft client = clientSupplier.get();
             IBaritone baritone = baritoneSupplier.get();
             
             // Baritone availability check

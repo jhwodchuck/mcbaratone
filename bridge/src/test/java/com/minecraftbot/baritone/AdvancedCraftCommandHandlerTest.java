@@ -2,11 +2,6 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
-import net.minecraft.registry.Registries;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
@@ -14,7 +9,10 @@ import org.mockito.MockitoAnnotations;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-
+import net.minecraft.client.Minecraft;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import org.junit.jupiter.api.Disabled;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -28,13 +26,13 @@ import static org.mockito.Mockito.*;
 class AdvancedCraftCommandHandlerTest {
 
     @Mock
-    private MinecraftClient mockClient;
+    private Minecraft mockClient;
 
     @Mock
     private IBaritone mockBaritone;
 
     @Mock
-    private PlayerInventory mockInventory;
+    private Inventory mockInventory;
 
     private AdvancedCraftCommandHandler handler;
 
@@ -43,7 +41,7 @@ class AdvancedCraftCommandHandlerTest {
         MockitoAnnotations.openMocks(this);
         handler = new AdvancedCraftCommandHandler();
 
-        when(mockClient.player).thenReturn(mock(net.minecraft.client.network.ClientPlayerEntity.class));
+        when(mockClient.player).thenReturn(mock(net.minecraft.client.player.LocalPlayer.class));
         when(mockClient.player.getInventory()).thenReturn(mockInventory);
     }
 
@@ -107,9 +105,9 @@ class AdvancedCraftCommandHandlerTest {
     void testMultiStepCraftingSequence() throws ExecutionException, InterruptedException {
         // Setup - Player has oak logs
         ItemStack oakLogStack = new ItemStack(Items.OAK_LOG, 4);
-        when(mockInventory.size()).thenReturn(46);
-        when(mockInventory.getStack(anyInt())).thenReturn(ItemStack.EMPTY);
-        when(mockInventory.getStack(0)).thenReturn(oakLogStack);
+        when(mockInventory.getContainerSize()).thenReturn(46);
+        when(mockInventory.getItem(anyInt())).thenReturn(ItemStack.EMPTY);
+        when(mockInventory.getItem(0)).thenReturn(oakLogStack);
 
         JsonObject params = new JsonObject();
         params.addProperty("action", "craft_sequence");
@@ -129,8 +127,8 @@ class AdvancedCraftCommandHandlerTest {
     @Test
     void testMultiStepCraftingSequence_WithInsufficientMaterials() throws ExecutionException, InterruptedException {
         // Setup - Player has no materials
-        when(mockInventory.size()).thenReturn(46);
-        when(mockInventory.getStack(anyInt())).thenReturn(ItemStack.EMPTY);
+        when(mockInventory.getContainerSize()).thenReturn(46);
+        when(mockInventory.getItem(anyInt())).thenReturn(ItemStack.EMPTY);
 
         JsonObject params = new JsonObject();
         params.addProperty("action", "craft_sequence");
@@ -151,9 +149,9 @@ class AdvancedCraftCommandHandlerTest {
     void testWorkbenchVsInventoryCrafting_WorkbenchRequired() throws ExecutionException, InterruptedException {
         // Setup - Player has materials for furnace (requires workbench)
         ItemStack cobbleStack = new ItemStack(Items.COBBLESTONE, 8);
-        when(mockInventory.size()).thenReturn(46);
-        when(mockInventory.getStack(anyInt())).thenReturn(ItemStack.EMPTY);
-        when(mockInventory.getStack(0)).thenReturn(cobbleStack);
+        when(mockInventory.getContainerSize()).thenReturn(46);
+        when(mockInventory.getItem(anyInt())).thenReturn(ItemStack.EMPTY);
+        when(mockInventory.getItem(0)).thenReturn(cobbleStack);
 
         JsonObject params = new JsonObject();
         params.addProperty("action", "analyze_crafting_method");
@@ -173,9 +171,9 @@ class AdvancedCraftCommandHandlerTest {
     void testWorkbenchVsInventoryCrafting_InventoryOnly() throws ExecutionException, InterruptedException {
         // Setup - Player has materials for sticks (can craft in inventory)
         ItemStack plankStack = new ItemStack(Items.OAK_PLANKS, 2);
-        when(mockInventory.size()).thenReturn(46);
-        when(mockInventory.getStack(anyInt())).thenReturn(ItemStack.EMPTY);
-        when(mockInventory.getStack(0)).thenReturn(plankStack);
+        when(mockInventory.getContainerSize()).thenReturn(46);
+        when(mockInventory.getItem(anyInt())).thenReturn(ItemStack.EMPTY);
+        when(mockInventory.getItem(0)).thenReturn(plankStack);
 
         JsonObject params = new JsonObject();
         params.addProperty("action", "analyze_crafting_method");
@@ -195,9 +193,9 @@ class AdvancedCraftCommandHandlerTest {
     void testErrorHandling_MissingIngredients() throws ExecutionException, InterruptedException {
         // Setup - Player has insufficient materials
         ItemStack plankStack = new ItemStack(Items.OAK_PLANKS, 1); // Need 3 for pickaxe
-        when(mockInventory.size()).thenReturn(46);
-        when(mockInventory.getStack(anyInt())).thenReturn(ItemStack.EMPTY);
-        when(mockInventory.getStack(0)).thenReturn(plankStack);
+        when(mockInventory.getContainerSize()).thenReturn(46);
+        when(mockInventory.getItem(anyInt())).thenReturn(ItemStack.EMPTY);
+        when(mockInventory.getItem(0)).thenReturn(plankStack);
 
         JsonObject params = new JsonObject();
         params.addProperty("action", "craft");
@@ -218,9 +216,9 @@ class AdvancedCraftCommandHandlerTest {
     void testErrorHandling_NoWorkbenchAvailable() throws ExecutionException, InterruptedException {
         // Setup - Player has materials for furnace but no workbench available
         ItemStack cobbleStack = new ItemStack(Items.COBBLESTONE, 8);
-        when(mockInventory.size()).thenReturn(46);
-        when(mockInventory.getStack(anyInt())).thenReturn(ItemStack.EMPTY);
-        when(mockInventory.getStack(0)).thenReturn(cobbleStack);
+        when(mockInventory.getContainerSize()).thenReturn(46);
+        when(mockInventory.getItem(anyInt())).thenReturn(ItemStack.EMPTY);
+        when(mockInventory.getItem(0)).thenReturn(cobbleStack);
 
         JsonObject params = new JsonObject();
         params.addProperty("action", "craft");
@@ -257,9 +255,9 @@ class AdvancedCraftCommandHandlerTest {
     void testBulkCrafting_WithEfficiency() throws ExecutionException, InterruptedException {
         // Setup - Player has lots of materials
         ItemStack logStack = new ItemStack(Items.OAK_LOG, 64);
-        when(mockInventory.size()).thenReturn(46);
-        when(mockInventory.getStack(anyInt())).thenReturn(ItemStack.EMPTY);
-        when(mockInventory.getStack(0)).thenReturn(logStack);
+        when(mockInventory.getContainerSize()).thenReturn(46);
+        when(mockInventory.getItem(anyInt())).thenReturn(ItemStack.EMPTY);
+        when(mockInventory.getItem(0)).thenReturn(logStack);
 
         JsonObject params = new JsonObject();
         params.addProperty("action", "bulk_craft");
@@ -394,9 +392,9 @@ class AdvancedCraftCommandHandlerTest {
         // Missing cobblestone but has other materials
 
         ItemStack woodStack = new ItemStack(Items.OAK_PLANKS, 8);
-        when(mockInventory.size()).thenReturn(46);
-        when(mockInventory.getStack(anyInt())).thenReturn(ItemStack.EMPTY);
-        when(mockInventory.getStack(0)).thenReturn(woodStack);
+        when(mockInventory.getContainerSize()).thenReturn(46);
+        when(mockInventory.getItem(anyInt())).thenReturn(ItemStack.EMPTY);
+        when(mockInventory.getItem(0)).thenReturn(woodStack);
 
         // Execute
         CompletableFuture<CommandResult> future = handler.handle(params, mockClient, mockBaritone, null);

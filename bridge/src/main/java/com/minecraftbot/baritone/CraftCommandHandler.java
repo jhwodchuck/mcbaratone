@@ -2,26 +2,25 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.screen.ingame.CraftingScreen;
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.item.ItemStack;
-import net.minecraft.registry.Registries;
-import net.minecraft.screen.slot.SlotActionType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.Socket;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.ContainerInput;
+import net.minecraft.world.item.ItemStack;
 
 public class CraftCommandHandler implements CommandHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(CraftCommandHandler.class);
 
     @Override
-    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
-        if (client.player == null || client.interactionManager == null) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
+        if (client.player == null || client.gameMode == null) {
             return CompletableFuture.completedFuture(CommandResult.error("Player not available"));
         }
         
@@ -61,13 +60,13 @@ public class CraftCommandHandler implements CommandHandler {
         }
         
         // Check if we need a crafting table
-        boolean hasCraftingTable = client.player.currentScreenHandler instanceof net.minecraft.screen.CraftingScreenHandler;
+        boolean hasCraftingTable = client.player.containerMenu instanceof net.minecraft.world.inventory.CraftingMenu;
         if (recipe.requiresTable && !hasCraftingTable) {
             return CompletableFuture.completedFuture(CommandResult.error("Recipe requires crafting table but none is open"));
         }
         
         int crafted = 0;
-        int syncId = client.player.currentScreenHandler.syncId;
+        int syncId = client.player.containerMenu.containerId;
         JsonObject data = new JsonObject();
         
         // Craft the requested count
@@ -94,7 +93,7 @@ public class CraftCommandHandler implements CommandHandler {
                 
                 // Click output slot (slot 0) to craft
                 client.execute(() -> {
-                    client.interactionManager.clickSlot(syncId, 0, 0, SlotActionType.QUICK_MOVE, client.player);
+                    client.gameMode.handleContainerInput(syncId, 0, 0, ContainerInput.QUICK_MOVE, client.player);
                 });
                 Thread.sleep(150); // Increased delay
                 
@@ -449,7 +448,7 @@ public class CraftCommandHandler implements CommandHandler {
         }
     }
     
-    private String dumpIngredients(MinecraftClient client, CraftRecipe recipe) {
+    private String dumpIngredients(Minecraft client, CraftRecipe recipe) {
         StringBuilder sb = new StringBuilder();
         Map<String, Integer> required = new java.util.HashMap<>();
         for (String s : recipe.grid) {
@@ -463,7 +462,7 @@ public class CraftCommandHandler implements CommandHandler {
         return sb.toString().trim();
     }
 
-    private boolean hasIngredients(MinecraftClient client, CraftRecipe recipe) {
+    private boolean hasIngredients(Minecraft client, CraftRecipe recipe) {
         Map<String, Integer> required = new java.util.HashMap<>();
         for (String s : recipe.grid) {
             if (s != null && !s.isEmpty()) {
@@ -482,15 +481,15 @@ public class CraftCommandHandler implements CommandHandler {
         return true;
     }
     
-    private int countItemInInventory(MinecraftClient client, String itemId) {
-        PlayerInventory inv = client.player.getInventory();
+    private int countItemInInventory(Minecraft client, String itemId) {
+        Inventory inv = client.player.getInventory();
         int count = 0;
         
-        for (int i = 0; i < inv.size(); i++) {
-            ItemStack stack = inv.getStack(i);
+        for (int i = 0; i < inv.getContainerSize(); i++) {
+            ItemStack stack = inv.getItem(i);
             if (stack.isEmpty()) continue;
             
-            String stackId = Registries.ITEM.getId(stack.getItem()).toString();
+            String stackId = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
             
             if (itemId.equals("any_log")) {
                 if (stackId.endsWith("_log") || stackId.contains("_wood")) {
@@ -511,11 +510,11 @@ public class CraftCommandHandler implements CommandHandler {
         return count;
     }
     
-    private int findItemSlot(MinecraftClient client, String itemId, int syncId, boolean isTable) {
+    private int findItemSlot(Minecraft client, String itemId, int syncId, boolean isTable) {
         // ALWAYS check cursor stack first during multi-step placement
-        ItemStack cursor = client.player.currentScreenHandler.getCursorStack();
+        ItemStack cursor = client.player.containerMenu.getCarried();
         if (!cursor.isEmpty()) {
-            String cursorId = Registries.ITEM.getId(cursor.getItem()).toString();
+            String cursorId = BuiltInRegistries.ITEM.getKey(cursor.getItem()).toString();
             if (itemId.equals(cursorId) || 
                (itemId.equals("any_log") && (cursorId.endsWith("_log") || cursorId.contains("_wood"))) ||
                (itemId.equals("any_planks") && cursorId.endsWith("_planks"))) {
@@ -524,14 +523,14 @@ public class CraftCommandHandler implements CommandHandler {
             }
         }
 
-        PlayerInventory inv = client.player.getInventory();
+        Inventory inv = client.player.getInventory();
         LOGGER.info("findItemSlot: Searching for {}", itemId);
         
         for (int i = 0; i < 36; i++) {
-            ItemStack stack = inv.getStack(i);
+            ItemStack stack = inv.getItem(i);
             if (stack.isEmpty()) continue;
             
-            String stackId = Registries.ITEM.getId(stack.getItem()).toString();
+            String stackId = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
             
             if (itemId.equals("any_log")) {
                 if (stackId.endsWith("_log") || stackId.contains("_wood")) {
@@ -572,20 +571,20 @@ public class CraftCommandHandler implements CommandHandler {
         }
     }
     
-    private void clearCraftingGrid(MinecraftClient client, int syncId, boolean isTable) {
+    private void clearCraftingGrid(Minecraft client, int syncId, boolean isTable) {
         int gridSize = isTable ? 9 : 4;
         int gridStart = 1; // Slot 0 is output, grid starts at 1
         
         for (int i = gridStart; i <= gridSize; i++) {
             final int slot = i;
             client.execute(() -> {
-                client.interactionManager.clickSlot(syncId, slot, 0, SlotActionType.QUICK_MOVE, client.player);
+                client.gameMode.handleContainerInput(syncId, slot, 0, ContainerInput.QUICK_MOVE, client.player);
             });
             try { Thread.sleep(30); } catch (InterruptedException e) {}
         }
     }
     
-    private String placeIngredients(MinecraftClient client, int syncId, CraftRecipe recipe, boolean isTable) {
+    private String placeIngredients(Minecraft client, int syncId, CraftRecipe recipe, boolean isTable) {
         int gridStart = 1; // Output is slot 0
         // isTable is now passed in based on actual screen type, not recipe.requiresTable
         
@@ -624,7 +623,7 @@ public class CraftCommandHandler implements CommandHandler {
             if (sourceSlot == -2) {
                 // Already in cursor! Just place one.
                 client.execute(() -> {
-                    client.interactionManager.clickSlot(syncId, dst, 1, SlotActionType.PICKUP, client.player); // Right click = place 1
+                    client.gameMode.handleContainerInput(syncId, dst, 1, ContainerInput.PICKUP, client.player); // Right click = place 1
                 });
                 try { Thread.sleep(80); } catch (InterruptedException e) {}
             } else {
@@ -637,21 +636,21 @@ public class CraftCommandHandler implements CommandHandler {
                 
                 // 1. Pickup All
                 client.execute(() -> {
-                    client.interactionManager.clickSlot(syncId, src, 0, SlotActionType.PICKUP, client.player); // Left click = pickup all
+                    client.gameMode.handleContainerInput(syncId, src, 0, ContainerInput.PICKUP, client.player); // Left click = pickup all
                 });
                 try { Thread.sleep(60); } catch (InterruptedException e) {}
                 
                 // 2. Place One
                 client.execute(() -> {
-                    client.interactionManager.clickSlot(syncId, dst, 1, SlotActionType.PICKUP, client.player); // Right click = place 1
+                    client.gameMode.handleContainerInput(syncId, dst, 1, ContainerInput.PICKUP, client.player); // Right click = place 1
                 });
                 try { Thread.sleep(60); } catch (InterruptedException e) {}
                 
                 // 3. Return Remainder (if any)
                 client.execute(() -> {
-                    ItemStack cursor = client.player.currentScreenHandler.getCursorStack();
+                    ItemStack cursor = client.player.containerMenu.getCarried();
                     if (!cursor.isEmpty()) {
-                        client.interactionManager.clickSlot(syncId, src, 0, SlotActionType.PICKUP, client.player); // Left click = drop all
+                        client.gameMode.handleContainerInput(syncId, src, 0, ContainerInput.PICKUP, client.player); // Left click = drop all
                     }
                 });
                 try { Thread.sleep(60); } catch (InterruptedException e) {}

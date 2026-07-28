@@ -4,13 +4,6 @@ import baritone.api.IBaritone;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.item.ItemStack;
-import net.minecraft.registry.Registries;
-import net.minecraft.screen.CraftingScreenHandler;
-import net.minecraft.screen.PlayerScreenHandler;
-import net.minecraft.screen.ScreenHandler;
-import net.minecraft.screen.slot.SlotActionType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,6 +12,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.ContainerInput;
+import net.minecraft.world.inventory.CraftingMenu;
+import net.minecraft.world.inventory.InventoryMenu;
+import net.minecraft.world.item.ItemStack;
 
 /**
  * Bridge primitive that executes a full recipe click choreography in-process.
@@ -79,8 +79,8 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
 
     /** Mutable state for one non-blocking recipe command. */
     private static class RecipeExecution {
-        final MinecraftClient client;
-        final ScreenHandler handler;
+        final Minecraft client;
+        final AbstractContainerMenu handler;
         final int syncId;
         final int gridStart;
         final int gridEnd;
@@ -96,13 +96,13 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
         int collectionPolls;
         int inventoryBefore;
 
-        RecipeExecution(MinecraftClient client, ScreenHandler handler,
+        RecipeExecution(Minecraft client, AbstractContainerMenu handler,
                         int gridEnd, int invStart, List<Placement> placements,
                         String expectedOutput, int expectedCount, int crafts,
                         CompletableFuture<CommandResult> future) {
             this.client = client;
             this.handler = handler;
-            this.syncId = handler.syncId;
+            this.syncId = handler.containerId;
             this.gridStart = 1;
             this.gridEnd = gridEnd;
             this.invStart = invStart;
@@ -126,7 +126,7 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
 
     @Override
     public CompletableFuture<CommandResult> execute(
-            JsonObject params, MinecraftClient client,
+            JsonObject params, Minecraft client,
             IBaritone baritone, Socket clientSocket) {
 
         // ---- Parse parameters ----
@@ -177,20 +177,20 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
         CompletableFuture<CommandResult> result = new CompletableFuture<>();
         client.execute(() -> {
             try {
-                if (client.player == null || client.interactionManager == null) {
+                if (client.player == null || client.gameMode == null) {
                     result.complete(CommandResult.error(
                             "Player or interaction manager not available"));
                     return;
                 }
 
-                ScreenHandler handler = client.player.currentScreenHandler;
+                AbstractContainerMenu handler = client.player.containerMenu;
                 if (handler == null) {
                     result.complete(CommandResult.error("No screen handler open"));
                     return;
                 }
 
-                boolean isTable = handler instanceof CraftingScreenHandler;
-                boolean isPlayer = handler instanceof PlayerScreenHandler;
+                boolean isTable = handler instanceof CraftingMenu;
+                boolean isPlayer = handler instanceof InventoryMenu;
                 if (!isTable && !isPlayer) {
                     result.complete(CommandResult.error(
                             "Expected crafting screen, got "
@@ -228,10 +228,10 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
         }
 
         for (int slot = execution.gridStart; slot < execution.gridEnd; slot++) {
-            ItemStack gridStack = execution.handler.getSlot(slot).getStack();
+            ItemStack gridStack = execution.handler.getSlot(slot).getItem();
             if (!gridStack.isEmpty()) {
-                execution.client.interactionManager.clickSlot(
-                        execution.syncId, slot, 0, SlotActionType.QUICK_MOVE,
+                execution.client.gameMode.handleContainerInput(
+                        execution.syncId, slot, 0, ContainerInput.QUICK_MOVE,
                         execution.client.player);
             }
         }
@@ -249,14 +249,14 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
                 return;
             }
 
-            execution.client.interactionManager.clickSlot(
-                    execution.syncId, sourceSlot, 0, SlotActionType.PICKUP,
+            execution.client.gameMode.handleContainerInput(
+                    execution.syncId, sourceSlot, 0, ContainerInput.PICKUP,
                     execution.client.player);
-            execution.client.interactionManager.clickSlot(
-                    execution.syncId, placement.gridSlot, 1, SlotActionType.PICKUP,
+            execution.client.gameMode.handleContainerInput(
+                    execution.syncId, placement.gridSlot, 1, ContainerInput.PICKUP,
                     execution.client.player);
-            execution.client.interactionManager.clickSlot(
-                    execution.syncId, sourceSlot, 0, SlotActionType.PICKUP,
+            execution.client.gameMode.handleContainerInput(
+                    execution.syncId, sourceSlot, 0, ContainerInput.PICKUP,
                     execution.client.player);
         }
 
@@ -274,10 +274,10 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
             return;
         }
 
-        ItemStack outputStack = execution.handler.getSlot(0).getStack();
+        ItemStack outputStack = execution.handler.getSlot(0).getItem();
         String actualOutputId = outputStack.isEmpty()
                 ? "minecraft:air"
-                : Registries.ITEM.getId(outputStack.getItem()).toString();
+                : BuiltInRegistries.ITEM.getKey(outputStack.getItem()).toString();
         int actualOutputCount = outputStack.isEmpty() ? 0 : outputStack.getCount();
         boolean outputReady = !outputStack.isEmpty()
                 && (execution.expectedOutput.isEmpty()
@@ -285,8 +285,8 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
                         && actualOutputCount >= execution.expectedCount));
 
         if (outputReady && execution.outputPolls >= OUTPUT_SETTLE_POLL_MIN) {
-            execution.client.interactionManager.clickSlot(
-                    execution.syncId, 0, 0, SlotActionType.QUICK_MOVE,
+            execution.client.gameMode.handleContainerInput(
+                    execution.syncId, 0, 0, ContainerInput.QUICK_MOVE,
                     execution.client.player);
             execution.collectionPolls = 0;
             scheduleOnMainThread(execution, () -> verifyCollection(execution),
@@ -328,7 +328,7 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
             return;
         }
 
-        ItemStack outputStack = execution.handler.getSlot(0).getStack();
+        ItemStack outputStack = execution.handler.getSlot(0).getItem();
         int expectedInventoryCount = execution.inventoryBefore
                 + (execution.craftsCompleted + 1) * execution.expectedCount;
         int actualInventoryCount = countInventoryItem(
@@ -387,15 +387,15 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
         execution.future.complete(CommandResult.success(data));
     }
 
-    private int countInventoryItem(MinecraftClient client, String itemId) {
+    private int countInventoryItem(Minecraft client, String itemId) {
         if (client.player == null || itemId == null || itemId.isEmpty()) {
             return 0;
         }
         int count = 0;
-        for (int i = 0; i < client.player.getInventory().size(); i++) {
-            ItemStack stack = client.player.getInventory().getStack(i);
+        for (int i = 0; i < client.player.getInventory().getContainerSize(); i++) {
+            ItemStack stack = client.player.getInventory().getItem(i);
             if (stack.isEmpty()) continue;
-            String stackId = Registries.ITEM.getId(stack.getItem()).toString();
+            String stackId = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
             if (itemId.equals(stackId)) {
                 count += stack.getCount();
             }
@@ -405,9 +405,9 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
 
     private boolean screenStillOpen(RecipeExecution execution) {
         return execution.client.player != null
-                && execution.client.interactionManager != null
-                && execution.client.player.currentScreenHandler == execution.handler
-                && execution.handler.syncId == execution.syncId;
+                && execution.client.gameMode != null
+                && execution.client.player.containerMenu == execution.handler
+                && execution.handler.containerId == execution.syncId;
     }
 
     /** Run a later step on the Minecraft main thread without blocking it. */
@@ -461,13 +461,13 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
      * Find the first inventory slot in [startSlot, endSlot) matching the selector.
      * Returns -1 if not found.
      */
-    private static int findSource(ScreenHandler handler, String selector,
+    private static int findSource(AbstractContainerMenu handler, String selector,
                                    int startSlot, int endSlot) {
         for (int i = startSlot; i < endSlot; i++) {
-            ItemStack stack = handler.getSlot(i).getStack();
+            ItemStack stack = handler.getSlot(i).getItem();
             if (stack.isEmpty()) continue;
 
-            String itemId = Registries.ITEM.getId(stack.getItem()).toString();
+            String itemId = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
             if (matchesSelector(selector, itemId)) {
                 return i;
             }

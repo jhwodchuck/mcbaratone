@@ -2,7 +2,6 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -14,6 +13,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.atomic.AtomicLong;
+import net.minecraft.client.Minecraft;
 import java.util.concurrent.TimeUnit;
 import java.util.Comparator;
 
@@ -137,7 +137,7 @@ public class CommandDispatcher {
      * @return CommandResult from command execution
      */
     public CommandResult dispatch(String command, JsonObject params) {
-        MinecraftClient client = MinecraftClient.getInstance();
+        Minecraft client = Minecraft.getInstance();
         IBaritone baritoneInstance = null;
         
         // Try to get Baritone instance
@@ -166,7 +166,7 @@ public class CommandDispatcher {
      * @param baritone Baritone API instance
      * @return CommandResult containing the execution outcome
      */
-    public CommandResult dispatchCommand(JsonObject request, Socket clientSocket, MinecraftClient client, IBaritone baritone) {
+    public CommandResult dispatchCommand(JsonObject request, Socket clientSocket, Minecraft client, IBaritone baritone) {
         long startTime = System.currentTimeMillis();
 
         try {
@@ -346,7 +346,7 @@ public class CommandDispatcher {
      * @param baritone Baritone API instance
      * @return CommandResult from command execution
      */
-    private CommandResult executeCommand(PrioritizedCommand pCmd, MinecraftClient client, IBaritone baritone) {
+    private CommandResult executeCommand(PrioritizedCommand pCmd, Minecraft client, IBaritone baritone) {
         JsonObject request = pCmd.request;
         Socket clientSocket = pCmd.clientSocket;
         String command = request.get("command").getAsString();
@@ -462,7 +462,7 @@ public class CommandDispatcher {
      * @return CommandResult from handler execution
      */
     private CommandResult executeWithTimeoutAndRetry(CommandHandler handler, JsonObject params,
-            MinecraftClient client, IBaritone baritone, Socket clientSocket, long startTime, String commandName) {
+            Minecraft client, IBaritone baritone, Socket clientSocket, long startTime, String commandName) {
 
         // Execute with retry logic
         return retryHandler.executeWithRetry(() -> {

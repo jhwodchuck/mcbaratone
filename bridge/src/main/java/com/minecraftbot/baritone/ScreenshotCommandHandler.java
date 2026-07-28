@@ -2,11 +2,7 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gl.Framebuffer;
-import net.minecraft.client.texture.NativeImage;
-import net.minecraft.client.util.ScreenshotRecorder;
-import net.minecraft.entity.player.PlayerEntity;
+import com.mojang.blaze3d.pipeline.RenderTarget;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -16,6 +12,9 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.Screenshot;
+import net.minecraft.world.entity.player.Player;
 import java.util.Set;
 
 /**
@@ -38,7 +37,7 @@ public class ScreenshotCommandHandler extends AsyncCommandHandler {
     }
 
     @Override
-    public CompletableFuture<CommandResult> execute(JsonObject params, MinecraftClient client, IBaritone baritone,
+    public CompletableFuture<CommandResult> execute(JsonObject params, Minecraft client, IBaritone baritone,
             Socket clientSocket) {
         // Validate parameters
         CommandResult validation = validateScreenshotParameters(params);
@@ -53,12 +52,12 @@ public class ScreenshotCommandHandler extends AsyncCommandHandler {
 
         executeOnMainThread(client, () -> {
             try {
-                if (client.player == null || client.world == null) {
+                if (client.player == null || client.level == null) {
                     future.complete(CommandResult.error("Player or world not available"));
                     return;
                 }
 
-                Framebuffer framebuffer = client.getFramebuffer();
+                RenderTarget framebuffer = client.gameRenderer.mainRenderTarget();
                 if (framebuffer == null) {
                     future.complete(CommandResult.error("No framebuffer available"));
                     return;
@@ -68,8 +67,8 @@ public class ScreenshotCommandHandler extends AsyncCommandHandler {
                 // <runDirectory>/screenshots/<fileName>; the recorder writes on an IO
                 // worker and invokes the message callback when the attempt finishes,
                 // so completion (not this call) is when the file can be verified.
-                Path expected = client.runDirectory.toPath().resolve(SCREENSHOT_DIR).resolve(fileName);
-                ScreenshotRecorder.saveScreenshot(client.runDirectory, fileName, framebuffer, 1, msg -> {
+                Path expected = client.gameDirectory.toPath().resolve(SCREENSHOT_DIR).resolve(fileName);
+                Screenshot.grab(client.gameDirectory, fileName, framebuffer, 1, msg -> {
                     try {
                         JsonObject data = new JsonObject();
                         boolean exists = Files.exists(expected);
@@ -169,17 +168,17 @@ public class ScreenshotCommandHandler extends AsyncCommandHandler {
     /**
      * Creates metadata JSON object.
      */
-    private JsonObject createMetadata(MinecraftClient client, ScreenshotOptions options) {
+    private JsonObject createMetadata(Minecraft client, ScreenshotOptions options) {
         JsonObject metadata = new JsonObject();
 
         // Timestamp
         metadata.addProperty("timestamp", LocalDateTime.now().toString());
 
         // Player information
-        PlayerEntity player = client.player;
+        Player player = client.player;
         if (player != null) {
             metadata.addProperty("player_name", player.getName().getString());
-            metadata.addProperty("player_uuid", player.getUuid().toString());
+            metadata.addProperty("player_uuid", player.getUUID().toString());
 
             // Position
             JsonObject position = new JsonObject();
@@ -191,14 +190,14 @@ public class ScreenshotCommandHandler extends AsyncCommandHandler {
             // Health and food
             metadata.addProperty("health", player.getHealth());
             metadata.addProperty("max_health", player.getMaxHealth());
-            metadata.addProperty("hunger", player.getHungerManager().getFoodLevel());
+            metadata.addProperty("hunger", player.getFoodData().getFoodLevel());
         }
 
         // World information
-        if (client.world != null) {
-            metadata.addProperty("dimension", client.world.getRegistryKey().getValue().toString());
-            metadata.addProperty("time", client.world.getTime());
-            metadata.addProperty("difficulty", client.world.getDifficulty().getName());
+        if (client.level != null) {
+            metadata.addProperty("dimension", client.level.dimension().identifier().toString());
+            metadata.addProperty("time", client.level.getGameTime());
+            metadata.addProperty("difficulty", client.level.getDifficulty().getSerializedName());
         }
 
         // Game version and mod info

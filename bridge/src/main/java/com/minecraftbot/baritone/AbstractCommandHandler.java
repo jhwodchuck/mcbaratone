@@ -2,9 +2,9 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
 
 /**
  * Abstract base class for SYNCHRONOUS command handlers.
@@ -14,7 +14,7 @@ import java.util.concurrent.CompletableFuture;
 public abstract class AbstractCommandHandler extends AbstractBaseCommandHandler {
 
     @Override
-    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         try {
             // Validate common requirements
             if (requiresPlayer() && client.player == null) {
@@ -44,5 +44,5 @@ public abstract class AbstractCommandHandler extends AbstractBaseCommandHandler 
      * @param clientSocket The client socket
      * @return The command result
      */
-    protected abstract CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket);
+    protected abstract CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket);
 }

@@ -3,19 +3,18 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.item.ItemStack;
-import net.minecraft.registry.Registries;
-
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.item.ItemStack;
 
 public class GetInventoryCommandHandler implements CommandHandler {
 
     @Override
-    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         CompletableFuture<CommandResult> result = new CompletableFuture<>();
 
         if (client == null) {
@@ -31,26 +30,26 @@ public class GetInventoryCommandHandler implements CommandHandler {
                         return;
                     }
 
-                    PlayerInventory inv = client.player.getInventory();
+                    Inventory inv = client.player.getInventory();
 
                     JsonArray mainInventory = new JsonArray();
                     for (int i = 0; i < 36; i++) {
-                        mainInventory.add(serializeItemStack(inv.getStack(i), i));
+                        mainInventory.add(serializeItemStack(inv.getItem(i), i));
                     }
 
                     JsonArray armorInventory = new JsonArray();
                     for (int i = 0; i < 4; i++) {
-                        armorInventory.add(serializeItemStack(inv.getStack(36 + i), 36 + i));
+                        armorInventory.add(serializeItemStack(inv.getItem(36 + i), 36 + i));
                     }
 
                     JsonArray offhandInventory = new JsonArray();
-                    offhandInventory.add(serializeItemStack(inv.getStack(40), 40));
+                    offhandInventory.add(serializeItemStack(inv.getItem(40), 40));
 
                     JsonObject data = new JsonObject();
                     data.add("inventory", mainInventory);
                     data.add("armor", armorInventory);
                     data.add("offhand", offhandInventory);
-                    data.addProperty("selected_slot", inv.selectedSlot);
+                    data.addProperty("selected_slot", inv.selected);
 
                     result.complete(CommandResult.success(data));
                 } catch (Exception e) {
@@ -75,10 +74,10 @@ public class GetInventoryCommandHandler implements CommandHandler {
             itemData.addProperty("id", "minecraft:air");
             itemData.addProperty("count", 0);
         } else {
-            itemData.addProperty("id", Registries.ITEM.getId(stack.getItem()).toString());
+            itemData.addProperty("id", BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
             itemData.addProperty("count", stack.getCount());
-            itemData.addProperty("max_count", stack.getMaxCount());
-            itemData.addProperty("damage", stack.getDamage());
+            itemData.addProperty("max_count", stack.getMaxStackSize());
+            itemData.addProperty("damage", stack.getDamageValue());
             itemData.addProperty("name", stack.getItem().toString());
         }
         return itemData;

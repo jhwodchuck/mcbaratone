@@ -2,10 +2,7 @@ package com.minecraftbot.baritone;
 
 import com.google.gson.JsonObject;
 import net.fabricmc.api.ModInitializer;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.client.world.ClientWorld;
-import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.client.Minecraft;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.AfterEach;
@@ -23,6 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+
 import baritone.api.BaritoneAPI;
 import baritone.BaritoneProvider;
 import baritone.api.IBaritone;
@@ -44,7 +42,7 @@ import baritone.api.IBaritone;
 public class BaritoneAPIBridgeTest {
 
     @Mock
-    private MinecraftClient mockClient;
+    private Minecraft mockClient;
 
     @Mock
     private BaritoneAPIBridge.IPlayerContext mockContext;
@@ -56,7 +54,7 @@ public class BaritoneAPIBridgeTest {
     private Socket mockSocket;
 
     private BaritoneAPIBridge bridge;
-    private MockedStatic<MinecraftClient> minecraftClientMock;
+    private MockedStatic<Minecraft> minecraftClientMock;
     private MockedStatic<CommandHandlerFactory> commandHandlerFactoryMock;
     private ExecutorService testExecutor;
 
@@ -66,8 +64,8 @@ public class BaritoneAPIBridgeTest {
         testExecutor = Executors.newCachedThreadPool();
 
         // Setup static mocks
-        minecraftClientMock = mockStatic(MinecraftClient.class);
-        minecraftClientMock.when(MinecraftClient::getInstance).thenReturn(mockClient);
+        minecraftClientMock = mockStatic(Minecraft.class);
+        minecraftClientMock.when(Minecraft::getInstance).thenReturn(mockClient);
 
         // Initialize bridge with spy
         bridge = spy(new BaritoneAPIBridge());
@@ -99,7 +97,7 @@ public class BaritoneAPIBridgeTest {
         when(mockContext.getSaturationLevel()).thenReturn(5.0f);
         when(mockContext.getDimension()).thenReturn("minecraft:overworld");
         try {
-            when(mockContext.getBlockPos()).thenReturn(new net.minecraft.util.math.BlockPos(0, 64, 0));
+            when(mockContext.getBlockPos()).thenReturn(new net.minecraft.core.BlockPos(0, 64, 0));
         } catch (NoClassDefFoundError e) {
             // BlockPos might not be available in some environments, but we mock it anyway
         }
@@ -160,8 +158,8 @@ public class BaritoneAPIBridgeTest {
         java.io.File tempDir = java.nio.file.Files.createTempDirectory("baritone_test").toFile();
         tempDir.deleteOnExit();
 
-        // Use reflection to set the runDirectory field on mockClient
-        java.lang.reflect.Field runDirField = net.minecraft.client.MinecraftClient.class.getDeclaredField("runDirectory");
+        // Use reflection to set the gameDirectory field on mockClient.
+        java.lang.reflect.Field runDirField = net.minecraft.client.Minecraft.class.getDeclaredField("gameDirectory");
         runDirField.setAccessible(true);
         runDirField.set(mockClient, tempDir);
 
@@ -225,7 +223,7 @@ public class BaritoneAPIBridgeTest {
         when(mockContext.getZ()).thenReturn(200.0);
         when(mockContext.getYaw()).thenReturn(45.0f);
         when(mockContext.getPitch()).thenReturn(30.0f);
-        when(mockContext.getBlockPos()).thenReturn(new net.minecraft.util.math.BlockPos(100, 64, 200));
+        when(mockContext.getBlockPos()).thenReturn(new net.minecraft.core.BlockPos(100, 64, 200));
         when(mockContext.getHealth()).thenReturn(20.0f);
         when(mockContext.getMaxHealth()).thenReturn(20.0f);
 

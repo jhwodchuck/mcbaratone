@@ -2,18 +2,17 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.block.BlockState;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.ActionResult;
-import net.minecraft.util.Hand;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.Vec3d;
-
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * Simple block placement handler that avoids any packet-level manipulation.
@@ -22,8 +21,8 @@ import java.util.concurrent.ExecutionException;
 public class PlaceBlockCommandHandler implements CommandHandler {
 
     @Override
-    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
-        if (client.player == null || client.world == null || client.interactionManager == null) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
+        if (client.player == null || client.level == null || client.gameMode == null) {
             return CompletableFuture.completedFuture(
                 CommandResult.error("Player, world, or interaction manager not available"));
         }
@@ -42,20 +41,20 @@ public class PlaceBlockCommandHandler implements CommandHandler {
             BlockPos targetPos = new BlockPos(x, y, z);
             
             CommandResult result = client.submit(() -> {
-                BlockState currentTargetState = client.world.getBlockState(targetPos);
-                if (!currentTargetState.isReplaceable()) {
+                BlockState currentTargetState = client.level.getBlockState(targetPos);
+                if (!currentTargetState.canBeReplaced()) {
                     return CommandResult.error("Target position is already occupied: " + targetPos);
                 }
 
                 // Find a solid neighbor to place against
                 Direction placeFace = Direction.UP;
-                BlockPos placeAgainst = targetPos.down();
+                BlockPos placeAgainst = targetPos.below();
                 boolean foundNeighbor = false;
                 
                 for (Direction dir : Direction.values()) {
-                    BlockPos adjacent = targetPos.offset(dir);
-                    BlockState adjacentState = client.world.getBlockState(adjacent);
-                    if (adjacentState.isReplaceable()) continue;
+                    BlockPos adjacent = targetPos.relative(dir);
+                    BlockState adjacentState = client.level.getBlockState(adjacent);
+                    if (adjacentState.canBeReplaced()) continue;
 
                     placeAgainst = adjacent;
                     placeFace = dir.getOpposite();
@@ -63,7 +62,7 @@ public class PlaceBlockCommandHandler implements CommandHandler {
                     break;
                 }
                 
-                if (!foundNeighbor && client.world.getBlockState(targetPos.down()).isReplaceable()) {
+                if (!foundNeighbor && client.level.getBlockState(targetPos.below()).canBeReplaced()) {
                     return CommandResult.error("No solid block found to place against at " + targetPos);
                 }
                 
@@ -72,14 +71,14 @@ public class PlaceBlockCommandHandler implements CommandHandler {
                 double centerY = placeAgainst.getY() + 0.5;
                 double centerZ = placeAgainst.getZ() + 0.5;
                 
-                double dirX = placeFace.getOffsetX();
-                double dirY = placeFace.getOffsetY();
-                double dirZ = placeFace.getOffsetZ();
+                double dirX = placeFace.getStepX();
+                double dirY = placeFace.getStepY();
+                double dirZ = placeFace.getStepZ();
                 
-                Vec3d hitPos = new Vec3d(centerX + dirX * 0.5, centerY + dirY * 0.5, centerZ + dirZ * 0.5);
+                Vec3 hitPos = new Vec3(centerX + dirX * 0.5, centerY + dirY * 0.5, centerZ + dirZ * 0.5);
                 
                 // Verify item is in hand
-                if (client.player.getMainHandStack().isEmpty()) {
+                if (client.player.getMainHandItem().isEmpty()) {
                      return CommandResult.error("Main hand is empty!");
                 }
                 
@@ -87,24 +86,24 @@ public class PlaceBlockCommandHandler implements CommandHandler {
                 // Just let the game handle it naturally
                 BlockHitResult hitResult = new BlockHitResult(hitPos, placeFace, placeAgainst, false);
                 
-                ActionResult actionResult = client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hitResult);
-                client.player.swingHand(Hand.MAIN_HAND);
+                InteractionResult actionResult = client.gameMode.useItemOn(client.player, InteractionHand.MAIN_HAND, hitResult);
+                client.player.swing(InteractionHand.MAIN_HAND);
                 
                 JsonObject data = new JsonObject();
-                data.addProperty("placed", actionResult.isAccepted());
+                data.addProperty("placed", actionResult.consumesAction());
                 data.addProperty("status", actionResult.toString());
-                data.addProperty("accepted", actionResult.isAccepted());
+                data.addProperty("accepted", actionResult.consumesAction());
                 data.addProperty("x", x);
                 data.addProperty("y", y);
                 data.addProperty("z", z);
-                data.addProperty("item", client.player.getMainHandStack().getName().getString());
+                data.addProperty("item", client.player.getMainHandItem().getHoverName().getString());
                 
-                if (actionResult.isAccepted()) {
+                if (actionResult.consumesAction()) {
                     return CommandResult.success(data);
                 } else {
                     return new CommandResult(false, data,
                         "Placement rejected by Minecraft: " + actionResult
-                            + "; item=" + client.player.getMainHandStack().getName().getString()
+                            + "; item=" + client.player.getMainHandItem().getHoverName().getString()
                             + "; target=" + targetPos);
                 }
             }).get();

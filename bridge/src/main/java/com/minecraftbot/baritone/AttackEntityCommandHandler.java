@@ -2,13 +2,12 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.entity.Entity;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.Hand;
-
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.Entity;
 
 /**
  * Handler for the attack_entity command.
@@ -17,7 +16,7 @@ import java.util.concurrent.CompletableFuture;
 public class AttackEntityCommandHandler implements CommandHandler {
 
     @Override
-    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         if (!params.has("entity_id")) {
             return CompletableFuture.completedFuture(CommandResult.error("Missing required parameter: entity_id"));
         }
@@ -36,18 +35,18 @@ public class AttackEntityCommandHandler implements CommandHandler {
         CompletableFuture<CommandResult> result = new CompletableFuture<>();
         Runnable attackTask = () -> {
             try {
-                if (client.player == null || client.interactionManager == null || client.world == null) {
+                if (client.player == null || client.gameMode == null || client.level == null) {
                     result.complete(CommandResult.error("Player/World not available"));
                     return;
                 }
 
-                Entity target = client.world.getEntityById(entityId);
+                Entity target = client.level.getEntity(entityId);
                 if (target == null) {
                     result.complete(CommandResult.error("Entity not found: " + entityId));
                     return;
                 }
 
-                float cooldown = client.player.getAttackCooldownProgress(0.0f);
+                float cooldown = client.player.getAttackStrengthScale(0.0f);
                 JsonObject data = new JsonObject();
                 data.addProperty("entity_id", entityId);
                 data.addProperty("entity_type", entityType(target));
@@ -61,8 +60,8 @@ public class AttackEntityCommandHandler implements CommandHandler {
                     return;
                 }
 
-                client.interactionManager.attackEntity(client.player, target);
-                client.player.swingHand(Hand.MAIN_HAND);
+                client.gameMode.attack(client.player, target);
+                client.player.swing(InteractionHand.MAIN_HAND);
                 data.addProperty("attacked", true);
                 result.complete(CommandResult.success(data));
             } catch (Exception e) {
@@ -86,7 +85,7 @@ public class AttackEntityCommandHandler implements CommandHandler {
     }
 
     String entityType(Entity target) {
-        return Registries.ENTITY_TYPE.getId(target.getType()).toString();
+        return BuiltInRegistries.ENTITY_TYPE.getKey(target.getType()).toString();
     }
 
     @Override

@@ -2,19 +2,18 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.block.BlockState;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.math.BlockPos;
-
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.level.block.state.BlockState;
 
 public class GetBlockCommandHandler implements CommandHandler {
 
     @Override
-    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
-        if (client.world == null) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
+        if (client.level == null) {
             return CompletableFuture.completedFuture(CommandResult.error("World not available"));
         }
 
@@ -25,16 +24,18 @@ public class GetBlockCommandHandler implements CommandHandler {
             BlockPos pos = new BlockPos(x, y, z);
             
             CommandResult result = client.submit(() -> {
-                BlockState state = client.world.getBlockState(pos);
+                BlockState state = client.level.getBlockState(pos);
                 JsonObject data = new JsonObject();
                 String id = "";
                 if (state != null && state.getBlock() != null) {
-                    id = Registries.BLOCK.getId(state.getBlock()).toString();
+                    id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
                     
                     // Add state properties
                     JsonObject properties = new JsonObject();
-                    state.getEntries().forEach((property, value) -> {
-                        properties.addProperty(property.getName(), value.toString());
+                    state.getValues().forEach(propertyValue -> {
+                        properties.addProperty(
+                                propertyValue.property().getName(),
+                                propertyValue.valueName());
                     });
                     data.add("state", properties);
                 }

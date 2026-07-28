@@ -1,15 +1,6 @@
 package com.minecraftbot.baritone;
 
 import com.google.gson.JsonObject;
-import net.minecraft.block.BlockState;
-import net.minecraft.block.Blocks;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.world.ClientWorld;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
-import net.minecraft.util.math.BlockPos;
 import baritone.api.IBaritone;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,7 +9,13 @@ import org.mockito.MockitoAnnotations;
 
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
-
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Blocks;
 import org.junit.jupiter.api.Disabled;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -27,7 +24,7 @@ import static org.mockito.Mockito.*;
 public class PlaceFireCommandHandlerTest {
 
     @Mock
-    private MinecraftClient mockClient;
+    private Minecraft mockClient;
 
     @Mock
     private IBaritone mockBaritone;
@@ -36,10 +33,10 @@ public class PlaceFireCommandHandlerTest {
     private Socket mockSocket;
 
     @Mock
-    private ClientWorld mockWorld;
+    private ClientLevel mockWorld;
 
     @Mock
-    private ClientPlayerEntity mockPlayer;
+    private LocalPlayer mockPlayer;
 
     private PlaceFireCommandHandler handler;
 
@@ -54,9 +51,9 @@ public class PlaceFireCommandHandlerTest {
         handler = new PlaceFireCommandHandler();
 
         // Setup common mocks
-        TestUtils.setField(mockClient, "world", mockWorld);
+        TestUtils.setField(mockClient, "level", mockWorld);
         TestUtils.setField(mockClient, "player", mockPlayer);
-        when(mockPlayer.getBlockPos()).thenReturn(new BlockPos(0, 64, 0));
+        when(mockPlayer.blockPosition()).thenReturn(new BlockPos(0, 64, 0));
     }
 
     @Test
@@ -98,12 +95,12 @@ public class PlaceFireCommandHandlerTest {
 
         // Mock invalid surface (dirt block)
         BlockPos targetPos = new BlockPos(10, 64, 0);
-        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.DIRT.getDefaultState());
+        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.DIRT.defaultBlockState());
 
         // Mock inventory with flint and steel
         ItemStack flintAndSteel = new ItemStack(Items.FLINT_AND_STEEL);
-        when(mockPlayer.getInventory().getStack(0)).thenReturn(flintAndSteel);
-        when(mockPlayer.getInventory().selectedSlot).thenReturn(0);
+        when(mockPlayer.getInventory().getItem(0)).thenReturn(flintAndSteel);
+        when(mockPlayer.getInventory().selected).thenReturn(0);
 
         CompletableFuture<CommandResult> future = handler.execute(params, mockClient, mockBaritone, mockSocket);
         CommandResult result = future.join();
@@ -121,23 +118,23 @@ public class PlaceFireCommandHandlerTest {
 
         // Mock valid surface
         BlockPos targetPos = new BlockPos(10, 64, 0);
-        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.getDefaultState());
+        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.defaultBlockState());
 
         // Mock excessive flammable blocks nearby
         for (int dx = -3; dx <= 3; dx++) {
             for (int dy = -3; dy <= 3; dy++) {
                 for (int dz = -3; dz <= 3; dz++) {
                     if (dx == 0 && dy == 0 && dz == 0) continue;
-                    BlockPos checkPos = targetPos.add(dx, dy, dz);
-                    when(mockWorld.getBlockState(checkPos)).thenReturn(Blocks.OAK_LOG.getDefaultState());
+                    BlockPos checkPos = targetPos.offset(dx, dy, dz);
+                    when(mockWorld.getBlockState(checkPos)).thenReturn(Blocks.OAK_LOG.defaultBlockState());
                 }
             }
         }
 
         // Mock inventory
         ItemStack flintAndSteel = new ItemStack(Items.FLINT_AND_STEEL);
-        when(mockPlayer.getInventory().getStack(0)).thenReturn(flintAndSteel);
-        when(mockPlayer.getInventory().selectedSlot).thenReturn(0);
+        when(mockPlayer.getInventory().getItem(0)).thenReturn(flintAndSteel);
+        when(mockPlayer.getInventory().selected).thenReturn(0);
 
         CommandResult result = handler.execute(params, mockClient, mockBaritone, mockSocket).join();
 
@@ -154,12 +151,12 @@ public class PlaceFireCommandHandlerTest {
 
         // Mock valid surface
         BlockPos targetPos = new BlockPos(0, 64, 0);
-        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.getDefaultState());
+        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.defaultBlockState());
 
         // Mock inventory
         ItemStack flintAndSteel = new ItemStack(Items.FLINT_AND_STEEL);
-        when(mockPlayer.getInventory().getStack(0)).thenReturn(flintAndSteel);
-        when(mockPlayer.getInventory().selectedSlot).thenReturn(0);
+        when(mockPlayer.getInventory().getItem(0)).thenReturn(flintAndSteel);
+        when(mockPlayer.getInventory().selected).thenReturn(0);
 
         CommandResult result = handler.execute(params, mockClient, mockBaritone, mockSocket).join();
 
@@ -176,10 +173,10 @@ public class PlaceFireCommandHandlerTest {
 
         // Mock valid surface
         BlockPos targetPos = new BlockPos(10, 64, 0);
-        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.getDefaultState());
+        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.defaultBlockState());
 
         // Mock empty inventory
-        when(mockPlayer.getInventory().getStack(anyInt())).thenReturn(ItemStack.EMPTY);
+        when(mockPlayer.getInventory().getItem(anyInt())).thenReturn(ItemStack.EMPTY);
 
         CommandResult result = handler.execute(params, mockClient, mockBaritone, mockSocket).join();
 
@@ -196,12 +193,12 @@ public class PlaceFireCommandHandlerTest {
 
         // Mock valid surface
         BlockPos targetPos = new BlockPos(10, 64, 0);
-        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.getDefaultState());
+        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.defaultBlockState());
 
         // Mock flint and steel with 0 durability left
         ItemStack flintAndSteel = new ItemStack(Items.FLINT_AND_STEEL);
-        flintAndSteel.setDamage(flintAndSteel.getMaxDamage());
-        when(mockPlayer.getInventory().getStack(0)).thenReturn(flintAndSteel);
+        flintAndSteel.setDamageValue(flintAndSteel.getMaxDamage());
+        when(mockPlayer.getInventory().getItem(0)).thenReturn(flintAndSteel);
 
         CommandResult result = handler.execute(params, mockClient, mockBaritone, mockSocket).join();
 
@@ -218,19 +215,19 @@ public class PlaceFireCommandHandlerTest {
 
         // Mock valid surface
         BlockPos targetPos = new BlockPos(10, 64, 0);
-        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.getDefaultState());
+        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.defaultBlockState());
 
         // Mock safe environment (no flammable blocks nearby)
-        when(mockWorld.getBlockState(any(BlockPos.class))).thenReturn(Blocks.AIR.getDefaultState());
-        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.getDefaultState());
+        when(mockWorld.getBlockState(any(BlockPos.class))).thenReturn(Blocks.AIR.defaultBlockState());
+        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.defaultBlockState());
 
         // Mock inventory with flint and steel
         ItemStack flintAndSteel = new ItemStack(Items.FLINT_AND_STEEL);
-        when(mockPlayer.getInventory().getStack(0)).thenReturn(flintAndSteel);
-        when(mockPlayer.getInventory().selectedSlot).thenReturn(0);
+        when(mockPlayer.getInventory().getItem(0)).thenReturn(flintAndSteel);
+        when(mockPlayer.getInventory().selected).thenReturn(0);
 
         // Mock player position far enough away
-        when(mockPlayer.getBlockPos()).thenReturn(new BlockPos(0, 64, 0));
+        when(mockPlayer.blockPosition()).thenReturn(new BlockPos(0, 64, 0));
 
         CommandResult result = handler.execute(params, mockClient, mockBaritone, mockSocket).join();
 
@@ -252,26 +249,26 @@ public class PlaceFireCommandHandlerTest {
 
         // Mock valid surface at target
         BlockPos targetPos = new BlockPos(10, 64, 0);
-        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.getDefaultState());
+        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.defaultBlockState());
 
         // Mock better position with flammable blocks nearby
         BlockPos betterPos = new BlockPos(11, 64, 0);
-        when(mockWorld.getBlockState(betterPos)).thenReturn(Blocks.NETHERRACK.getDefaultState());
-        when(mockWorld.getBlockState(betterPos.add(-1, 0, 0))).thenReturn(Blocks.OAK_LOG.getDefaultState()); // Adjacent flammable
+        when(mockWorld.getBlockState(betterPos)).thenReturn(Blocks.NETHERRACK.defaultBlockState());
+        when(mockWorld.getBlockState(betterPos.offset(-1, 0, 0))).thenReturn(Blocks.OAK_LOG.defaultBlockState()); // Adjacent flammable
 
         // Mock safe environment
-        when(mockWorld.getBlockState(any(BlockPos.class))).thenReturn(Blocks.AIR.getDefaultState());
-        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.getDefaultState());
-        when(mockWorld.getBlockState(betterPos)).thenReturn(Blocks.NETHERRACK.getDefaultState());
-        when(mockWorld.getBlockState(betterPos.add(-1, 0, 0))).thenReturn(Blocks.OAK_LOG.getDefaultState());
+        when(mockWorld.getBlockState(any(BlockPos.class))).thenReturn(Blocks.AIR.defaultBlockState());
+        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.defaultBlockState());
+        when(mockWorld.getBlockState(betterPos)).thenReturn(Blocks.NETHERRACK.defaultBlockState());
+        when(mockWorld.getBlockState(betterPos.offset(-1, 0, 0))).thenReturn(Blocks.OAK_LOG.defaultBlockState());
 
         // Mock inventory
         ItemStack flintAndSteel = new ItemStack(Items.FLINT_AND_STEEL);
-        when(mockPlayer.getInventory().getStack(0)).thenReturn(flintAndSteel);
-        when(mockPlayer.getInventory().selectedSlot).thenReturn(0);
+        when(mockPlayer.getInventory().getItem(0)).thenReturn(flintAndSteel);
+        when(mockPlayer.getInventory().selected).thenReturn(0);
 
         // Mock player position
-        when(mockPlayer.getBlockPos()).thenReturn(new BlockPos(0, 64, 0));
+        when(mockPlayer.blockPosition()).thenReturn(new BlockPos(0, 64, 0));
 
         CommandResult result = handler.execute(params, mockClient, mockBaritone, mockSocket).join();
 
@@ -291,19 +288,19 @@ public class PlaceFireCommandHandlerTest {
 
         // Mock valid surface
         BlockPos targetPos = new BlockPos(10, 64, 0);
-        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.getDefaultState());
+        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.defaultBlockState());
 
         // Mock safe environment
-        when(mockWorld.getBlockState(any(BlockPos.class))).thenReturn(Blocks.AIR.getDefaultState());
-        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.getDefaultState());
+        when(mockWorld.getBlockState(any(BlockPos.class))).thenReturn(Blocks.AIR.defaultBlockState());
+        when(mockWorld.getBlockState(targetPos)).thenReturn(Blocks.NETHERRACK.defaultBlockState());
 
         // Mock inventory with fire charge (stack of 32)
         ItemStack fireCharge = new ItemStack(Items.FIRE_CHARGE, 32);
-        when(mockPlayer.getInventory().getStack(0)).thenReturn(fireCharge);
-        when(mockPlayer.getInventory().selectedSlot).thenReturn(0);
+        when(mockPlayer.getInventory().getItem(0)).thenReturn(fireCharge);
+        when(mockPlayer.getInventory().selected).thenReturn(0);
 
         // Mock player position
-        when(mockPlayer.getBlockPos()).thenReturn(new BlockPos(0, 64, 0));
+        when(mockPlayer.blockPosition()).thenReturn(new BlockPos(0, 64, 0));
 
         CommandResult result = handler.execute(params, mockClient, mockBaritone, mockSocket).join();
 

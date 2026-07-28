@@ -4,13 +4,13 @@ import baritone.api.IBaritone;
 import baritone.api.pathing.goals.*;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.Socket;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
 
 /**
  * Advanced goal setting system supporting time-based goals, conditional chains,
@@ -67,7 +67,7 @@ public class AdvancedGoalCommandHandler extends AsyncCommandHandler {
     }
 
     @Override
-    public CompletableFuture<CommandResult> execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         String action = params.has("action") ? params.get("action").getAsString() : "set";
 
         switch (action) {
@@ -88,7 +88,7 @@ public class AdvancedGoalCommandHandler extends AsyncCommandHandler {
         }
     }
 
-    private CompletableFuture<CommandResult> handleSetGoal(JsonObject params, MinecraftClient client, IBaritone baritone) {
+    private CompletableFuture<CommandResult> handleSetGoal(JsonObject params, Minecraft client, IBaritone baritone) {
         return executeOnMainThread(client, () -> {
             try {
                 Goal goal = parseGoal(params);
@@ -110,7 +110,7 @@ public class AdvancedGoalCommandHandler extends AsyncCommandHandler {
         });
     }
 
-    private CompletableFuture<CommandResult> handleGoalChain(JsonObject params, MinecraftClient client, IBaritone baritone) {
+    private CompletableFuture<CommandResult> handleGoalChain(JsonObject params, Minecraft client, IBaritone baritone) {
         if (!params.has("chain_id") || !params.has("steps")) {
             return CompletableFuture.completedFuture(CommandResult.error("Missing chain_id or steps"));
         }
@@ -144,7 +144,7 @@ public class AdvancedGoalCommandHandler extends AsyncCommandHandler {
         return CompletableFuture.completedFuture(CommandResult.success(data));
     }
 
-    private CompletableFuture<CommandResult> handleTimeBasedGoal(JsonObject params, MinecraftClient client, IBaritone baritone) {
+    private CompletableFuture<CommandResult> handleTimeBasedGoal(JsonObject params, Minecraft client, IBaritone baritone) {
         if (!params.has("execute_at")) {
             return CompletableFuture.completedFuture(CommandResult.error("Missing execute_at timestamp"));
         }
@@ -164,7 +164,7 @@ public class AdvancedGoalCommandHandler extends AsyncCommandHandler {
         return handleGoalChain(params, client, baritone);
     }
 
-    private CompletableFuture<CommandResult> handleCompositeGoal(JsonObject params, MinecraftClient client, IBaritone baritone) {
+    private CompletableFuture<CommandResult> handleCompositeGoal(JsonObject params, Minecraft client, IBaritone baritone) {
         if (!params.has("goals") || !params.has("operator")) {
             return CompletableFuture.completedFuture(CommandResult.error("Missing goals or operator"));
         }
@@ -198,7 +198,7 @@ public class AdvancedGoalCommandHandler extends AsyncCommandHandler {
         });
     }
 
-    private CompletableFuture<CommandResult> handleCancelGoal(JsonObject params, MinecraftClient client, IBaritone baritone) {
+    private CompletableFuture<CommandResult> handleCancelGoal(JsonObject params, Minecraft client, IBaritone baritone) {
         String chainId = params.has("chain_id") ? params.get("chain_id").getAsString() : null;
 
         if (chainId != null) {
@@ -262,7 +262,7 @@ public class AdvancedGoalCommandHandler extends AsyncCommandHandler {
                     int x2 = params.get("x").getAsInt();
                     int z2 = params.get("z").getAsInt();
                     int range = params.has("range") ? params.get("range").getAsInt() : 1;
-                    return new GoalNear(new net.minecraft.util.math.BlockPos(x2, params.get("y").getAsInt(), z2), range);
+                    return new GoalNear(new net.minecraft.core.BlockPos(x2, params.get("y").getAsInt(), z2), range);
 
                 default:
                     return null;
@@ -291,7 +291,7 @@ public class AdvancedGoalCommandHandler extends AsyncCommandHandler {
         return goals.get(0); // Return first goal for now
     }
 
-    private void executeGoalChain(MinecraftClient client, IBaritone baritone, GoalChain chain) {
+    private void executeGoalChain(Minecraft client, IBaritone baritone, GoalChain chain) {
         if (chain.currentStepIndex >= chain.steps.size()) {
             chain.active = false;
             activeChains.remove(chain.id);

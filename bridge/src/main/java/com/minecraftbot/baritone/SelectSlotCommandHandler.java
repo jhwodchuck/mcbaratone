@@ -2,16 +2,15 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
-
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
+import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
 
 public class SelectSlotCommandHandler implements CommandHandler {
 
     @Override
-    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         if (client.player == null) {
             return CompletableFuture.completedFuture(CommandResult.error("Player not available"));
         }
@@ -23,8 +22,8 @@ public class SelectSlotCommandHandler implements CommandHandler {
             }
             
             client.submit(() -> {
-                client.player.getInventory().selectedSlot = slot;
-                client.player.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(slot));
+                client.player.getInventory().selected = slot;
+                client.player.connection.send(new ServerboundSetCarriedItemPacket(slot));
                 return null;
             }).get();
             

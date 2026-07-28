@@ -2,8 +2,6 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.math.BlockPos;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
@@ -11,6 +9,7 @@ import org.mockito.MockitoAnnotations;
 
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -23,7 +22,7 @@ import static org.mockito.Mockito.*;
 public class SequenceCommandHandlerTest {
 
     @Mock
-    private MinecraftClient mockClient;
+    private Minecraft mockClient;
 
     @Mock
     private IBaritone mockBaritone;
@@ -216,7 +215,7 @@ public class SequenceCommandHandlerTest {
     /** Handler double that always succeeds. Public so the factory can instantiate it. */
     public static class AlwaysOkHandler implements CommandHandler {
         @Override
-        public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+        public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
             JsonObject data = new JsonObject();
             data.addProperty("ok", true);
             return CompletableFuture.completedFuture(CommandResult.success(data));
@@ -231,7 +230,7 @@ public class SequenceCommandHandlerTest {
     /** Handler double that always fails. Public so the factory can instantiate it. */
     public static class AlwaysFailHandler implements CommandHandler {
         @Override
-        public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+        public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
             return CompletableFuture.completedFuture(CommandResult.error("intentional test failure"));
         }
 

@@ -1,10 +1,10 @@
 package com.minecraftbot.baritone;
 
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.Hand;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.Vec3d;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -62,17 +62,17 @@ public final class ManualMiningController {
     }
 
     /** Advance the current break by one tick. Runs on the client thread. */
-    public synchronized void tick(MinecraftClient client) {
+    public synchronized void tick(Minecraft client) {
         if (target == null) {
             return;
         }
-        if (client.player == null || client.world == null || client.interactionManager == null) {
+        if (client.player == null || client.level == null || client.gameMode == null) {
             stop();
             return;
         }
 
         // Already gone (broken by us, or by anything else).
-        if (client.world.getBlockState(target).isAir()) {
+        if (client.level.getBlockState(target).isAir()) {
             stop();
             return;
         }
@@ -88,24 +88,24 @@ public final class ManualMiningController {
         aimAt(client, target);
 
         if (!started) {
-            client.interactionManager.attackBlock(target, face);
+            client.gameMode.startDestroyBlock(target, face);
             started = true;
         } else {
-            client.interactionManager.updateBlockBreakingProgress(target, face);
+            client.gameMode.continueDestroyBlock(target, face);
         }
-        client.player.swingHand(Hand.MAIN_HAND);
+        client.player.swing(InteractionHand.MAIN_HAND);
     }
 
-    private void aimAt(MinecraftClient client, BlockPos pos) {
-        Vec3d eye = client.player.getEyePos();
+    private void aimAt(Minecraft client, BlockPos pos) {
+        Vec3 eye = client.player.getEyePosition();
         double dx = (pos.getX() + 0.5) - eye.x;
         double dy = (pos.getY() + 0.5) - eye.y;
         double dz = (pos.getZ() + 0.5) - eye.z;
         double horizontal = Math.sqrt(dx * dx + dz * dz);
         float yaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
         float pitch = (float) (-Math.toDegrees(Math.atan2(dy, horizontal)));
-        client.player.setYaw(yaw);
-        client.player.setPitch(pitch);
+        client.player.setYRot(yaw);
+        client.player.setXRot(pitch);
     }
 
     private Direction parseFace(String name) {

@@ -5,10 +5,9 @@ import baritone.api.IBaritone;
 import baritone.api.pathing.goals.GoalBlock;
 import baritone.api.pathing.goals.GoalNear;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.math.BlockPos;
-
 import java.net.Socket;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
 
 /**
  * Command handler for movement commands: goto, come, follow.
@@ -21,7 +20,7 @@ public class GotoCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         String action = params.has("action") ? params.get("action").getAsString() : "goto";
 
         switch (action) {
@@ -47,7 +46,7 @@ public class GotoCommandHandler extends AbstractCommandHandler {
         int z = params.get("z").getAsInt();
         int radius = params.has("radius") ? params.get("radius").getAsInt() : 0;
 
-        executeOnMainThread(MinecraftClient.getInstance(), () -> {
+        executeOnMainThread(Minecraft.getInstance(), () -> {
             if (radius > 0) {
                 baritone.getCustomGoalProcess().setGoalAndPath(new GoalNear(new BlockPos(x, y, z), radius));
             } else {
@@ -64,13 +63,13 @@ public class GotoCommandHandler extends AbstractCommandHandler {
         return CommandResult.success(data);
     }
 
-    private CommandResult handleCome(JsonObject params, MinecraftClient client, IBaritone baritone) {
+    private CommandResult handleCome(JsonObject params, Minecraft client, IBaritone baritone) {
         if (client.player == null) {
             return CommandResult.error("Player not available");
         }
 
         try {
-            BlockPos targetPos = client.player.getBlockPos();
+            BlockPos targetPos = client.player.blockPosition();
 
             executeOnMainThread(client, () -> {
                 baritone.getCustomGoalProcess().setGoalAndPath(new GoalBlock(targetPos));
@@ -91,8 +90,8 @@ public class GotoCommandHandler extends AbstractCommandHandler {
     private CommandResult handleFollow(JsonObject params, IBaritone baritone) {
         String entity = params.has("entity") ? params.get("entity").getAsString() : "player";
 
-        executeOnMainThread(MinecraftClient.getInstance(), () ->
-            MinecraftClient.getInstance().player.networkHandler.sendChatMessage("#follow " + entity));
+        executeOnMainThread(Minecraft.getInstance(), () ->
+            Minecraft.getInstance().player.connection.sendChat("#follow " + entity));
 
         JsonObject data = new JsonObject();
         data.addProperty("sent", true);

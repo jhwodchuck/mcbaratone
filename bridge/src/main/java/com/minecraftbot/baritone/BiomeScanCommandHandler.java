@@ -3,15 +3,14 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.world.Heightmap;
-
 import java.net.Socket;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.levelgen.Heightmap;
 
 /**
  * Samples surface biomes from chunks already loaded by the client.
@@ -34,7 +33,7 @@ public class BiomeScanCommandHandler extends AsyncCommandHandler {
 
     @Override
     public CompletableFuture<CommandResult> execute(
-            JsonObject params, MinecraftClient client, IBaritone baritone,
+            JsonObject params, Minecraft client, IBaritone baritone,
             Socket clientSocket) {
         int radius = params.has("radius") ? params.get("radius").getAsInt() : DEFAULT_RADIUS;
         int step = params.has("step") ? params.get("step").getAsInt() : DEFAULT_STEP;
@@ -50,12 +49,12 @@ public class BiomeScanCommandHandler extends AsyncCommandHandler {
         return executeOnMainThread(client, () -> scanLoadedBiomes(client, radius, step));
     }
 
-    private CommandResult scanLoadedBiomes(MinecraftClient client, int radius, int step) {
-        if (client.player == null || client.world == null) {
+    private CommandResult scanLoadedBiomes(Minecraft client, int radius, int step) {
+        if (client.player == null || client.level == null) {
             return CommandResult.error("Player or world not available");
         }
 
-        BlockPos origin = client.player.getBlockPos();
+        BlockPos origin = client.player.blockPosition();
         Map<String, BiomeSample> nearestByBiome = new HashMap<>();
         int loadedSamples = 0;
         int unloadedSamples = 0;
@@ -68,16 +67,16 @@ public class BiomeScanCommandHandler extends AsyncCommandHandler {
                 }
                 int x = origin.getX() + dx;
                 int z = origin.getZ() + dz;
-                if (!client.world.isChunkLoaded(x >> 4, z >> 4)) {
+                if (!client.level.hasChunk(x >> 4, z >> 4)) {
                     unloadedSamples++;
                     continue;
                 }
 
-                int y = client.world.getTopY(
-                    Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, x, z) - 1;
+                int y = client.level.getHeight(
+                    Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z) - 1;
                 BlockPos samplePos = new BlockPos(x, y, z);
-                String biomeId = client.world.getBiome(samplePos).getKey()
-                    .map(key -> key.getValue().toString())
+                String biomeId = client.level.getBiome(samplePos).unwrapKey()
+                    .map(key -> key.identifier().toString())
                     .orElse("unknown");
                 loadedSamples++;
 
@@ -94,8 +93,8 @@ public class BiomeScanCommandHandler extends AsyncCommandHandler {
             .sorted(Comparator.comparingDouble(BiomeSample::distance))
             .forEach(sample -> biomes.add(toJson(sample)));
 
-        String currentBiome = client.world.getBiome(origin).getKey()
-            .map(key -> key.getValue().toString())
+        String currentBiome = client.level.getBiome(origin).unwrapKey()
+            .map(key -> key.identifier().toString())
             .orElse("unknown");
         JsonObject data = new JsonObject();
         data.addProperty("current_biome", currentBiome);

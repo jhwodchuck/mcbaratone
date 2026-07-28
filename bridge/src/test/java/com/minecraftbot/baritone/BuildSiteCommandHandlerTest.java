@@ -2,13 +2,13 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.util.function.IntPredicate;
+import net.minecraft.client.Minecraft;
 import java.net.Socket;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -18,7 +18,7 @@ public class BuildSiteCommandHandlerTest {
     private BuildSiteCommandHandler handler;
 
     @Mock
-    private MinecraftClient mockClient;
+    private Minecraft mockClient;
 
     @Mock
     private IBaritone mockBaritone;
@@ -52,7 +52,7 @@ public class BuildSiteCommandHandlerTest {
     @Test
     void testHandle_MissingPlayerOrWorld() {
         TestUtils.setField(mockClient, "player", null);
-        TestUtils.setField(mockClient, "world", null);
+        TestUtils.setField(mockClient, "level", null);
 
         CommandResult result = handler.execute(new JsonObject(), mockClient, mockBaritone, mockSocket);
         assertFalse(result.isSuccess());

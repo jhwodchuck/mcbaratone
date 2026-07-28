@@ -1,5 +1,5 @@
 plugins {
-    id 'fabric-loom' version '1.13.3'
+    id 'net.fabricmc.fabric-loom' version '1.17-SNAPSHOT'
     id 'maven-publish'
     id 'jacoco'
 }
@@ -38,11 +38,10 @@ repositories {
 dependencies {
     // To change the versions see the gradle.properties file
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
-    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 
     // Fabric API. This is technically optional, but you probably want it anyway.
-    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 
     // HTTP client used by the bridge (Webb)
     // The real dependency is normally fetched from Maven Central, but some
@@ -55,7 +54,7 @@ dependencies {
 
     // Local Baritone API
     // We expect the user to put baritone-api-fabric-*.jar in the 'libs' folder
-    modImplementation files('libs/baritone-api-fabric-1.15.0.jar')
+    implementation files('libs/baritone-api-fabric-1.15.0-9-gd93f1582.jar')
 
     // WebSocket and networking - include to bundle in JAR (Jar-in-Jar)
     implementation 'org.java-websocket:Java-WebSocket:1.5.3'
@@ -69,9 +68,9 @@ dependencies {
     // Gradle 9 no longer puts the JUnit Platform launcher on the test runtime
     // classpath automatically.
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-    testImplementation 'org.mockito:mockito-core:5.5.0'
-    testImplementation 'org.mockito:mockito-junit-jupiter:5.5.0'
-    testImplementation files('libs/baritone-api-fabric-1.15.0.jar')
+    testImplementation 'org.mockito:mockito-core:5.23.0'
+    testImplementation 'org.mockito:mockito-junit-jupiter:5.23.0'
+    testImplementation files('libs/baritone-api-fabric-1.15.0-9-gd93f1582.jar')
 }
 
 test {
@@ -95,7 +94,7 @@ processResources {
 }
 
 tasks.withType(JavaCompile).configureEach {
-    it.options.release = 21
+    it.options.release = 25
 }
 
 java {
@@ -104,8 +103,8 @@ java {
     // If you remove this line, sources will not be generated.
     withSourcesJar()
 
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
 }
 
 jar {

@@ -2,10 +2,9 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.math.BlockPos;
-
 import java.net.Socket;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
 
 /**
  * Handler for the quarry command - excavates area.
@@ -18,7 +17,7 @@ public class QuarryCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         if (client.player == null) {
             return CommandResult.error("Player not available");
         }
@@ -26,9 +25,9 @@ public class QuarryCommandHandler extends AbstractCommandHandler {
         int size = params.has("size") ? params.get("size").getAsInt() : 10;
         int depth = params.has("depth") ? params.get("depth").getAsInt() : 5;
 
-        BlockPos center = client.player.getBlockPos();
-        BlockPos corner1 = center.add(size / 2, 0, size / 2);
-        BlockPos corner2 = center.add(-size / 2, -depth, -size / 2);
+        BlockPos center = client.player.blockPosition();
+        BlockPos corner1 = center.offset(size / 2, 0, size / 2);
+        BlockPos corner2 = center.offset(-size / 2, -depth, -size / 2);
 
         executeOnMainThread(client, () -> 
             baritone.getBuilderProcess().clearArea(corner1, corner2));

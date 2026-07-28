@@ -3,17 +3,15 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.item.ItemStack;
-import net.minecraft.registry.Registries;
-import net.minecraft.screen.slot.SlotActionType;
-
 import java.net.Socket;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.ContainerInput;
+import net.minecraft.world.item.ItemStack;
 
 /**
  * Command handler for inventory operations: get_inventory, inventory_click.
@@ -26,7 +24,7 @@ public class InventoryCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         String action = params.has("action") ? params.get("action").getAsString() : "get";
 
         switch (action) {
@@ -39,7 +37,7 @@ public class InventoryCommandHandler extends AbstractCommandHandler {
         }
     }
 
-    private CommandResult handleGetInventory(MinecraftClient client) {
+    private CommandResult handleGetInventory(Minecraft client) {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<JsonObject> dataRef = new AtomicReference<>();
         AtomicReference<String> errorRef = new AtomicReference<>();
@@ -51,29 +49,29 @@ public class InventoryCommandHandler extends AbstractCommandHandler {
                     return;
                 }
 
-                PlayerInventory inv = client.player.getInventory();
+                Inventory inv = client.player.getInventory();
 
                 // Main Inventory (0-35)
                 JsonArray mainInventory = new JsonArray();
                 for (int i = 0; i < 36; i++) {
-                    mainInventory.add(serializeItemStack(inv.getStack(i), i));
+                    mainInventory.add(serializeItemStack(inv.getItem(i), i));
                 }
 
                 // Armor (Slots 36-39)
                 JsonArray armorInventory = new JsonArray();
                 for (int i = 0; i < 4; i++) {
-                    armorInventory.add(serializeItemStack(inv.getStack(36 + i), i));
+                    armorInventory.add(serializeItemStack(inv.getItem(36 + i), i));
                 }
 
                 // Offhand (Slot 40)
                 JsonArray offhandInventory = new JsonArray();
-                offhandInventory.add(serializeItemStack(inv.getStack(40), 0));
+                offhandInventory.add(serializeItemStack(inv.getItem(40), 0));
 
                 JsonObject data = new JsonObject();
                 data.add("inventory", mainInventory);
                 data.add("armor", armorInventory);
                 data.add("offhand", offhandInventory);
-                data.addProperty("selected_slot", inv.selectedSlot);
+                data.addProperty("selected_slot", inv.selected);
 
                 dataRef.set(data);
             } catch (Exception e) {
@@ -98,8 +96,8 @@ public class InventoryCommandHandler extends AbstractCommandHandler {
         return CommandResult.success(dataRef.get());
     }
 
-    private CommandResult handleInventoryClick(MinecraftClient client, JsonObject params) {
-        if (client.player == null || client.interactionManager == null) {
+    private CommandResult handleInventoryClick(Minecraft client, JsonObject params) {
+        if (client.player == null || client.gameMode == null) {
             return CommandResult.error("Player or interaction manager not available");
         }
 
@@ -110,15 +108,15 @@ public class InventoryCommandHandler extends AbstractCommandHandler {
         // Default to player inventory (0)
         int syncId = params.has("sync_id") ? params.get("sync_id").getAsInt() : 0;
 
-        SlotActionType type;
+        ContainerInput type;
         try {
-            type = SlotActionType.valueOf(typeStr);
+            type = ContainerInput.valueOf(typeStr);
         } catch (IllegalArgumentException e) {
             return CommandResult.error("Invalid click type: " + typeStr);
         }
 
         try {
-            client.interactionManager.clickSlot(syncId, slot, button, type, client.player);
+            client.gameMode.handleContainerInput(syncId, slot, button, type, client.player);
 
             JsonObject data = new JsonObject();
             data.addProperty("clicked", true);
@@ -141,10 +139,10 @@ public class InventoryCommandHandler extends AbstractCommandHandler {
             itemData.addProperty("id", "minecraft:air");
             itemData.addProperty("count", 0);
         } else {
-            itemData.addProperty("id", Registries.ITEM.getId(stack.getItem()).toString());
+            itemData.addProperty("id", BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
             itemData.addProperty("count", stack.getCount());
-            itemData.addProperty("max_count", stack.getMaxCount());
-            itemData.addProperty("damage", stack.getDamage());
+            itemData.addProperty("max_count", stack.getMaxStackSize());
+            itemData.addProperty("damage", stack.getDamageValue());
             itemData.addProperty("max_damage", stack.getMaxDamage());
             itemData.addProperty("name", stack.getItem().toString()); // Safer fallback
         }

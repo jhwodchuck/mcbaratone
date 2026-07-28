@@ -2,16 +2,15 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.block.BlockState;
-import net.minecraft.util.math.Direction;
-import net.minecraft.world.World;
-
 import java.net.Socket;
 import java.util.function.IntPredicate;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -37,12 +36,12 @@ public class BuildSiteCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         if (client == null) {
             return CommandResult.error("Minecraft client not available");
         }
 
-        if (client.world == null || client.player == null) {
+        if (client.level == null || client.player == null) {
             return CommandResult.error("World or player not available");
         }
 
@@ -64,10 +63,10 @@ public class BuildSiteCommandHandler extends AbstractCommandHandler {
         return Math.max(MIN_RADIUS, Math.min(MAX_RADIUS, radius));
     }
 
-    private CommandResult inspectBuildSite(MinecraftClient client, int radius) {
-        ClientPlayerEntity player = client.player;
-        World world = client.world;
-        BlockPos center = player.getBlockPos();
+    private CommandResult inspectBuildSite(Minecraft client, int radius) {
+        LocalPlayer player = client.player;
+        Level world = client.level;
+        BlockPos center = player.blockPosition();
 
         int baseY = center.getY();
         int totalColumns = 0;
@@ -88,7 +87,7 @@ public class BuildSiteCommandHandler extends AbstractCommandHandler {
                 maxDy = Math.max(maxDy, dy);
 
                 BlockState surfaceState = world.getBlockState(surface);
-                String surfaceId = Registries.BLOCK.getId(surfaceState.getBlock()).toString();
+                String surfaceId = BuiltInRegistries.BLOCK.getKey(surfaceState.getBlock()).toString();
                 surfaceCounts.merge(surfaceId, 1, Integer::sum);
 
                 if (hasFluidInSurfaceScan(world, sample, baseY)) {
@@ -128,9 +127,9 @@ public class BuildSiteCommandHandler extends AbstractCommandHandler {
         return CommandResult.success(data);
     }
 
-    private boolean isClearHeadroom(World world, BlockPos surface) {
+    private boolean isClearHeadroom(Level world, BlockPos surface) {
         for (int dy = 1; dy <= HEADROOM_BLOCKS; dy++) {
-            BlockState state = world.getBlockState(surface.up(dy));
+            BlockState state = world.getBlockState(surface.above(dy));
             if (!state.isAir()) {
                 return false;
             }
@@ -138,7 +137,7 @@ public class BuildSiteCommandHandler extends AbstractCommandHandler {
         return true;
     }
 
-    private BlockPos findSurface(World world, BlockPos pos, int baseY) {
+    private BlockPos findSurface(Level world, BlockPos pos, int baseY) {
         for (int dy = MAX_SURFACE_SCAN_UP; dy >= -MAX_SURFACE_SCAN_DOWN; dy--) {
             BlockPos candidate = new BlockPos(pos.getX(), baseY + dy, pos.getZ());
             if (isSurfaceCandidate(world, candidate)) {
@@ -149,15 +148,15 @@ public class BuildSiteCommandHandler extends AbstractCommandHandler {
         return new BlockPos(pos.getX(), baseY - 1, pos.getZ());
     }
 
-    private boolean isSurfaceCandidate(World world, BlockPos pos) {
+    private boolean isSurfaceCandidate(Level world, BlockPos pos) {
         BlockState state = world.getBlockState(pos);
         return !state.isAir()
                 && state.getFluidState().isEmpty()
-                && !state.isReplaceable()
-                && state.isSideSolidFullSquare(world, pos, Direction.UP);
+                && !state.canBeReplaced()
+                && state.isFaceSturdy(world, pos, Direction.UP);
     }
 
-    private boolean hasFluidInSurfaceScan(World world, BlockPos pos, int baseY) {
+    private boolean hasFluidInSurfaceScan(Level world, BlockPos pos, int baseY) {
         IntPredicate hasFluidAtY = (y) -> {
             BlockState state = world.getBlockState(new BlockPos(pos.getX(), y, pos.getZ()));
             return !state.getFluidState().isEmpty();

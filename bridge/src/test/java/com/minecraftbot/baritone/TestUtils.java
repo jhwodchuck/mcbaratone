@@ -59,13 +59,13 @@ public class TestUtils {
             
             // Try accessing Blocks.AIR first
             try {
-                Object air = net.minecraft.block.Blocks.AIR;
+                Object air = net.minecraft.world.level.block.Blocks.AIR;
                 return; // Already initialized
             } catch (Throwable t) {
                 // Not initialized
             }
 
-            net.minecraft.Bootstrap.initialize();
+            net.minecraft.server.Bootstrap.bootStrap();
         } catch (Exception e) {
             System.err.println("Failed to initialize Minecraft Bootstrap: " + e.getMessage());
             // It might fail if assets are missing, but for unit tests we assume it works or we mock Registries.

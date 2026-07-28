@@ -2,10 +2,9 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
 
 /**
  * Command handler for cancel: Stops the current Baritone process.
@@ -13,7 +12,7 @@ import java.util.concurrent.CompletableFuture;
 public class CancelCommandHandler implements CommandHandler {
 
     @Override
-    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         CompletableFuture<CommandResult> result = new CompletableFuture<>();
         Runnable cancel = () -> {
             try {

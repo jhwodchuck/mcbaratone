@@ -3,23 +3,22 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.block.Block;
-import net.minecraft.block.BlockState;
-import net.minecraft.block.Blocks;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
-import net.minecraft.util.Hand;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.World;
-
 import java.net.Socket;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * Enhanced PlaceFireCommandHandler with advanced fire placement logic.
@@ -51,7 +50,7 @@ public class PlaceFireCommandHandler extends AsyncCommandHandler {
     }
 
     @Override
-    public CompletableFuture<CommandResult> execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         // Validate coordinates
         CommandResult validation = validateCoordinates(params);
         if (validation != null) {
@@ -61,12 +60,12 @@ public class PlaceFireCommandHandler extends AsyncCommandHandler {
         BlockPos targetPos = getBlockPos(params);
 
         return executeOnMainThread(client, () -> {
-            if (client.player == null || client.world == null) {
+            if (client.player == null || client.level == null) {
                 return CommandResult.error("Player or world not available");
             }
 
             // Perform comprehensive analysis
-            FirePlacementAnalysis analysis = analyzeFirePlacement(client.world, client.player, targetPos);
+            FirePlacementAnalysis analysis = analyzeFirePlacement(client.level, client.player, targetPos);
 
             // Check if placement is safe
             if (!analysis.isSafe) {
@@ -80,17 +79,17 @@ public class PlaceFireCommandHandler extends AsyncCommandHandler {
             }
 
             // Select optimal tool slot
-            client.player.getInventory().selectedSlot = inventoryCheck.slot;
-            client.player.networkHandler.sendPacket(
-                new net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket(inventoryCheck.slot)
+            client.player.getInventory().selected = inventoryCheck.slot;
+            client.player.connection.send(
+                new net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket(inventoryCheck.slot)
             );
 
             // Execute fire placement
             BlockHitResult hitResult = new BlockHitResult(
-                Vec3d.ofCenter(targetPos), Direction.UP, targetPos, false
+                Vec3.atCenterOf(targetPos), Direction.UP, targetPos, false
             );
-            client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hitResult);
-            client.player.swingHand(Hand.MAIN_HAND);
+            client.gameMode.useItemOn(client.player, InteractionHand.MAIN_HAND, hitResult);
+            client.player.swing(InteractionHand.MAIN_HAND);
 
             // Prepare response data
             JsonObject data = new JsonObject();
@@ -120,7 +119,7 @@ public class PlaceFireCommandHandler extends AsyncCommandHandler {
     /**
      * Analyzes terrain for fire placement suitability.
      */
-    private FirePlacementAnalysis analyzeFirePlacement(World world, PlayerEntity player, BlockPos targetPos) {
+    private FirePlacementAnalysis analyzeFirePlacement(Level world, Player player, BlockPos targetPos) {
         FirePlacementAnalysis analysis = new FirePlacementAnalysis();
 
         // Check if target block can have fire placed on it
@@ -138,7 +137,7 @@ public class PlaceFireCommandHandler extends AsyncCommandHandler {
                 for (int dz = -SCAN_RADIUS; dz <= SCAN_RADIUS; dz++) {
                     if (dx == 0 && dy == 0 && dz == 0) continue;
 
-                    BlockPos checkPos = targetPos.add(dx, dy, dz);
+                    BlockPos checkPos = targetPos.offset(dx, dy, dz);
                     BlockState state = world.getBlockState(checkPos);
                     Block block = state.getBlock();
 
@@ -159,8 +158,8 @@ public class PlaceFireCommandHandler extends AsyncCommandHandler {
         }
 
         // Check for player safety
-        BlockPos playerPos = player.getBlockPos();
-        double distanceToPlayer = Math.sqrt(targetPos.getSquaredDistance(playerPos));
+        BlockPos playerPos = player.blockPosition();
+        double distanceToPlayer = Math.sqrt(targetPos.distSqr(playerPos));
         if (distanceToPlayer < 2.0) {
             analysis.isSafe = false;
             analysis.safetyReason = "Too close to player position";
@@ -197,10 +196,10 @@ public class PlaceFireCommandHandler extends AsyncCommandHandler {
     /**
      * Calculates fuel score based on nearby flammable materials.
      */
-    private int calculateFuelScore(World world, BlockPos pos, List<BlockPos> flammablePositions) {
+    private int calculateFuelScore(Level world, BlockPos pos, List<BlockPos> flammablePositions) {
         int score = 0;
         for (BlockPos flammablePos : flammablePositions) {
-            double distance = Math.sqrt(pos.getSquaredDistance(flammablePos));
+            double distance = Math.sqrt(pos.distSqr(flammablePos));
             if (distance <= 2.0) {
                 score += 3; // Close flammable material
             } else if (distance <= 4.0) {
@@ -226,7 +225,7 @@ public class PlaceFireCommandHandler extends AsyncCommandHandler {
     /**
      * Finds optimal fire placement position based on fuel availability.
      */
-    private BlockPos findOptimalPosition(World world, BlockPos originalPos, List<BlockPos> flammablePositions) {
+    private BlockPos findOptimalPosition(Level world, BlockPos originalPos, List<BlockPos> flammablePositions) {
         BlockPos bestPos = originalPos;
         int bestScore = calculateFuelScore(world, originalPos, flammablePositions);
 
@@ -234,7 +233,7 @@ public class PlaceFireCommandHandler extends AsyncCommandHandler {
         for (Direction direction : Direction.values()) {
             if (direction == Direction.UP || direction == Direction.DOWN) continue;
 
-            BlockPos checkPos = originalPos.offset(direction);
+            BlockPos checkPos = originalPos.relative(direction);
             BlockState state = world.getBlockState(checkPos);
             if (state.isAir() || isValidFireSurface(state.getBlock())) {
                 int score = calculateFuelScore(world, checkPos, flammablePositions);
@@ -251,16 +250,16 @@ public class PlaceFireCommandHandler extends AsyncCommandHandler {
     /**
      * Checks inventory for flint & steel or fire charge availability and durability.
      */
-    private InventoryCheckResult checkInventory(PlayerEntity player) {
+    private InventoryCheckResult checkInventory(Player player) {
         InventoryCheckResult result = new InventoryCheckResult();
 
         for (int i = 0; i < 9; i++) {
-            ItemStack stack = player.getInventory().getStack(i);
+            ItemStack stack = player.getInventory().getItem(i);
             if (stack.getItem() == Items.FLINT_AND_STEEL) {
-                if (stack.getDamage() < stack.getMaxDamage() - 1) { // Has at least 1 use left
+                if (stack.getDamageValue() < stack.getMaxDamage() - 1) { // Has at least 1 use left
                     result.available = true;
                     result.slot = i;
-                    result.durability = (stack.getMaxDamage() - stack.getDamage()) / (double) stack.getMaxDamage();
+                    result.durability = (stack.getMaxDamage() - stack.getDamageValue()) / (double) stack.getMaxDamage();
                     result.toolType = "flint_and_steel";
                     return result;
                 }

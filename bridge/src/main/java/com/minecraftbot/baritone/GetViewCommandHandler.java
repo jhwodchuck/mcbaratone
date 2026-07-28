@@ -3,12 +3,11 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.block.BlockState;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.math.BlockPos;
-
 import java.net.Socket;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.level.block.state.BlockState;
 
 /**
  * Command handler for getting a view of nearby blocks.
@@ -21,8 +20,8 @@ public class GetViewCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
-        if (client.world == null || client.player == null) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
+        if (client.level == null || client.player == null) {
             return CommandResult.error("World or player not available");
         }
 
@@ -32,21 +31,21 @@ public class GetViewCommandHandler extends AbstractCommandHandler {
 
         try {
             return client.submit(() -> {
-                BlockPos playerPos = client.player.getBlockPos();
+                BlockPos playerPos = client.player.blockPosition();
                 JsonArray voxelsList = new JsonArray();
 
                 for (int x = -radius; x <= radius; x++) {
                     for (int y = -radius; y <= radius; y++) {
                         for (int z = -radius; z <= radius; z++) {
-                            BlockPos pos = playerPos.add(x, y, z);
-                            BlockState state = client.world.getBlockState(pos);
+                            BlockPos pos = playerPos.offset(x, y, z);
+                            BlockState state = client.level.getBlockState(pos);
                             
                             if (!state.isAir()) {
                                 JsonObject voxel = new JsonObject();
                                 voxel.addProperty("x", pos.getX());
                                 voxel.addProperty("y", pos.getY());
                                 voxel.addProperty("z", pos.getZ());
-                                voxel.addProperty("id", Registries.BLOCK.getId(state.getBlock()).toString());
+                                voxel.addProperty("id", BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());
                                 voxelsList.add(voxel);
                             }
                         }

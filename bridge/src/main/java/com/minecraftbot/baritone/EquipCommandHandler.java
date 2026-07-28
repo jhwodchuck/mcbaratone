@@ -2,18 +2,17 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.inventory.Inventory;
-import net.minecraft.item.ItemStack;
-import net.minecraft.registry.Registries;
-import net.minecraft.screen.ScreenHandler;
-import net.minecraft.screen.slot.Slot;
-import net.minecraft.screen.slot.SlotActionType;
-import net.minecraft.util.Identifier;
-
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.Container;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.ContainerInput;
+import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.ItemStack;
 
 /**
  * Handler for equip command.
@@ -22,8 +21,8 @@ import java.util.concurrent.CompletableFuture;
 public class EquipCommandHandler implements CommandHandler {
 
     @Override
-    public CompletableFuture<CommandResult> handle(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
-        if (client.player == null || client.interactionManager == null) {
+    public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
+        if (client.player == null || client.gameMode == null) {
             return CompletableFuture.completedFuture(CommandResult.error("Player not available"));
         }
 
@@ -44,13 +43,13 @@ public class EquipCommandHandler implements CommandHandler {
                     return CommandResult.error("Unsupported equip slot: " + slotName);
                 }
 
-                PlayerInventory inv = client.player.getInventory();
+                Inventory inv = client.player.getInventory();
                 int sourceInventoryIndex = findItemSlot(inv, itemId);
                 if (sourceInventoryIndex < 0) {
                     return CommandResult.error("Item not found in inventory: " + itemId);
                 }
 
-                ScreenHandler handler = client.player.playerScreenHandler;
+                AbstractContainerMenu handler = client.player.inventoryMenu;
                 Integer sourceSlotId = findScreenSlotId(handler, inv, sourceInventoryIndex);
                 Integer targetSlotId = findScreenSlotId(handler, inv, targetInventoryIndex);
 
@@ -58,9 +57,9 @@ public class EquipCommandHandler implements CommandHandler {
                     return CommandResult.error("Unable to resolve slot ids for equip");
                 }
 
-                int syncId = handler.syncId;
-                client.interactionManager.clickSlot(syncId, sourceSlotId, 0, SlotActionType.PICKUP, client.player);
-                client.interactionManager.clickSlot(syncId, targetSlotId, 0, SlotActionType.PICKUP, client.player);
+                int syncId = handler.containerId;
+                client.gameMode.handleContainerInput(syncId, sourceSlotId, 0, ContainerInput.PICKUP, client.player);
+                client.gameMode.handleContainerInput(syncId, targetSlotId, 0, ContainerInput.PICKUP, client.player);
 
                 JsonObject data = new JsonObject();
                 data.addProperty("equipped", true);
@@ -96,27 +95,27 @@ public class EquipCommandHandler implements CommandHandler {
         }
     }
 
-    private int findItemSlot(PlayerInventory inv, String itemId) {
+    private int findItemSlot(Inventory inv, String itemId) {
         Identifier itemIdentifier;
         try {
-            itemIdentifier = Identifier.of(itemId);
+            itemIdentifier = Identifier.parse(itemId);
         } catch (IllegalArgumentException e) {
             return -1;
         }
 
         for (int i = 0; i < 36; i++) {
-            ItemStack stack = inv.getStack(i);
-            if (!stack.isEmpty() && Registries.ITEM.getId(stack.getItem()).equals(itemIdentifier)) {
+            ItemStack stack = inv.getItem(i);
+            if (!stack.isEmpty() && BuiltInRegistries.ITEM.getKey(stack.getItem()).equals(itemIdentifier)) {
                 return i;
             }
         }
         return -1;
     }
 
-    private Integer findScreenSlotId(ScreenHandler handler, Inventory inv, int inventoryIndex) {
+    private Integer findScreenSlotId(AbstractContainerMenu handler, Container inv, int inventoryIndex) {
         for (int i = 0; i < handler.slots.size(); i++) {
             Slot slot = handler.slots.get(i);
-            if (slot.inventory == inv && slot.getIndex() == inventoryIndex) {
+            if (slot.container == inv && slot.getContainerSlot() == inventoryIndex) {
                 return i;
             }
         }

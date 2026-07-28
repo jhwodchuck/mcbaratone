@@ -3,9 +3,8 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-
 import java.net.Socket;
+import net.minecraft.client.Minecraft;
 
 /**
  * Command handler for retrieving crafting recipes.
@@ -20,7 +19,7 @@ public class RecipeCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         // In 1.21.4+, client-side recipe access is not reliable
         // The RecipeManager on the client throws NoSuchFieldError when accessed
         // Return a graceful error message so Python falls back to hardcoded defaults

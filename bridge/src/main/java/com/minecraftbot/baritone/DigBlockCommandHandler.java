@@ -2,9 +2,8 @@ package com.minecraftbot.baritone;
 
 import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-
 import java.net.Socket;
+import net.minecraft.client.Minecraft;
 
 /**
  * Handler for the dig_block command - progressive survival-mode block breaking
@@ -24,7 +23,7 @@ public class DigBlockCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, MinecraftClient client, IBaritone baritone, Socket clientSocket) {
+    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         if (!params.has("x") || !params.has("y") || !params.has("z")) {
             return CommandResult.error("Missing coordinates");
         }
