@@ -2077,3 +2077,61 @@ def test_descent_still_proceeds_below_regen_threshold_when_food_is_carried(
     output = capsys.readouterr().out
     assert "refusing a descent that cannot be healed out of" not in output
     assert "continuing with fallback food=9" in output
+
+
+def test_return_to_base_routes_around_an_obstructed_interior_block(monkeypatch):
+    """The block directly inside the door is not guaranteed to be free. Live:
+    Bot10's (87,64,164) was solid dirt, so the interior goal was unreachable by
+    construction -- and allowBreak is disabled just before the approach, so
+    Baritone could not clear it either. "Return to base for protected smelting"
+    failed 500+ times while the bot stood at the open doorway two blocks away."""
+    handler = iron_age.FoodAndIronHandler()
+    # Interior floor y=64; everything solid except the column at (88, 64, 165).
+    free = {(88, 64, 165), (88, 65, 165)}
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_block":
+                key = (payload["x"], payload["y"], payload["z"])
+                return {"id": "minecraft:air" if key in free else "minecraft:dirt"}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    interior_bounds = (range(85, 90), range(164, 169))
+
+    chosen = handler._standable_interior_target(
+        client,
+        (87, 64, 164),  # the obstructed preferred block
+        interior_bounds,
+        64,
+    )
+
+    assert chosen == (88, 64, 165)
+
+
+def test_return_to_base_keeps_the_preferred_interior_block_when_it_is_free(monkeypatch):
+    handler = iron_age.FoodAndIronHandler()
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_block":
+                return {"id": "minecraft:air"}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    chosen = handler._standable_interior_target(
+        client,
+        (87, 64, 164),
+        (range(85, 90), range(164, 169)),
+        64,
+    )
+
+    assert chosen == (87, 64, 164)

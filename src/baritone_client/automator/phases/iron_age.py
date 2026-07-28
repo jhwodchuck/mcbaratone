@@ -385,6 +385,56 @@ class FoodAndIronHandler(PhaseHandler):
             return True
         return self._return_to_base(client, state)
 
+    _INTERIOR_PASSABLE = ("air", "cave_air", "grass", "snow", "torch")
+
+    def _standable_interior_target(
+        self,
+        client,
+        preferred: tuple,
+        interior_bounds: tuple,
+        floor_y: int,
+    ) -> tuple:
+        """Pick an interior block the player can actually stand on.
+
+        The block directly inside the door is not guaranteed to be free. Live:
+        Bot10's (87, 64, 164) was solid dirt, so the interior goal was
+        unreachable by construction -- and because ``allowBreak`` is disabled
+        just before the approach, Baritone could not clear it either. "Return
+        to base for protected smelting" failed 500+ times while the bot stood
+        at the open doorway two blocks away. Fall back to any interior column
+        with a free body and head slot.
+        """
+
+        def passable(x: int, y: int, z: int) -> bool:
+            try:
+                block = client.transport.dispatch(
+                    "get_block", {"x": x, "y": y, "z": z}
+                )
+            except Exception:
+                return False
+            return any(
+                token in str(block.get("id", ""))
+                for token in self._INTERIOR_PASSABLE
+            )
+
+        candidates = [preferred] + [
+            (cx, floor_y, cz)
+            for cz in interior_bounds[1]
+            for cx in interior_bounds[0]
+            if (cx, floor_y, cz) != preferred
+        ]
+        for candidate in candidates:
+            if passable(*candidate) and passable(
+                candidate[0], candidate[1] + 1, candidate[2]
+            ):
+                if candidate != preferred:
+                    print(
+                        f"  Interior block {preferred} is obstructed; "
+                        f"entering via {candidate} instead."
+                    )
+                return candidate
+        return preferred
+
     def _return_to_base(self, client, state: StateManager) -> bool:
         """Return to the checkpointed starter-house interior."""
         structures = state.custom_data.get("structures", {})
@@ -418,7 +468,12 @@ class FoodAndIronHandler(PhaseHandler):
         door = house.get("door") or [x + 3, y + 1, z]
         door = tuple(int(value) for value in door)
         outside = (door[0], door[1], door[2] - 2)
-        inside = (door[0], door[1], door[2] + 1)
+        inside = self._standable_interior_target(
+            client,
+            (door[0], door[1], door[2] + 1),
+            interior_bounds,
+            y + 1,
+        )
         print(f"  Returning to starter-house doorway via {outside}...")
         if not goto(
             client,
@@ -473,7 +528,13 @@ class FoodAndIronHandler(PhaseHandler):
             client.transport.dispatch("chat", {"message": "#set allowBreak true"})
 
         if not entered:
-            return False
+            # A 0.25 tolerance demands one exact block, but Baritone routinely
+            # parks a block off inside the same room. The interior-bounds test
+            # below is the real success criterion, and it already excludes the
+            # doorway itself -- so the "don't stop in the open door" concern
+            # that motivated the tight tolerance still holds. Hard-failing here
+            # instead discarded genuine arrivals.
+            print("  Exact interior block not reached; checking interior bounds...")
 
         arrived = self._read_state(client, "Return to base arrival check")
         if arrived is None:
