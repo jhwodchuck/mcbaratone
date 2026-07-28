@@ -295,9 +295,7 @@ class EndGameAutomator:
                     return False
 
                 phase = obj.phase
-                self.planner.mark_active(obj)
-                self._persist_objective_progress()
-                self.state.set_phase(phase)  # keeps checkpoint / Suite 1200 current_phase meaningful
+                self._activate_objective(obj)
 
                 if self.on_phase_start:
                     self.on_phase_start(phase)
@@ -564,6 +562,13 @@ class EndGameAutomator:
             p.name for p in self.planner.completed_phases()
         ]
         self.state.custom_data["objective_runtime"] = self.planner.runtime_state()
+
+    def _activate_objective(self, objective) -> None:
+        """Persist ownership and its consumed attempt before gameplay starts."""
+        self.planner.mark_active(objective)
+        self.state.set_phase(objective.phase)
+        self._persist_objective_progress()
+        self._save_checkpoint()
     
     def _handle_death_recovery(self) -> bool:
         """Handle death and stop the run if recovery cannot be proven safe."""

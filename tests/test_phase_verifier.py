@@ -257,6 +257,27 @@ def test_automator_persists_and_restores_objective_failure_budget(tmp_path):
     assert recovered.last_evidence == "durable-evidence"
 
 
+def test_objective_activation_checkpoints_consumed_attempt_before_work(tmp_path):
+    _client, _resources, state, _verifier = make_verifier(tmp_path)
+    automator = object.__new__(EndGameAutomator)
+    automator.state = state
+    automator.planner = ObjectivePlanner(default_objectives())
+    saves = []
+    automator._save_checkpoint = lambda: saves.append(
+        state.custom_data["objective_runtime"]["BRIDGE_CHECK"]["attempts"]
+    )
+    objective = automator.planner._by_phase[Phase.BRIDGE_CHECK]
+
+    automator._activate_objective(objective)
+
+    assert state.get_current_phase() is Phase.BRIDGE_CHECK
+    assert saves == [1]
+    assert (
+        state.custom_data["objective_runtime"]["BRIDGE_CHECK"]["status"]
+        == "ACTIVE"
+    )
+
+
 def test_resource_refresh_reports_inventory_for_durable_observation(tmp_path):
     inventory = [{"id": "minecraft:cobblestone", "count": 32}]
     _client, resources, state, _verifier = make_verifier(
