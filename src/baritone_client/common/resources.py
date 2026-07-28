@@ -576,8 +576,14 @@ def gather_wood(
             maximum_radius=float(max_distance_from_origin or 96.0),
         )
         major_stalls = 0
-        
-        while time.time() - start < timeout:
+        # Seconds spent evading/relocating rather than gathering. Defence is
+        # not work, and charging it against the gathering budget is what let a
+        # single camped mob reduce output to exactly zero -- see the credit
+        # site below. Capped at one extra `timeout` so a permanently contested
+        # area still terminates instead of looping forever.
+        defense_seconds = 0.0
+
+        while time.time() - start - defense_seconds < timeout:
             if free_inventory_slots(client) < 2:
                 client.transport.dispatch("cancel", {})
                 if not _reserve_gathering_inventory(client):
@@ -637,15 +643,28 @@ def gather_wood(
                  print("DEBUG: Hostile entered bounded wood-gathering radius")
                  client.transport.dispatch("cancel", {})
                  return False
-            if not abort_on_threats and defend_or_flee(client):
-                 print("DEBUG: Wood gathering interrupted by defense logic. Resuming mining...")
-                 # Re-issue mine command just in case
-                 client.transport.dispatch("mine", {"blocks": LOG_BLOCKS, "quantity": needed + 4})
-                 time.sleep(2)
-                 idle_checks = 0
-                 stalled_checks = 0
-                 exploring = False
-                 continue
+            if not abort_on_threats:
+                defense_started = time.time()
+                if defend_or_flee(client):
+                    # Credit back the time defence consumed. A creeper camped
+                    # near the work area triggers evade -> "relocate 28 blocks
+                    # away" -> walk back, which costs far more of the budget
+                    # than the old short flee did. Live: Bot07/Bot08 burned
+                    # every 180s window on 4-5 such cycles and hit
+                    # "gather_wood timeout" with 0 logs, every attempt, for a
+                    # day -- wood stuck at 0/64 while health stayed 20/20.
+                    defense_seconds = min(
+                        defense_seconds + (time.time() - defense_started),
+                        float(timeout),
+                    )
+                    print("DEBUG: Wood gathering interrupted by defense logic. Resuming mining...")
+                    # Re-issue mine command just in case
+                    client.transport.dispatch("mine", {"blocks": LOG_BLOCKS, "quantity": needed + 4})
+                    time.sleep(2)
+                    idle_checks = 0
+                    stalled_checks = 0
+                    exploring = False
+                    continue
 
             # Fail Fast: Check if Baritone gave up (is_pathing = False)
             state = _read_state_optional(client, retries=3, label="Wood gather pathing state")

@@ -1397,3 +1397,60 @@ def test_ensure_supplies_yields_when_health_cannot_recover(monkeypatch):
 
     with pytest.raises(resources.SurvivalRecoveryRequired):
         resources.ensure_supplies(client, {"minecraft:wooden_pickaxe": 1})
+
+
+def test_wood_gathering_does_not_charge_defense_time_to_its_budget(monkeypatch):
+    """A mob camped near the work area triggers evade -> relocate -> walk
+    back, which eats far more of the gathering window than a short flee did.
+    Live: Bot07/Bot08 spent every 180s window on 4-5 such cycles, hit
+    "gather_wood timeout" with 0 logs on every single attempt for a full day,
+    and sat at wood=0/64 while showing 20/20 health the whole time. Defence is
+    not gathering, so its cost must not be billed to the gathering budget."""
+    from baritone_client.common import combat
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(resources.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(resources.time, "sleep", lambda _s: None)
+
+    class SteadyTransport(RecordingTransport):
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "world_time": 1000,
+                    "health": 20,
+                    "food_level": 20,
+                    "is_pathing": True,
+                    "block_position": {"x": 0, "y": 64, "z": 0},
+                }
+            return {}
+
+    transport = SteadyTransport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(resources, "count_item", lambda *_a, **_k: 0)
+    monkeypatch.setattr(resources, "_ensure_outdoor_daylight", lambda *_a: True)
+    monkeypatch.setattr(resources, "_start_mine_process", lambda *_a: None)
+    monkeypatch.setattr(resources, "_reserve_gathering_inventory", lambda *_a: True)
+    monkeypatch.setattr(resources, "free_inventory_slots", lambda *_a: 32)
+
+    defense_calls = []
+
+    def fake_defend(_client):
+        defense_calls.append(True)
+        clock["t"] += 40.0  # each evade/relocate cycle burns 40s
+        return True
+
+    monkeypatch.setattr(combat, "defend_or_flee", fake_defend)
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [])
+
+    resources.gather_wood(client, count=6, timeout=100)
+
+    # Billing defence to the budget allows only ~2 cycles before the 100s
+    # window closes. Crediting it back must allow meaningfully more, so the
+    # bot still gets real working time in a contested area.
+    assert len(defense_calls) > 3, (
+        f"defence time still charged to the gathering budget "
+        f"(only {len(defense_calls)} cycles fit)"
+    )
+    # ...but the credit is capped, so a permanently contested area terminates.
+    assert len(defense_calls) < 12, "budget credit must remain bounded"
