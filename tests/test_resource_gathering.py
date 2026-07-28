@@ -1473,7 +1473,9 @@ def test_marooned_wood_gatherer_attempts_lower_surface_egress(monkeypatch):
                     "world_time": 1000,
                     "health": 20,
                     "food_level": 20,
-                    "is_pathing": False,  # Baritone gave up
+                    # Baritone reports it is "pathing" while working flee
+                    # goals, so a pinned bot looks busy while going nowhere.
+                    "is_pathing": True,
                     "block_position": {"x": -9, "y": 85, "z": -7},  # never moves
                 }
             return {}
@@ -1537,7 +1539,7 @@ def test_marooned_egress_fires_even_while_defence_interrupts_every_tick(monkeypa
                     "world_time": 1000,
                     "health": 20,
                     "food_level": 20,
-                    "is_pathing": False,
+                    "is_pathing": True,
                     "block_position": {"x": -9, "y": 85, "z": -7},
                 }
             return {}

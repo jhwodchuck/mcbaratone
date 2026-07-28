@@ -654,12 +654,15 @@ def gather_wood(
             # every side, burning ~4000 cancelled actions at wood=0/64 while
             # a creeper camped beside them. Getting off the island is what
             # resolves both problems, so it has to be checked first.
+            # Deliberately NOT gated on is_pathing. Baritone reports
+            # is_pathing=True while it works through flee goals, so a bot
+            # pinned on a pillar looks "busy" the whole time it is going
+            # nowhere -- an is_pathing guard here never fired live. Sustained
+            # zero displacement is the honest signal. The threshold is high
+            # enough (~24s+ of no movement) that normal work, including
+            # standing still to break a log, never trips it.
             maroon_watch.observe(state)
-            if (
-                not state.get("is_pathing", True)
-                and maroon_watch.stalled(6)
-                and not marooned_egress_attempted
-            ):
+            if maroon_watch.stalled(12) and not marooned_egress_attempted:
                 marooned_egress_attempted = True
                 print(
                     "DEBUG: Idle and stationary; treating as marooned and "
