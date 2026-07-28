@@ -387,53 +387,53 @@ class FoodAndIronHandler(PhaseHandler):
 
     _INTERIOR_PASSABLE = ("air", "cave_air", "grass", "snow", "torch")
 
-    def _standable_interior_target(
-        self,
-        client,
-        preferred: tuple,
-        interior_bounds: tuple,
-        floor_y: int,
-    ) -> tuple:
-        """Pick an interior block the player can actually stand on.
+    def _block_is_passable(self, client, x: int, y: int, z: int) -> bool:
+        try:
+            block = client.transport.dispatch("get_block", {"x": x, "y": y, "z": z})
+        except Exception:
+            return False
+        return any(
+            token in str(block.get("id", "")) for token in self._INTERIOR_PASSABLE
+        )
 
-        The block directly inside the door is not guaranteed to be free. Live:
-        Bot10's (87, 64, 164) was solid dirt, so the interior goal was
-        unreachable by construction -- and because ``allowBreak`` is disabled
-        just before the approach, Baritone could not clear it either. "Return
-        to base for protected smelting" failed 500+ times while the bot stood
-        at the open doorway two blocks away. Fall back to any interior column
-        with a free body and head slot.
+    def _clear_doorway_entry(self, client, entry: tuple) -> bool:
+        """Dig out the block just inside the door when it is sealed shut.
+
+        The doorway is the only opening in the starter house, and the wall row
+        leaves no diagonal around the block behind it -- so if that block is
+        solid the interior is simply unreachable, no matter which interior
+        target is chosen. Live: Bot10's (87, 64, 164) was dirt, and "Return to
+        base for protected smelting" failed 500+ times while the bot stood at
+        its own open front door. ``allowBreak`` is disabled for the approach
+        (so Baritone will not tunnel through walls), which also stops it
+        clearing this block, so break it directly via dig_block instead.
         """
-
-        def passable(x: int, y: int, z: int) -> bool:
+        x, y, z = entry
+        for offset in (0, 1):  # body slot, then head slot
+            target_y = y + offset
+            if self._block_is_passable(client, x, target_y, z):
+                continue
+            print(f"  Doorway entry {(x, target_y, z)} is sealed; clearing it...")
             try:
-                block = client.transport.dispatch(
-                    "get_block", {"x": x, "y": y, "z": z}
+                client.transport.dispatch(
+                    "look_at", {"x": x + 0.5, "y": target_y + 0.5, "z": z + 0.5}
                 )
-            except Exception:
+                client.transport.dispatch(
+                    "dig_block",
+                    {"x": x, "y": target_y, "z": z, "max_ticks": 160},
+                )
+            except Exception as exc:
+                print(f"  Could not clear doorway entry: {exc}")
                 return False
-            return any(
-                token in str(block.get("id", ""))
-                for token in self._INTERIOR_PASSABLE
-            )
-
-        candidates = [preferred] + [
-            (cx, floor_y, cz)
-            for cz in interior_bounds[1]
-            for cx in interior_bounds[0]
-            if (cx, floor_y, cz) != preferred
-        ]
-        for candidate in candidates:
-            if passable(*candidate) and passable(
-                candidate[0], candidate[1] + 1, candidate[2]
-            ):
-                if candidate != preferred:
-                    print(
-                        f"  Interior block {preferred} is obstructed; "
-                        f"entering via {candidate} instead."
-                    )
-                return candidate
-        return preferred
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                time.sleep(0.4)
+                if self._block_is_passable(client, x, target_y, z):
+                    break
+            else:
+                print(f"  Doorway entry {(x, target_y, z)} did not clear.")
+                return False
+        return True
 
     def _return_to_base(self, client, state: StateManager) -> bool:
         """Return to the checkpointed starter-house interior."""
@@ -468,12 +468,7 @@ class FoodAndIronHandler(PhaseHandler):
         door = house.get("door") or [x + 3, y + 1, z]
         door = tuple(int(value) for value in door)
         outside = (door[0], door[1], door[2] - 2)
-        inside = self._standable_interior_target(
-            client,
-            (door[0], door[1], door[2] + 1),
-            interior_bounds,
-            y + 1,
-        )
+        inside = (door[0], door[1], door[2] + 1)
         print(f"  Returning to starter-house doorway via {outside}...")
         if not goto(
             client,
@@ -511,6 +506,10 @@ class FoodAndIronHandler(PhaseHandler):
                     {"x": door[0], "y": door[1], "z": door[2]},
                 )
                 time.sleep(0.25)
+            # The door can be open and the house still be sealed: the block
+            # behind it may be solid, and the wall row leaves no diagonal
+            # around it. Clear it before pathing, or the goal is unreachable.
+            self._clear_doorway_entry(client, inside)
             entered = goto(
                 client,
                 inside[0],

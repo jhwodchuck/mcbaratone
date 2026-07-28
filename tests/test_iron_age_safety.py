@@ -2079,59 +2079,58 @@ def test_descent_still_proceeds_below_regen_threshold_when_food_is_carried(
     assert "continuing with fallback food=9" in output
 
 
-def test_return_to_base_routes_around_an_obstructed_interior_block(monkeypatch):
-    """The block directly inside the door is not guaranteed to be free. Live:
-    Bot10's (87,64,164) was solid dirt, so the interior goal was unreachable by
-    construction -- and allowBreak is disabled just before the approach, so
-    Baritone could not clear it either. "Return to base for protected smelting"
-    failed 500+ times while the bot stood at the open doorway two blocks away."""
-    handler = iron_age.FoodAndIronHandler()
-    # Interior floor y=64; everything solid except the column at (88, 64, 165).
-    free = {(88, 64, 165), (88, 65, 165)}
-
+def _doorway_client(solid):
+    """Client whose world has `solid` blocks; dig_block clears them."""
     class Transport:
         def __init__(self):
             self.calls = []
+            self.solid = set(solid)
 
         def dispatch(self, route, payload):
             self.calls.append((route, payload))
             if route == "get_block":
                 key = (payload["x"], payload["y"], payload["z"])
-                return {"id": "minecraft:air" if key in free else "minecraft:dirt"}
+                return {"id": "minecraft:dirt" if key in self.solid else "minecraft:air"}
+            if route == "dig_block":
+                self.solid.discard((payload["x"], payload["y"], payload["z"]))
             return {}
 
-    client = SimpleNamespace(transport=Transport())
-    interior_bounds = (range(85, 90), range(164, 169))
-
-    chosen = handler._standable_interior_target(
-        client,
-        (87, 64, 164),  # the obstructed preferred block
-        interior_bounds,
-        64,
-    )
-
-    assert chosen == (88, 64, 165)
+    transport = Transport()
+    return SimpleNamespace(transport=transport), transport
 
 
-def test_return_to_base_keeps_the_preferred_interior_block_when_it_is_free(monkeypatch):
+def test_sealed_doorway_entry_is_dug_out(monkeypatch):
+    """The doorway is the starter house's only opening and the wall row leaves
+    no diagonal around the block behind it, so a solid block there makes the
+    interior unreachable no matter which interior target is chosen. Live:
+    Bot10's (87,64,164) was dirt and "Return to base for protected smelting"
+    failed 500+ times while the bot stood at its own open front door.
+    allowBreak is disabled for the approach, so Baritone cannot clear it."""
+    monkeypatch.setattr(iron_age.time, "sleep", lambda _s: None)
+    client, transport = _doorway_client({(87, 64, 164)})
     handler = iron_age.FoodAndIronHandler()
 
-    class Transport:
-        def __init__(self):
-            self.calls = []
+    assert handler._clear_doorway_entry(client, (87, 64, 164))
 
-        def dispatch(self, route, payload):
-            self.calls.append((route, payload))
-            if route == "get_block":
-                return {"id": "minecraft:air"}
-            return {}
+    dug = [p for r, p in transport.calls if r == "dig_block"]
+    assert {(d["x"], d["y"], d["z"]) for d in dug} == {(87, 64, 164)}
 
-    client = SimpleNamespace(transport=Transport())
-    chosen = handler._standable_interior_target(
-        client,
-        (87, 64, 164),
-        (range(85, 90), range(164, 169)),
-        64,
-    )
 
-    assert chosen == (87, 64, 164)
+def test_clear_doorway_entry_also_frees_the_head_slot(monkeypatch):
+    monkeypatch.setattr(iron_age.time, "sleep", lambda _s: None)
+    client, transport = _doorway_client({(87, 64, 164), (87, 65, 164)})
+    handler = iron_age.FoodAndIronHandler()
+
+    assert handler._clear_doorway_entry(client, (87, 64, 164))
+
+    dug = {(p["x"], p["y"], p["z"]) for r, p in transport.calls if r == "dig_block"}
+    assert dug == {(87, 64, 164), (87, 65, 164)}
+
+
+def test_clear_doorway_entry_is_a_noop_when_already_open(monkeypatch):
+    monkeypatch.setattr(iron_age.time, "sleep", lambda _s: None)
+    client, transport = _doorway_client(set())
+    handler = iron_age.FoodAndIronHandler()
+
+    assert handler._clear_doorway_entry(client, (87, 64, 164))
+    assert not any(r == "dig_block" for r, _ in transport.calls)
