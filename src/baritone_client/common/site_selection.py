@@ -220,6 +220,14 @@ def find_flat_ground(
                     expected_y=surface_y,
                     goto=safe_goto,
                 )
+                if recovered is None:
+                    from .build_site_recovery import excavate_surface_egress
+
+                    recovered = excavate_surface_egress(
+                        client,
+                        origin=(player_x, player_y, player_z),
+                        expected_y=surface_y,
+                    )
                 if recovered is not None:
                     player_x, player_y, player_z = recovered
                     surface_y = player_y

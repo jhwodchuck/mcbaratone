@@ -166,6 +166,118 @@ def test_surface_recovery_uses_loaded_dry_terrain_before_surface_command():
     assert destinations == [(20, 70, 4)]
 
 
+def test_surface_recovery_excavates_when_all_surface_routes_fail(monkeypatch):
+    from baritone_client.common import build_site_recovery
+
+    class Transport:
+        def __init__(self):
+            self.state_reads = 0
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                self.state_reads += 1
+                y = 62 if self.state_reads == 1 else 68
+                return {"block_position": {"x": 424, "y": y, "z": 1}}
+            return {}
+
+    transport = Transport()
+    monkeypatch.setattr(build_site_recovery.time, "sleep", lambda _seconds: None)
+    clock = iter((0.0, 0.0, 1.0))
+    monkeypatch.setattr(build_site_recovery.time, "monotonic", clock.__next__)
+
+    assert build_site_recovery.excavate_surface_egress(
+        SimpleNamespace(transport=transport),
+        origin=(424, 62, 1),
+        expected_y=70,
+        timeout_per_attempt=10.0,
+    ) == (424, 68, 1)
+    assert any(route == "tunnel" for route, _payload in transport.calls)
+
+
+def test_build_site_relocation_loads_a_different_dry_view(monkeypatch):
+    from baritone_client.common import build_site_recovery
+
+    class Transport:
+        def __init__(self):
+            self.state_reads = 0
+
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                self.state_reads += 1
+                x = 0 if self.state_reads == 1 else 24
+                return {"block_position": {"x": x, "y": 64, "z": 0}}
+            if route == "find_blocks":
+                return {"found": [{"x": 24, "y": 63, "z": 0}]}
+            return {}
+
+    destinations = []
+    monkeypatch.setattr(
+        build_site_recovery, "destination_safe", lambda *_args: True
+    )
+
+    assert build_site_recovery.relocate_build_site_search(
+        SimpleNamespace(transport=Transport()),
+        attempt=1,
+        goto=lambda _client, *position, **_kwargs: destinations.append(position)
+        or True,
+    )
+    assert destinations == [(24, 64, 0)]
+
+
+def test_base_phase_relocates_when_local_view_has_no_build_site(monkeypatch):
+    class Resources:
+        phase_ready_result = lambda *_args, **_kwargs: None
+        check_phase_requirements = lambda *_args, **_kwargs: {}
+        get_summary = lambda *_args, **_kwargs: {"inventory": {}}
+        refresh_inventory = lambda *_args, **_kwargs: None
+
+    class State:
+        def __init__(self):
+            self.custom_data = {}
+            self.saved = 0
+
+        def update_position(self, *_args):
+            return None
+
+        def save_checkpoint(self, *_args):
+            self.saved += 1
+
+    sites = iter((None, (100, 64, 100)))
+    relocated = []
+
+    def find_site(*_args, **kwargs):
+        return next(sites) if kwargs.get("footprint") == 7 else None
+
+    monkeypatch.setattr(base_construction, "recover_health", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        base_construction, "wait_for_safe_daylight", lambda *_a, **_k: True
+    )
+    monkeypatch.setattr(base_construction, "find_flat_ground", find_site)
+    monkeypatch.setattr(
+        "baritone_client.common.build_site_recovery.relocate_build_site_search",
+        lambda *_a, **_k: relocated.append(True) or True,
+    )
+    monkeypatch.setattr(base_construction, "build_good_house", lambda *_a: True)
+    monkeypatch.setattr(base_construction, "setup_base", lambda *_a: (True, None))
+    monkeypatch.setattr(
+        base_construction, "establish_wheat_farm", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        base_construction, "get_player_pos", lambda *_a: (100, 64, 100)
+    )
+
+    state = State()
+    result = BaseConstructionHandler().execute(
+        SimpleNamespace(), Resources(), state
+    )
+
+    assert result.success
+    assert relocated == [True]
+    assert state.custom_data["base_location"] == (100, 64, 100)
+
+
 def test_build_survival_margin_rejects_low_food():
     client = SimpleNamespace(
         transport=SimpleNamespace(
@@ -713,6 +825,7 @@ def test_low_hunger_house_failure_yields_without_charging_repair_attempt(monkeyp
         )
 
     assert "base_construction_repair_attempts" not in state.custom_data
+    assert state.custom_data["base_survival_recovery_failures"] == 1
 
 
 def test_low_health_after_house_failure_yields_before_repair_attempt(monkeypatch):
@@ -735,6 +848,50 @@ def test_low_health_after_house_failure_yields_before_repair_attempt(monkeypatch
         BaseConstructionHandler()._recover_build_survival_or_yield(
             SimpleNamespace(transport=transport)
         )
+
+
+def test_repeated_survival_abort_relocates_unsafe_build_origin(monkeypatch):
+    class State:
+        def __init__(self):
+            self.custom_data = {
+                "base_build_origin": [283, 64, 43],
+                "base_survival_recovery_failures": 2,
+            }
+            self.saved = 0
+
+        def save_checkpoint(self, *_args):
+            self.saved += 1
+
+    transport = SimpleNamespace(
+        dispatch=lambda route, _payload: {"health": 20, "food_level": 11}
+    )
+    monkeypatch.setattr(base_construction, "eat_until_hunger", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        base_construction, "acquire_emergency_food", lambda *_a, **_k: False
+    )
+    relocation = {}
+
+    def relocate(*_args, **kwargs):
+        relocation.update(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        "baritone_client.common.build_site_recovery.relocate_build_site_search",
+        relocate,
+    )
+
+    state = State()
+    with pytest.raises(SurvivalRecoveryRequired):
+        BaseConstructionHandler()._recover_build_survival_or_yield(
+            SimpleNamespace(transport=transport),
+            state=state,
+            inventory_summary={},
+        )
+
+    assert "base_build_origin" not in state.custom_data
+    assert "base_survival_recovery_failures" not in state.custom_data
+    assert relocation["attempt_limit"] == 2
+    assert state.saved == 1
 
 
 def test_surface_ascent_falls_back_to_a_nearby_column(monkeypatch):

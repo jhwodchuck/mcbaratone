@@ -130,8 +130,11 @@ class BaseConstructionHandler(PhaseHandler):
                 minimum_health=12.0,
                 exploration_center=self._recovery_center(state),
             ):
-                raise SurvivalRecoveryRequired(
-                    "base construction health remains below 12 after bounded recovery"
+                self._raise_after_survival_failure(
+                    client,
+                    state=state,
+                    inventory_summary=resources.get_summary()["inventory"],
+                    reason="base construction health remains below 12 after bounded recovery",
                 )
 
         # A base build starts with exposed gathering and many slow placement
@@ -153,19 +156,9 @@ class BaseConstructionHandler(PhaseHandler):
         # Reuse an in-progress build origin after a failure or process restart.
         # Selecting a fresh flat site on every retry strands the previous shell
         # and consumes a complete second set of materials.
-        saved_origin = state.custom_data.get("base_build_origin")
-        if isinstance(saved_origin, (list, tuple)) and len(saved_origin) == 3:
-            location = tuple(int(value) for value in saved_origin)
-            print(f"  Resuming starter house at {location}")
-        else:
-            location = find_flat_ground(client, radius=24, footprint=7)
-            if location is None:
-                return TaskResult.fail("No suitable flat ground location found for base")
-            state.custom_data["base_build_origin"] = list(location)
-            px, py, pz = get_player_pos(client)
-            state.update_position(px, py, pz)
-            state.save_checkpoint(resources.get_summary()["inventory"])
-            print(f"  Saved in-progress starter house origin {location}")
+        location = self._resolve_build_location(client, resources, state)
+        if location is None:
+            return TaskResult.fail("No suitable flat ground location found for base")
 
         x, y, z = location
 
@@ -209,6 +202,8 @@ class BaseConstructionHandler(PhaseHandler):
             # cannot restore a working margin.
             self._recover_build_survival_or_yield(
                 client,
+                state=state,
+                inventory_summary=resources.get_summary()["inventory"],
                 recovery_center=(x, z),
             )
             repair_attempt += 1
@@ -341,6 +336,45 @@ class BaseConstructionHandler(PhaseHandler):
         )
 
     @staticmethod
+    def _resolve_build_location(
+        client,
+        resources: ResourceManager,
+        state: StateManager,
+    ) -> Optional[tuple[int, int, int]]:
+        """Reuse a saved origin or relocate until a new footprint is visible."""
+        saved_origin = state.custom_data.get("base_build_origin")
+        if isinstance(saved_origin, (list, tuple)) and len(saved_origin) == 3:
+            location = tuple(int(value) for value in saved_origin)
+            print(f"  Resuming starter house at {location}")
+            return location
+
+        location = find_flat_ground(client, radius=24, footprint=7)
+        if location is None:
+            from ...common.build_site_recovery import relocate_build_site_search
+
+            search_attempt = int(
+                state.custom_data.get("base_site_search_attempts", 0)
+            ) + 1
+            state.custom_data["base_site_search_attempts"] = search_attempt
+            if relocate_build_site_search(
+                client,
+                attempt=search_attempt,
+                goto=goto,
+            ):
+                location = find_flat_ground(client, radius=24, footprint=7)
+            if location is None:
+                state.save_checkpoint(resources.get_summary()["inventory"])
+                return None
+
+        state.custom_data.pop("base_site_search_attempts", None)
+        state.custom_data["base_build_origin"] = list(location)
+        px, py, pz = get_player_pos(client)
+        state.update_position(px, py, pz)
+        state.save_checkpoint(resources.get_summary()["inventory"])
+        print(f"  Saved in-progress starter house origin {location}")
+        return location
+
+    @staticmethod
     def _within_staging_band(client, x: int, y: int, z: int):
         """Return ``(staged, py)`` for the current position vs the house band.
 
@@ -416,11 +450,14 @@ class BaseConstructionHandler(PhaseHandler):
         staged, _ = cls._within_staging_band(client, x, y, z)
         return bool(staged)
 
-    @staticmethod
+    @classmethod
     def _recover_build_survival_or_yield(
+        cls,
         client,
         minimum_food: int = 12,
         recovery_center: Optional[tuple[float, float]] = None,
+        state: Optional[StateManager] = None,
+        inventory_summary: Optional[dict] = None,
     ) -> None:
         """Restore building health/hunger or yield without charging a retry."""
         transport = getattr(client, "transport", None)
@@ -459,11 +496,53 @@ class BaseConstructionHandler(PhaseHandler):
                 exploration_center=recovery_center,
             )
         if recovered:
+            if state is not None:
+                state.custom_data.pop("base_survival_recovery_failures", None)
             return
-        raise SurvivalRecoveryRequired(
-            "base construction health or hunger remains below its working margin "
-            "after bounded recovery"
+        cls._raise_after_survival_failure(
+            client,
+            state=state,
+            inventory_summary=inventory_summary,
+            reason=(
+                "base construction health or hunger remains below its working "
+                "margin after bounded recovery"
+            ),
         )
+
+    @staticmethod
+    def _raise_after_survival_failure(
+        client,
+        *,
+        state: Optional[StateManager],
+        inventory_summary: Optional[dict],
+        reason: str,
+    ) -> None:
+        """Persist repeated recovery failures and leave an unsafe build area."""
+        if state is None:
+            raise SurvivalRecoveryRequired(reason)
+        failures = int(
+            state.custom_data.get("base_survival_recovery_failures", 0)
+        ) + 1
+        state.custom_data["base_survival_recovery_failures"] = failures
+        if failures >= 3:
+            from ...common.build_site_recovery import relocate_build_site_search
+
+            if relocate_build_site_search(
+                client,
+                attempt=failures,
+                goto=goto,
+                attempt_limit=2,
+            ):
+                state.custom_data.pop("base_build_origin", None)
+                state.custom_data.pop("base_construction_repair_attempts", None)
+                state.custom_data.pop("base_site_return_failures", None)
+                state.custom_data.pop("base_survival_recovery_failures", None)
+                print(
+                    "  Repeated survival recovery failed at this build origin; "
+                    "relocated to safer terrain and retired the unsafe site."
+                )
+        state.save_checkpoint(inventory_summary or {})
+        raise SurvivalRecoveryRequired(reason)
 
     def _summarize_starter_house_progress(self, client, x: int, y: int, z: int) -> dict[str, int | bool]:
         """Return current starter-house completion state by block role."""
