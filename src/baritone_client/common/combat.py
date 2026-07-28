@@ -1381,13 +1381,21 @@ def _relocate_away_from(
     any progress (~1700 cancelled actions each, zero wood gathered).
 
     Fighting is not an option for these threats by policy (a meleed creeper
-    detonates), so break the standoff the only remaining way: pick a point a
-    full ``distance`` blocks along the vector directly away from the threat
-    and let normal pathing take the bot there, out of the mob's aggro range
-    and away from the contested work area.
-    """
-    from .navigation import goto
+    detonates), so break the standoff the only remaining way: head a full
+    ``distance`` blocks along the vector directly away from the threat, out of
+    its aggro range and away from the contested work area.
 
+    Success is measured as *horizontal separation gained from the threat*, not
+    as arrival at an exact block. Two reasons, both learned the hard way:
+    ``goto``'s arrival test is 3D, so passing the player's current Y as the
+    destination Y makes it unreachable-by-construction whenever the ground 28
+    blocks away sits more than ``tolerance`` higher or lower; and the goal
+    coordinate itself may be inside terrain or midair. The first version did
+    exactly that and returned False on every single call -- so the caller
+    never reset its evade counter, re-escalated immediately every cycle, and
+    Bot07 climbed to "evasion failed 42x" while never gathering a log. What
+    the caller actually needs to know is "did I get away", so measure that.
+    """
     try:
         state = client.transport.dispatch("get_state", {})
     except Exception:
@@ -1397,10 +1405,11 @@ def _relocate_away_from(
     if threat_position is None or not position:
         return False
     px = float(position.get("x", 0) or 0)
-    py = float(position.get("y", 64) or 64)
     pz = float(position.get("z", 0) or 0)
-    dx = px - float(threat_position[0])
-    dz = pz - float(threat_position[2])
+    threat_x = float(threat_position[0])
+    threat_z = float(threat_position[2])
+    dx = px - threat_x
+    dz = pz - threat_z
     norm = (dx * dx + dz * dz) ** 0.5
     if norm < 0.5:
         # Standing essentially on top of the threat gives no usable bearing.
@@ -1409,18 +1418,36 @@ def _relocate_away_from(
     target_z = int(pz + dz / norm * distance)
     print(
         f"DEFENSE: relocating {distance} blocks away from "
-        f"{threat.get('type')} to ({target_x}, {int(py)}, {target_z})"
+        f"{threat.get('type')} toward ({target_x}, {target_z})"
     )
-    return bool(
-        goto(
-            client,
-            target_x,
-            int(py),
-            target_z,
-            timeout=timeout,
-            tolerance=4.0,
-        )
+    # Two-argument #goto is Y-agnostic: Baritone resolves a walkable
+    # destination near that column instead of demanding one exact block.
+    client.transport.dispatch(
+        "chat", {"message": f"#goto {target_x} {target_z}"}
     )
+    # Getting clear of the mob's aggro/blast range is the goal; requiring the
+    # full `distance` would fail on any terrain that forces a detour.
+    required_gain = max(8.0, distance * 0.5)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(1.0)
+        try:
+            current = client.transport.dispatch("get_state", {})
+        except Exception:
+            break
+        here = current.get("block_position", current.get("position", {})) or {}
+        if not here:
+            continue
+        separation = (
+            (float(here.get("x", px) or px) - threat_x) ** 2
+            + (float(here.get("z", pz) or pz) - threat_z) ** 2
+        ) ** 0.5
+        if separation - norm >= required_gain:
+            _stop_for_defense(client)
+            print(f"DEFENSE: relocated to {separation:.1f}m from the threat")
+            return True
+    _stop_for_defense(client)
+    return False
 
 
 def _escape_destination_safe(client, x: int, y: int, z: int) -> bool:

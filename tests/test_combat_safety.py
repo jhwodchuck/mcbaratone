@@ -1291,23 +1291,54 @@ def test_repeated_evasion_still_fights_back_against_a_zombie(monkeypatch):
     assert not relocated
 
 
-def test_relocate_away_from_targets_a_point_opposite_the_threat(monkeypatch):
-    """The relocation endpoint must be far enough to leave the contested area
-    (run_away's own candidates top out a few blocks away, which is why the
-    creeper standoff never resolved) and directly away from the threat."""
-    transport = CombatTransport(health=20.0)
+class _RelocateTransport:
+    """Transport whose player walks away from the threat over successive
+    get_state polls, so relocation can observe real separation gain."""
+
+    def __init__(self, positions):
+        self.calls = []
+        self._positions = list(positions)
+
+    def dispatch(self, route, payload):
+        self.calls.append((route, payload))
+        if route == "get_state":
+            x = self._positions[0]
+            if len(self._positions) > 1:
+                self._positions.pop(0)
+            return {"health": 20.0, "block_position": {"x": x, "y": 64, "z": 0}}
+        return {}
+
+
+def test_relocate_heads_directly_away_using_a_y_agnostic_goal(monkeypatch):
+    """The relocation goal must not pin a Y coordinate. goto's arrival test is
+    3D, so passing the player's current Y made the destination unreachable
+    whenever the ground 28 blocks away sat more than `tolerance` higher or
+    lower -- it returned False on every call, the caller never reset its evade
+    counter, and Bot07 climbed to "evasion failed 42x" without gathering a
+    single log. Two-argument #goto lets Baritone resolve a walkable column."""
+    monkeypatch.setattr(combat.time, "sleep", lambda _s: None)
+    # Player starts at x=0 and walks to x=-30; threat sits at x=+5.
+    transport = _RelocateTransport([0, -12, -30])
     client = SimpleNamespace(transport=transport)
-    # Player at origin, threat 5 blocks to the +x side.
     threat = {"id": 5, "type": "minecraft:creeper", "position": {"x": 5, "y": 64, "z": 0}}
-    captured = {}
-
-    def fake_goto(_client, x, y, z, **kwargs):
-        captured.update({"x": x, "y": y, "z": z})
-        return True
-
-    monkeypatch.setattr("baritone_client.common.navigation.goto", fake_goto)
 
     assert combat._relocate_away_from(client, threat, distance=28)
-    # Directly away means -x, and a full 28 blocks out.
-    assert captured["x"] == -28
-    assert captured["z"] == 0
+
+    goals = [
+        payload["message"]
+        for route, payload in transport.calls
+        if route == "chat" and payload.get("message", "").startswith("#goto")
+    ]
+    # Directly away from +x means -x, a full 28 blocks out, and no Y term.
+    assert goals == ["#goto -28 0"]
+
+
+def test_relocate_reports_failure_when_separation_never_grows(monkeypatch):
+    """A bot pinned in place must report failure so the caller can try
+    something else, rather than silently claiming it escaped."""
+    monkeypatch.setattr(combat.time, "sleep", lambda _s: None)
+    transport = _RelocateTransport([0])  # never moves
+    client = SimpleNamespace(transport=transport)
+    threat = {"id": 5, "type": "minecraft:creeper", "position": {"x": 5, "y": 64, "z": 0}}
+
+    assert not combat._relocate_away_from(client, threat, distance=28, timeout=3)
