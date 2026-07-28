@@ -68,7 +68,10 @@ def select_target(
     # at 8.0/7.3 health in lush caves, feet in water, with 8-10 tropical fish
     # inside 128 blocks -- their only food source -- and never targeted one.
     if in_water:
-        target = api.find_entity_by_type(client, list(WATER_FOOD), radius=32)
+        # 64, not something tighter: measured live, the nearest fish to a
+        # starving bot in a lush cave sat at 48.7m, and a radius-48 query
+        # returned nothing at all. A shorter leash simply means never eating.
+        target = api.find_entity_by_type(client, list(WATER_FOOD), radius=64)
         if target is not None:
             return target
 
@@ -186,8 +189,17 @@ def hunt_target(
     target_type = str(target.get("type", ""))
     aquatic = any(water_type in target_type for water_type in WATER_FOOD)
     if aquatic and float(target.get("distance", 999)) >= 4.5:
+        # Scale the follow window to the distance. A flat 8s cannot cover the
+        # ~48m separation measured live in a lush cave, so every attempt
+        # reported "aquatic target could not be reached safely" and the bot
+        # starved beside its only food source. Bounded so a fish that keeps
+        # swimming away still ends the attempt. The drowning reflex inside
+        # the follow loop remains the safety net for the longer swim.
+        approach_timeout = min(
+            30.0, max(8.0, float(target.get("distance", 8.0)) * 0.5)
+        )
         if not api._approach_aquatic_food(
-            client, target_id, target_type, timeout=8.0
+            client, target_id, target_type, timeout=approach_timeout
         ):
             print("RECOVERY: aquatic target could not be reached safely")
             time.sleep(1)

@@ -1372,7 +1372,7 @@ def test_submerged_bot_targets_nearby_fish_immediately(monkeypatch):
     )
 
     assert target is not None and "tropical_fish" in target["type"]
-    assert looked and looked[0][1] == 32, "submerged search should widen to 32"
+    assert looked and looked[0][1] == 64, "submerged search must reach fish ~48m out"
 
 
 def test_dry_bot_still_waits_before_chasing_fish(monkeypatch):
@@ -1407,3 +1407,30 @@ def test_player_is_in_water_reads_the_feet_block():
     client = SimpleNamespace(transport=WaterTransport())
     state = {"block_position": {"x": 0, "y": 62, "z": 0}}
     assert combat._player_is_in_water(client, state)
+
+
+def test_aquatic_approach_window_scales_with_distance(monkeypatch):
+    """A flat 8s follow cannot cover the ~48m separation measured live in a
+    lush cave, so every attempt reported "aquatic target could not be reached
+    safely" and the bot starved beside its only food source."""
+    from baritone_client.common import emergency_food
+
+    seen = {}
+
+    def fake_approach(_c, _id, _type, timeout):
+        seen["timeout"] = timeout
+        return False  # force the early return; we only care about the window
+
+    monkeypatch.setattr(combat, "_approach_aquatic_food", fake_approach)
+    monkeypatch.setattr(emergency_food.time, "sleep", lambda _s: None)
+
+    emergency_food.hunt_target(
+        SimpleNamespace(transport=CombatTransport()),
+        {"id": 3, "type": "minecraft:tropical_fish", "distance": 48.7,
+         "position": {"x": 48, "y": 62, "z": 0}},
+        minimum_health=12.0,
+        recovery_complete=lambda _s=None: False,
+    )
+
+    assert seen["timeout"] > 8.0, "window must grow for a distant fish"
+    assert seen["timeout"] <= 30.0, "and stay bounded"
