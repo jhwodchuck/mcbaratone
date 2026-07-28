@@ -1517,3 +1517,54 @@ def test_surface_egress_altitude_gate_is_configurable():
     # Default gate refuses at y=85 without touching the bridge.
     assert surface_egress.try_lower_surface_egress(client, low_state) is None
     assert not client.transport.calls
+
+
+def test_marooned_egress_fires_even_while_defence_interrupts_every_tick(monkeypatch):
+    """The live failure: Bot07/Bot08 were marooned on the SAME one-block island
+    at (-9,85,-7) with a creeper parked beside them. Defence fired on every
+    loop iteration and `continue`d -- and reset idle_checks to 0 -- so an
+    egress check placed in the idle path was unreachable exactly when needed.
+    Escaping the island is what resolves both the stranding and the creeper,
+    so the maroon check must run before defence, not after it."""
+    from baritone_client.common import resources as res
+    from baritone_client.common import combat
+
+    class StuckTransport(RecordingTransport):
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "world_time": 1000,
+                    "health": 20,
+                    "food_level": 20,
+                    "is_pathing": False,
+                    "block_position": {"x": -9, "y": 85, "z": -7},
+                }
+            return {}
+
+    transport = StuckTransport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(res, "count_item", lambda *_a, **_k: 0)
+    monkeypatch.setattr(res, "_ensure_outdoor_daylight", lambda *_a: True)
+    monkeypatch.setattr(res, "_start_mine_process", lambda *_a: None)
+    monkeypatch.setattr(res, "_reserve_gathering_inventory", lambda *_a: True)
+    monkeypatch.setattr(res, "free_inventory_slots", lambda *_a: 32)
+    monkeypatch.setattr(res, "_find_blocks_optional", lambda *_a, **_k: {"found": []})
+    monkeypatch.setattr(res.time, "sleep", lambda _s: None)
+    # A creeper is always present: defence handles it and reports "interrupted"
+    # on every single iteration, exactly as it did live.
+    monkeypatch.setattr(combat, "defend_or_flee", lambda _c: True)
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [])
+
+    egress_calls = []
+    monkeypatch.setattr(
+        res,
+        "try_lower_surface_egress",
+        lambda _c, _s, **kw: egress_calls.append(kw) or None,
+    )
+
+    res.gather_wood(client, count=6, timeout=40)
+
+    assert egress_calls, (
+        "marooned egress must still fire when defence interrupts every tick"
+    )
