@@ -1568,3 +1568,88 @@ def test_marooned_egress_fires_even_while_defence_interrupts_every_tick(monkeypa
     assert egress_calls, (
         "marooned egress must still fire when defence interrupts every tick"
     )
+
+
+def _drop_client(column, health=20.0, pos=(-9, 85, -7), own=None):
+    """column: {y: block_id}, applied to every column EXCEPT the bot's own
+    (stepping off a pillar lands the bot in an adjacent column)."""
+    own = own or {}
+
+    class T(RecordingTransport):
+        def __init__(self):
+            super().__init__()
+            self.here = list(pos)
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "health": health,
+                    "block_position": {
+                        "x": self.here[0], "y": self.here[1], "z": self.here[2]
+                    },
+                }
+            if route == "get_block":
+                if (payload["x"], payload["z"]) == (pos[0], pos[2]):
+                    return {"id": own.get(payload["y"], "minecraft:air")}
+                return {"id": column.get(payload["y"], "minecraft:air")}
+            return {}
+
+    t = T()
+    return SimpleNamespace(transport=t), t
+
+
+def test_survivable_drop_escapes_a_pillar_with_an_empty_inventory(monkeypatch):
+    """Live: Bot07/Bot08 stood on a 3-block cobblestone pillar they built
+    themselves at (-9,85,-7) with a completely empty inventory -- no blocks to
+    bridge with, no pickaxe to mine down. Every other escape needs materials,
+    so all of them no-op'd and both burned ~4000 cancelled actions at
+    wood=0/64. An 11-block drop costs ~4 hearts at full health."""
+    from baritone_client.common import surface_egress
+
+    # Pillar under the bot, 8-block air gap, stone floor from y=73 down.
+    pillar = {84: "minecraft:cobblestone", 83: "minecraft:cobblestone",
+              82: "minecraft:cobblestone"}
+    column = {y: "minecraft:stone" for y in range(73, 61, -1)}
+    client, transport = _drop_client(column, own=pillar)
+
+    def fake_goto(_c, x, y, z, **_kw):
+        transport.here = [x, y, z]
+        return True
+
+    monkeypatch.setattr(surface_egress, "goto", fake_goto)
+
+    reached = surface_egress.try_survivable_drop(client, {
+        "health": 20.0, "block_position": {"x": -9, "y": 85, "z": -7},
+    })
+
+    # Lands in an ADJACENT column at the stone floor (y=73) -> feet at y=74.
+    assert reached is not None
+    assert reached[1] == 74
+    assert abs(reached[0] - (-9)) + abs(reached[2] - (-7)) == 1
+    # The fall limit must be raised for the drop and always restored after.
+    msgs = [p["message"] for r, p in transport.calls if r == "chat"]
+    assert any(m.startswith("#set maxFallHeightNoWater 1") for m in msgs)
+    assert msgs[-1] == "#set maxFallHeightNoWater 3"
+
+
+def test_survivable_drop_refuses_lava_landing():
+    from baritone_client.common import surface_egress
+
+    column = {75: "minecraft:lava"}
+    client, _t = _drop_client(column)
+
+    assert surface_egress.try_survivable_drop(client, {
+        "health": 20.0, "block_position": {"x": -9, "y": 85, "z": -7},
+    }) is None
+
+
+def test_survivable_drop_refuses_when_the_fall_would_leave_too_little_health():
+    from baritone_client.common import surface_egress
+
+    column = {60: "minecraft:stone"}  # a 24-block fall
+    client, _t = _drop_client(column, health=20.0)
+
+    assert surface_egress.try_survivable_drop(client, {
+        "health": 20.0, "block_position": {"x": -9, "y": 85, "z": -7},
+    }) is None

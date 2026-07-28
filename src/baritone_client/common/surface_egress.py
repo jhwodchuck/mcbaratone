@@ -21,6 +21,113 @@ _SURFACE_BLOCKS = [
     "minecraft:stone",
 ]
 
+# Never drop onto these, whatever the arithmetic says.
+_FATAL_LANDINGS = ("lava", "magma", "fire", "campfire", "cactus", "void")
+# Vanilla: no damage for the first three blocks, then half a heart per block.
+_FREE_FALL_BLOCKS = 3
+# Leave a real buffer -- the landing can still have mobs, and health may be
+# mis-sampled by a tick.
+_POST_FALL_HEALTH_MARGIN = 8.0
+
+
+def try_survivable_drop(
+    client: Any,
+    state: Dict[str, Any],
+    *,
+    max_scan_depth: int = 24,
+) -> Optional[Tuple[int, int, int]]:
+    """Step off a pillar when there is no path down and nothing to build with.
+
+    Absolute last resort, and only when the arithmetic clearly says the fall
+    is survivable. Live: Bot07 and Bot08 stood on a 3-block cobblestone pillar
+    they had built themselves at (-9, 85, -7), inventory completely empty --
+    no blocks to bridge with and no pickaxe to mine down. Every other escape
+    needs materials, so all of them no-op'd and both bots burned ~4000
+    cancelled actions at wood=0/64 across a day and a half. An 11-block drop
+    onto the stone below costs about four hearts at full health, which is
+    strictly better than being stranded forever.
+    """
+    x, y, z = block_position(state)
+    health = float(state.get("health", 20) or 0)
+
+    def block_at(bx: int, by: int, bz: int) -> Optional[str]:
+        try:
+            return str(
+                client.transport.dispatch(
+                    "get_block", {"x": bx, "y": by, "z": bz}
+                ).get("id", "")
+            )
+        except Exception:
+            return None
+
+    # Stepping off lands in an ADJACENT column, not the one the bot is
+    # standing on -- scanning straight down just finds the pillar underfoot.
+    best = None
+    for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        cx, cz = x + dx, z + dz
+        landing_y = None
+        for probe_y in range(y - 1, y - max_scan_depth, -1):
+            block = block_at(cx, probe_y, cz)
+            if block is None:
+                break
+            if not block or "air" in block:
+                continue
+            if any(bad in block for bad in _FATAL_LANDINGS):
+                print(f"DEBUG: Refusing drop onto {block} at ({cx}, {probe_y}, {cz})")
+                landing_y = None
+                break
+            landing_y = probe_y
+            break
+        if landing_y is None:
+            continue
+        fall = y - (landing_y + 1)
+        if fall <= 1:
+            continue
+        if best is None or fall < best[0]:
+            best = (fall, cx, landing_y, cz)
+
+    if best is None:
+        return None
+    fall, cx, landing_y, cz = best
+    damage = max(0, fall - _FREE_FALL_BLOCKS)
+    if health - damage < _POST_FALL_HEALTH_MARGIN:
+        print(
+            f"DEBUG: Drop of {fall} blocks would cost ~{damage:.0f} health "
+            f"from {health:.0f}; refusing"
+        )
+        return None
+
+    print(
+        f"DEBUG: No path off and nothing to build with; dropping {fall} "
+        f"blocks to ({cx}, {landing_y + 1}, {cz}) "
+        f"(~{damage:.0f} damage from {health:.0f})"
+    )
+    previous_fall_limit = None
+    try:
+        previous_fall_limit = fall + 2
+        client.transport.dispatch(
+            "chat", {"message": f"#set maxFallHeightNoWater {previous_fall_limit}"}
+        )
+        reached = goto(
+            client,
+            cx,
+            landing_y + 1,
+            cz,
+            timeout=40,
+            tolerance=2.0,
+        )
+    finally:
+        client.transport.dispatch(
+            "chat", {"message": "#set maxFallHeightNoWater 3"}
+        )
+    if not reached:
+        return None
+    after = block_position(client.transport.dispatch("get_state", {}))
+    if after[1] <= y - 2:
+        print(f"DEBUG: Drop landed at {after}")
+        return after
+    return None
+
 
 def try_lower_surface_egress(
     client: Any,
@@ -133,5 +240,11 @@ def try_lower_surface_egress(
         client.transport.dispatch("chat", {"message": "#set allowPlace true"})
         refreshed = client.transport.dispatch("get_state", {})
         watchdog.reset(refreshed)
-        return attempt(attempt_limit, max(timeout_per_candidate, 30.0))
-    return None
+        reached = attempt(attempt_limit, max(timeout_per_candidate, 30.0))
+        if reached is not None:
+            return reached
+
+    # Everything above needs either a walkable route or blocks to build with.
+    # A bot stranded on a self-built pillar with an empty inventory has
+    # neither, so without this it stays there forever.
+    return try_survivable_drop(client, client.transport.dispatch("get_state", {}))
