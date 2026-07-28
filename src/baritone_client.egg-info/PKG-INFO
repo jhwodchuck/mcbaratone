@@ -1,8 +1,8 @@
 Metadata-Version: 2.4
 Name: baritone-client
 Version: 0.1.0
-Summary: Python facade for controlling Baritone via a lightweight transport layer
-Author: OpenAI Agent
+Summary: Python facade and optional HTTP client for controlling Baritone
+Author: mcbaratone contributors
 Project-URL: Homepage, https://github.com/jhwodchuck/mcbaratone
 Project-URL: Repository, https://github.com/jhwodchuck/mcbaratone
 Classifier: Programming Language :: Python :: 3
@@ -15,9 +15,12 @@ Requires-Dist: websockets>=12.0
 Requires-Dist: pydantic>=2.7
 Requires-Dist: mcp>=1.25.0
 Requires-Dist: lz4>=4.3.0
+Requires-Dist: requests>=2.31
+Requires-Dist: typing-extensions>=4.12.0
+Requires-Dist: pyyaml>=6.0.0
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
-Requires-Dist: requests>=2.31; extra == "dev"
+Requires-Dist: responses>=0.25.0; extra == "dev"
 
 # mcbaratone
 
@@ -39,6 +42,7 @@ means at every milestone.
 | Install, launch, resume, and monitor the bot | [Operator guide](docs/operator-guide.md) |
 | Understand the code and runtime flow | [Architecture map](docs/architecture_map.md) |
 | See the intended repository organization | [Repository layout](docs/repository-layout.md) |
+| Coordinate parallel AI-agent work | [AI agent workflow](docs/agent-workflow.md) |
 | Find current documentation | [Documentation index](docs/README.md) |
 | Understand tests and their world-safety level | [Functional test guide](tests/functional/README.md) |
 | See the endgame acceptance gates | [Survival progression suite](tests/functional/survival/README.md) |
@@ -114,9 +118,22 @@ Run the fast, verified progression regression set:
   tests\test_default_handlers.py
 ```
 
-The full offline collection currently contains 259 tests and includes slow
-retry-path coverage. Run `python -m pytest -q` when a longer verification pass
-is appropriate.
+The offline suite changes frequently. Verify its current collection rather
+than copying a test count into status documents:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest --collect-only -q
+```
+
+Run `python -m pytest -q` when a longer verification pass is appropriate; it
+includes slow retry-path coverage.
+
+Keep new modules and functions within the maintainability budgets, and prevent
+the documented legacy hotspots from growing:
+
+```powershell
+python scripts\check_module_sizes.py
+```
 
 List functional tests without connecting to Minecraft:
 
@@ -158,3 +175,28 @@ root-level paths.
 - Preserve unrelated dirty-worktree changes and the active checkpoint.
 - Add an offline test and a Survival acceptance gate for each new capability.
 - Do not modify `bridge/` unless the task explicitly targets the Fabric bridge.
+
+## Optional HTTP API client
+
+The primary runtime uses the Fabric bridge transports described above. An
+additional HTTP client is available for deployments that expose the optional
+REST control surface:
+
+```python
+from baritone_client.http_api import BaritoneClient, BaritoneController
+
+client = BaritoneClient("http://localhost:4567", token="your-token")
+controller = BaritoneController(client)
+controller.go_to(100, 64, -20)
+```
+
+The `baritone-http-client` command respects `BARITONE_BASE_URL` and
+`BARITONE_TOKEN`. The offline endpoint contract and overview snapshot are
+packaged under `baritone_client.http_api.data`; they can be loaded or exported
+without network access:
+
+```python
+from baritone_client.http_api import export_openapi_yaml, load_endpoints
+
+print(export_openapi_yaml(load_endpoints()))
+```

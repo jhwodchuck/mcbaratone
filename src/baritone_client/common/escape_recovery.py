@@ -178,6 +178,70 @@ def verify_escape(
     return False
 
 
+def relocate_away_from(
+    client: Any,
+    threat: Dict,
+    *,
+    distance: int = 28,
+    timeout: int = 30,
+) -> bool:
+    """Walk away from a non-combat threat and verify separation gained."""
+    from . import combat as api
+
+    try:
+        state = client.transport.dispatch("get_state", {})
+    except Exception:
+        return False
+    position = state.get("block_position", state.get("position", {})) or {}
+    threat_position = api.entity_position(threat)
+    if threat_position is None or not position:
+        return False
+    px = float(position.get("x", 0) or 0)
+    pz = float(position.get("z", 0) or 0)
+    threat_x = float(threat_position[0])
+    threat_z = float(threat_position[2])
+    dx = px - threat_x
+    dz = pz - threat_z
+    initial_separation = (dx * dx + dz * dz) ** 0.5
+    if initial_separation < 0.5:
+        return False
+
+    target_x = int(px + dx / initial_separation * distance)
+    target_z = int(pz + dz / initial_separation * distance)
+    print(
+        f"DEFENSE: relocating {distance} blocks away from "
+        f"{threat.get('type')} toward ({target_x}, {target_z})"
+    )
+    client.transport.dispatch(
+        "chat", {"message": f"#goto {target_x} {target_z}"}
+    )
+    required_gain = max(8.0, distance * 0.5)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(1.0)
+        try:
+            current = client.transport.dispatch("get_state", {})
+        except Exception:
+            break
+        here = current.get(
+            "block_position", current.get("position", {})
+        ) or {}
+        if not here:
+            continue
+        separation = (
+            (float(here.get("x", px) or px) - threat_x) ** 2
+            + (float(here.get("z", pz) or pz) - threat_z) ** 2
+        ) ** 0.5
+        if separation - initial_separation >= required_gain:
+            api._stop_for_defense(client)
+            print(
+                f"DEFENSE: relocated to {separation:.1f}m from the threat"
+            )
+            return True
+    api._stop_for_defense(client)
+    return False
+
+
 def run_away(
     client: Any,
     threat: Dict,

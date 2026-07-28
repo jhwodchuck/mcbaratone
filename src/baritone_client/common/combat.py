@@ -444,107 +444,39 @@ _SUBMERSION_TICKS_BEFORE_SURFACE = 2
 
 
 def _head_block_is_water(client, state) -> bool:
-    """True when the block at head height is water (player fully submerged).
+    from .aquatic_survival import head_block_is_water
 
-    A bot swimming across the surface has its head in air (only the feet block
-    is water), so this fires only on genuine full submersion.
-    """
-    position = state.get("block_position", state.get("position", {}))
-    if not all(axis in position for axis in ("x", "y", "z")):
-        return False
-    try:
-        head = client.transport.dispatch(
-            "get_block",
-            {
-                "x": int(position["x"]),
-                "y": int(position["y"]) + 1,
-                "z": int(position["z"]),
-            },
-        ).get("id", "")
-    except Exception:
-        return False
-    return "water" in str(head)
-
-
-_WATER_FEET_BLOCKS = ("water", "seagrass", "kelp")
+    return head_block_is_water(client, state)
 
 
 def _player_is_in_water(client, state) -> bool:
-    """Whether the player's feet are in water (or water-logged plants).
+    from .aquatic_survival import player_is_in_water
 
-    Used to relax the aquatic-food restrictions: a bot already submerged
-    cannot be "dragged into water" by chasing a fish, which is the risk the
-    normal 16-block cap guards against.
-    """
-    position = state.get("block_position", state.get("position", {})) or {}
-    if not all(axis in position for axis in ("x", "y", "z")):
-        return False
-    try:
-        block = str(
-            client.transport.dispatch(
-                "get_block",
-                {
-                    "x": int(position["x"]),
-                    "y": int(position["y"]),
-                    "z": int(position["z"]),
-                },
-            ).get("id", "")
-        )
-    except Exception:
-        return False
-    return any(token in block for token in _WATER_FEET_BLOCKS)
+    return player_is_in_water(client, state)
 
 
 def _submerged_too_long(client, state, *, max_seconds: float) -> bool:
-    """Track continuous head-underwater TIME; True once it exceeds max_seconds.
+    from .aquatic_survival import submerged_too_long
 
-    The tick-count reflex (escape_water_if_submerged) surfaces after 2
-    supervision ticks, which is right for the slow (~2s) goto/defence loops
-    but wrong for the fast (~0.2-0.5s) aquatic-hunt/combat loops -- there 2
-    ticks is under a second, so it would surface before ever reaching a fish.
-    Conversely those loops previously had NO drowning check at all, so a bot
-    chasing a fish stayed submerged the full ~15s air supply and DROWNED
-    (confirmed live: Bot08 died "safely hunting tropical_fish"). A wall-clock
-    limit lets a hunt dive briefly to grab a near-surface fish, then forces a
-    surface well before the air runs out, regardless of loop frequency.
-    """
-    if not _head_block_is_water(client, state):
-        client._submerged_since = None
-        return False
-    since = getattr(client, "_submerged_since", None)
-    now = time.time()
-    if since is None:
-        client._submerged_since = now
-        return False
-    return (now - since) >= float(max_seconds)
+    return submerged_too_long(
+        client,
+        state,
+        max_seconds=max_seconds,
+        head_is_water=_head_block_is_water,
+        clock=time.time,
+    )
 
 
 def escape_water_if_submerged(client, state) -> bool:
-    """Surface the bot before it drowns -- the single largest cause of fleet deaths.
+    from .aquatic_survival import escape_water_if_submerged as implementation
 
-    The bridge does not expose the air-supply meter, so submersion is inferred
-    from the block at head height.  Baritone crosses water on the surface fine,
-    but bots still drown when fully submerged: knocked into deep water by a mob,
-    pathing along a lake bottom, or breaking blocks while under.  Once the head
-    has stayed underwater across consecutive supervision ticks, drive Baritone's
-    ``#surface`` and confirm the head reaches air.  Returns True when a surfacing
-    action was taken so the caller pauses/retries like any other defensive
-    reflex.
-    """
-    if not _head_block_is_water(client, state):
-        client._submersion_ticks = 0
-        return False
-    ticks = int(getattr(client, "_submersion_ticks", 0)) + 1
-    client._submersion_ticks = ticks
-    if ticks < _SUBMERSION_TICKS_BEFORE_SURFACE:
-        return False
-    print(
-        f"SURVIVAL: head underwater for {ticks} supervision ticks; "
-        "surfacing to avoid drowning"
+    return implementation(
+        client,
+        state,
+        tick_limit=_SUBMERSION_TICKS_BEFORE_SURFACE,
+        head_is_water=_head_block_is_water,
+        surface=_surface_after_aquatic_hunt,
     )
-    if _surface_after_aquatic_hunt(client, timeout=12.0):
-        client._submersion_ticks = 0
-    return True
 
 
 def survival_tick(client, state=None) -> bool:
@@ -1408,86 +1340,14 @@ def _relocate_away_from(
     distance: int = 28,
     timeout: int = 30,
 ) -> bool:
-    """Walk decisively away from a threat that must never be fought.
+    from .escape_recovery import relocate_away_from
 
-    run_away's escape candidates are deliberately short-range -- they are
-    picked from blocks immediately around the player and then rejected unless
-    they gain ``minimum_gain`` (5m) of separation. Against a threat that is
-    already ~5m away in open terrain there is often no such candidate, so
-    run_away fails every single time while the threat neither closes nor
-    leaves. Confirmed live: Bot07 and Bot08 each spent 24+ hours cycling
-    "evade creeper at 5.5m" -> "candidate routes did not increase separation"
-    -> "Wood gathering interrupted by defense logic" without dying OR making
-    any progress (~1700 cancelled actions each, zero wood gathered).
-
-    Fighting is not an option for these threats by policy (a meleed creeper
-    detonates), so break the standoff the only remaining way: head a full
-    ``distance`` blocks along the vector directly away from the threat, out of
-    its aggro range and away from the contested work area.
-
-    Success is measured as *horizontal separation gained from the threat*, not
-    as arrival at an exact block. Two reasons, both learned the hard way:
-    ``goto``'s arrival test is 3D, so passing the player's current Y as the
-    destination Y makes it unreachable-by-construction whenever the ground 28
-    blocks away sits more than ``tolerance`` higher or lower; and the goal
-    coordinate itself may be inside terrain or midair. The first version did
-    exactly that and returned False on every single call -- so the caller
-    never reset its evade counter, re-escalated immediately every cycle, and
-    Bot07 climbed to "evasion failed 42x" while never gathering a log. What
-    the caller actually needs to know is "did I get away", so measure that.
-    """
-    try:
-        state = client.transport.dispatch("get_state", {})
-    except Exception:
-        return False
-    position = state.get("block_position", state.get("position", {})) or {}
-    threat_position = entity_position(threat)
-    if threat_position is None or not position:
-        return False
-    px = float(position.get("x", 0) or 0)
-    pz = float(position.get("z", 0) or 0)
-    threat_x = float(threat_position[0])
-    threat_z = float(threat_position[2])
-    dx = px - threat_x
-    dz = pz - threat_z
-    norm = (dx * dx + dz * dz) ** 0.5
-    if norm < 0.5:
-        # Standing essentially on top of the threat gives no usable bearing.
-        return False
-    target_x = int(px + dx / norm * distance)
-    target_z = int(pz + dz / norm * distance)
-    print(
-        f"DEFENSE: relocating {distance} blocks away from "
-        f"{threat.get('type')} toward ({target_x}, {target_z})"
+    return relocate_away_from(
+        client,
+        threat,
+        distance=distance,
+        timeout=timeout,
     )
-    # Two-argument #goto is Y-agnostic: Baritone resolves a walkable
-    # destination near that column instead of demanding one exact block.
-    client.transport.dispatch(
-        "chat", {"message": f"#goto {target_x} {target_z}"}
-    )
-    # Getting clear of the mob's aggro/blast range is the goal; requiring the
-    # full `distance` would fail on any terrain that forces a detour.
-    required_gain = max(8.0, distance * 0.5)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        time.sleep(1.0)
-        try:
-            current = client.transport.dispatch("get_state", {})
-        except Exception:
-            break
-        here = current.get("block_position", current.get("position", {})) or {}
-        if not here:
-            continue
-        separation = (
-            (float(here.get("x", px) or px) - threat_x) ** 2
-            + (float(here.get("z", pz) or pz) - threat_z) ** 2
-        ) ** 0.5
-        if separation - norm >= required_gain:
-            _stop_for_defense(client)
-            print(f"DEFENSE: relocated to {separation:.1f}m from the threat")
-            return True
-    _stop_for_defense(client)
-    return False
 
 
 def _escape_destination_safe(client, x: int, y: int, z: int) -> bool:

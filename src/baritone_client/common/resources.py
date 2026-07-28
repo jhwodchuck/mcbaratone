@@ -519,20 +519,12 @@ def gather_wood(
     if total_logs >= count:
         print(f"DEBUG: Already have {total_logs} logs, skipping gather")
         return True
-    
     # 1 log = 4 planks, so planks/4 = equivalent logs
-    PLANK_TYPES = [
-        "minecraft:oak_planks", "minecraft:birch_planks", "minecraft:spruce_planks",
-        "minecraft:dark_oak_planks", "minecraft:acacia_planks", "minecraft:jungle_planks",
-        "minecraft:mangrove_planks", "minecraft:cherry_planks"
-    ]
-    total_planks = sum(count_item(client, p) for p in PLANK_TYPES)
+    total_planks = sum(count_item(client, p) for p in PLANK_ITEMS)
     equivalent_logs = total_planks // 4  # 4 planks = 1 log
-    
     if total_logs + equivalent_logs >= count:
         print(f"DEBUG: Have {total_logs} logs + {total_planks} planks ({equivalent_logs} log equiv) = enough! Skipping gather")
         return True
-    
     # Calculate how many more logs we actually need
     needed = count - total_logs - equivalent_logs
     print(f"DEBUG: Need {needed} more logs (have {total_logs} logs, {total_planks} planks)")
@@ -723,7 +715,7 @@ def gather_wood(
             
             # Inventory Progress Tracking
             curr_logs = sum(count_item(client, block) for block in LOG_BLOCKS)
-            curr_planks = sum(count_item(client, p) for p in PLANK_TYPES)
+            curr_planks = sum(count_item(client, p) for p in PLANK_ITEMS)
             total = curr_logs + (curr_planks // 4)
             print(f"DEBUG: gather_wood total={total}/{count} (Pathing: {is_pathing})")
             
@@ -740,81 +732,25 @@ def gather_wood(
                             client.transport.dispatch("mine", {"blocks": LOG_BLOCKS, "quantity": needed + 4})
                         elif idle_checks >= 6: # ~18s total idle
                             print("DEBUG: No trees nearby (idle)? Attempting explicit search...")
-                            # Explicitly find blocks since 'mine' command might be failing
-                            # Do not select the same unreachable log forever.
-                            # The old loop repeatedly rediscovered one log in
-                            # a ravine/tree canopy and spent the whole run
-                            # retrying it without changing position.
-                            found_log = None
-                            try:
-                                response = _find_blocks_optional(
-                                    client,
-                                    {
-                                        "blocks": LOG_BLOCKS,
-                                        "radius": 128,
-                                        "limit": 4096,
-                                    },
-                                    label="Wood nearby log search",
-                                )
-                                found = response.get("found", []) if response else []
-                                candidates = [
-                                    (
-                                        float(item.get("distance", 0)),
-                                        int(item["x"]),
-                                        int(item["y"]),
-                                        int(item["z"]),
-                                    )
-                                    for item in found
-                                    if (int(item["x"]), int(item["y"]), int(item["z"]))
-                                    not in failed_log_positions
-                                ]
-                                if candidates:
-                                    _, lx, ly, lz = min(candidates)
-                                    found_log = (lx, ly, lz)
-                            except Exception:
-                                found_log = find_nearby_block(client, LOG_BLOCKS, radius=128)
-                            if found_log:
-                                lx, ly, lz = found_log
-                                print(
-                                    f"DEBUG: Found log at ({lx}, {ly}, {lz}). "
-                                    "Approaching and breaking it directly..."
-                                )
-                                if _approach_and_break_log(client, found_log):
-                                    exploring = False
-                                else:
-                                    print(
-                                        "DEBUG: Could not approach explicit log; "
-                                        "exploring for a reachable tree..."
-                                    )
-                                    failed_log_positions.add(tuple(found_log))
-                                    target_x, target_z = exploration_waypoints.next()
-                                    client.transport.dispatch(
-                                        "explore",
-                                        {"x": target_x, "z": target_z},
-                                    )
-                                    exploring = True
-                                    movement.reset(state)
-                                idle_checks = 0
-                                stalled_checks = 0
-                                time.sleep(2)
-                            else:
-                                if max_distance_from_origin is not None:
-                                    print(
-                                        "DEBUG: No logs in bounded search radius; "
-                                        "returning home"
-                                    )
-                                    client.transport.dispatch("cancel", {})
-                                    return False
-                                print("DEBUG: No logs found in radius 128. Random exploration...")
-                                target_x, target_z = exploration_waypoints.next()
-                                client.transport.dispatch(
-                                    "explore",
-                                    {"x": target_x, "z": target_z},
-                                )
-                                exploring = True
-                                movement.reset(state)
-                                idle_checks = 0
-                                time.sleep(2)
+                            from .wood_search import start_explicit_wood_search
+
+                            search_result = start_explicit_wood_search(
+                                client,
+                                log_blocks=LOG_BLOCKS,
+                                failed_positions=failed_log_positions,
+                                exploration_waypoints=exploration_waypoints,
+                                bounded=max_distance_from_origin is not None,
+                                find_blocks=_find_blocks_optional,
+                                find_nearby=find_nearby_block,
+                                approach_and_break=_approach_and_break_log,
+                            )
+                            if search_result is None:
+                                return False
+                            exploring = search_result
+                            movement.reset(state)
+                            idle_checks = 0
+                            stalled_checks = 0
+                            time.sleep(2)
                         continue
                     else:
                         # We were exploring/pathing, but now we stopped.

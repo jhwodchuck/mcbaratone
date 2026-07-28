@@ -1,2 +1,3 @@
 [console_scripts]
+baritone-http-client = baritone_client.http_cli:main
 baritone-mcp-server = baritone_client.mcp_server:main

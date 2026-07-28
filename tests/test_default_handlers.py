@@ -3,12 +3,14 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import pytest
+
 from baritone_client.automator import EndGameAutomator
 from baritone_client.actions import CraftingAction
 from baritone_client.automator.phases import InitialGatheringHandler
 from baritone_client.core.interfaces import ActionContext
 from baritone_client.automator.state_manager import Phase
-from baritone_client.common.tasks import TaskResult
+from baritone_client.common.tasks import SurvivalRecoveryRequired, TaskResult
 from baritone_client.common.resources import gather_stone
 from baritone_client.automator.phases import initial_gathering
 from baritone_client.common import inventory as common_inventory
@@ -83,7 +85,7 @@ def test_missing_bed_materials_do_not_block_progression():
 
 def test_initial_core_goals_require_verified_storage_deposit(monkeypatch):
     counts = {
-        "minecraft:oak_log": 8,
+        "minecraft:oak_log": 16,
         "minecraft:cobblestone": 64,
         "minecraft:stone_pickaxe": 1,
         "minecraft:stone_axe": 1,
@@ -181,10 +183,12 @@ def test_initial_gathering_refuses_work_while_critically_wounded(monkeypatch):
         ),
     )
 
-    result = InitialGatheringHandler().execute(
-        client, resources, SimpleNamespace()
-    )
+    with pytest.raises(
+        SurvivalRecoveryRequired,
+        match="health remains below 12",
+    ):
+        InitialGatheringHandler().execute(
+            client, resources, SimpleNamespace()
+        )
 
-    assert not result.success
-    assert "health recovery" in result.reason
     client.transport.dispatch.assert_any_call("close_screen", {})
