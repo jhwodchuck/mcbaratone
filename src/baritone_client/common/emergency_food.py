@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from .aquatic_survival import head_block_is_water, player_is_in_water
 from .movement_recovery import (
     ExplorationWaypoints,
     MovementWatchdog,
@@ -25,16 +26,22 @@ def reach_food_search_surface(client: Any, state: Dict) -> bool:
     """Reach dry Overworld surface terrain before blind food exploration."""
     position = block_position(state)
     dimension = state.get("dimension", "minecraft:overworld")
-    if dimension != "minecraft:overworld" or position[1] >= MINIMUM_FOOD_SEARCH_Y:
+    if dimension != "minecraft:overworld":
+        return True
+    in_water = player_is_in_water(client, state) or head_block_is_water(
+        client, state
+    )
+    if position[1] >= MINIMUM_FOOD_SEARCH_Y and not in_water:
         return True
 
     from .build_site_recovery import excavate_surface_egress
     from .navigation import goto
     from .surface_recovery import reach_dry_surface
 
+    reason = "submerged" if in_water else f"underground at y={position[1]}"
     print(
-        "RECOVERY: emergency food search is underground; "
-        f"ascending from y={position[1]} before exploration"
+        f"RECOVERY: emergency food search is {reason}; "
+        "reaching dry surface before exploration"
     )
     recovered = reach_dry_surface(
         client,

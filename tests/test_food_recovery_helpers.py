@@ -9,6 +9,7 @@ from baritone_client.common.food_recovery import (
     bounded_exploration_origin,
     must_hold_for_critical_food,
 )
+from baritone_client.common import emergency_food
 
 
 def test_critical_food_search_holds_only_near_death_or_starving():
@@ -145,3 +146,57 @@ def test_observed_herd_persistence_is_centralized():
         "renewable",
         "observed",
     ]
+
+
+def test_submerged_food_search_reaches_dry_surface_even_above_y_floor(
+    monkeypatch,
+):
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_args: {}))
+    state = {
+        "dimension": "minecraft:overworld",
+        "block_position": {"x": 10, "y": 58, "z": 20},
+    }
+    recovered = []
+    monkeypatch.setattr(
+        emergency_food,
+        "player_is_in_water",
+        lambda *_args: True,
+    )
+    monkeypatch.setattr(
+        emergency_food,
+        "head_block_is_water",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.surface_recovery.reach_dry_surface",
+        lambda _client, **kwargs: recovered.append(kwargs) or (12, 64, 21),
+    )
+
+    assert emergency_food.reach_food_search_surface(client, state)
+    assert recovered[0]["origin"] == (10, 58, 20)
+
+
+def test_dry_surface_food_search_does_not_run_surface_recovery(monkeypatch):
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_args: {}))
+    state = {
+        "dimension": "minecraft:overworld",
+        "block_position": {"x": 10, "y": 64, "z": 20},
+    }
+    monkeypatch.setattr(
+        emergency_food,
+        "player_is_in_water",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        emergency_food,
+        "head_block_is_water",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.surface_recovery.reach_dry_surface",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("dry surface must not trigger recovery")
+        ),
+    )
+
+    assert emergency_food.reach_food_search_surface(client, state)
