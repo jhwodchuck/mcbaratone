@@ -411,6 +411,21 @@ def test_boot_wood_check_yields_to_low_food_recovery(monkeypatch):
         )
 
 
+def test_boot_safety_preserves_survival_recovery_signal():
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: {
+                "world_time": 1000,
+                "health": 2.5,
+                "food_level": 15,
+            }
+        )
+    )
+
+    with pytest.raises(SurvivalRecoveryRequired):
+        SafetyCheckAction().execute(SimpleNamespace(client=client))
+
+
 def test_boot_reuses_durable_tools_and_verified_infrastructure(monkeypatch):
     durable = {
         "minecraft:stone_pickaxe",

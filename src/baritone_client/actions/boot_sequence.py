@@ -22,6 +22,7 @@ from ..common.base import (
 from ..common.combat import hunt_passive_mobs
 from ..common.navigation import find_nearby_block, goto
 from ..common.runtime_artifacts import append_world_map_entry
+from ..common.tasks import SurvivalRecoveryRequired
 from .boot_readiness import (
     durable_boot_capabilities,
     has_durable_tool_set,
@@ -69,6 +70,8 @@ class SafetyCheckAction(BaseAction):
 
             return ActionResult.ok("Day time - no safety actions needed")
 
+        except SurvivalRecoveryRequired:
+            raise
         except Exception as e:
             print(f"Safety check error: {e}")
             return ActionResult.fail(f"Safety check failed: {e}")
