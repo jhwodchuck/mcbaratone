@@ -387,6 +387,14 @@ def _approach_aquatic_food(
         while time.time() < deadline:
             # #follow has no goto drowning reflex; bail after a bounded dive.
             follow_state = client.transport.dispatch("get_state", {})
+            follow_health = float(follow_state.get("health", 20) or 0)
+            if follow_health < 12.0:
+                print(
+                    "RECOVERY: health fell below 12 during aquatic follow; "
+                    "surfacing and abandoning the fish target"
+                )
+                _surface_after_aquatic_hunt(client, timeout=12.0)
+                return False
             if _submerged_too_long(client, follow_state, max_seconds=8.0):
                 print("SURVIVAL: submerged too long chasing aquatic food; surfacing")
                 _surface_after_aquatic_hunt(client, timeout=12.0)

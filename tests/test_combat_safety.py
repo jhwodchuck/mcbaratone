@@ -191,6 +191,47 @@ def test_aquatic_food_uses_dynamic_follow_until_melee_range(monkeypatch):
     ]
 
 
+def test_aquatic_follow_surfaces_when_health_drops_below_margin(monkeypatch):
+    class FallingHealthTransport(CombatTransport):
+        def __init__(self):
+            super().__init__(health=20.0)
+            self.health_reads = iter((20.0, 8.0))
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {"health": next(self.health_reads)}
+            return {}
+
+    transport = FallingHealthTransport()
+    client = SimpleNamespace(transport=transport)
+    scans = iter(
+        (
+            [{"id": 22, "type": "minecraft:tropical_fish", "distance": 8.0}],
+        )
+    )
+    surfaced = []
+    monkeypatch.setattr(
+        combat,
+        "get_nearby_entities",
+        lambda *_args, **_kwargs: next(scans),
+    )
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        combat,
+        "_surface_after_aquatic_hunt",
+        lambda *_args, **_kwargs: surfaced.append(True) or True,
+    )
+    monkeypatch.setattr(combat.time, "sleep", lambda _seconds: None)
+
+    assert not combat._approach_aquatic_food(
+        client,
+        22,
+        "minecraft:tropical_fish",
+    )
+    assert surfaced == [True]
+
+
 def test_aquatic_hunt_surfaces_until_head_reaches_air(monkeypatch):
     class SurfaceTransport(CombatTransport):
         def __init__(self):
