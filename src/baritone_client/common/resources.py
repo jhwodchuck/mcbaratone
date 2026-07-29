@@ -556,6 +556,10 @@ def _wood_gathering_must_stop_after_defense(
     minimum_health: float,
 ) -> bool:
     """Recheck an expedition after defense may have moved the bot."""
+    if getattr(client, "_last_defense_intervention", None) == "aquatic":
+        print("DEBUG: Wood gathering stopped after aquatic defense intervention")
+        client.transport.dispatch("cancel", {})
+        return True
     state = _read_state_optional(
         client,
         retries=3,

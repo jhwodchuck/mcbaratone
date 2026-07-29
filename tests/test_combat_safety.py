@@ -396,6 +396,7 @@ def test_defend_or_flee_surfaces_before_assessing_threats(monkeypatch):
 
     assert combat.defend_or_flee(client) is True
     assert surfaced == [True]
+    assert client._last_defense_intervention == "aquatic"
 
 
 def test_near_death_recovery_eventually_explores_instead_of_holding_forever(

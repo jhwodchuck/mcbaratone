@@ -748,7 +748,7 @@ def test_wood_gather_does_not_resume_mining_after_defense_surfaces_bot(monkeypat
     monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
 
     def fake_defend(_client):
-        transport.submerged = True
+        client._last_defense_intervention = "aquatic"
         return True
 
     monkeypatch.setattr(combat, "defend_or_flee", fake_defend)

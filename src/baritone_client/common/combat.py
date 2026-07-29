@@ -1436,6 +1436,7 @@ def ensure_alive(client, state: Optional[Dict] = None) -> bool:
 
 def defend_or_flee(client) -> bool:
     """Advance the canonical defensive state machine by one supervised tick."""
+    client._last_defense_intervention = None
     snapshot = _get_combat_snapshot(client)
     state = (
         snapshot["player"]
@@ -1443,9 +1444,9 @@ def defend_or_flee(client) -> bool:
         else client.transport.dispatch("get_state", {})
     )
     ensure_alive(client, state)
-    # Drowning is the fleet's #1 killer and more urgent than any land threat:
-    # get the head above water before assessing mobs.
+    # Surface before assessing land threats; drowning is more urgent.
     if escape_water_if_submerged(client, state):
+        client._last_defense_intervention = "aquatic"
         return True
     health = float(state.get("health", 20) or 0)
     runtime = _defense_runtime(client)
