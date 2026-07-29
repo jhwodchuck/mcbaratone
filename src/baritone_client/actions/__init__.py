@@ -18,6 +18,7 @@ from .boot_sequence import (
     FinalSleepAction,
 )
 from .combat import CombatAction
+from .boot_surface import BootSurfaceSafetyAction
 from .crafting import CraftingAction
 from .death_recovery_action import DeathRecoveryAction
 from .inventory import InventoryAction
@@ -67,6 +68,7 @@ __all__ = [
     "IronSmeltingAction",
     "StorageOrganizationAction",
     "FinalSleepAction",
+    "BootSurfaceSafetyAction",
     "CombatAction",
     "CraftingAction",
     "DeathRecoveryAction",

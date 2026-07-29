@@ -502,6 +502,7 @@ def survival_tick(client, state=None) -> bool:
     try:
         if state is None:
             state = client.transport.dispatch("get_state", {})
+        ensure_alive(client, state)
         return escape_water_if_submerged(client, state)
     except PlayerDeathDetected:
         raise

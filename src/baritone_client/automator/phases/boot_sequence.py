@@ -24,6 +24,7 @@ from ...actions import (
     ConditionalWoodGatheringAction,
     PlankCraftingAction,
     StoneToolCraftingAction,
+    BootSurfaceSafetyAction,
     BedAcquisitionAction,
     HuntingAndScoutingAction,
     InfrastructurePlacementAction,
@@ -183,6 +184,11 @@ class BootSequenceHandler(PhaseHandler):
             # materials; the generic ResourceGatheringAction neither accepts
             # per-item constructor arguments nor belongs in this sequence.
             StoneToolCraftingAction(),
+
+            # Optional bed/scouting searches are surface activities. Resumed
+            # checkpoints may be deep in a hostile mine, where Explore can
+            # descend farther instead of finding passive mobs.
+            BootSurfaceSafetyAction(),
 
             # Phase 1d: Conditional Bed Acquisition (Day vs Night strategy)
             ConditionalAction(
