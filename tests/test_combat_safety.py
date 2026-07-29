@@ -586,6 +586,45 @@ def test_emergency_food_does_not_treat_full_health_low_hunger_as_recovered(monke
         )
 
 
+def test_emergency_food_refuses_blind_underground_exploration(monkeypatch):
+    class UndergroundTransport(CombatTransport):
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "health": 20.0,
+                    "food_level": 10,
+                    "world_time": 1000,
+                    "dimension": "minecraft:overworld",
+                    "block_position": {"x": 100, "y": 12, "z": 172},
+                }
+            return {}
+
+    client = SimpleNamespace(transport=UndergroundTransport())
+    surface_checks = []
+    monkeypatch.setattr(combat, "recover_health", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        combat,
+        "prepare_food_search_state",
+        lambda _client, state: surface_checks.append(
+            state["block_position"]["y"]
+        ),
+    )
+    monkeypatch.setattr(
+        combat,
+        "get_nearby_entities",
+        lambda *_args, **_kwargs: pytest.fail(
+            "underground recovery must not begin blind entity exploration"
+        ),
+    )
+
+    assert not combat.acquire_emergency_food(client, minimum_food=14)
+    assert surface_checks == [12]
+    assert not any(
+        route == "explore" for route, _payload in client.transport.calls
+    )
+
+
 def test_secure_recovery_area_requires_sustained_daylight_clearance(monkeypatch):
     transport = CombatTransport(health=20.0)
     client = SimpleNamespace(transport=transport)
@@ -1480,6 +1519,39 @@ def test_submerged_bot_targets_nearby_fish_immediately(monkeypatch):
 
     assert target is not None and "tropical_fish" in target["type"]
     assert looked and looked[0] == 64, "submerged search must reach fish ~48m out"
+
+
+def test_wounded_submerged_bot_limits_aquatic_target_search(monkeypatch):
+    from baritone_client.common import emergency_food
+
+    radii = []
+
+    def nearby(_client, radius):
+        radii.append(radius)
+        if radius == 64:
+            return [
+                {
+                    "id": 7,
+                    "type": "minecraft:tropical_fish",
+                    "distance": 43.0,
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(combat, "get_nearby_entities", nearby)
+    target = emergency_food.select_target(
+        SimpleNamespace(transport=CombatTransport()),
+        [],
+        current_food=17,
+        elapsed=0.0,
+        timeout=240.0,
+        renewable_source_callback=None,
+        in_water=True,
+        aquatic_search_radius=16,
+    )
+
+    assert target is None
+    assert radii == [16]
 
 
 def test_dry_bot_still_waits_before_chasing_fish(monkeypatch):

@@ -17,6 +17,49 @@ from .surface_egress import try_lower_surface_egress
 PRIMARY_LAND_FOOD = ("cow", "pig")
 SECONDARY_LAND_FOOD = ("sheep", "chicken", "rabbit")
 WATER_FOOD = ("salmon", "cod", "tropical_fish")
+MINIMUM_FOOD_SEARCH_Y = 55
+EXPECTED_SURFACE_Y = 63
+
+
+def reach_food_search_surface(client: Any, state: Dict) -> bool:
+    """Reach dry Overworld surface terrain before blind food exploration."""
+    position = block_position(state)
+    dimension = state.get("dimension", "minecraft:overworld")
+    if dimension != "minecraft:overworld" or position[1] >= MINIMUM_FOOD_SEARCH_Y:
+        return True
+
+    from .build_site_recovery import excavate_surface_egress
+    from .navigation import goto
+    from .surface_recovery import reach_dry_surface
+
+    print(
+        "RECOVERY: emergency food search is underground; "
+        f"ascending from y={position[1]} before exploration"
+    )
+    recovered = reach_dry_surface(
+        client,
+        origin=position,
+        expected_y=EXPECTED_SURFACE_Y,
+        goto=goto,
+    )
+    if recovered is None:
+        recovered = excavate_surface_egress(
+            client,
+            origin=position,
+            expected_y=EXPECTED_SURFACE_Y,
+        )
+    return recovered is not None and recovered[1] >= MINIMUM_FOOD_SEARCH_Y
+
+
+def prepare_food_search_state(client: Any, state: Dict) -> Optional[Dict]:
+    """Return refreshed surface state, or fail closed when ascent is impossible."""
+    if not reach_food_search_surface(client, state):
+        print(
+            "RECOVERY: could not reach safe surface terrain for emergency "
+            "food search"
+        )
+        return None
+    return client.transport.dispatch("get_state", {})
 
 
 def select_target(
@@ -30,6 +73,7 @@ def select_target(
         Callable[[str, tuple[int, int, int]], None]
     ],
     in_water: bool = False,
+    aquatic_search_radius: int = 64,
     unreachable: Optional[set] = None,
 ) -> Optional[Dict]:
     """Choose a renewable land target, with nearby fish as fallback.
@@ -96,13 +140,13 @@ def select_target(
         # 64, not something tighter: measured live, the nearest fish to a
         # starving bot in a lush cave sat at 48.7m, and a radius-48 query
         # returned nothing at all. A shorter leash simply means never eating.
-        target = nearest_fish(64)
+        target = nearest_fish(min(64, max(1, int(aquatic_search_radius))))
         if target is not None:
             return target
 
     water_fallback_after = min(90.0, max(15.0, timeout / 2.0))
     if current_food <= 6 or elapsed >= water_fallback_after:
-        return nearest_fish(16)
+        return nearest_fish(min(16, max(1, int(aquatic_search_radius))))
     return None
 
 

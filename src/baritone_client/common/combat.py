@@ -12,6 +12,7 @@ from .food_recovery import (
 )
 from .combat_targeting import matches_requested_mob
 from .emergency_food import EmergencyExploration, hunt_target, select_target
+from .emergency_food import prepare_food_search_state
 
 from ..core.exceptions import TransportError
 
@@ -751,6 +752,9 @@ def acquire_emergency_food(
 
     start = time.time()
     state = client.transport.dispatch("get_state", {})
+    state = prepare_food_search_state(client, state)
+    if state is None:
+        return False
     position = state.get("block_position", state.get("position", {}))
     origin_x, origin_z = bounded_exploration_origin(
         position,
@@ -900,6 +904,7 @@ def acquire_emergency_food(
             timeout=timeout,
             renewable_source_callback=renewable_source_callback,
             in_water=_player_is_in_water(client, state),
+            aquatic_search_radius=int(hunt_radius),
             unreachable=unreachable_food,
         )
         if target is None:
