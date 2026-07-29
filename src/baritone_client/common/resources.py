@@ -546,6 +546,32 @@ def _wood_gathering_must_stop(
     return True
 
 
+def _wood_gathering_must_stop_after_defense(
+    client,
+    *,
+    origin_x: float,
+    origin_z: float,
+    latest_world_time: Optional[int],
+    max_distance_from_origin: Optional[float],
+    minimum_health: float,
+) -> bool:
+    """Recheck an expedition after defense may have moved the bot."""
+    state = _read_state_optional(
+        client,
+        retries=3,
+        label="Wood gather post-defense state",
+    )
+    return state is None or _wood_gathering_must_stop(
+        client,
+        state,
+        origin_x=origin_x,
+        origin_z=origin_z,
+        latest_world_time=latest_world_time,
+        max_distance_from_origin=max_distance_from_origin,
+        minimum_health=minimum_health,
+    )
+
+
 def gather_wood(
     client,
     count: int = 16,
@@ -713,6 +739,15 @@ def gather_wood(
             if not abort_on_threats:
                 defense_started = time.time()
                 if defend_or_flee(client):
+                    if _wood_gathering_must_stop_after_defense(
+                        client,
+                        origin_x=origin_x,
+                        origin_z=origin_z,
+                        latest_world_time=latest_world_time,
+                        max_distance_from_origin=max_distance_from_origin,
+                        minimum_health=minimum_health,
+                    ):
+                        return False
                     # Credit back the time defence consumed. A creeper camped
                     # near the work area triggers evade -> "relocate 28 blocks
                     # away" -> walk back, which costs far more of the budget

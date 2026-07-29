@@ -719,6 +719,51 @@ def test_wood_gather_aborts_after_aquatic_safety_intervention(monkeypatch):
     assert ("cancel", {}) in transport.calls
 
 
+def test_wood_gather_does_not_resume_mining_after_defense_surfaces_bot(monkeypatch):
+    from baritone_client.common import combat
+
+    class DefenseTransport(RecordingTransport):
+        submerged = False
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "world_time": 1000,
+                    "health": 20,
+                    "food_level": 20,
+                    "is_pathing": True,
+                    "submerged": self.submerged,
+                    "block_position": {"x": 127, "y": 62, "z": -318},
+                }
+            return {}
+
+    transport = DefenseTransport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(resources, "count_item", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(resources, "_ensure_outdoor_daylight", lambda *_args: True)
+    monkeypatch.setattr(resources, "_start_mine_process", lambda *_args: None)
+    monkeypatch.setattr(resources, "_reserve_gathering_inventory", lambda *_args: True)
+    monkeypatch.setattr(resources, "free_inventory_slots", lambda *_args: 32)
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    def fake_defend(_client):
+        transport.submerged = True
+        return True
+
+    monkeypatch.setattr(combat, "defend_or_flee", fake_defend)
+    monkeypatch.setattr(
+        combat,
+        "survival_tick",
+        lambda _client, state: bool(state.get("submerged")),
+    )
+
+    assert not resources.gather_wood(client, count=3, timeout=1)
+    mine_calls = [call for call in transport.calls if call[0] == "mine"]
+    assert mine_calls == []
+    assert ("cancel", {}) in transport.calls
+
+
 def test_missing_mining_pickaxe_is_replaced(monkeypatch):
     transport = RecordingTransport()
     client = SimpleNamespace(transport=transport)
