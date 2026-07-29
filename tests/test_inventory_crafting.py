@@ -21,6 +21,32 @@ class DummyClient:
         self.transport = transport
 
 
+def test_remote_loaded_crafting_table_is_not_selected_for_survival_work():
+    client = DummyClient(
+        DummyTransport(
+            {
+                "get_state": {
+                    "block_position": {"x": -104, "y": 64, "z": 798},
+                },
+            }
+        )
+    )
+    found_tables = [
+        {"x": -81, "y": 68, "z": 757, "distance": 1.0},
+        {"x": -100, "y": 64, "z": 795, "distance": 999.0},
+    ]
+
+    assert inventory._nearest_local_crafting_table(client, found_tables) == (
+        -100,
+        64,
+        795,
+    )
+    assert (
+        inventory._nearest_local_crafting_table(client, found_tables[:1])
+        is None
+    )
+
+
 class RecipeAwareTransport:
     """Tiny inventory simulator for dependency-order regression tests."""
 

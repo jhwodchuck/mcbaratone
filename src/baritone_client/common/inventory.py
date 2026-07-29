@@ -669,6 +669,38 @@ def ensure_tool_sticks(client, item_id: str, count: int = 1) -> bool:
     return count_item(client, "minecraft:stick") >= required
 
 
+def _nearest_local_crafting_table(
+    client,
+    found_tables,
+    *,
+    maximum_distance: float = 12.0,
+):
+    """Reject loaded tables that require a survival-expensive commute."""
+    try:
+        state = client.transport.dispatch("get_state", {})
+        position = state.get("block_position", state.get("position", {}))
+        px = float(position["x"])
+        pz = float(position["z"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    candidates = []
+    for table in found_tables:
+        try:
+            x = int(table["x"])
+            y = int(table["y"])
+            z = int(table["z"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        distance = ((x - px) ** 2 + (z - pz) ** 2) ** 0.5
+        if distance <= float(maximum_distance):
+            candidates.append((distance, x, y, z))
+    if not candidates:
+        return None
+    _, x, y, z = min(candidates)
+    return (x, y, z)
+
+
 def craft(client, item_id: str, count: int = 1) -> bool:
     """
     Craft an item, verified by inventory delta (a status=ok reply does not
@@ -791,18 +823,15 @@ def craft(client, item_id: str, count: int = 1) -> bool:
                         )
                         found_tables = nearby.get("found")
                         if found_tables:
-                            nearest = min(
-                                found_tables,
-                                key=lambda value: float(value.get("distance", float("inf"))),
-                            )
-                            table_open = harness_ops.ensure_crafting_table_open(
+                            local_table = _nearest_local_crafting_table(
                                 client,
-                                table_pos=(
-                                    int(nearest["x"]),
-                                    int(nearest["y"]),
-                                    int(nearest["z"]),
-                                ),
+                                found_tables,
                             )
+                            if local_table is not None:
+                                table_open = harness_ops.ensure_crafting_table_open(
+                                    client,
+                                    table_pos=local_table,
+                                )
                         elif found_tables is None:
                             # Compatibility for transports without block search.
                             table_open = harness_ops.ensure_crafting_table_open(client)
