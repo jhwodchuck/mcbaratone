@@ -3,6 +3,7 @@ Boot sequence specific actions for the initial gathering phase.
 """
 
 import time
+from math import hypot
 from typing import List
 from .base import BaseAction
 from .resource_gathering import ResourceGatheringAction
@@ -177,6 +178,38 @@ class BaseRecoveryAction(BaseAction):
                 print("Updated runtime world map with recovered base location.")
             else:
                 print("Base location already recorded in the runtime world map.")
+
+            # Every boot retry must begin from the recovered anchor. Waiting
+            # until infrastructure placement near the end of the sequence
+            # allowed wood, food, and scouting retries to ratchet hundreds of
+            # blocks farther away. Eventually a valid house was repeatedly
+            # reported as unreachable even though the real defect was
+            # cumulative retry drift.
+            state = self.run_command(context, "get_state", {})
+            current = state.get("block_position", state.get("position", {}))
+            if all(axis in current for axis in ("x", "z")):
+                distance = hypot(
+                    float(current["x"]) - position[0],
+                    float(current["z"]) - position[2],
+                )
+                if distance > 12.0:
+                    require_survival_margin(context.client)
+                    print(
+                        "Returning to recovered boot anchor before resource "
+                        f"work ({distance:.1f}m away)..."
+                    )
+                    if not goto(
+                        context.client,
+                        position[0],
+                        position[1],
+                        position[2],
+                        timeout=300,
+                        check_interval=1.0,
+                        tolerance=3.0,
+                    ):
+                        return ActionResult.fail(
+                            "Could not return to recovered boot anchor"
+                        )
 
         return ActionResult.ok("Base recovery complete")
 

@@ -505,6 +505,47 @@ def _find_safe_nearby_ore(
     return (x, y, z)
 
 
+def _wood_gathering_must_stop(
+    client,
+    state: dict,
+    *,
+    origin_x: float,
+    origin_z: float,
+    latest_world_time: Optional[int],
+    max_distance_from_origin: Optional[float],
+    minimum_health: float,
+) -> bool:
+    """Cancel a wood expedition at its aquatic, time, health, or range boundary."""
+    from .combat import survival_tick
+
+    reason = None
+    if survival_tick(client, state):
+        reason = "after aquatic safety intervention"
+    elif (
+        latest_world_time is not None
+        and int(state.get("world_time", 0)) % 24000 >= int(latest_world_time)
+    ):
+        reason = "at its return-home boundary"
+    elif float(state.get("health", 20.0)) < float(minimum_health):
+        reason = "below safe health"
+    else:
+        position = state.get("block_position", state.get("position", {}))
+        distance = (
+            (float(position.get("x", 0)) - origin_x) ** 2
+            + (float(position.get("z", 0)) - origin_z) ** 2
+        ) ** 0.5
+        if (
+            max_distance_from_origin is not None
+            and distance > float(max_distance_from_origin)
+        ):
+            reason = "at its expedition radius"
+    if reason is None:
+        return False
+    print(f"DEBUG: Wood gathering stopped {reason}")
+    client.transport.dispatch("cancel", {})
+    return True
+
+
 def gather_wood(
     client,
     count: int = 16,
@@ -593,28 +634,15 @@ def gather_wood(
             if state is None:
                 time.sleep(0.5)
                 continue
-            day_time = int(state.get("world_time", 0)) % 24000
-            if latest_world_time is not None and day_time >= int(
-                latest_world_time
+            if _wood_gathering_must_stop(
+                client,
+                state,
+                origin_x=origin_x,
+                origin_z=origin_z,
+                latest_world_time=latest_world_time,
+                max_distance_from_origin=max_distance_from_origin,
+                minimum_health=minimum_health,
             ):
-                print("DEBUG: Wood gathering reached its return-home boundary")
-                client.transport.dispatch("cancel", {})
-                return False
-            if float(state.get("health", 20.0)) < float(minimum_health):
-                print("DEBUG: Wood gathering stopped below safe health")
-                client.transport.dispatch("cancel", {})
-                return False
-            position = state.get("block_position", state.get("position", {}))
-            distance = (
-                (float(position.get("x", 0)) - origin_x) ** 2
-                + (float(position.get("z", 0)) - origin_z) ** 2
-            ) ** 0.5
-            if (
-                max_distance_from_origin is not None
-                and distance > float(max_distance_from_origin)
-            ):
-                print("DEBUG: Wood gathering reached its expedition radius")
-                client.transport.dispatch("cancel", {})
                 return False
             food_level = int(state.get("food_level", state.get("food", 20)))
             if food_level <= 10:

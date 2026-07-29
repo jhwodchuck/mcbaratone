@@ -686,6 +686,39 @@ def test_bounded_wood_gather_stops_at_expedition_radius(monkeypatch):
     assert ("cancel", {}) in transport.calls
 
 
+def test_wood_gather_aborts_after_aquatic_safety_intervention(monkeypatch):
+    from baritone_client.common import combat
+
+    class SwampTransport(RecordingTransport):
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "world_time": 1000,
+                    "health": 13.0,
+                    "food_level": 15,
+                    "is_pathing": True,
+                    "block_position": {"x": 338, "y": 60, "z": -389},
+                }
+            return {}
+
+    transport = SwampTransport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(resources, "count_item", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(resources, "_ensure_outdoor_daylight", lambda *_args: True)
+    monkeypatch.setattr(resources, "_start_mine_process", lambda *_args: None)
+    interventions = []
+    monkeypatch.setattr(
+        combat,
+        "survival_tick",
+        lambda _client, _state: interventions.append(True) or True,
+    )
+
+    assert not resources.gather_wood(client, count=3, timeout=1)
+    assert interventions == [True]
+    assert ("cancel", {}) in transport.calls
+
+
 def test_missing_mining_pickaxe_is_replaced(monkeypatch):
     transport = RecordingTransport()
     client = SimpleNamespace(transport=transport)
