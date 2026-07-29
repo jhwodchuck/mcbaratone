@@ -12,6 +12,7 @@ from baritone_client.actions.boot_sequence import (
     FinalSleepAction,
     HuntingAndScoutingAction,
     InfrastructurePlacementAction,
+    PlankCraftingAction,
     SafetyCheckAction,
     StoneToolCraftingAction,
 )
@@ -366,6 +367,26 @@ def test_boot_wood_check_counts_carried_logs_as_convertible_planks(monkeypatch):
     )
 
     assert result.success
+
+
+def test_boot_plank_crafting_uses_mangrove_logs_detected_by_wood_check(monkeypatch):
+    crafted = []
+
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.count_item",
+        lambda _client, item_id: 4 if item_id == "minecraft:mangrove_log" else 0,
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.craft",
+        lambda _client, item_id, count: crafted.append((item_id, count)) or True,
+    )
+
+    result = PlankCraftingAction().execute(
+        SimpleNamespace(client=SimpleNamespace())
+    )
+
+    assert result.success
+    assert crafted == [("minecraft:mangrove_planks", 4)]
 
 
 def test_boot_wood_check_defers_reserve_on_ledge_with_nearby_table(monkeypatch):

@@ -30,15 +30,21 @@ from .boot_readiness import (
 )
 
 
-_BOOT_LOGS = [
-    "minecraft:oak_log", "minecraft:spruce_log", "minecraft:birch_log",
-    "minecraft:jungle_log", "minecraft:acacia_log", "minecraft:dark_oak_log",
-    "minecraft:mangrove_log", "minecraft:cherry_log",
-]
+_BOOT_WOOD_RECIPES = (
+    ("minecraft:oak_log", "minecraft:oak_planks"),
+    ("minecraft:spruce_log", "minecraft:spruce_planks"),
+    ("minecraft:birch_log", "minecraft:birch_planks"),
+    ("minecraft:jungle_log", "minecraft:jungle_planks"),
+    ("minecraft:acacia_log", "minecraft:acacia_planks"),
+    ("minecraft:dark_oak_log", "minecraft:dark_oak_planks"),
+    ("minecraft:mangrove_log", "minecraft:mangrove_planks"),
+    ("minecraft:cherry_log", "minecraft:cherry_planks"),
+    ("minecraft:pale_oak_log", "minecraft:pale_oak_planks"),
+)
+_BOOT_LOGS = [log_id for log_id, _ in _BOOT_WOOD_RECIPES]
 _BOOT_PLANKS = [
-    "minecraft:oak_planks", "minecraft:spruce_planks", "minecraft:birch_planks",
-    "minecraft:jungle_planks", "minecraft:acacia_planks", "minecraft:dark_oak_planks",
-    "minecraft:mangrove_planks", "minecraft:cherry_planks", "minecraft:bamboo_planks",
+    *(plank_id for _, plank_id in _BOOT_WOOD_RECIPES),
+    "minecraft:bamboo_planks",
 ]
 
 
@@ -242,27 +248,13 @@ class PlankCraftingAction(BaseAction):
             )
             return ActionResult.ok("Bootstrap planks are no longer required")
 
-        plank_types = [
-            "minecraft:oak_planks", "minecraft:birch_planks", "minecraft:spruce_planks",
-            "minecraft:dark_oak_planks", "minecraft:acacia_planks", "minecraft:jungle_planks",
-            "minecraft:mangrove_planks", "minecraft:cherry_planks"
-        ]
-        total_planks = sum(count_item(context.client, p) for p in plank_types)
+        total_planks = _count_family(context.client, _BOOT_PLANKS)
 
         if total_planks >= 4:
             print(f"Already have {total_planks} planks. Skipping craft.")
             return ActionResult.ok("Already have sufficient planks")
 
-        log_types = [
-            ("minecraft:oak_log", "minecraft:oak_planks"),
-            ("minecraft:birch_log", "minecraft:birch_planks"),
-            ("minecraft:spruce_log", "minecraft:spruce_planks"),
-            ("minecraft:dark_oak_log", "minecraft:dark_oak_planks"),
-            ("minecraft:acacia_log", "minecraft:acacia_planks"),
-            ("minecraft:jungle_log", "minecraft:jungle_planks"),
-        ]
-
-        for log_id, plank_id in log_types:
+        for log_id, plank_id in _BOOT_WOOD_RECIPES:
             log_count = count_item(context.client, log_id)
             if log_count > 0:
                 print(f"Converting {log_count} {log_id} to planks...")
