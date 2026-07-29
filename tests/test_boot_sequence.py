@@ -662,6 +662,44 @@ def test_bed_acquisition_reuses_checkpointed_house_bed(monkeypatch):
     assert result.message == "House bed already available"
 
 
+def test_bed_acquisition_uses_one_bounded_direct_craft(monkeypatch):
+    inventory = {
+        "minecraft:white_wool": 3,
+        "minecraft:oak_planks": 3,
+    }
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.count_item",
+        lambda _client, item_id: inventory.get(item_id, 0),
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.hunt_passive_mobs",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("existing wool must not trigger a hunt")
+        ),
+    )
+    craft_calls = []
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.craft",
+        lambda _client, item_id, count: craft_calls.append((item_id, count))
+        or False,
+    )
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: {"world_time": 1000}
+        )
+    )
+
+    result = BedAcquisitionAction().execute(
+        SimpleNamespace(
+            client=client,
+            state=SimpleNamespace(custom_data={}),
+        )
+    )
+
+    assert result.success
+    assert craft_calls == [("minecraft:white_bed", 1)]
+
+
 def test_night_safety_uses_shelter_instead_of_bulk_mining(monkeypatch):
     class Transport:
         def dispatch(self, route, payload):

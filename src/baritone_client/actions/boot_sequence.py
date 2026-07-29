@@ -400,13 +400,14 @@ class BedAcquisitionAction(BaseAction):
             if not plank_result.success:
                 return ActionResult.fail("Cannot craft bed - insufficient planks")
 
-        # Try craft white bed
-        if ensure_supplies(context.client, {"minecraft:white_bed": 1}).success:
+        # The generic supply loop has no bed handler and otherwise waits its
+        # full 600-second budget. Make one bounded direct attempt; a completed
+        # shelter remains a valid fallback when this optional craft fails.
+        if craft(context.client, "minecraft:white_bed", 1):
             print("Crafted white bed!")
             return ActionResult.ok("Bed crafted successfully")
-        else:
-            print("Failed to craft bed (maybe mixed wool colors?)")
-            return ActionResult.fail("Bed crafting failed")
+        print("Bed craft unavailable; deferring optional bed acquisition.")
+        return ActionResult.ok("Bed crafting deferred")
 
 
 class HuntingAndScoutingAction(BaseAction):
