@@ -17,6 +17,7 @@ from .site_selection import (
     find_flat_site_in_view as _find_flat_site_in_view,
     surface_y_at as _surface_y_at,
 )
+from .runtime_artifacts import append_world_map_entry
 
 
 def is_position_safe(client, x: int, y: int, z: int) -> bool:
@@ -259,13 +260,9 @@ def place_crafting_table(
         )
         print(f"  *** BASE LOCATION SET to ({x}, {y}, {z}) ***")
     
-    # Update world_map.md
-    try:
-        with open("c:/gh/mcbaratone/world_map.md", "a") as f:
-            label = "Crafting Table/Base" if save_as_base else "Crafting Table"
-            f.write(f"\n- **{label}**: ({x}, {y}, {z})")
-    except Exception as e:
-        print(f"  Failed to update world_map.md: {e}")
+    label = "Crafting Table/Base" if save_as_base else "Crafting Table"
+    if not append_world_map_entry(label, (x, y, z)):
+        print("  Crafting-table landmark already recorded in runtime evidence")
     
     return True
 

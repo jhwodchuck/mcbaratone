@@ -18,6 +18,7 @@ from ...common.base import (
 )
 from ...common.tasks import (
     ActionTask,
+    ProgressRecoveryRequired,
     SequentialTask,
     SurvivalRecoveryRequired,
     TaskResult,
@@ -26,6 +27,7 @@ from ...common.navigation import goto
 from ...common.inventory import count_item, select_item
 from ...common.resources import _wait_for_path_completion
 from ...common.automation_utils import get_player_pos
+from ...common.site_selection import surface_y_at
 from ...common.combat import acquire_emergency_food, eat_until_hunger, recover_health
 from ...common.farming import establish_wheat_farm
 import time
@@ -370,6 +372,13 @@ class BaseConstructionHandler(PhaseHandler):
         if location is None:
             from ...common.build_site_recovery import relocate_build_site_search
 
+            px, py, pz = get_player_pos(client)
+            expected_surface = surface_y_at(client, int(px), int(pz))
+            minimum_y = (
+                int(expected_surface) - 2
+                if expected_surface is not None and py < expected_surface - 3
+                else None
+            )
             search_attempt = int(
                 state.custom_data.get("base_site_search_attempts", 0)
             ) + 1
@@ -378,11 +387,15 @@ class BaseConstructionHandler(PhaseHandler):
                 client,
                 attempt=search_attempt,
                 goto=goto,
+                minimum_y=minimum_y,
             ):
                 location = find_flat_ground(client, radius=24, footprint=7)
             if location is None:
                 state.save_checkpoint(resources.get_summary()["inventory"])
-                return None
+                raise ProgressRecoveryRequired(
+                    "base site search could not reach a new dry-surface view "
+                    f"(attempt={search_attempt}, minimum_y={minimum_y})"
+                )
 
         state.custom_data.pop("base_site_search_attempts", None)
         state.custom_data["base_build_origin"] = list(location)

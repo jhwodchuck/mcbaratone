@@ -52,8 +52,9 @@ def relocate_build_site_search(
     goto: Optional[Callable[..., bool]] = None,
     search_radius: int = 64,
     attempt_limit: int = 8,
+    minimum_y: Optional[int] = None,
 ) -> bool:
-    """Move far enough to load a different candidate build-site view."""
+    """Move far enough to load a different dry-surface candidate view."""
     if goto is None:
         from .navigation import goto
 
@@ -75,12 +76,20 @@ def relocate_build_site_search(
         highest_by_column[(x, z)] = max(y, highest_by_column.get((x, z), -64))
     candidates = []
     for (x, z), y in highest_by_column.items():
+        if minimum_y is not None and y < int(minimum_y):
+            continue
         distance_sq = (x - origin[0]) ** 2 + (z - origin[2]) ** 2
         if 16**2 <= distance_sq <= search_radius**2:
             candidate = (x, y, z)
             if destination_safe(client, *candidate):
                 candidates.append((distance_sq, candidate))
-    ranked = [candidate for _distance, candidate in sorted(candidates)]
+    ranked = [
+        candidate
+        for _distance, candidate in sorted(
+            candidates,
+            key=lambda item: (-item[1][1], item[0]),
+        )
+    ]
     if ranked:
         offset = max(0, int(attempt) - 1) % len(ranked)
         ranked = ranked[offset:] + ranked[:offset]

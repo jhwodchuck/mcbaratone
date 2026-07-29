@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import mock_open
 
+import pytest
+
 from baritone_client.automator.phases import boot_sequence
 from baritone_client.automator.phases.boot_sequence import BootSequenceHandler
 from baritone_client.actions.boot_sequence import (
@@ -13,6 +15,7 @@ from baritone_client.actions.boot_sequence import (
     SafetyCheckAction,
     StoneToolCraftingAction,
 )
+from baritone_client.common.tasks import SurvivalRecoveryRequired
 
 
 class RecordingState:
@@ -376,6 +379,68 @@ def test_boot_wood_check_defers_reserve_on_ledge_with_nearby_table(monkeypatch):
     )
 
     assert result.success
+
+
+def test_boot_wood_check_yields_to_low_food_recovery(monkeypatch):
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: {
+                "health": 20,
+                "food_level": 5,
+            }
+        )
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.count_item",
+        lambda *_args: 0,
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.find_nearby_block",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.gather_wood",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unsafe outdoor gathering must not begin")
+        ),
+    )
+
+    with pytest.raises(SurvivalRecoveryRequired):
+        ConditionalWoodGatheringAction(needed_logs=4).execute(
+            SimpleNamespace(client=client, state=SimpleNamespace(custom_data={}))
+        )
+
+
+def test_boot_reuses_durable_tools_and_verified_infrastructure(monkeypatch):
+    durable = {
+        "minecraft:stone_pickaxe",
+        "minecraft:stone_axe",
+        "minecraft:stone_shovel",
+        "minecraft:stone_sword",
+    }
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_readiness.count_item",
+        lambda _client, item_id: int(item_id in durable),
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.gather_wood",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("owned durable capabilities must not be recreated")
+        ),
+    )
+    context = SimpleNamespace(
+        client=SimpleNamespace(),
+        state=SimpleNamespace(
+            custom_data={
+                "structures": {
+                    "bootstrap_base": {"verified": True},
+                }
+            }
+        ),
+    )
+
+    assert ConditionalWoodGatheringAction(needed_logs=4).execute(context).success
+    assert StoneToolCraftingAction().execute(context).success
 
 
 def test_boot_base_recovery_prefers_checkpointed_house(monkeypatch):

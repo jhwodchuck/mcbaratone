@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 from .state_manager import Phase, StateManager
 from ..common.tasks import (
     PlayerDeathDetected,
+    ProgressRecoveryRequired,
     SurvivalRecoveryRequired,
     TaskResult,
     normalize_task_result,
@@ -294,6 +295,17 @@ class PhaseExecutor:
                         f"failed non-fatally: {food_exc}"
                     )
                 time.sleep(2.0)
+                return False
+            except ProgressRecoveryRequired as exc:
+                end_operation(
+                    operation,
+                    "interrupted",
+                    reason=str(exc),
+                    interruption="progress_recovery",
+                )
+                self.interruption_reason = "progress_recovery"
+                print(f"Phase {phase.name} yielded for world recovery: {exc}")
+                handler.on_exit(self.client, self.resources, self.state)
                 return False
             except Exception as e:
                 end_operation(

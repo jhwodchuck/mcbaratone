@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
+from ..common.runtime_artifacts import runtime_artifact_path
 
 logger = logging.getLogger(__name__)
 
@@ -292,7 +293,7 @@ class MappingSystem(BackgroundSystem):
             
         self.path_history = []  # List of (x, z)
         self.last_update = 0
-        self.map_file = "world_map.md"
+        self.map_file = runtime_artifact_path("world_map.md", state_manager)
 
     def tick(self):
         try:

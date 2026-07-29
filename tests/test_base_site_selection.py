@@ -6,7 +6,10 @@ from baritone_client.automator.phases import base_construction
 from baritone_client.automator.phases.base_construction import BaseConstructionHandler
 from baritone_client.common import base, surface_recovery
 from baritone_client.common.base import _find_flat_site_in_view
-from baritone_client.common.tasks import SurvivalRecoveryRequired
+from baritone_client.common.tasks import (
+    ProgressRecoveryRequired,
+    SurvivalRecoveryRequired,
+)
 
 
 def _flat_patch(origin_x, origin_z, size=9, ground_y=63):
@@ -224,6 +227,81 @@ def test_build_site_relocation_loads_a_different_dry_view(monkeypatch):
         or True,
     )
     assert destinations == [(24, 64, 0)]
+
+
+def test_build_site_relocation_rejects_same_level_cave_floor(monkeypatch):
+    from baritone_client.common import build_site_recovery
+
+    class Transport:
+        def __init__(self):
+            self.state_reads = 0
+
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                self.state_reads += 1
+                y = 62 if self.state_reads == 1 else 69
+                x = 0 if self.state_reads == 1 else 28
+                return {"block_position": {"x": x, "y": y, "z": 0}}
+            if route == "find_blocks":
+                return {
+                    "found": [
+                        {"x": 20, "y": 62, "z": 0},
+                        {"x": 28, "y": 68, "z": 0},
+                    ]
+                }
+            return {}
+
+    destinations = []
+    monkeypatch.setattr(
+        build_site_recovery, "destination_safe", lambda *_args: True
+    )
+
+    assert build_site_recovery.relocate_build_site_search(
+        SimpleNamespace(transport=Transport()),
+        attempt=1,
+        minimum_y=66,
+        goto=lambda _client, *position, **_kwargs: destinations.append(position)
+        or True,
+    )
+    assert destinations == [(28, 69, 0)]
+
+
+def test_base_site_failure_yields_without_phase_retry_burn(monkeypatch):
+    class Resources:
+        get_summary = lambda *_args, **_kwargs: {"inventory": {}}
+
+    class State:
+        def __init__(self):
+            self.custom_data = {}
+            self.saved = 0
+
+        def save_checkpoint(self, *_args):
+            self.saved += 1
+
+    monkeypatch.setattr(
+        base_construction, "find_flat_ground", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        base_construction, "get_player_pos", lambda *_args: (424, 62, 1)
+    )
+    monkeypatch.setattr(
+        base_construction, "surface_y_at", lambda *_args: 70
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.build_site_recovery.relocate_build_site_search",
+        lambda *_args, **_kwargs: False,
+    )
+    state = State()
+
+    with pytest.raises(ProgressRecoveryRequired):
+        BaseConstructionHandler._resolve_build_location(
+            SimpleNamespace(),
+            Resources(),
+            state,
+        )
+
+    assert state.saved == 1
+    assert state.custom_data["base_site_search_attempts"] == 1
 
 
 def test_unprovisioned_remote_build_site_is_unsafe_to_return_to():

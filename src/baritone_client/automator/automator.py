@@ -14,7 +14,7 @@ from .coordination_hub import CoordinationHub, SystemEvent, EventType
 from .systems import SafetySystem, HungerSystem, MappingSystem
 from .telemetry import TelemetrySystem
 from ..common.nether import find_nearest_portal
-from ..common.tasks import TaskResult
+from ..common.tasks import PlayerDeathDetected, TaskResult
 from ..actions.death_recovery_action import DeathRecoveryAction
 from ..core.interfaces import ActionContext, ActionResult
 from ..actions.base import BaseAction
@@ -96,6 +96,7 @@ class EndGameAutomator:
         self.checkpoint_interval = checkpoint_interval
         self._last_checkpoint = 0.0
         self._running = False
+        self._stall_reported = False
         
         # Callbacks
         self.on_phase_start: Optional[Callable[[Phase], None]] = None
@@ -254,6 +255,20 @@ class EndGameAutomator:
             
         # Initialize dynamic resources
         self.resources.initialize_recipes()
+
+        from .stall_recovery import rearm_abandoned_objectives
+
+        reopened = rearm_abandoned_objectives(
+            self.planner,
+            self.state.custom_data,
+        )
+        if reopened:
+            print(
+                "OBJECTIVE REPAIR: re-opened abandoned objectives for "
+                f"runtime revision: {', '.join(reopened)}"
+            )
+            self._persist_objective_progress()
+            self._save_checkpoint()
         
         # Record Spawn Location
         try:
@@ -291,10 +306,23 @@ class EndGameAutomator:
                     # Nothing runnable and not won: a genuine stall (every remaining
                     # objective is abandoned, or its prerequisites are unmet).  End
                     # the run gracefully rather than spinning.
-                    self._report_stall()
-                    return False
+                    if not self._stall_reported:
+                        self._report_stall()
+                        self._stall_reported = True
+                    try:
+                        from .stall_recovery import maintain_stalled_survival
+
+                        activity = maintain_stalled_survival(self.client)
+                        print(f"  Stalled survival hold: {activity}")
+                    except PlayerDeathDetected:
+                        # The next outer-loop pass owns death recovery so the
+                        # exact grave and pre-death inventory remain available.
+                        continue
+                    time.sleep(5.0)
+                    continue
 
                 phase = obj.phase
+                self._stall_reported = False
                 self._activate_objective(obj)
 
                 if self.on_phase_start:
@@ -307,7 +335,11 @@ class EndGameAutomator:
                 if (
                     not success
                     and self.executor.interruption_reason
-                    in {"player_death", "survival_recovery"}
+                    in {
+                        "player_death",
+                        "progress_recovery",
+                        "survival_recovery",
+                    }
                 ):
                     interruption = self.executor.interruption_reason
                     self.planner.record_evidence(

@@ -18,6 +18,10 @@ class SurvivalRecoveryRequired(RuntimeError):
     """Signal a safe survival hold that must not consume an objective attempt."""
 
 
+class ProgressRecoveryRequired(RuntimeError):
+    """Signal bounded world recovery that must not consume a phase retry."""
+
+
 @dataclass
 class TaskResult:
     """Result of task execution."""

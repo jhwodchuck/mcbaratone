@@ -13,6 +13,7 @@ from ...common.resources import gather_wood, gather_stone, gather_ores, ensure_s
 from ...common.inventory import count_item, craft, select_item
 from ...common.base import setup_base
 from ...common.combat import hunt_passive_mobs
+from ...common.runtime_artifacts import append_world_map_entry
 
 from ...actions import (
     SequenceAction,
@@ -113,20 +114,15 @@ class BootSequenceHandler(PhaseHandler):
         
         # 3. Update world_map.md if we have a location
         if found_pos:
-            try:
-                # Check if already logged (primitive check)
-                with open("c:/gh/mcbaratone/world_map.md", "r", encoding="utf-8") as f:
-                    content = f.read()
-                
-                entry = f"({found_pos[0]}, {found_pos[1]}, {found_pos[2]})"
-                if entry not in content:
-                    with open("c:/gh/mcbaratone/world_map.md", "a", encoding="utf-8") as f:
-                        f.write(f"\n- **Crafting Table/Base (Recovered)**: {entry}")
-                    print("  Updated world_map.md with recovered base location.")
-                else:
-                    print("  Base location already in world_map.md.")
-            except Exception as e:
-                print(f"  Failed to update world_map.md: {e}")
+            position = tuple(int(value) for value in found_pos)
+            if append_world_map_entry(
+                "Crafting Table/Base (Recovered)",
+                position,
+                state=getattr(self, "state", None),
+            ):
+                print("  Updated runtime world map with recovered base location.")
+            else:
+                print("  Base location already recorded in runtime world map.")
                 
         return True
 

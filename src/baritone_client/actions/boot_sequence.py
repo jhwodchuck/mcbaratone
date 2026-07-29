@@ -21,6 +21,12 @@ from ..common.base import (
 )
 from ..common.combat import hunt_passive_mobs
 from ..common.navigation import find_nearby_block, goto
+from ..common.runtime_artifacts import append_world_map_entry
+from .boot_readiness import (
+    durable_boot_capabilities,
+    has_durable_tool_set,
+    require_survival_margin,
+)
 
 
 _BOOT_LOGS = [
@@ -55,13 +61,11 @@ class SafetyCheckAction(BaseAction):
             if is_night:
                 print("Night time detected - establishing shelter until daylight")
                 if wait_for_safe_daylight(context.client):
+                    require_survival_margin(context.client)
                     return ActionResult.ok("Sheltered safely until daylight")
                 return ActionResult.fail("Could not establish safe daylight")
 
-            if health < 10:
-                return ActionResult.fail(
-                    f"Daylight health is too low for boot work ({health}/20)"
-                )
+            require_survival_margin(context.client)
 
             return ActionResult.ok("Day time - no safety actions needed")
 
@@ -154,20 +158,15 @@ class BaseRecoveryAction(BaseAction):
 
         # 4. Update world_map.md if we have a location
         if found_pos:
-            try:
-                # Check if already logged (primitive check)
-                with open("c:/gh/mcbaratone/world_map.md", "r", encoding="utf-8") as f:
-                    content = f.read()
-
-                entry = f"({found_pos[0]}, {found_pos[1]}, {found_pos[2]})"
-                if entry not in content:
-                    with open("c:/gh/mcbaratone/world_map.md", "a", encoding="utf-8") as f:
-                        f.write(f"\n- **Crafting Table/Base (Recovered)**: {entry}")
-                    print("Updated world_map.md with recovered base location.")
-                else:
-                    print("Base location already in world_map.md.")
-            except Exception as e:
-                print(f"Failed to update world_map.md: {e}")
+            position = tuple(int(value) for value in found_pos)
+            if append_world_map_entry(
+                "Crafting Table/Base (Recovered)",
+                position,
+                state=context.state,
+            ):
+                print("Updated runtime world map with recovered base location.")
+            else:
+                print("Base location already recorded in the runtime world map.")
 
         return ActionResult.ok("Base recovery complete")
 
@@ -180,6 +179,13 @@ class ConditionalWoodGatheringAction(BaseAction):
 
     def execute(self, context: ActionContext) -> ActionResult:
         """Check inventory and gather wood if needed."""
+        if durable_boot_capabilities(context):
+            print(
+                "Durable tools and verified infrastructure already exist; "
+                "skipping bootstrap wood gathering."
+            )
+            return ActionResult.ok("Durable boot capabilities already established")
+
         logs = _count_family(context.client, _BOOT_LOGS)
         if logs >= self.needed_logs:
             print("Sufficient logs present; skipping wood gathering.")
@@ -211,6 +217,8 @@ class ConditionalWoodGatheringAction(BaseAction):
             )
             return ActionResult.ok("Enough wood to bootstrap stone recovery")
 
+        require_survival_margin(context.client)
+
         # Gather minimal wood
         success = gather_wood(context.client, count=self.needed_logs)
         if success:
@@ -224,6 +232,13 @@ class PlankCraftingAction(BaseAction):
 
     def execute(self, context: ActionContext) -> ActionResult:
         """Convert logs to planks using available log types."""
+        if durable_boot_capabilities(context):
+            print(
+                "Durable tools and verified infrastructure already exist; "
+                "skipping bootstrap plank crafting."
+            )
+            return ActionResult.ok("Bootstrap planks are no longer required")
+
         plank_types = [
             "minecraft:oak_planks", "minecraft:birch_planks", "minecraft:spruce_planks",
             "minecraft:dark_oak_planks", "minecraft:acacia_planks", "minecraft:jungle_planks",
@@ -265,6 +280,10 @@ class StoneToolCraftingAction(BaseAction):
 
     def execute(self, context: ActionContext) -> ActionResult:
         """Craft stone pickaxe, axe, shovel, and sword."""
+        if has_durable_tool_set(context.client):
+            print("Complete durable tool set already present; skipping stone tool crafting.")
+            return ActionResult.ok("Durable tool set already available")
+
         # Full set: pickaxe 3 + axe 3 + shovel 1 + sword 2 = 9 cobble.
         # The generic requirement strategy only sees the requested finished
         # tool and otherwise opens the table with no raw material available.
@@ -596,6 +615,7 @@ class FinalSleepAction(BaseAction):
 
     def execute(self, context: ActionContext) -> ActionResult:
         """Sleep through the night."""
+        require_survival_margin(context.client)
         success = sleep_through_night(context.client)
         if success:
             return ActionResult.ok("Successfully slept through night")
