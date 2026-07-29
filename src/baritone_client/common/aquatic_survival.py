@@ -75,9 +75,26 @@ def escape_water_if_submerged(
     *,
     tick_limit: int,
     head_is_water: Callable[[Any, dict], bool],
+    feet_in_water: Callable[[Any, dict], bool],
     surface: Callable[..., bool],
 ) -> bool:
     """Surface after consecutive underwater supervision ticks."""
+    health = float(state.get("health", 20.0) or 0)
+    prior_health = getattr(client, "_last_survival_health", None)
+    client._last_survival_health = health
+    if (
+        prior_health is not None
+        and health < float(prior_health) - 0.5
+        and feet_in_water(client, state)
+    ):
+        print(
+            "SURVIVAL: health fell while in water; "
+            "surfacing before further drowning damage"
+        )
+        surface(client, timeout=12.0)
+        client._submersion_ticks = 0
+        return True
+
     if not head_is_water(client, state):
         client._submersion_ticks = 0
         return False

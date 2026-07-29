@@ -26,6 +26,7 @@ from ..common.tasks import SurvivalRecoveryRequired
 from .boot_readiness import (
     durable_boot_capabilities,
     has_durable_tool_set,
+    nearby_infrastructure_record,
     require_survival_margin,
 )
 
@@ -445,10 +446,7 @@ class InfrastructurePlacementAction(BaseAction):
         # 1. Resolve and return to the checkpointed house directly.  A named
         # ``base`` waypoint can be overwritten by temporary quarry tables, and
         # merely seeing ``is_pathing=False`` is not proof of arrival.
-        structures = getattr(context.state, "custom_data", {}).get(
-            "structures", {}
-        )
-        house = structures.get("starter_house", {})
+        house = nearby_infrastructure_record(context)
         house_target = house.get("crafting_table")
         if not isinstance(house_target, (list, tuple)) or len(house_target) != 3:
             origin = house.get("origin") or getattr(

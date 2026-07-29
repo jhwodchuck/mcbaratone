@@ -341,6 +341,38 @@ def test_submersion_reflex_resets_when_head_clears(monkeypatch):
     assert surfaced == []
 
 
+def test_water_damage_surfaces_when_swimming_pose_makes_head_probe_dry(monkeypatch):
+    class SwimmingTransport(CombatTransport):
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_block":
+                return {
+                    "id": (
+                        "minecraft:water"
+                        if payload["y"] == 62
+                        else "minecraft:air"
+                    )
+                }
+            return {}
+
+    client = SimpleNamespace(transport=SwimmingTransport(health=20.0))
+    surfaced = []
+    monkeypatch.setattr(
+        combat,
+        "_surface_after_aquatic_hunt",
+        lambda _client, **_kwargs: surfaced.append(True) or True,
+    )
+    state = {
+        "health": 20.0,
+        "block_position": {"x": 0, "y": 62, "z": 0},
+    }
+    assert combat.escape_water_if_submerged(client, state) is False
+
+    state["health"] = 16.0
+    assert combat.escape_water_if_submerged(client, state) is True
+    assert surfaced == [True]
+
+
 def test_defend_or_flee_surfaces_before_assessing_threats(monkeypatch):
     # Pre-seed one submersion tick so this call reaches the surface threshold.
     client = SimpleNamespace(

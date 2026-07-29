@@ -303,6 +303,24 @@ class EndGameAutomator:
                 ready = self.planner.runnable()
                 obj = self.planner.select(ready)
                 if obj is None:
+                    from .stall_recovery import (
+                        rearm_recovered_survival_objectives,
+                    )
+
+                    reopened = rearm_recovered_survival_objectives(
+                        self.planner,
+                        self.client,
+                    )
+                    if reopened:
+                        print(
+                            "SURVIVAL REPAIR: re-opened safe objectives: "
+                            + ", ".join(reopened)
+                        )
+                        self._persist_objective_progress()
+                        self._save_checkpoint()
+                        self._stall_reported = False
+                        continue
+
                     # Nothing runnable and not won: a genuine stall (every remaining
                     # objective is abandoned, or its prerequisites are unmet).  End
                     # the run gracefully rather than spinning.

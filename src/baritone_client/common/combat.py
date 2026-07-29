@@ -483,6 +483,7 @@ def escape_water_if_submerged(client, state) -> bool:
         state,
         tick_limit=_SUBMERSION_TICKS_BEFORE_SURFACE,
         head_is_water=_head_block_is_water,
+        feet_in_water=_player_is_in_water,
         surface=_surface_after_aquatic_hunt,
     )
 

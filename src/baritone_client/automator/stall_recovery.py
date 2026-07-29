@@ -13,7 +13,7 @@ from typing import Any, MutableMapping
 from .objective import ObjStatus, ObjectivePlanner
 
 
-OBJECTIVE_RUNTIME_REVISION = 7
+OBJECTIVE_RUNTIME_REVISION = 8
 
 
 def rearm_abandoned_objectives(
@@ -79,3 +79,30 @@ def maintain_stalled_survival(client: Any) -> str:
 
     client.transport.dispatch("cancel", {})
     return "holding"
+
+
+def rearm_recovered_survival_objectives(
+    planner: ObjectivePlanner,
+    client: Any,
+) -> list[str]:
+    """Re-open objectives abandoned only because survival was temporarily low."""
+    state = client.transport.dispatch("get_state", {})
+    health = float(state.get("health", 20) or 0)
+    food = int(state.get("food_level", state.get("food", 20)) or 0)
+    if health < 12.0 or food < 14:
+        return []
+
+    reopened = []
+    for objective in planner.objectives:
+        if (
+            objective.status is not ObjStatus.ABANDONED
+            or objective.last_failure != "survival_recovery"
+        ):
+            continue
+        objective.status = ObjStatus.PENDING
+        objective.attempts = 0
+        objective.interruptions = 0
+        objective.no_progress_streak = 0
+        objective.last_failure = ""
+        reopened.append(objective.phase.name)
+    return reopened

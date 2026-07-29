@@ -9,6 +9,7 @@ from baritone_client.automator.stall_recovery import (
     OBJECTIVE_RUNTIME_REVISION,
     maintain_stalled_survival,
     rearm_abandoned_objectives,
+    rearm_recovered_survival_objectives,
 )
 from baritone_client.automator.state_manager import Phase
 
@@ -72,3 +73,55 @@ def test_stalled_survival_actively_recovers_low_food(monkeypatch):
             "timeout": 120.0,
         }
     ]
+
+
+def test_safe_survival_recovery_reopens_abandoned_objective():
+    planner = ObjectivePlanner(default_objectives())
+    objective = planner._by_phase[Phase.BOOT_SEQUENCE]
+    objective.status = ObjStatus.ABANDONED
+    objective.attempts = 2
+    objective.interruptions = 4
+    objective.no_progress_streak = 3
+    objective.last_failure = "survival_recovery"
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda _route, _payload: {
+                "health": 13.0,
+                "food_level": 17,
+            }
+        )
+    )
+
+    assert rearm_recovered_survival_objectives(planner, client) == [
+        "BOOT_SEQUENCE"
+    ]
+    assert objective.status is ObjStatus.PENDING
+    assert objective.interruptions == 0
+    assert objective.no_progress_streak == 0
+
+
+def test_unsafe_or_phase_failed_objective_is_not_reopened():
+    planner = ObjectivePlanner(default_objectives())
+    objective = planner._by_phase[Phase.BOOT_SEQUENCE]
+    objective.status = ObjStatus.ABANDONED
+    objective.last_failure = "survival_recovery"
+    unsafe = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda _route, _payload: {
+                "health": 20.0,
+                "food_level": 9,
+            }
+        )
+    )
+    assert rearm_recovered_survival_objectives(planner, unsafe) == []
+
+    objective.last_failure = "phase_failed"
+    safe = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda _route, _payload: {
+                "health": 20.0,
+                "food_level": 20,
+            }
+        )
+    )
+    assert rearm_recovered_survival_objectives(planner, safe) == []

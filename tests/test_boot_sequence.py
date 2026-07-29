@@ -203,7 +203,10 @@ def test_boot_infrastructure_reuses_verified_house_blocks(monkeypatch):
     class Transport:
         def dispatch(self, route, payload):
             if route == "get_state":
-                return {"is_pathing": False}
+                return {
+                    "is_pathing": False,
+                    "block_position": {"x": 10, "y": 65, "z": 20},
+                }
             if route == "get_block":
                 return {"id": positions.get((payload["x"], payload["y"], payload["z"]), "minecraft:air")}
             return {}
@@ -250,6 +253,10 @@ def test_boot_infrastructure_repairs_only_missing_world_block(monkeypatch):
 
     class Transport:
         def dispatch(self, route, payload):
+            if route == "get_state":
+                return {
+                    "block_position": {"x": 10, "y": 65, "z": 20},
+                }
             if route == "get_block":
                 return {
                     "id": positions.get(
@@ -481,12 +488,39 @@ def test_boot_reuses_durable_tools_and_verified_infrastructure(monkeypatch):
             AssertionError("owned durable capabilities must not be recreated")
         ),
     )
+    blocks = {
+        (11, 65, 21): "minecraft:crafting_table",
+        (12, 65, 21): "minecraft:furnace",
+        (11, 65, 22): "minecraft:chest",
+    }
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                return {
+                    "block_position": {"x": 10, "y": 65, "z": 20},
+                }
+            if route == "get_block":
+                return {
+                    "id": blocks.get(
+                        (payload["x"], payload["y"], payload["z"]),
+                        "minecraft:air",
+                    )
+                }
+            return {}
+
     context = SimpleNamespace(
-        client=SimpleNamespace(),
+        client=SimpleNamespace(transport=Transport()),
         state=SimpleNamespace(
             custom_data={
                 "structures": {
-                    "bootstrap_base": {"verified": True},
+                    "bootstrap_base": {
+                        "origin": [10, 65, 20],
+                        "crafting_table": [11, 65, 21],
+                        "furnace": [12, 65, 21],
+                        "supply_chest": [11, 65, 22],
+                        "verified": True,
+                    },
                 }
             }
         ),
@@ -494,6 +528,63 @@ def test_boot_reuses_durable_tools_and_verified_infrastructure(monkeypatch):
 
     assert ConditionalWoodGatheringAction(needed_logs=4).execute(context).success
     assert StoneToolCraftingAction().execute(context).success
+
+
+def test_boot_does_not_reuse_remote_checkpointed_infrastructure(monkeypatch):
+    durable = {
+        "minecraft:stone_pickaxe",
+        "minecraft:stone_axe",
+        "minecraft:stone_shovel",
+        "minecraft:stone_sword",
+    }
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_readiness.count_item",
+        lambda _client, item_id: int(item_id in durable),
+    )
+    gathered = []
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.count_item",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.find_nearby_block",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.require_survival_margin",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.gather_wood",
+        lambda _client, count: gathered.append(count) or True,
+    )
+    context = SimpleNamespace(
+        client=SimpleNamespace(
+            transport=SimpleNamespace(
+                dispatch=lambda route, _payload: {
+                    "block_position": {"x": 0, "y": 65, "z": 0}
+                }
+                if route == "get_state"
+                else {"id": "minecraft:air"}
+            )
+        ),
+        state=SimpleNamespace(
+            custom_data={
+                "structures": {
+                    "bootstrap_base": {
+                        "origin": [300, 65, 300],
+                        "crafting_table": [301, 65, 301],
+                        "furnace": [302, 65, 301],
+                        "supply_chest": [301, 65, 302],
+                        "verified": True,
+                    }
+                }
+            }
+        ),
+    )
+
+    assert ConditionalWoodGatheringAction(needed_logs=4).execute(context).success
+    assert gathered == [4]
 
 
 def test_boot_base_recovery_prefers_checkpointed_house(monkeypatch):
