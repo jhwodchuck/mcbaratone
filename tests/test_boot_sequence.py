@@ -48,6 +48,23 @@ def test_boot_sequence_translates_action_message_to_task_reason(monkeypatch):
     assert state.payloads
 
 
+def test_boot_handler_preserves_survival_recovery_signal(monkeypatch):
+    monkeypatch.setattr(
+        boot_sequence.SequenceAction,
+        "execute",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            SurvivalRecoveryRequired("recover before boot")
+        ),
+    )
+
+    with pytest.raises(SurvivalRecoveryRequired):
+        BootSequenceHandler().execute(
+            SimpleNamespace(),
+            SimpleNamespace(),
+            RecordingState(),
+        )
+
+
 def test_boot_crop_planting_verifies_and_persists_irrigated_plot(monkeypatch):
     blocks = {(0, 64, 0): "minecraft:water"}
     for x in range(-1, 2):

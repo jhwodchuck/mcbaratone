@@ -9,6 +9,7 @@ from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
 from ...common import TaskResult
+from ...common.tasks import ProgressRecoveryRequired, SurvivalRecoveryRequired
 from ...common.resources import gather_wood, gather_stone, gather_ores, ensure_supplies
 from ...common.inventory import count_item, craft, select_item
 from ...common.base import setup_base
@@ -219,6 +220,8 @@ class BootSequenceHandler(PhaseHandler):
 
             return TaskResult(success=result.success, reason=result.message)
 
+        except (ProgressRecoveryRequired, SurvivalRecoveryRequired):
+            raise
         except Exception as e:
             # Handle errors with checkpoint persistence
             error_msg = f"Boot sequence failed: {e}"
