@@ -102,6 +102,8 @@ def test_boot_sequence_gates_optional_exploration_on_surface(monkeypatch):
 
     action_names = [type(action).__name__ for action in captured_actions]
     surface_index = action_names.index("BootSurfaceSafetyAction")
+    assert surface_index < action_names.index("BaseRecoveryAction")
+    assert surface_index < action_names.index("ConditionalWoodGatheringAction")
     assert surface_index < action_names.index("ConditionalAction")
     assert surface_index < action_names.index("HuntingAndScoutingAction")
     assert not result.success

@@ -106,6 +106,7 @@ class BaseRecoveryAction(BaseAction):
         print("Recovering Base Location...")
 
         found_pos = None
+        durable_house_anchor = False
 
         # 1. The checkpointed starter house is authoritative.  Temporary
         # quarry crafting tables may have overwritten the Baritone `base`
@@ -124,6 +125,7 @@ class BaseRecoveryAction(BaseAction):
             ).get("id", "")
             if block == "minecraft:crafting_table":
                 found_pos = candidate
+                durable_house_anchor = True
                 print(f"Checkpointed house base verified at {found_pos}")
                 self.run_command(
                     context,
@@ -151,6 +153,7 @@ class BaseRecoveryAction(BaseAction):
                     verified_anchors += int(anchor_block in accepted)
                 if verified_anchors >= 2:
                     found_pos = candidate
+                    durable_house_anchor = True
                     print(
                         f"Checkpointed house anchors verified at {found_pos}; "
                         "crafting table repair remains pending"
@@ -192,14 +195,12 @@ class BaseRecoveryAction(BaseAction):
             else:
                 print("Base location already recorded in the runtime world map.")
 
-            # Every boot retry must begin from the recovered anchor. Waiting
-            # until infrastructure placement near the end of the sequence
-            # allowed wood, food, and scouting retries to ratchet hundreds of
-            # blocks farther away. Eventually a valid house was repeatedly
-            # reported as unreachable even though the real defect was
-            # cumulative retry drift.
+            # A checkpoint-verified house is a durable anchor worth returning
+            # to. A generic waypoint or nearby table may be a temporary quarry
+            # workstation across deep water; forcing every boot retry back to
+            # it caused repeated drowning without proving any durable base.
             distance = _horizontal_distance_to(context.client, position)
-            if distance != float("inf"):
+            if durable_house_anchor and distance != float("inf"):
                 if distance > _BOOT_ANCHOR_STAGING_RADIUS:
                     require_survival_margin(context.client)
                     print(

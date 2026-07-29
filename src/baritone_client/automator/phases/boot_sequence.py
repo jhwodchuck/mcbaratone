@@ -173,6 +173,10 @@ class BootSequenceHandler(PhaseHandler):
         boot_sequence = SequenceAction([
             # Phase 1a: Safety and Recovery
             SafetyCheckAction(),
+            # Resource gathering and recovered-anchor navigation are also
+            # surface activities. Resumed checkpoints may be submerged or
+            # deep underground before the first wood request.
+            BootSurfaceSafetyAction(),
             BaseRecoveryAction(),
 
             # Phase 1b: Initial Resource Gathering
@@ -184,11 +188,6 @@ class BootSequenceHandler(PhaseHandler):
             # materials; the generic ResourceGatheringAction neither accepts
             # per-item constructor arguments nor belongs in this sequence.
             StoneToolCraftingAction(),
-
-            # Optional bed/scouting searches are surface activities. Resumed
-            # checkpoints may be deep in a hostile mine, where Explore can
-            # descend farther instead of finding passive mobs.
-            BootSurfaceSafetyAction(),
 
             # Phase 1d: Conditional Bed Acquisition (Day vs Night strategy)
             ConditionalAction(

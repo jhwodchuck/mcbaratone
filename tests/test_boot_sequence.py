@@ -716,6 +716,45 @@ def test_boot_base_recovery_accepts_proven_horizontal_arrival(monkeypatch):
     assert result.success
 
 
+def test_boot_base_recovery_does_not_chase_opportunistic_remote_table(
+    monkeypatch,
+):
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "waypoint":
+                return {}
+            if route == "get_state":
+                return {
+                    "block_position": {"x": 0, "y": 64, "z": 0},
+                    "health": 20,
+                    "food_level": 18,
+                }
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    state = SimpleNamespace(custom_data={"structures": {}})
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.find_nearby_block",
+        lambda *_args, **_kwargs: (60, 64, 60),
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.append_world_map_entry",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.goto",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an opportunistic table is not a durable return anchor"
+        ),
+    )
+
+    result = BaseRecoveryAction().execute(
+        SimpleNamespace(client=client, state=state)
+    )
+
+    assert result.success
+
+
 def test_stone_tool_action_gathers_raw_cobble_before_crafting(monkeypatch):
     inventory = {"minecraft:cobblestone": 0}
     calls = []
