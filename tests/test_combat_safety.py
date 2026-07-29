@@ -1642,6 +1642,28 @@ def test_dry_bot_still_waits_before_chasing_fish(monkeypatch):
     ) is None
 
 
+def test_starving_dry_bot_does_not_reenter_water_for_fish(monkeypatch):
+    from baritone_client.common import emergency_food
+
+    monkeypatch.setattr(
+        combat,
+        "get_nearby_entities",
+        lambda *_args, **_kwargs: [
+            {"id": 1, "type": "minecraft:salmon", "distance": 8.0}
+        ],
+    )
+
+    assert emergency_food.select_target(
+        SimpleNamespace(transport=CombatTransport()),
+        [],
+        current_food=6,
+        elapsed=120.0,
+        timeout=240.0,
+        renewable_source_callback=None,
+        in_water=False,
+    ) is None
+
+
 def test_player_is_in_water_reads_the_feet_block():
     class WaterTransport(CombatTransport):
         def dispatch(self, route, payload):

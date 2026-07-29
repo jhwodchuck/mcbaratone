@@ -172,7 +172,9 @@ def select_target(
             return target
 
     water_fallback_after = min(90.0, max(15.0, timeout / 2.0))
-    if current_food <= 6 or elapsed >= water_fallback_after:
+    if in_water and (
+        current_food <= 6 or elapsed >= water_fallback_after
+    ):
         return nearest_fish(min(16, max(1, int(aquatic_search_radius))))
     return None
 
