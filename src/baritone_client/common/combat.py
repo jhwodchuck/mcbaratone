@@ -11,8 +11,8 @@ from .food_recovery import (
     must_hold_for_critical_food,
 )
 from .combat_targeting import matches_requested_mob
-from .emergency_food import EmergencyExploration, hunt_target, select_target
-from .emergency_food import prepare_food_search_state
+from .emergency_food import EmergencyExploration, enforce_dry_food_search_state
+from .emergency_food import hunt_target, prepare_food_search_state, select_target
 
 from ..core.exceptions import TransportError
 
@@ -802,6 +802,8 @@ def acquire_emergency_food(
                 time.sleep(1.0)
                 continue
         ensure_alive(client, state)
+        if not enforce_dry_food_search_state(client, state, stop_exploring):
+            return False
         exploration.observe(state)
         if recovery_complete(state):
             stop_exploring()

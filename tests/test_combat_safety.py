@@ -625,6 +625,73 @@ def test_emergency_food_refuses_blind_underground_exploration(monkeypatch):
     )
 
 
+def test_emergency_food_rechecks_dry_surface_after_exploration_enters_water(
+    monkeypatch,
+):
+    dry = {
+        "health": 20.0,
+        "food_level": 10,
+        "world_time": 1000,
+        "dimension": "minecraft:overworld",
+        "block_position": {"x": 0, "y": 64, "z": 0},
+        "wet": False,
+    }
+    wet = {
+        **dry,
+        "block_position": {"x": 4, "y": 63, "z": 0},
+        "wet": True,
+    }
+
+    class WetAfterStartTransport(CombatTransport):
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return wet
+            return {}
+
+    client = SimpleNamespace(transport=WetAfterStartTransport())
+    surface_checks = []
+
+    class RecheckedSurface(Exception):
+        pass
+
+    class MissedSurfaceRecheck(Exception):
+        pass
+
+    def prepare(_client, state):
+        surface_checks.append(state["wet"])
+        if len(surface_checks) > 1:
+            raise RecheckedSurface()
+        return dry
+
+    monkeypatch.setattr(combat, "recover_health", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(combat, "prepare_food_search_state", prepare)
+    monkeypatch.setattr(
+        "baritone_client.common.emergency_food.prepare_food_search_state",
+        prepare,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.emergency_food.player_is_in_water",
+        lambda _client, state: state["wet"],
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.emergency_food.head_block_is_water",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        combat,
+        "get_nearby_entities",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            MissedSurfaceRecheck()
+        ),
+    )
+
+    with pytest.raises(RecheckedSurface):
+        combat.acquire_emergency_food(client, minimum_food=14)
+
+    assert surface_checks == [True, True]
+
+
 def test_secure_recovery_area_requires_sustained_daylight_clearance(monkeypatch):
     transport = CombatTransport(health=20.0)
     client = SimpleNamespace(transport=transport)

@@ -69,6 +69,26 @@ def prepare_food_search_state(client: Any, state: Dict) -> Optional[Dict]:
     return client.transport.dispatch("get_state", {})
 
 
+def enforce_dry_food_search_state(
+    client: Any,
+    state: Dict,
+    stop_exploring: Callable[[], None],
+) -> bool:
+    """Refresh ``state`` on dry ground if exploration entered water."""
+    if not (
+        player_is_in_water(client, state)
+        or head_block_is_water(client, state)
+    ):
+        return True
+    stop_exploring()
+    refreshed = prepare_food_search_state(client, state)
+    if refreshed is None:
+        return False
+    state.clear()
+    state.update(refreshed)
+    return True
+
+
 def select_target(
     client: Any,
     nearby: List[Dict],
