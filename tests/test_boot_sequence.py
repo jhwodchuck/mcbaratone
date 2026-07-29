@@ -670,6 +670,52 @@ def test_boot_base_recovery_stages_at_remote_checkpoint_before_resource_work(
     assert staged == [(-8, 79, -121, 300)]
 
 
+def test_boot_base_recovery_accepts_proven_horizontal_arrival(monkeypatch):
+    states = iter(
+        [
+            {"block_position": {"x": 40, "y": 64, "z": 40}},
+            {"block_position": {"x": -5, "y": 64, "z": -121}},
+        ]
+    )
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_block":
+                return {"id": "minecraft:crafting_table"}
+            if route == "get_state":
+                return next(states)
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    state = SimpleNamespace(
+        custom_data={
+            "structures": {
+                "starter_house": {
+                    "crafting_table": [-8, 79, -121],
+                }
+            }
+        }
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.append_world_map_entry",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.require_survival_margin",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.goto",
+        lambda *_args, **_kwargs: False,
+    )
+
+    result = BaseRecoveryAction().execute(
+        SimpleNamespace(client=client, state=state)
+    )
+
+    assert result.success
+
+
 def test_stone_tool_action_gathers_raw_cobble_before_crafting(monkeypatch):
     inventory = {"minecraft:cobblestone": 0}
     calls = []

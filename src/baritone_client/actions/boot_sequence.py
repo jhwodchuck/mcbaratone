@@ -48,10 +48,23 @@ _BOOT_PLANKS = [
     *(plank_id for _, plank_id in _BOOT_WOOD_RECIPES),
     "minecraft:bamboo_planks",
 ]
+_BOOT_ANCHOR_STAGING_RADIUS = 12.0
 
 
 def _count_family(client, item_ids) -> int:
     return sum(count_item(client, item_id) for item_id in item_ids)
+
+
+def _horizontal_distance_to(client, position) -> float:
+    """Measure staging distance without penalizing a table on another Y level."""
+    state = client.transport.dispatch("get_state", {})
+    current = state.get("block_position", state.get("position", {}))
+    if not all(axis in current for axis in ("x", "z")):
+        return float("inf")
+    return hypot(
+        float(current["x"]) - position[0],
+        float(current["z"]) - position[2],
+    )
 
 
 class SafetyCheckAction(BaseAction):
@@ -185,14 +198,9 @@ class BaseRecoveryAction(BaseAction):
             # blocks farther away. Eventually a valid house was repeatedly
             # reported as unreachable even though the real defect was
             # cumulative retry drift.
-            state = self.run_command(context, "get_state", {})
-            current = state.get("block_position", state.get("position", {}))
-            if all(axis in current for axis in ("x", "z")):
-                distance = hypot(
-                    float(current["x"]) - position[0],
-                    float(current["z"]) - position[2],
-                )
-                if distance > 12.0:
+            distance = _horizontal_distance_to(context.client, position)
+            if distance != float("inf"):
+                if distance > _BOOT_ANCHOR_STAGING_RADIUS:
                     require_survival_margin(context.client)
                     print(
                         "Returning to recovered boot anchor before resource "
@@ -207,8 +215,24 @@ class BaseRecoveryAction(BaseAction):
                         check_interval=1.0,
                         tolerance=3.0,
                     ):
-                        return ActionResult.fail(
-                            "Could not return to recovered boot anchor"
+                        distance = _horizontal_distance_to(
+                            context.client, position
+                        )
+                        safety_aborted = getattr(
+                            context.client,
+                            "_last_navigation_survival_abort",
+                            False,
+                        )
+                        if (
+                            safety_aborted
+                            or distance > _BOOT_ANCHOR_STAGING_RADIUS
+                        ):
+                            return ActionResult.fail(
+                                "Could not return to recovered boot anchor"
+                            )
+                        print(
+                            "Recovered boot anchor staged within "
+                            f"{distance:.1f}m despite route completion status."
                         )
 
         return ActionResult.ok("Base recovery complete")
