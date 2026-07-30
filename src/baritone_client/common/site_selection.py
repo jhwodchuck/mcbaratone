@@ -177,22 +177,45 @@ def find_flat_ground(
             from .automation_utils import safe_goto
 
             _restore_surface_navigation_policy(client)
-            # Try the player's own column first, then nearby ones. Insisting on
-            # this exact column is what stranded Bot09: it stood in shallow
-            # water at y=62 under a vine canopy, surface_y_at returned the top
-            # of the vines (y=68), and Baritone cannot climb a vine column --
-            # so the only offered goal was unreachable and BASE_CONSTRUCTION
-            # failed on repeat. A couple of blocks sideways is usually ordinary
-            # walkable ground.
-            ascended = safe_goto(
-                client,
-                player_x,
-                surface_y,
-                player_z,
-                timeout=180.0,
+            from .surface_recovery import (
+                position_is_aquatic,
+                reach_dry_surface,
             )
-            if not ascended:
-                for dx, dz in ((4, 0), (-4, 0), (0, 4), (0, -4), (6, 6), (-6, -6)):
+
+            aquatic_origin = position_is_aquatic(
+                client,
+                (player_x, player_y, player_z),
+            )
+            recovered = None
+            if aquatic_origin:
+                recovered = reach_dry_surface(
+                    client,
+                    origin=(player_x, player_y, player_z),
+                    expected_y=surface_y,
+                    goto=safe_goto,
+                )
+            # Dry underground positions can try ordinary coordinate routes.
+            # Aquatic positions need the upward-only recovery first; a normal
+            # route can otherwise spend minutes trying to walk along a riverbed.
+            ascended = recovered is not None
+            if not ascended and not aquatic_origin:
+                ascended = safe_goto(
+                    client,
+                    player_x,
+                    surface_y,
+                    player_z,
+                    timeout=180.0,
+                )
+            if not ascended and not aquatic_origin:
+                nearby_offsets = (
+                    (4, 0),
+                    (-4, 0),
+                    (0, 4),
+                    (0, -4),
+                    (6, 6),
+                    (-6, -6),
+                )
+                for dx, dz in nearby_offsets:
                     near_x, near_z = player_x + dx, player_z + dz
                     near_surface = surface_y_at(client, near_x, near_z)
                     if near_surface is None or near_surface < surface_y - 6:
@@ -212,14 +235,13 @@ def find_flat_ground(
                         surface_y = near_surface
                         break
             if not ascended:
-                from .surface_recovery import reach_dry_surface
-
-                recovered = reach_dry_surface(
-                    client,
-                    origin=(player_x, player_y, player_z),
-                    expected_y=surface_y,
-                    goto=safe_goto,
-                )
+                if not aquatic_origin:
+                    recovered = reach_dry_surface(
+                        client,
+                        origin=(player_x, player_y, player_z),
+                        expected_y=surface_y,
+                        goto=safe_goto,
+                    )
                 if recovered is None:
                     from .build_site_recovery import excavate_surface_egress
 

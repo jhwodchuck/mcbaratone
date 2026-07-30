@@ -54,7 +54,7 @@ def _block_is_breathable(block_id: object) -> bool:
     return not any(token in value for token in _NON_BREATHABLE_BLOCK_TOKENS)
 
 
-def _position_is_aquatic(
+def position_is_aquatic(
     client: Any,
     position: tuple[int, int, int],
 ) -> bool:
@@ -195,7 +195,7 @@ def reach_dry_surface(
     _configure_surface_pathing(client)
     if (
         expected_y > oy
-        and _position_is_aquatic(client, origin)
+        and position_is_aquatic(client, origin)
         and _start_y_level_ascent(client, expected_y)
     ):
         recovered = _wait_for_dry_level(

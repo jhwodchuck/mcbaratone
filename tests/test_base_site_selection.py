@@ -1148,15 +1148,11 @@ def test_repeated_survival_abort_relocates_unsafe_build_origin(monkeypatch):
     assert state.saved == 1
 
 
-def test_surface_ascent_falls_back_to_a_nearby_column(monkeypatch):
-    """Insisting on the player's own column stranded Bot09: it stood in
-    shallow water at y=62 under a vine canopy, surface_y_at returned the top
-    of the vines (y=68), and Baritone cannot climb a vine column -- so the only
-    offered goal was unreachable and BASE_CONSTRUCTION failed on repeat. A
-    couple of blocks sideways is usually ordinary walkable ground."""
+def test_surface_ascent_uses_aquatic_recovery_before_coordinate_route(monkeypatch):
+    """An aquatic build-site search must not spend minutes on an old route."""
     from baritone_client.common import site_selection
 
-    attempts = []
+    calls = []
 
     class Transport:
         def dispatch(self, route, payload):
@@ -1175,10 +1171,8 @@ def test_surface_ascent_falls_back_to_a_nearby_column(monkeypatch):
                 return {"voxels": []}
             return {}
 
-    def fake_goto(_client, x, y, z, **_kw):
-        attempts.append((x, y, z))
-        # Only the sideways column is reachable.
-        return (x, z) != (371, 46)
+    def fake_goto(*_args, **_kwargs):
+        raise AssertionError("coordinate routing must not precede aquatic recovery")
 
     monkeypatch.setattr(
         "baritone_client.common.automation_utils.safe_goto", fake_goto
@@ -1186,13 +1180,14 @@ def test_surface_ascent_falls_back_to_a_nearby_column(monkeypatch):
     monkeypatch.setattr(
         site_selection, "_restore_surface_navigation_policy", lambda _c: None
     )
+    monkeypatch.setattr(
+        surface_recovery,
+        "reach_dry_surface",
+        lambda *_args, **_kwargs: calls.append("aquatic") or (371, 66, 46),
+    )
 
     site_selection.find_flat_ground(
         SimpleNamespace(transport=Transport()), radius=8, footprint=1
     )
 
-    assert attempts, "should have attempted an ascent"
-    assert attempts[0] == (371, 68, 46), "own column first"
-    assert any(a[0] != 371 or a[2] != 46 for a in attempts), (
-        "must fall back to a nearby column instead of giving up"
-    )
+    assert calls == ["aquatic"]
