@@ -118,7 +118,7 @@ def manual_column_descend(
             break
         below = str(read_block_optional(client, px, py - 1, pz) or "")
         if not below or any(name in below for name in _OPEN_BLOCKS):
-            if not require_pickaxe and below:
+            if not require_pickaxe:
                 landing, gap = _landing_below(client, px, py, pz)
                 if landing and gap and not any(
                     name in landing for name in _UNSAFE_BLOCKS

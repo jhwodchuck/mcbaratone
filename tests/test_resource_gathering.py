@@ -1484,7 +1484,7 @@ def test_manual_escape_descent_uses_preopened_safe_shaft(monkeypatch):
         transport.calls.append((route, payload))
         if route == "get_block":
             if payload["y"] == 63:
-                return {"id": "minecraft:air"}
+                return {}
             if payload["y"] == 62:
                 return {"id": "minecraft:stone"}
             return {"id": "minecraft:air"}
