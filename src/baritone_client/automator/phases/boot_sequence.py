@@ -170,6 +170,8 @@ class BootSequenceHandler(PhaseHandler):
                 changed = self._run_dry_anchor_step(client, state, homestead)
             elif step_name == "wood_reserve":
                 changed = self._run_wood_reserve_step(client, state, homestead)
+            elif step_name == "plank_reserve":
+                changed = self._run_plank_reserve_step(client, state, homestead)
             elif step_name == "stone_reserve":
                 changed = self._run_stone_reserve_step(client, state, homestead)
             elif step_name == "infrastructure":
@@ -211,6 +213,9 @@ class BootSequenceHandler(PhaseHandler):
 
     def _run_wood_reserve_step(self, client, state, homestead):
         return self._homestead.run_wood_reserve(homestead)
+
+    def _run_plank_reserve_step(self, client, state, homestead):
+        return self._homestead.run_plank_reserve(homestead)
 
     def _run_stone_reserve_step(self, client, state, homestead):
         return self._homestead.run_stone_reserve(homestead)

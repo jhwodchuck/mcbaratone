@@ -79,6 +79,7 @@ def test_boot_sequence_executes_only_next_unverified_step(monkeypatch):
     )
     for step in (
         "_run_wood_reserve_step",
+        "_run_plank_reserve_step",
         "_run_stone_reserve_step",
         "_run_infrastructure_step",
         "_run_micro_farm_step",
@@ -163,6 +164,7 @@ def test_boot_sequence_skips_live_verified_steps(monkeypatch):
             "steps": {
                 "dry_anchor": {"verified": True},
                 "wood_reserve": {"verified": True},
+                "plank_reserve": {"verified": True},
                 "stone_reserve": {"verified": True},
                 "infrastructure": {"verified": True},
                 "micro_farm": {"verified": True},
@@ -214,6 +216,7 @@ def test_boot_light_perimeter_repairs_one_missing_torch_per_invocation(monkeypat
         "steps": {
             "dry_anchor": {"verified": True},
             "wood_reserve": {"verified": True},
+            "plank_reserve": {"verified": True},
             "stone_reserve": {"verified": True},
             "infrastructure": {"verified": True},
             "micro_farm": {"verified": True},
@@ -282,6 +285,7 @@ def test_boot_light_perimeter_failed_placement_not_persisted_as_verified(monkeyp
         "steps": {
             "dry_anchor": {"verified": True},
             "wood_reserve": {"verified": True},
+            "plank_reserve": {"verified": True},
             "stone_reserve": {"verified": True},
             "infrastructure": {"verified": True},
             "micro_farm": {"verified": True},
@@ -337,6 +341,7 @@ def test_boot_construction_pacing_blocks_unsafe_or_underequipped(monkeypatch, fo
             "steps": {
                 "dry_anchor": {"verified": True},
                 "wood_reserve": {"verified": True},
+                "plank_reserve": {"verified": True},
                 "stone_reserve": {"verified": True},
                 "infrastructure": {"verified": True},
                 "micro_farm": {"verified": False},
@@ -382,6 +387,7 @@ def test_boot_micro_farm_completes_before_optional_expansion(monkeypatch):
             "steps": {
                 "dry_anchor": {"verified": True},
                 "wood_reserve": {"verified": True},
+                "plank_reserve": {"verified": True},
                 "stone_reserve": {"verified": True},
                 "infrastructure": {"verified": True},
                 "micro_farm": {"verified": False},
@@ -558,3 +564,48 @@ def test_homestead_step_returns_home_before_resource_work(monkeypatch):
             {"timeout": 180, "check_interval": 1.0, "tolerance": 4.0},
         )
     ]
+
+
+def test_infrastructure_rearms_planks_before_replaying_setup(monkeypatch):
+    state = _state_with_payloads(
+        {
+            "homestead": {
+                "anchor": [0, 64, 0],
+                "steps": {
+                    "dry_anchor": {"verified": True},
+                    "wood_reserve": {"verified": True},
+                    "plank_reserve": {"verified": True},
+                    "stone_reserve": {"verified": True},
+                    "infrastructure": {"verified": False},
+                },
+            }
+        }
+    )
+    state.custom_data["structures"].pop("bootstrap_base")
+    transport, _ = _transport_for_blocks()
+    inventory = {
+        "minecraft:oak_planks": 3,
+        "minecraft:cobblestone": 8,
+    }
+    monkeypatch.setattr(
+        "baritone_client.actions.homestead.count_item",
+        lambda _client, item: inventory.get(item, 0),
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.homestead.setup_base",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("setup must wait for the plank reserve")
+        ),
+    )
+    runner = IncrementalHomestead(
+        SimpleNamespace(transport=transport),
+        state,
+        lambda _client: False,
+    )
+    homestead = runner.load()
+
+    assert runner.run_infrastructure(homestead)
+    assert not runner.step(homestead, "plank_reserve")["verified"]
+    assert runner.step(homestead, "infrastructure")["evidence"] == {
+        "missing_planks": 9
+    }

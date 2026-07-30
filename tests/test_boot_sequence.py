@@ -50,6 +50,7 @@ def test_boot_sequence_advances_only_first_unverified_step(monkeypatch):
     handler = BootSequenceHandler()
     monkeypatch.setattr(BootSequenceHandler, "_run_dry_anchor_step", run_dry_anchor)
     monkeypatch.setattr(handler, "_run_wood_reserve_step", forbidden_step)
+    monkeypatch.setattr(handler, "_run_plank_reserve_step", forbidden_step)
     monkeypatch.setattr(handler, "_run_stone_reserve_step", forbidden_step)
     monkeypatch.setattr(handler, "_run_infrastructure_step", forbidden_step)
     monkeypatch.setattr(handler, "_run_micro_farm_step", forbidden_step)

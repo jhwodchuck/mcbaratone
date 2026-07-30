@@ -18,6 +18,7 @@ from ..common.tasks import ProgressRecoveryRequired, SurvivalRecoveryRequired
 ORDERED_HOMESTEAD_STEPS = (
     "dry_anchor",
     "wood_reserve",
+    "plank_reserve",
     "stone_reserve",
     "infrastructure",
     "micro_farm",
@@ -285,6 +286,31 @@ class IncrementalHomestead:
         )
         return after > before
 
+    def run_plank_reserve(self, homestead: dict[str, Any]) -> bool:
+        """Convert local logs into the exact workstation plank reserve."""
+        if self.enforce_anchor(homestead):
+            return True
+        self.require_construction_pacing()
+        record = self.step(homestead, "plank_reserve")
+        before = sum(count_item(self.client, item) for item in PLANK_ITEMS)
+        if before >= 16:
+            changed = not bool(record.get("verified"))
+            record.update(verified=True, evidence={"planks": before})
+            return changed
+        log_item = next(
+            (item for item in LOG_ITEMS if count_item(self.client, item) > 0),
+            None,
+        )
+        if log_item is None:
+            self.step(homestead, "wood_reserve")["verified"] = False
+            record.update(verified=False, evidence={"planks": before})
+            return True
+        plank_item = PLANK_ITEMS[LOG_ITEMS.index(log_item)]
+        craft(self.client, plank_item, 16 - before)
+        after = sum(count_item(self.client, item) for item in PLANK_ITEMS)
+        record.update(verified=after >= 16, evidence={"planks": after})
+        return after > before
+
     def run_infrastructure(self, homestead: dict[str, Any]) -> bool:
         """Re-probe or place a compact table, furnace, and chest near anchor."""
         if self.enforce_anchor(homestead):
@@ -298,6 +324,17 @@ class IncrementalHomestead:
             return changed
 
         record["verified"] = False
+        planks = sum(count_item(self.client, item) for item in PLANK_ITEMS)
+        if planks < 12:
+            self.step(homestead, "plank_reserve")["verified"] = False
+            record["evidence"] = {"missing_planks": 12 - planks}
+            return True
+        cobblestone = count_item(self.client, "minecraft:cobblestone")
+        furnace = count_item(self.client, "minecraft:furnace")
+        if furnace < 1 and cobblestone < 8:
+            self.step(homestead, "stone_reserve")["verified"] = False
+            record["evidence"] = {"missing_cobblestone": 8 - cobblestone}
+            return True
         success, location = setup_base(self.client)
         if not success or location is None:
             return False
