@@ -1,7 +1,8 @@
-"""Recovery policy for exhausted objective graphs.
+"""Recovery policy for failed or exhausted objective graphs.
 
 The goal graph intentionally persists failure budgets, but a code repair must
-be able to re-open objectives that were abandoned by the repaired behavior.
+be able to re-open objectives that were blocked or abandoned by the repaired
+behavior.
 When a graph still stalls after re-arming, keep the controller attached and
 perform only bounded survival work instead of exiting into a restart loop.
 """
@@ -13,14 +14,14 @@ from typing import Any, MutableMapping
 from .objective import ObjStatus, ObjectivePlanner
 
 
-OBJECTIVE_RUNTIME_REVISION = 32
+OBJECTIVE_RUNTIME_REVISION = 33
 
 
 def rearm_abandoned_objectives(
     planner: ObjectivePlanner,
     custom_data: MutableMapping[str, Any],
 ) -> list[str]:
-    """Re-open abandoned objectives once for the current runtime revision."""
+    """Re-open failed objectives once for the current runtime revision."""
     try:
         saved_revision = int(custom_data.get("objective_runtime_revision", 0) or 0)
     except (TypeError, ValueError):
@@ -30,7 +31,7 @@ def rearm_abandoned_objectives(
 
     reopened = []
     for objective in planner.objectives:
-        if objective.status is not ObjStatus.ABANDONED:
+        if objective.status not in {ObjStatus.BLOCKED, ObjStatus.ABANDONED}:
             continue
         objective.status = ObjStatus.PENDING
         objective.attempts = 0

@@ -41,6 +41,26 @@ def test_runtime_revision_rearms_abandoned_objective_once():
     assert objective.attempts == 3
 
 
+def test_runtime_revision_refreshes_blocked_objective_budget():
+    planner = ObjectivePlanner(default_objectives())
+    objective = planner._by_phase[Phase.BOOT_SEQUENCE]
+    objective.status = ObjStatus.BLOCKED
+    objective.attempts = 2
+    objective.interruptions = 3
+    objective.no_progress_streak = 1
+    objective.last_failure = "phase_failed"
+    custom_data = {}
+
+    assert rearm_abandoned_objectives(planner, custom_data) == [
+        "BOOT_SEQUENCE"
+    ]
+    assert objective.status is ObjStatus.PENDING
+    assert objective.attempts == 0
+    assert objective.interruptions == 0
+    assert objective.no_progress_streak == 0
+    assert objective.last_failure == ""
+
+
 def test_stalled_survival_actively_recovers_low_food(monkeypatch):
     client = SimpleNamespace(
         transport=SimpleNamespace(
