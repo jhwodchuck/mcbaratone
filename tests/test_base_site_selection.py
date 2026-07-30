@@ -248,6 +248,78 @@ def test_stalled_aquatic_ascent_yields_to_excavation_without_route_retries(
     assert not any(route == "find_blocks" for route, _payload in transport.calls)
 
 
+def test_stalled_aquatic_ascent_builds_supported_shallow_water_walkway(
+    monkeypatch,
+):
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.position = (4, 62, 4)
+            self.blocks = {
+                (x, 61, 4): "minecraft:dirt"
+                for x in range(5, 9)
+            }
+            self.blocks.update(
+                {
+                    (x, 62, 4): "minecraft:water"
+                    for x in range(4, 9)
+                }
+            )
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                x, y, z = self.position
+                return {"block_position": {"x": x, "y": y, "z": z}}
+            if route == "get_block":
+                position = (payload["x"], payload["y"], payload["z"])
+                return {"id": self.blocks.get(position, "minecraft:air")}
+            if route == "get_inventory":
+                return {
+                    "inventory": [
+                        {
+                            "slot": 2,
+                            "id": "minecraft:dirt",
+                            "count": 4,
+                        }
+                    ]
+                }
+            if route == "place_block":
+                position = (payload["x"], payload["y"], payload["z"])
+                self.blocks[position] = "minecraft:dirt"
+                return {"placed": True}
+            return {}
+
+    transport = Transport()
+
+    def goto(_client, x, y, z, **_kwargs):
+        transport.position = (x, y, z)
+        return True
+
+    monkeypatch.setattr(
+        surface_recovery.time,
+        "monotonic",
+        iter((0.0, 0.0, 13.0)).__next__,
+    )
+    monkeypatch.setattr(surface_recovery.time, "sleep", lambda _seconds: None)
+
+    assert surface_recovery.reach_dry_surface(
+        SimpleNamespace(transport=transport),
+        origin=(4, 62, 4),
+        expected_y=69,
+        goto=goto,
+        command_timeout=90.0,
+    ) == (8, 63, 4)
+    assert [
+        payload
+        for route, payload in transport.calls
+        if route == "place_block"
+    ] == [
+        {"x": x, "y": 62, "z": 4}
+        for x in range(5, 9)
+    ]
+
+
 def test_surface_recovery_excavates_when_all_surface_routes_fail(monkeypatch):
     from baritone_client.common import build_site_recovery
 

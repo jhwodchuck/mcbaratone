@@ -26,6 +26,20 @@ _NON_BREATHABLE_BLOCK_TOKENS = (
     "seagrass",
 )
 
+_AQUATIC_WALKWAY_MATERIALS = (
+    "minecraft:dirt",
+    "minecraft:cobblestone",
+    "minecraft:cobbled_deepslate",
+    "minecraft:oak_planks",
+    "minecraft:spruce_planks",
+    "minecraft:birch_planks",
+    "minecraft:jungle_planks",
+    "minecraft:acacia_planks",
+    "minecraft:dark_oak_planks",
+    "minecraft:mangrove_planks",
+    "minecraft:cherry_planks",
+)
+
 
 def _configure_surface_pathing(
     client: Any,
@@ -138,6 +152,114 @@ def _wait_for_dry_level(
     return None
 
 
+def _aquatic_walkway_direction(
+    client: Any,
+    origin: tuple[int, int, int],
+    *,
+    length: int,
+) -> Optional[tuple[int, int]]:
+    """Find a supported shallow-water line that can be replaced with blocks."""
+    ox, oy, oz = origin
+    for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        viable = True
+        for step in range(1, length + 1):
+            x, z = ox + dx * step, oz + dz * step
+            try:
+                support = client.transport.dispatch(
+                    "get_block",
+                    {"x": x, "y": oy - 1, "z": z},
+                ).get("id", "")
+                feet = client.transport.dispatch(
+                    "get_block",
+                    {"x": x, "y": oy, "z": z},
+                ).get("id", "")
+                head = client.transport.dispatch(
+                    "get_block",
+                    {"x": x, "y": oy + 1, "z": z},
+                ).get("id", "")
+            except Exception:
+                viable = False
+                break
+            support_value = str(support)
+            unsupported = not support_value or any(
+                token in support_value
+                for token in (
+                    "air",
+                    "water",
+                    "lava",
+                    "seagrass",
+                    "kelp",
+                    "vine",
+                )
+            )
+            if (
+                _block_is_breathable(feet)
+                or unsupported
+                or not _block_is_breathable(head)
+            ):
+                viable = False
+                break
+        if viable:
+            return (dx, dz)
+    return None
+
+
+def _build_aquatic_walkway(
+    client: Any,
+    origin: tuple[int, int, int],
+    *,
+    goto: Callable[..., bool],
+    length: int = 4,
+) -> Optional[tuple[int, int, int]]:
+    """Build a short supported path out of shallow water and walk onto it."""
+    from .inventory import get_inventory, select_item
+
+    inventory = get_inventory(client)
+    material = next(
+        (
+            item_id
+            for item_id in _AQUATIC_WALKWAY_MATERIALS
+            if int(inventory.get(item_id, 0) or 0) >= length
+        ),
+        None,
+    )
+    direction = _aquatic_walkway_direction(client, origin, length=length)
+    if material is None or direction is None:
+        return None
+    if not select_item(client, material, allow_swap=True):
+        return None
+
+    ox, oy, oz = origin
+    dx, dz = direction
+    client.transport.dispatch("cancel", {})
+    for step in range(1, length + 1):
+        target = (ox + dx * step, oy, oz + dz * step)
+        try:
+            client.transport.dispatch(
+                "place_block",
+                {"x": target[0], "y": target[1], "z": target[2]},
+            )
+            time.sleep(0.2)
+            placed = client.transport.dispatch(
+                "get_block",
+                {"x": target[0], "y": target[1], "z": target[2]},
+            ).get("id", "")
+        except Exception:
+            return None
+        if placed != material:
+            return None
+
+    target = (ox + dx * length, oy + 1, oz + dz * length)
+    print(f"SURVIVAL: built shallow-water escape walkway toward {target}")
+    if not goto(client, *target, timeout=30.0):
+        return None
+    current = block_position(client.transport.dispatch("get_state", {}))
+    moved_sq = (current[0] - ox) ** 2 + (current[2] - oz) ** 2
+    if moved_sq < 2**2 or position_is_aquatic(client, current):
+        return None
+    return current
+
+
 def _head_is_dry(client: Any, position: tuple[int, int, int]) -> bool:
     try:
         block = client.transport.dispatch(
@@ -207,6 +329,13 @@ def reach_dry_surface(
         )
         if recovered is not None:
             return recovered
+        walkway_exit = _build_aquatic_walkway(
+            client,
+            origin,
+            goto=goto,
+        )
+        if walkway_exit is not None:
+            return walkway_exit
         # Coordinate routes cannot make progress from this same aquatic cell
         # if the upward goal itself never moved. Let callers proceed to their
         # bounded excavation fallback instead of spending minutes retrying it.
