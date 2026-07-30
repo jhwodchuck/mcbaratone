@@ -82,6 +82,62 @@ def maintain_stalled_survival(client: Any) -> str:
     return "holding"
 
 
+def rearm_any_abandoned_objectives(
+    planner: ObjectivePlanner,
+    custom_data: MutableMapping[str, Any],
+    *,
+    now: float,
+    cooldown_seconds: float = 300.0,
+) -> list[str]:
+    """Last-resort re-open of ANY abandoned objective when nothing can run.
+
+    A permanent stall is never a correct terminal state for a bot meant to run
+    for weeks. The objective graph is a strict chain -- BOOT_SEQUENCE gates
+    BASE_CONSTRUCTION, which gates FOOD_AND_IRON, which gates everything else
+    -- so abandoning one mid-chain objective makes the entire remaining
+    mission unreachable forever.
+
+    Measured on the live fleet after ~9 days: BOOT_SEQUENCE was abandoned
+    after 3 attempts (transient causes -- "Failed to gather wood", "Failed to
+    gather cobblestone", a camped creeper), and all ten downstream objectives
+    then sat PENDING on a prerequisite that could never be satisfied. Neither
+    existing repair could help: ``rearm_abandoned_objectives`` only fires when
+    the persisted runtime revision is older than the code constant (a one-shot
+    migration hook -- the checkpoint already matched), and
+    ``rearm_recovered_survival_objectives`` only re-opens objectives whose
+    ``last_failure`` is exactly ``survival_recovery`` (BOOT_SEQUENCE's was
+    ``player_death``/``phase_failed``). The result was ~4,800 controller
+    restarts with zero phase completions.
+
+    The blockers are overwhelmingly environmental and time-varying -- a
+    creeper wanders off, trees regrow, the bot respawns elsewhere -- so
+    retrying later is genuinely likely to succeed. Rate-limited so a phase
+    that fails instantly cannot hot-loop between abandonment and re-arm.
+    """
+    last = custom_data.get("last_full_objective_rearm")
+    try:
+        last_at = float(last) if last is not None else None
+    except (TypeError, ValueError):
+        last_at = None
+    if last_at is not None and now - last_at < cooldown_seconds:
+        return []
+
+    reopened = []
+    for objective in planner.objectives:
+        if objective.status not in {ObjStatus.BLOCKED, ObjStatus.ABANDONED}:
+            continue
+        objective.status = ObjStatus.PENDING
+        objective.attempts = 0
+        objective.interruptions = 0
+        objective.no_progress_streak = 0
+        objective.last_failure = ""
+        reopened.append(objective.phase.name)
+
+    if reopened:
+        custom_data["last_full_objective_rearm"] = now
+    return reopened
+
+
 def rearm_recovered_survival_objectives(
     planner: ObjectivePlanner,
     client: Any,

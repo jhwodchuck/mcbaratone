@@ -321,9 +321,32 @@ class EndGameAutomator:
                         self._stall_reported = False
                         continue
 
-                    # Nothing runnable and not won: a genuine stall (every remaining
-                    # objective is abandoned, or its prerequisites are unmet).  End
-                    # the run gracefully rather than spinning.
+                    # Nothing runnable and the survival-specific repair above
+                    # did not apply. The objective graph is a strict chain, so
+                    # one abandoned mid-chain objective leaves every downstream
+                    # phase permanently unreachable -- and neither existing
+                    # repair covers a phase abandoned for player_death or
+                    # phase_failed. Re-open whatever is abandoned, rate-limited,
+                    # rather than holding forever. See
+                    # rearm_any_abandoned_objectives for the measured evidence.
+                    from .stall_recovery import rearm_any_abandoned_objectives
+
+                    forced = rearm_any_abandoned_objectives(
+                        self.planner,
+                        self.state.custom_data,
+                        now=time.time(),
+                    )
+                    if forced:
+                        print(
+                            "OBJECTIVE REPAIR: nothing runnable; re-opened "
+                            "abandoned objectives: " + ", ".join(forced)
+                        )
+                        self._persist_objective_progress()
+                        self._save_checkpoint()
+                        self._stall_reported = False
+                        continue
+
+                    # Still nothing runnable: hold and keep surviving.
                     if not self._stall_reported:
                         self._report_stall()
                         self._stall_reported = True
