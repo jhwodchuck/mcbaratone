@@ -17,7 +17,10 @@ from baritone_client.actions.boot_sequence import (
     StorageOrganizationAction,
     StoneToolCraftingAction,
 )
-from baritone_client.common.tasks import SurvivalRecoveryRequired
+from baritone_client.common.tasks import (
+    PlayerDeathDetected,
+    SurvivalRecoveryRequired,
+)
 
 
 class RecordingState:
@@ -60,6 +63,23 @@ def test_boot_handler_preserves_survival_recovery_signal(monkeypatch):
     )
 
     with pytest.raises(SurvivalRecoveryRequired):
+        BootSequenceHandler().execute(
+            SimpleNamespace(),
+            SimpleNamespace(),
+            RecordingState(),
+        )
+
+
+def test_boot_handler_preserves_player_death_signal(monkeypatch):
+    monkeypatch.setattr(
+        boot_sequence.SequenceAction,
+        "execute",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            PlayerDeathDetected("died during boot")
+        ),
+    )
+
+    with pytest.raises(PlayerDeathDetected):
         BootSequenceHandler().execute(
             SimpleNamespace(),
             SimpleNamespace(),
