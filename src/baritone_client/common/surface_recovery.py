@@ -38,6 +38,14 @@ _AQUATIC_WALKWAY_MATERIALS = (
     "minecraft:dark_oak_planks",
     "minecraft:mangrove_planks",
     "minecraft:cherry_planks",
+    "minecraft:oak_log",
+    "minecraft:spruce_log",
+    "minecraft:birch_log",
+    "minecraft:jungle_log",
+    "minecraft:acacia_log",
+    "minecraft:dark_oak_log",
+    "minecraft:mangrove_log",
+    "minecraft:cherry_log",
 )
 
 
@@ -156,27 +164,20 @@ def _wait_for_dry_level(
     return None
 
 
-def _aquatic_walkway_direction(
+def _aquatic_walkway_plan(
     client: Any,
     origin: tuple[int, int, int],
     *,
     length: int,
-) -> Optional[tuple[int, int]]:
-    """Find a supported shallow-water line that can be replaced with blocks."""
+) -> Optional[tuple[tuple[int, int], list[tuple[int, int, int]]]]:
+    """Plan a short bottom-up walkway through water up to two blocks deep."""
     ox, oy, oz = origin
     for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
         viable = True
+        placements = []
         for step in range(1, length + 1):
             x, z = ox + dx * step, oz + dz * step
             try:
-                support = client.transport.dispatch(
-                    "get_block",
-                    {"x": x, "y": oy - 1, "z": z},
-                ).get("id", "")
-                feet = client.transport.dispatch(
-                    "get_block",
-                    {"x": x, "y": oy, "z": z},
-                ).get("id", "")
                 head = client.transport.dispatch(
                     "get_block",
                     {"x": x, "y": oy + 1, "z": z},
@@ -184,27 +185,67 @@ def _aquatic_walkway_direction(
             except Exception:
                 viable = False
                 break
-            support_value = str(support)
-            unsupported = not support_value or any(
-                token in support_value
-                for token in (
-                    "air",
-                    "water",
-                    "lava",
-                    "seagrass",
-                    "kelp",
-                    "vine",
-                )
-            )
-            if (
-                _block_is_breathable(feet)
-                or unsupported
-                or not _block_is_breathable(head)
-            ):
+            if not _block_is_breathable(head):
                 viable = False
                 break
+            floor_y = None
+            for candidate_y in (oy - 1, oy - 2):
+                try:
+                    candidate = client.transport.dispatch(
+                        "get_block",
+                        {"x": x, "y": candidate_y, "z": z},
+                    ).get("id", "")
+                except Exception:
+                    candidate = ""
+                candidate_value = str(candidate)
+                unsupported = not candidate_value or any(
+                    token in candidate_value
+                    for token in (
+                        "air",
+                        "water",
+                        "lava",
+                        "seagrass",
+                        "kelp",
+                        "vine",
+                    )
+                )
+                if not unsupported:
+                    floor_y = candidate_y
+                    break
+            if floor_y is None:
+                viable = False
+                break
+            for fill_y in range(floor_y + 1, oy + 1):
+                try:
+                    block = client.transport.dispatch(
+                        "get_block",
+                        {"x": x, "y": fill_y, "z": z},
+                    ).get("id", "")
+                except Exception:
+                    block = ""
+                if _block_is_breathable(block):
+                    viable = False
+                    break
+                placements.append((x, fill_y, z))
+            if not viable:
+                break
         if viable:
-            return (dx, dz)
+            return ((dx, dz), placements)
+    return None
+
+
+def _walkway_materials(
+    inventory: dict[str, int],
+    *,
+    required: int,
+) -> Optional[list[str]]:
+    """Allocate a bounded walkway from mixed carried solid blocks."""
+    allocated = []
+    for item_id in _AQUATIC_WALKWAY_MATERIALS:
+        count = int(inventory.get(item_id, 0) or 0)
+        allocated.extend([item_id] * min(count, required - len(allocated)))
+        if len(allocated) >= required:
+            return allocated
     return None
 
 
@@ -219,25 +260,20 @@ def _build_aquatic_walkway(
     from .inventory import get_inventory, select_item
 
     inventory = get_inventory(client)
-    material = next(
-        (
-            item_id
-            for item_id in _AQUATIC_WALKWAY_MATERIALS
-            if int(inventory.get(item_id, 0) or 0) >= length
-        ),
-        None,
-    )
-    direction = _aquatic_walkway_direction(client, origin, length=length)
-    if material is None or direction is None:
+    plan = _aquatic_walkway_plan(client, origin, length=length)
+    if plan is None:
         return None
-    if not select_item(client, material, allow_swap=True):
+    direction, placements = plan
+    materials = _walkway_materials(inventory, required=len(placements))
+    if materials is None:
         return None
 
     ox, oy, oz = origin
     dx, dz = direction
     client.transport.dispatch("cancel", {})
-    for step in range(1, length + 1):
-        target = (ox + dx * step, oy, oz + dz * step)
+    for target, material in zip(placements, materials):
+        if not select_item(client, material, allow_swap=True):
+            return None
         try:
             client.transport.dispatch(
                 "place_block",
@@ -262,6 +298,85 @@ def _build_aquatic_walkway(
     if moved_sq < 2**2 or position_is_aquatic(client, current):
         return None
     return current
+
+
+def _loaded_dry_shore_candidates(
+    client: Any,
+    origin: tuple[int, int, int],
+    *,
+    search_radius: int = 64,
+) -> list[tuple[int, int, int]]:
+    """Return nearby loaded ground columns with verified dry standing space."""
+    ox, _oy, oz = origin
+    try:
+        response = client.transport.dispatch(
+            "find_blocks",
+            {
+                "blocks": _SURFACE_BLOCKS,
+                "radius": int(search_radius),
+                "limit": 4096,
+            },
+        )
+    except Exception:
+        return []
+    highest_by_column = {}
+    for block in response.get("found", []):
+        x, y, z = int(block["x"]), int(block["y"]) + 1, int(block["z"])
+        highest_by_column[(x, z)] = max(
+            y,
+            highest_by_column.get((x, z), -64),
+        )
+    candidates = []
+    for (x, z), y in highest_by_column.items():
+        distance_sq = (x - ox) ** 2 + (z - oz) ** 2
+        if distance_sq < 6**2 or distance_sq > search_radius**2:
+            continue
+        position = (x, y, z)
+        if position_is_aquatic(client, position) or not _head_is_dry(
+            client,
+            position,
+        ):
+            continue
+        candidates.append((distance_sq, position))
+    return [
+        position
+        for _distance, position in sorted(candidates)
+    ]
+
+
+def _swim_to_loaded_dry_shore(
+    client: Any,
+    origin: tuple[int, int, int],
+    *,
+    timeout: float = 30.0,
+) -> Optional[tuple[int, int, int]]:
+    """Use one bounded raw route from surface water to verified loaded land."""
+    for target in _loaded_dry_shore_candidates(client, origin)[:2]:
+        client.transport.dispatch("cancel", {})
+        client.transport.dispatch(
+            "goto",
+            {"x": target[0], "y": target[1], "z": target[2]},
+        )
+        deadline = time.monotonic() + max(0.0, timeout)
+        checks = 0
+        while time.monotonic() < deadline:
+            state = client.transport.dispatch("get_state", {})
+            current = block_position(state)
+            if (
+                not position_is_aquatic(client, current)
+                and _head_is_dry(client, current)
+            ):
+                client.transport.dispatch("cancel", {})
+                print(f"SURVIVAL: reached loaded dry shore at {current}")
+                return current
+            if current[1] < origin[1] - 2:
+                break
+            checks += 1
+            if checks >= 2 and not state.get("is_pathing", True):
+                break
+            time.sleep(0.5)
+        client.transport.dispatch("cancel", {})
+    return None
 
 
 def _head_is_dry(client: Any, position: tuple[int, int, int]) -> bool:
@@ -340,6 +455,9 @@ def reach_dry_surface(
         )
         if walkway_exit is not None:
             return walkway_exit
+        shore_exit = _swim_to_loaded_dry_shore(client, origin)
+        if shore_exit is not None:
+            return shore_exit
         # Coordinate routes cannot make progress from this same aquatic cell
         # if the upward goal itself never moved. Let callers proceed to their
         # bounded excavation fallback instead of spending minutes retrying it.

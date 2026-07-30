@@ -227,6 +227,10 @@ def test_stalled_aquatic_ascent_yields_to_excavation_without_route_retries(
                 return {"block_position": {"x": 4, "y": 62, "z": 4}}
             if route == "get_block":
                 return {"id": "minecraft:water"}
+            if route == "get_inventory":
+                return {"inventory": []}
+            if route == "find_blocks":
+                return {"found": []}
             return {}
 
     transport = Transport()
@@ -245,7 +249,11 @@ def test_stalled_aquatic_ascent_yields_to_excavation_without_route_retries(
         command_timeout=90.0,
     ) is None
     assert ("goal", {"type": "yLevel", "value": 69}) in transport.calls
-    assert not any(route == "find_blocks" for route, _payload in transport.calls)
+    assert sum(
+        route == "find_blocks"
+        for route, _payload in transport.calls
+    ) == 1
+    assert not any(route == "goto" for route, _payload in transport.calls)
 
 
 def test_stalled_aquatic_ascent_builds_supported_shallow_water_walkway(
@@ -255,14 +263,16 @@ def test_stalled_aquatic_ascent_builds_supported_shallow_water_walkway(
         def __init__(self):
             self.calls = []
             self.position = (4, 62, 4)
+            self.selected = "minecraft:dirt"
             self.blocks = {
-                (x, 61, 4): "minecraft:dirt"
+                (x, 60, 4): "minecraft:dirt"
                 for x in range(5, 9)
             }
             self.blocks.update(
                 {
-                    (x, 62, 4): "minecraft:water"
+                    (x, y, 4): "minecraft:water"
                     for x in range(4, 9)
+                    for y in (61, 62)
                 }
             )
 
@@ -280,14 +290,31 @@ def test_stalled_aquatic_ascent_builds_supported_shallow_water_walkway(
                         {
                             "slot": 2,
                             "id": "minecraft:dirt",
-                            "count": 4,
+                            "count": 2,
+                        },
+                        {
+                            "slot": 3,
+                            "id": "minecraft:dark_oak_planks",
+                            "count": 3,
+                        },
+                        {
+                            "slot": 4,
+                            "id": "minecraft:dark_oak_log",
+                            "count": 3,
                         }
                     ]
                 }
             if route == "place_block":
                 position = (payload["x"], payload["y"], payload["z"])
-                self.blocks[position] = "minecraft:dirt"
+                self.blocks[position] = self.selected
                 return {"placed": True}
+            if route == "select_slot":
+                self.selected = {
+                    2: "minecraft:dirt",
+                    3: "minecraft:dark_oak_planks",
+                    4: "minecraft:dark_oak_log",
+                }[payload["slot"]]
+                return {}
             return {}
 
     transport = Transport()
@@ -315,9 +342,70 @@ def test_stalled_aquatic_ascent_builds_supported_shallow_water_walkway(
         for route, payload in transport.calls
         if route == "place_block"
     ] == [
-        {"x": x, "y": 62, "z": 4}
+        {"x": x, "y": y, "z": 4}
         for x in range(5, 9)
+        for y in (61, 62)
     ]
+
+
+def test_deep_surface_water_uses_verified_loaded_shore_route(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.position = (4, 62, 4)
+            self.route_started = False
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                if self.route_started:
+                    self.position = (12, 63, 4)
+                x, y, z = self.position
+                return {
+                    "block_position": {"x": x, "y": y, "z": z},
+                    "is_pathing": True,
+                }
+            if route == "get_block":
+                position = (payload["x"], payload["y"], payload["z"])
+                if position == (12, 62, 4):
+                    return {"id": "minecraft:grass_block"}
+                if position[1] <= 62:
+                    return {"id": "minecraft:water"}
+                return {"id": "minecraft:air"}
+            if route == "get_inventory":
+                return {"inventory": []}
+            if route == "find_blocks":
+                return {
+                    "found": [
+                        {
+                            "x": 12,
+                            "y": 62,
+                            "z": 4,
+                            "id": "minecraft:grass_block",
+                        }
+                    ]
+                }
+            if route == "goto":
+                self.route_started = True
+                return {"started": True}
+            return {}
+
+    transport = Transport()
+    monkeypatch.setattr(
+        surface_recovery.time,
+        "monotonic",
+        iter((0.0, 0.0, 13.0, 20.0, 20.0)).__next__,
+    )
+    monkeypatch.setattr(surface_recovery.time, "sleep", lambda _seconds: None)
+
+    assert surface_recovery.reach_dry_surface(
+        SimpleNamespace(transport=transport),
+        origin=(4, 62, 4),
+        expected_y=63,
+        goto=lambda *_args, **_kwargs: False,
+        command_timeout=90.0,
+    ) == (12, 63, 4)
+    assert ("goto", {"x": 12, "y": 63, "z": 4}) in transport.calls
 
 
 def test_surface_recovery_excavates_when_all_surface_routes_fail(monkeypatch):
