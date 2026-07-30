@@ -200,3 +200,73 @@ def test_dry_surface_food_search_does_not_run_surface_recovery(monkeypatch):
     )
 
     assert emergency_food.reach_food_search_surface(client, state)
+
+
+def test_dry_cave_above_floor_still_ascends_to_real_surface(monkeypatch):
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_args: {}))
+    state = {
+        "dimension": "minecraft:overworld",
+        "block_position": {"x": 10, "y": 62, "z": 20},
+    }
+    recoveries = []
+    monkeypatch.setattr(
+        emergency_food,
+        "surface_y_at",
+        lambda *_args, **_kwargs: 84,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        emergency_food,
+        "player_is_in_water",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        emergency_food,
+        "head_block_is_water",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.surface_recovery.reach_dry_surface",
+        lambda _client, **kwargs: recoveries.append(kwargs) or (10, 84, 20),
+    )
+
+    assert emergency_food.reach_food_search_surface(client, state)
+    assert recoveries[0]["expected_y"] == 84
+
+
+def test_low_dry_ledge_does_not_satisfy_food_surface_recovery(monkeypatch):
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_args: {}))
+    state = {
+        "dimension": "minecraft:overworld",
+        "block_position": {"x": 10, "y": 58, "z": 20},
+    }
+    excavations = []
+    monkeypatch.setattr(
+        emergency_food,
+        "surface_y_at",
+        lambda *_args, **_kwargs: 84,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        emergency_food,
+        "player_is_in_water",
+        lambda *_args: True,
+    )
+    monkeypatch.setattr(
+        emergency_food,
+        "head_block_is_water",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.surface_recovery.reach_dry_surface",
+        lambda *_args, **_kwargs: (12, 64, 21),
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.build_site_recovery.excavate_surface_egress",
+        lambda _client, **kwargs: (
+            excavations.append(kwargs) or (12, 84, 21)
+        ),
+    )
+
+    assert emergency_food.reach_food_search_surface(client, state)
+    assert excavations[0]["expected_y"] == 84

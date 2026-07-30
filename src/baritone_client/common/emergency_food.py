@@ -12,6 +12,7 @@ from .movement_recovery import (
     MovementWatchdog,
     block_position,
 )
+from .site_selection import surface_y_at
 from .surface_egress import try_lower_surface_egress
 
 
@@ -26,16 +27,55 @@ MINIMUM_FOOD_SEARCH_Y = 55
 EXPECTED_SURFACE_Y = 63
 
 
+def _expected_food_search_y(
+    client: Any,
+    position: tuple[int, int, int],
+) -> int:
+    """Estimate the real terrain surface above a cave-bound player."""
+    observed = surface_y_at(
+        client,
+        position[0],
+        position[2],
+        top=max(120, position[1] + 64),
+        bottom=max(-64, position[1] - 32),
+    )
+    if observed is None:
+        return EXPECTED_SURFACE_Y
+    return max(EXPECTED_SURFACE_Y, int(observed))
+
+
+def _is_dry_food_search_surface(
+    client: Any,
+    position: tuple[int, int, int],
+) -> bool:
+    """Require dry footing near the top-down terrain surface."""
+    from .surface_recovery import position_is_aquatic
+
+    state = {
+        "block_position": {
+            "x": position[0],
+            "y": position[1],
+            "z": position[2],
+        }
+    }
+    return (
+        position[1] >= _expected_food_search_y(client, position) - 3
+        and not position_is_aquatic(client, position)
+        and not head_block_is_water(client, state)
+    )
+
+
 def reach_food_search_surface(client: Any, state: Dict) -> bool:
     """Reach dry Overworld surface terrain before blind food exploration."""
     position = block_position(state)
     dimension = state.get("dimension", "minecraft:overworld")
     if dimension != "minecraft:overworld":
         return True
+    expected_y = _expected_food_search_y(client, position)
     in_water = player_is_in_water(client, state) or head_block_is_water(
         client, state
     )
-    if position[1] >= MINIMUM_FOOD_SEARCH_Y and not in_water:
+    if position[1] >= expected_y - 3 and not in_water:
         return True
 
     # This gate exists to stop *blind exploration* while submerged, but it was
@@ -74,16 +114,26 @@ def reach_food_search_surface(client: Any, state: Dict) -> bool:
     recovered = reach_dry_surface(
         client,
         origin=position,
-        expected_y=EXPECTED_SURFACE_Y,
+        expected_y=expected_y,
         goto=goto,
     )
+    if recovered is not None and not _is_dry_food_search_surface(
+        client, recovered
+    ):
+        print(
+            "RECOVERY: rejected low cave ledge as emergency-food surface "
+            f"at {recovered}"
+        )
+        recovered = None
     if recovered is None:
         recovered = excavate_surface_egress(
             client,
             origin=position,
-            expected_y=EXPECTED_SURFACE_Y,
+            expected_y=expected_y,
         )
-    return recovered is not None and recovered[1] >= MINIMUM_FOOD_SEARCH_Y
+    return recovered is not None and _is_dry_food_search_surface(
+        client, recovered
+    )
 
 
 def prepare_food_search_state(client: Any, state: Dict) -> Optional[Dict]:
