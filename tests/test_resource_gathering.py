@@ -1475,6 +1475,43 @@ def test_manual_escape_descent_navigates_to_landing_when_water_prevents_drop(
     assert destinations == [(7, 63, -191)]
 
 
+def test_manual_escape_descent_uses_preopened_safe_shaft(monkeypatch):
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+    position = {"x": 7, "y": 64, "z": -191}
+
+    def dispatch(route, payload):
+        transport.calls.append((route, payload))
+        if route == "get_block":
+            if payload["y"] == 63:
+                return {"id": "minecraft:air"}
+            if payload["y"] == 62:
+                return {"id": "minecraft:stone"}
+            return {"id": "minecraft:air"}
+        if route == "get_state":
+            return {"block_position": dict(position)}
+        return {}
+
+    transport.dispatch = dispatch
+    destinations = []
+
+    def goto_landing(_client, x, y, z, **_kwargs):
+        destinations.append((x, y, z))
+        position["y"] = y
+        return True
+
+    monkeypatch.setattr(stone_descent, "goto", goto_landing, raising=False)
+
+    assert stone_descent.manual_column_descend(
+        client,
+        target_y=58,
+        max_steps=1,
+        require_pickaxe=False,
+    )
+    assert destinations == [(7, 63, -191)]
+    assert not any(route == "dig_block" for route, _payload in transport.calls)
+
+
 def test_manual_column_descend_stops_before_an_uncontrolled_fall(monkeypatch):
     """If the block two below is open, breaking would exceed a 1-block drop
     -- must stop rather than risk it."""

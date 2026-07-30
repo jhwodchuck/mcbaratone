@@ -60,6 +60,39 @@ def _landing_below(
     return None, None
 
 
+def _navigate_to_verified_landing(
+    client: Any,
+    api: Any,
+    *,
+    x: int,
+    y: int,
+    z: int,
+    gap: int,
+) -> Optional[tuple[int, int, int]]:
+    """Enter a previously verified shaft and confirm downward displacement."""
+    landing_y = y - gap + 1
+    if not goto(
+        client,
+        x,
+        landing_y,
+        z,
+        timeout=12.0,
+        tolerance=1.0,
+    ):
+        return None
+    after = api._read_state_optional(
+        client,
+        retries=1,
+        label="Manual descend landing",
+    )
+    if after is None:
+        return None
+    ax, ay, az = block_position(after)
+    if ay > y - 1:
+        return None
+    return ax, ay, az
+
+
 def manual_column_descend(
     client: Any,
     *,
@@ -85,6 +118,22 @@ def manual_column_descend(
             break
         below = str(read_block_optional(client, px, py - 1, pz) or "")
         if not below or any(name in below for name in _OPEN_BLOCKS):
+            if not require_pickaxe and below:
+                landing, gap = _landing_below(client, px, py, pz)
+                if landing and gap and not any(
+                    name in landing for name in _UNSAFE_BLOCKS
+                ):
+                    descended = _navigate_to_verified_landing(
+                        client,
+                        api,
+                        x=px,
+                        y=py,
+                        z=pz,
+                        gap=gap,
+                    )
+                    if descended is not None:
+                        px, py, pz = descended
+                        continue
             print(f"DEBUG: Manual descend: no floor at Y={py - 1}; stopping")
             break
         if any(name in below for name in _UNSAFE_BLOCKS):
@@ -142,29 +191,21 @@ def manual_column_descend(
                 px, py, pz = ax, ay, az
                 break
         else:
-            landing_y = previous_y - int(gap or 0) + 1
             print(
                 "DEBUG: Manual descend: player did not drop after breaking; "
-                f"navigating to verified landing at Y={landing_y}"
+                "navigating to verified landing"
             )
-            if goto(
+            descended = _navigate_to_verified_landing(
                 client,
-                px,
-                landing_y,
-                pz,
-                timeout=12.0,
-                tolerance=1.0,
-            ):
-                after = api._read_state_optional(
-                    client,
-                    retries=1,
-                    label="Manual descend landing",
-                )
-                if after is not None:
-                    ax, ay, az = block_position(after)
-                    if ay <= previous_y - 1:
-                        px, py, pz = ax, ay, az
-                        continue
+                api,
+                x=px,
+                y=previous_y,
+                z=pz,
+                gap=int(gap or 0),
+            )
+            if descended is not None:
+                px, py, pz = descended
+                continue
             print("DEBUG: Manual descend: verified landing remained unreachable")
             break
 
