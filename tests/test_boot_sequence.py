@@ -331,6 +331,45 @@ def test_boot_infrastructure_can_precede_full_house(monkeypatch):
     }
 
 
+def test_boot_infrastructure_falls_back_locally_when_house_is_unreachable(
+    monkeypatch,
+):
+    state = SimpleNamespace(
+        custom_data={
+            "structures": {
+                "starter_house": {
+                    "origin": [300, 68, 300],
+                    "crafting_table": [301, 68, 301],
+                }
+            }
+        }
+    )
+    client = SimpleNamespace(transport=SimpleNamespace())
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.nearby_infrastructure_record",
+        lambda _context: state.custom_data["structures"]["starter_house"],
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.goto",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.find_flat_ground",
+        lambda *_args, **_kwargs: (-40, 64, -315),
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.setup_base",
+        lambda *_args, **_kwargs: (True, (-40, 64, -315)),
+    )
+
+    result = InfrastructurePlacementAction().execute(
+        SimpleNamespace(client=client, state=state)
+    )
+
+    assert result.success
+    assert state.custom_data["bootstrap_base_location"] == [-40, 64, -315]
+
+
 def test_boot_wood_check_counts_real_plank_ids(monkeypatch):
     monkeypatch.setattr(
         "baritone_client.actions.boot_sequence.count_item",

@@ -723,6 +723,7 @@ def gather_wood(
                     client,
                     state,
                     minimum_altitude=0,
+                    allow_upward_excavation=True,
                 )
                 maroon_watch.reset(state)
                 movement.reset(state)

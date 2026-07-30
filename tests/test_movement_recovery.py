@@ -84,6 +84,59 @@ def test_surface_egress_tries_local_lower_ground_before_remote_storage(monkeypat
     assert destinations == [(-15, 107, -20)]
 
 
+def test_proven_marooned_egress_excavates_up_when_lower_routes_fail(monkeypatch):
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_block":
+                return {"id": "minecraft:stone"}
+            if route == "find_blocks":
+                return {"found": []}
+            if route == "get_state":
+                return {
+                    "health": 20,
+                    "block_position": {"x": 7, "y": 64, "z": -191},
+                }
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    monkeypatch.setattr(
+        surface_egress,
+        "supported_column_descent",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        surface_egress,
+        "harvest_shelf_dirt",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        surface_egress,
+        "try_survivable_drop",
+        lambda *_args, **_kwargs: None,
+    )
+    excavations = []
+    monkeypatch.setattr(
+        "baritone_client.common.build_site_recovery.excavate_surface_egress",
+        lambda _client, **kwargs: excavations.append(kwargs) or (7, 70, -191),
+    )
+
+    reached = surface_egress.try_lower_surface_egress(
+        client,
+        {"health": 20, "block_position": {"x": 7, "y": 64, "z": -191}},
+        minimum_altitude=0,
+        allow_upward_excavation=True,
+    )
+
+    assert reached == (7, 70, -191)
+    assert excavations == [
+        {
+            "origin": (7, 64, -191),
+            "expected_y": 70,
+            "timeout_per_attempt": 30.0,
+        }
+    ]
+
+
 def test_shelf_escape_harvests_vacated_blocks_not_current_floor(monkeypatch):
     class Transport:
         def __init__(self):

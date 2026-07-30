@@ -137,6 +137,7 @@ def try_lower_surface_egress(
     attempt_limit: int = 8,
     timeout_per_candidate: float = 24.0,
     minimum_altitude: int = 96,
+    allow_upward_excavation: bool = False,
 ) -> Optional[Tuple[int, int, int]]:
     """Walk to nearby lower terrain before attempting a vertical tunnel.
 
@@ -247,4 +248,17 @@ def try_lower_surface_egress(
     # Everything above needs either a walkable route or blocks to build with.
     # A bot stranded on a self-built pillar with an empty inventory has
     # neither, so without this it stays there forever.
-    return try_survivable_drop(client, client.transport.dispatch("get_state", {}))
+    latest_state = client.transport.dispatch("get_state", {})
+    dropped = try_survivable_drop(client, latest_state)
+    if dropped is not None or not allow_upward_excavation:
+        return dropped
+
+    from .build_site_recovery import excavate_surface_egress
+
+    print("DEBUG: Lower routes failed; excavating a bounded upward egress")
+    return excavate_surface_egress(
+        client,
+        origin=block_position(latest_state),
+        expected_y=max(63, origin[1] + 6),
+        timeout_per_attempt=30.0,
+    )

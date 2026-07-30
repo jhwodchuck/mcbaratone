@@ -494,6 +494,35 @@ class HuntingAndScoutingAction(BaseAction):
         return ActionResult.ok(f"Hunted {kills} animals")
 
 
+def _establish_bootstrap_infrastructure(context: ActionContext) -> ActionResult:
+    """Build a compact local anchor when the durable house is unavailable."""
+    bootstrap_site = find_flat_ground(
+        context.client,
+        radius=12,
+        footprint=3,
+    )
+    if bootstrap_site is None:
+        return ActionResult.fail("No safe site found for bootstrap infrastructure")
+    success, location = setup_base(context.client, bootstrap_site)
+    if not success or location is None:
+        return ActionResult.fail(
+            "Bootstrap infrastructure setup remained incomplete"
+        )
+    x, y, z = (int(value) for value in location)
+    custom_data = getattr(context.state, "custom_data", {})
+    custom_data["bootstrap_base_location"] = [x, y, z]
+    custom_data.setdefault("structures", {})["bootstrap_base"] = {
+        "origin": [x, y, z],
+        "crafting_table": [x + 1, y, z + 1],
+        "furnace": [x + 2, y, z + 1],
+        "supply_chest": [x + 1, y, z + 2],
+        "verified": True,
+    }
+    return ActionResult.ok(
+        "Bootstrap infrastructure established before house construction"
+    )
+
+
 class InfrastructurePlacementAction(BaseAction):
     """Place essential infrastructure at base location."""
 
@@ -517,33 +546,7 @@ class InfrastructurePlacementAction(BaseAction):
             # BOOT_SEQUENCE now establishes survival capabilities before the
             # full starter house. Build a compact verified infrastructure
             # anchor near the player instead of requiring T1203 up front.
-            bootstrap_site = find_flat_ground(
-                context.client,
-                radius=12,
-                footprint=3,
-            )
-            if bootstrap_site is None:
-                return ActionResult.fail(
-                    "No safe site found for bootstrap infrastructure"
-                )
-            success, location = setup_base(context.client, bootstrap_site)
-            if not success or location is None:
-                return ActionResult.fail(
-                    "Bootstrap infrastructure setup remained incomplete"
-                )
-            x, y, z = (int(value) for value in location)
-            custom_data = getattr(context.state, "custom_data", {})
-            custom_data["bootstrap_base_location"] = [x, y, z]
-            custom_data.setdefault("structures", {})["bootstrap_base"] = {
-                "origin": [x, y, z],
-                "crafting_table": [x + 1, y, z + 1],
-                "furnace": [x + 2, y, z + 1],
-                "supply_chest": [x + 1, y, z + 2],
-                "verified": True,
-            }
-            return ActionResult.ok(
-                "Bootstrap infrastructure established before house construction"
-            )
+            return _establish_bootstrap_infrastructure(context)
 
         print(f"Traveling to checkpointed house at {tuple(house_target)}...")
         if not goto(
@@ -555,7 +558,11 @@ class InfrastructurePlacementAction(BaseAction):
             check_interval=1.0,
             tolerance=3.0,
         ):
-            return ActionResult.fail("Could not reach checkpointed house")
+            print(
+                "Checkpointed house is unreachable; establishing local "
+                "bootstrap infrastructure instead."
+            )
+            return _establish_bootstrap_infrastructure(context)
         print("Arrived at checkpointed house.")
 
         # 2. Reuse the verified infrastructure created by BASE_CONSTRUCTION.
