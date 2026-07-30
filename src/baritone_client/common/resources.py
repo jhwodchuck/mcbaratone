@@ -25,6 +25,13 @@ from .movement_recovery import (
 )
 from .mining_safety import run_mining_defense
 from .surface_egress import try_lower_surface_egress
+from .wood_gathering import (
+    maintain_survival_window,
+    recover_after_aquatic_stop,
+    required_log_count,
+    stop_reason as wood_gathering_stop_reason,
+    stop_reason_after_defense as wood_gathering_stop_reason_after_defense,
+)
 from .automation_utils import get_player_pos
 from ..core.exceptions import CommandError, TransportError
 
@@ -505,77 +512,6 @@ def _find_safe_nearby_ore(
     return (x, y, z)
 
 
-def _wood_gathering_must_stop(
-    client,
-    state: dict,
-    *,
-    origin_x: float,
-    origin_z: float,
-    latest_world_time: Optional[int],
-    max_distance_from_origin: Optional[float],
-    minimum_health: float,
-) -> bool:
-    """Cancel a wood expedition at its aquatic, time, health, or range boundary."""
-    from .combat import survival_tick
-
-    reason = None
-    if survival_tick(client, state):
-        reason = "after aquatic safety intervention"
-    elif (
-        latest_world_time is not None
-        and int(state.get("world_time", 0)) % 24000 >= int(latest_world_time)
-    ):
-        reason = "at its return-home boundary"
-    elif float(state.get("health", 20.0)) < float(minimum_health):
-        reason = "below safe health"
-    else:
-        position = state.get("block_position", state.get("position", {}))
-        distance = (
-            (float(position.get("x", 0)) - origin_x) ** 2
-            + (float(position.get("z", 0)) - origin_z) ** 2
-        ) ** 0.5
-        if (
-            max_distance_from_origin is not None
-            and distance > float(max_distance_from_origin)
-        ):
-            reason = "at its expedition radius"
-    if reason is None:
-        return False
-    print(f"DEBUG: Wood gathering stopped {reason}")
-    client.transport.dispatch("cancel", {})
-    return True
-
-
-def _wood_gathering_must_stop_after_defense(
-    client,
-    *,
-    origin_x: float,
-    origin_z: float,
-    latest_world_time: Optional[int],
-    max_distance_from_origin: Optional[float],
-    minimum_health: float,
-) -> bool:
-    """Recheck an expedition after defense may have moved the bot."""
-    if getattr(client, "_last_defense_intervention", None) == "aquatic":
-        print("DEBUG: Wood gathering stopped after aquatic defense intervention")
-        client.transport.dispatch("cancel", {})
-        return True
-    state = _read_state_optional(
-        client,
-        retries=3,
-        label="Wood gather post-defense state",
-    )
-    return state is None or _wood_gathering_must_stop(
-        client,
-        state,
-        origin_x=origin_x,
-        origin_z=origin_z,
-        latest_world_time=latest_world_time,
-        max_distance_from_origin=max_distance_from_origin,
-        minimum_health=minimum_health,
-    )
-
-
 def gather_wood(
     client,
     count: int = 16,
@@ -586,19 +522,9 @@ def gather_wood(
     minimum_health: float = 12.0,
 ) -> bool:
     """Gather logs, counting four carried planks as one log equivalent."""
-    total_logs = sum(count_item(client, block) for block in LOG_BLOCKS)
-    if total_logs >= count:
-        print(f"DEBUG: Already have {total_logs} logs, skipping gather")
+    needed = required_log_count(client, count)
+    if needed is None:
         return True
-    # 1 log = 4 planks, so planks/4 = equivalent logs
-    total_planks = sum(count_item(client, p) for p in PLANK_ITEMS)
-    equivalent_logs = total_planks // 4  # 4 planks = 1 log
-    if total_logs + equivalent_logs >= count:
-        print(f"DEBUG: Have {total_logs} logs + {total_planks} planks ({equivalent_logs} log equiv) = enough! Skipping gather")
-        return True
-    # Calculate how many more logs we actually need
-    needed = count - total_logs - equivalent_logs
-    print(f"DEBUG: Need {needed} more logs (have {total_logs} logs, {total_planks} planks)")
     
     try:
         if not _reserve_gathering_inventory(client):
@@ -629,7 +555,7 @@ def gather_wood(
         _start_mine_process(client, LOG_BLOCKS, needed + 4)
         start = time.time()
         idle_checks = 0
-        last_count = total_logs + equivalent_logs
+        last_count = count - needed
         stalled_checks = 0
         exploring = False
         failed_log_positions: Set[tuple[int, int, int]] = set()
@@ -664,7 +590,7 @@ def gather_wood(
             if state is None:
                 time.sleep(0.5)
                 continue
-            if _wood_gathering_must_stop(
+            stop_reason = wood_gathering_stop_reason(
                 client,
                 state,
                 origin_x=origin_x,
@@ -672,24 +598,24 @@ def gather_wood(
                 latest_world_time=latest_world_time,
                 max_distance_from_origin=max_distance_from_origin,
                 minimum_health=minimum_health,
-            ):
-                return False
-            food_level = int(state.get("food_level", state.get("food", 20)))
-            if food_level <= 10:
-                from .combat import eat_until_hunger
-
-                client.transport.dispatch("cancel", {})
-                if not eat_until_hunger(client, minimum_food=14):
-                    print("DEBUG: Wood gathering stopped because food ran out")
+            )
+            if stop_reason:
+                if not recover_after_aquatic_stop(
+                    client,
+                    stop_reason,
+                    quantity=needed + 4,
+                    movement_watchdogs=(movement, maroon_watch),
+                ):
                     return False
-                _start_mine_process(client, LOG_BLOCKS, needed + 4)
+                idle_checks = stalled_checks = 0
+                exploring = False
                 continue
-            if not _ensure_outdoor_daylight(client, state):
-                return False
-            if int(state.get("world_time", 0)) % 24000 >= 12000:
-                client.transport.dispatch(
-                    "mine", {"blocks": LOG_BLOCKS, "quantity": needed + 4}
-                )
+            safety_resume = maintain_survival_window(
+                client, state, quantity=needed + 4
+            )
+            if safety_resume is not None:
+                if not safety_resume:
+                    return False
                 idle_checks = 0
                 stalled_checks = 0
                 exploring = False
@@ -744,15 +670,25 @@ def gather_wood(
             if not abort_on_threats:
                 defense_started = time.time()
                 if defend_or_flee(client):
-                    if _wood_gathering_must_stop_after_defense(
+                    stop_reason = wood_gathering_stop_reason_after_defense(
                         client,
                         origin_x=origin_x,
                         origin_z=origin_z,
                         latest_world_time=latest_world_time,
                         max_distance_from_origin=max_distance_from_origin,
                         minimum_health=minimum_health,
-                    ):
-                        return False
+                    )
+                    if stop_reason:
+                        if not recover_after_aquatic_stop(
+                            client,
+                            stop_reason,
+                            quantity=needed + 4,
+                            movement_watchdogs=(movement, maroon_watch),
+                        ):
+                            return False
+                        idle_checks = stalled_checks = 0
+                        exploring = False
+                        continue
                     # Credit back the time defence consumed. A creeper camped
                     # near the work area triggers evade -> "relocate 28 blocks
                     # away" -> walk back, which costs far more of the budget

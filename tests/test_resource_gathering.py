@@ -713,6 +713,9 @@ def test_wood_gather_aborts_after_aquatic_safety_intervention(monkeypatch):
         "survival_tick",
         lambda _client, _state: interventions.append(True) or True,
     )
+    monkeypatch.setattr(
+        resources, "_relocate_to_dry_stone_terrain", lambda _client: False
+    )
 
     assert not resources.gather_wood(client, count=3, timeout=1)
     assert interventions == [True]
@@ -757,11 +760,68 @@ def test_wood_gather_does_not_resume_mining_after_defense_surfaces_bot(monkeypat
         "survival_tick",
         lambda _client, state: bool(state.get("submerged")),
     )
+    monkeypatch.setattr(
+        resources, "_relocate_to_dry_stone_terrain", lambda _client: False
+    )
 
     assert not resources.gather_wood(client, count=3, timeout=1)
     mine_calls = [call for call in transport.calls if call[0] == "mine"]
     assert mine_calls == []
     assert ("cancel", {}) in transport.calls
+
+
+def test_wood_gather_relocates_before_resuming_after_aquatic_stop(monkeypatch):
+    from baritone_client.common import combat
+
+    class SwampTransport(RecordingTransport):
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "world_time": 1000,
+                    "health": 20.0,
+                    "food_level": 20,
+                    "is_pathing": True,
+                    "block_position": {"x": -110, "y": 57, "z": -327},
+                }
+            return {}
+
+    transport = SwampTransport()
+    client = SimpleNamespace(transport=transport)
+    inventory = {"minecraft:oak_log": 0}
+    starts = []
+    relocations = []
+    interventions = []
+
+    monkeypatch.setattr(
+        resources,
+        "count_item",
+        lambda _client, item_id: inventory.get(item_id, 0),
+    )
+    monkeypatch.setattr(resources, "_reserve_gathering_inventory", lambda _c: True)
+    monkeypatch.setattr(resources, "free_inventory_slots", lambda _c: 32)
+    monkeypatch.setattr(resources, "_ensure_outdoor_daylight", lambda *_args: True)
+    monkeypatch.setattr(
+        resources,
+        "_start_mine_process",
+        lambda *_args: starts.append(True),
+    )
+
+    def aquatic_stop(_client, _state):
+        interventions.append(True)
+        return len(interventions) == 1
+
+    def relocate(_client):
+        relocations.append(True)
+        inventory["minecraft:oak_log"] = 3
+        return True
+
+    monkeypatch.setattr(combat, "survival_tick", aquatic_stop)
+    monkeypatch.setattr(resources, "_relocate_to_dry_stone_terrain", relocate)
+
+    assert resources.gather_wood(client, count=3, timeout=30)
+    assert relocations == [True]
+    assert len(starts) == 2
 
 
 def test_missing_mining_pickaxe_is_replaced(monkeypatch):
