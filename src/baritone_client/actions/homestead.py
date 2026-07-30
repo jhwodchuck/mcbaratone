@@ -121,7 +121,7 @@ class IncrementalHomestead:
         checks = {
             "dry_anchor": anchor is not None and self._dry_ground(anchor),
             "infrastructure": self._live_infrastructure(
-                self._infrastructure_record(),
+                self._infrastructure_record(anchor),
                 anchor,
             ),
             "micro_farm": self._live_farm(),
@@ -328,7 +328,7 @@ class IncrementalHomestead:
             return True
         self.require_construction_pacing()
         record = self.step(homestead, "infrastructure")
-        existing = self._infrastructure_record()
+        existing = self._infrastructure_record(homestead.get("anchor"))
         if self._live_infrastructure(existing, homestead.get("anchor")):
             changed = not bool(record.get("verified"))
             record.update(verified=True, evidence="live_infrastructure")
@@ -474,7 +474,7 @@ class IncrementalHomestead:
                 return after_planks > before_planks
             return False
 
-        infrastructure = self._infrastructure_record()
+        infrastructure = self._infrastructure_record(homestead.get("anchor"))
         furnace = self._coordinate(infrastructure.get("furnace"))
         if furnace is None or self._block_at(furnace) not in {
             "minecraft:furnace",
@@ -587,15 +587,25 @@ class IncrementalHomestead:
         planks = sum(count_item(self.client, item) for item in PLANK_ITEMS)
         return logs + planks // 4
 
-    def _infrastructure_record(self) -> Mapping[str, Any]:
+    def _infrastructure_record(self, anchor: Any = None) -> Mapping[str, Any]:
         structures = self.state.custom_data.get("structures", {})
         if not isinstance(structures, Mapping):
             return {}
-        for name in ("starter_house", "bootstrap_base", "house_7x7"):
+        candidates = []
+        anchor_coord = self._coordinate(anchor)
+        for name in ("bootstrap_base", "starter_house", "house_7x7"):
             candidate = structures.get(name)
             if isinstance(candidate, Mapping) and candidate:
-                return candidate
-        return {}
+                origin = self._coordinate(candidate.get("origin"))
+                distance = (
+                    self._distance(origin, anchor_coord)
+                    if origin is not None and anchor_coord is not None
+                    else float("inf")
+                )
+                candidates.append((distance, candidate))
+        if not candidates:
+            return {}
+        return min(candidates, key=lambda item: item[0])[1]
 
     def _live_infrastructure(
         self,

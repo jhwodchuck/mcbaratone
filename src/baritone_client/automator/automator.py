@@ -408,7 +408,7 @@ class EndGameAutomator:
                             f"Phase {phase.name} exhausted its recovery/no-progress "
                             "budget and was abandoned for this checkpoint."
                         )
-                    if interruption == "pacing_hold":
+                    if interruption in {"incremental_progress", "pacing_hold"}:
                         time.sleep(30.0)
                     elif interruption == "survival_recovery":
                         time.sleep(max(1.0, min(5.0, self.executor.retry_delay)))

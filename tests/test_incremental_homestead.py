@@ -701,3 +701,29 @@ def test_infrastructure_rearms_planks_before_replaying_setup(monkeypatch):
     assert runner.step(homestead, "infrastructure")["evidence"] == {
         "missing_planks": 9
     }
+
+
+def test_homestead_prefers_nearest_infrastructure_record():
+    state = _state_with_payloads(
+        {
+            "homestead": {
+                "anchor": [0, 64, 0],
+                "steps": {"infrastructure": {"verified": False}},
+            }
+        }
+    )
+    state.custom_data["structures"]["starter_house"] = {
+        "origin": [500, 64, 500],
+        "crafting_table": [501, 64, 501],
+        "furnace": [502, 64, 501],
+        "supply_chest": [501, 64, 502],
+    }
+    transport, _ = _transport_for_blocks()
+    runner = IncrementalHomestead(
+        SimpleNamespace(transport=transport),
+        state,
+        lambda _client: False,
+    )
+
+    record = runner._infrastructure_record([0, 64, 0])
+    assert record["origin"] == [0, 64, 0]
