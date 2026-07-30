@@ -214,6 +214,40 @@ def test_dry_surface_uses_expected_y_ascent_before_horizontal_candidates(
     assert ("chat", {"message": "#surface"}) not in transport.calls
 
 
+def test_stalled_aquatic_ascent_yields_to_excavation_without_route_retries(
+    monkeypatch,
+):
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {"block_position": {"x": 4, "y": 62, "z": 4}}
+            if route == "get_block":
+                return {"id": "minecraft:water"}
+            return {}
+
+    transport = Transport()
+    monkeypatch.setattr(
+        surface_recovery.time,
+        "monotonic",
+        iter((0.0, 0.0, 13.0)).__next__,
+    )
+    monkeypatch.setattr(surface_recovery.time, "sleep", lambda _seconds: None)
+
+    assert surface_recovery.reach_dry_surface(
+        SimpleNamespace(transport=transport),
+        origin=(4, 62, 4),
+        expected_y=69,
+        goto=lambda *_args, **_kwargs: False,
+        command_timeout=90.0,
+    ) is None
+    assert ("goal", {"type": "yLevel", "value": 69}) in transport.calls
+    assert not any(route == "find_blocks" for route, _payload in transport.calls)
+
+
 def test_surface_recovery_excavates_when_all_surface_routes_fail(monkeypatch):
     from baritone_client.common import build_site_recovery
 

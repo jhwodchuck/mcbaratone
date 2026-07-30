@@ -193,19 +193,24 @@ def reach_dry_surface(
     """Try broader surface columns, then a verified upward-only surface command."""
     ox, oy, oz = origin
     _configure_surface_pathing(client)
+    aquatic_origin = position_is_aquatic(client, origin)
     if (
         expected_y > oy
-        and position_is_aquatic(client, origin)
+        and aquatic_origin
         and _start_y_level_ascent(client, expected_y)
     ):
         recovered = _wait_for_dry_level(
             client,
             origin_y=oy,
             expected_y=expected_y,
-            timeout=min(30.0, command_timeout),
+            timeout=min(12.0, command_timeout),
         )
         if recovered is not None:
             return recovered
+        # Coordinate routes cannot make progress from this same aquatic cell
+        # if the upward goal itself never moved. Let callers proceed to their
+        # bounded excavation fallback instead of spending minutes retrying it.
+        return None
     try:
         response = client.transport.dispatch(
             "find_blocks",
