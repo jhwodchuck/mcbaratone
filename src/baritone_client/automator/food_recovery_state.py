@@ -6,7 +6,6 @@ from ..common.combat import eat_until_hunger
 from ..common.farming import harvest_wheat_farm
 from ..common.husbandry import visit_known_herd_for_loot
 from ..common.inventory import withdraw_required_from_catalog
-from .phases.iron_age_food import FOOD_ANIMALS
 
 
 _STORED_FOOD_TARGETS = {
@@ -25,6 +24,8 @@ _STORED_FOOD_TARGETS = {
 
 def recover_known_food(client, state) -> bool:
     """Run the shared checkpointed-food recovery policy."""
+    from .phases.iron_age_food import FOOD_ANIMALS
+
     return recover_food_from_known_sources(client, state, FOOD_ANIMALS)
 
 
@@ -168,7 +169,10 @@ def recover_food_from_known_sources(
         client,
         {raw_item: 3},
         animal_type,
-        preserve_breeding_pair=True,
+        # Survival recovery is a last-resort meal, not a farm-maintenance
+        # pass. Requiring two survivors can turn a usable observed herd into
+        # a false failure when only one loaded animal remains.
+        preserve_breeding_pair=False,
         location=location,
     ) and eat_fn(client, minimum_food=12)
     if recovered:

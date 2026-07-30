@@ -174,11 +174,11 @@ def test_known_food_recovery_uses_nearest_persisted_food_landmark():
         withdraw_fn=lambda *_args, **_kwargs: -1,
         eat_fn=lambda *_args, **_kwargs: calls.append(("eat",)) or len(calls) > 1,
         visit_herd_fn=lambda _client, _requirements, animal, **kwargs:
-            calls.append((animal, kwargs["location"])) or True,
+            calls.append((animal, kwargs["location"], kwargs["preserve_breeding_pair"])) or True,
     )
 
     assert recovered
-    assert calls == [("pig", [148, 65, -143]), ("eat",)]
+    assert calls == [("pig", [148, 65, -143], False), ("eat",)]
 
 
 def test_submerged_food_search_reaches_dry_surface_even_above_y_floor(
