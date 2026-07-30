@@ -12,6 +12,7 @@ from .surface_egress import try_lower_surface_egress
 
 _UNSAFE_BLOCKS = ("lava", "water")
 _OPEN_BLOCKS = ("air",)
+_INSET_SUPPORT_BLOCKS = ("mud",)
 _MAX_SAFE_FALL_BLOCKS = 6
 _CARDINAL_OFFSETS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
@@ -133,9 +134,22 @@ def manual_column_descend(
     for _ in range(max_steps):
         if py <= target_y:
             break
-        below = str(read_block_optional(client, px, py - 1, pz) or "")
+        floor_y = py - 1
+        below = str(read_block_optional(client, px, floor_y, pz) or "")
         if not below or any(name in below for name in _OPEN_BLOCKS):
+            inset_support = ""
             if not require_pickaxe:
+                current_block = str(
+                    read_block_optional(client, px, py, pz) or ""
+                )
+                if any(
+                    name in current_block for name in _INSET_SUPPORT_BLOCKS
+                ):
+                    inset_support = current_block
+            if inset_support:
+                below = inset_support
+                floor_y = py
+            elif not require_pickaxe:
                 landing, gap = _landing_below(client, px, py, pz)
                 if landing and gap and not any(
                     name in landing for name in _UNSAFE_BLOCKS
@@ -151,8 +165,15 @@ def manual_column_descend(
                     if descended is not None:
                         px, py, pz = descended
                         continue
-            print(f"DEBUG: Manual descend: no floor at Y={py - 1}; stopping")
-            break
+                print(
+                    f"DEBUG: Manual descend: no floor at Y={py - 1}; stopping"
+                )
+                break
+            else:
+                print(
+                    f"DEBUG: Manual descend: no floor at Y={py - 1}; stopping"
+                )
+                break
         if any(name in below for name in _UNSAFE_BLOCKS):
             print(
                 f"DEBUG: Manual descend: unsafe block ({below}) "
@@ -182,12 +203,12 @@ def manual_column_descend(
 
         client.transport.dispatch(
             "dig_block",
-            {"x": px, "y": py - 1, "z": pz, "face": "UP", "max_ticks": 160},
+            {"x": px, "y": floor_y, "z": pz, "face": "UP", "max_ticks": 160},
         )
         deadline = time.time() + 8
         while time.time() < deadline:
             time.sleep(0.3)
-            block = str(read_block_optional(client, px, py - 1, pz) or "")
+            block = str(read_block_optional(client, px, floor_y, pz) or "")
             if not block or "air" in block:
                 break
         else:

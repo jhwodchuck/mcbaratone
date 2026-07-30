@@ -1551,6 +1551,47 @@ def test_manual_escape_descent_retries_transient_block_reads(monkeypatch):
     assert reads[62] >= 2
 
 
+def test_manual_escape_descends_from_inset_mud_support(monkeypatch):
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+    positions = iter([64, 63])
+    dug = set()
+
+    def dispatch(route, payload):
+        transport.calls.append((route, payload))
+        if route == "get_block":
+            key = (payload["x"], payload["y"], payload["z"])
+            if key in dug:
+                return {"id": "minecraft:air"}
+            if payload["y"] in (64, 62):
+                return {"id": "minecraft:mud"}
+            return {"id": "minecraft:air"}
+        if route == "get_state":
+            y = next(positions)
+            return {
+                "position": {"x": 7.3, "y": y + 0.875, "z": -190.7},
+                "block_position": {"x": 7, "y": y, "z": -191},
+            }
+        if route == "dig_block":
+            dug.add((payload["x"], payload["y"], payload["z"]))
+            return {"started": True}
+        return {}
+
+    transport.dispatch = dispatch
+    monkeypatch.setattr(stone_descent.time, "sleep", lambda _seconds: None)
+
+    assert stone_descent.manual_column_descend(
+        client,
+        target_y=58,
+        max_steps=1,
+        require_pickaxe=False,
+    )
+    digs = [payload for route, payload in transport.calls if route == "dig_block"]
+    assert digs == [
+        {"x": 7, "y": 64, "z": -191, "face": "UP", "max_ticks": 160}
+    ]
+
+
 def test_manual_column_descend_stops_before_an_uncontrolled_fall(monkeypatch):
     """If the block two below is open, breaking would exceed a 1-block drop
     -- must stop rather than risk it."""
