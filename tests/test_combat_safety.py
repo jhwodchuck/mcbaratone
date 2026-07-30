@@ -144,7 +144,14 @@ def test_eat_until_hunger_yields_death_to_top_level_recovery():
 def test_emergency_food_list_uses_current_raw_meat_item_ids():
     assert "minecraft:beef" in combat.EMERGENCY_FOOD_ITEMS
     assert "minecraft:porkchop" in combat.EMERGENCY_FOOD_ITEMS
-    assert "minecraft:tropical_fish" in combat.EMERGENCY_FOOD_ITEMS
+    # Edible fish belong; tropical_fish does NOT -- it has no food value in
+    # Minecraft, and listing it made bots believe they had food they could
+    # never eat (live: food stayed 0 while they hunted tropical fish in lush
+    # caves for days). Pufferfish is edible but poisons the eater.
+    assert "minecraft:cod" in combat.EMERGENCY_FOOD_ITEMS
+    assert "minecraft:salmon" in combat.EMERGENCY_FOOD_ITEMS
+    assert "minecraft:tropical_fish" not in combat.EMERGENCY_FOOD_ITEMS
+    assert "minecraft:pufferfish" not in combat.EMERGENCY_FOOD_ITEMS
     assert "minecraft:raw_beef" not in combat.EMERGENCY_FOOD_ITEMS
     assert "minecraft:raw_porkchop" not in combat.EMERGENCY_FOOD_ITEMS
 
@@ -171,8 +178,8 @@ def test_aquatic_food_uses_dynamic_follow_until_melee_range(monkeypatch):
     client = SimpleNamespace(transport=transport)
     scans = iter(
         (
-            [{"id": 22, "type": "minecraft:tropical_fish", "distance": 8.0}],
-            [{"id": 22, "type": "minecraft:tropical_fish", "distance": 3.5}],
+            [{"id": 22, "type": "minecraft:cod", "distance": 8.0}],
+            [{"id": 22, "type": "minecraft:cod", "distance": 3.5}],
         )
     )
     monkeypatch.setattr(combat, "get_nearby_entities", lambda *_args, **_kwargs: next(scans))
@@ -182,9 +189,9 @@ def test_aquatic_food_uses_dynamic_follow_until_melee_range(monkeypatch):
     assert combat._approach_aquatic_food(
         client,
         22,
-        "minecraft:tropical_fish",
+        "minecraft:cod",
     )
-    assert ("chat", {"message": "#follow entity tropical_fish"}) in transport.calls
+    assert ("chat", {"message": "#follow entity cod"}) in transport.calls
     assert transport.calls[-2:] == [
         ("chat", {"message": "#stop"}),
         ("cancel", {}),
@@ -207,7 +214,7 @@ def test_aquatic_follow_surfaces_when_health_drops_below_margin(monkeypatch):
     client = SimpleNamespace(transport=transport)
     scans = iter(
         (
-            [{"id": 22, "type": "minecraft:tropical_fish", "distance": 8.0}],
+            [{"id": 22, "type": "minecraft:cod", "distance": 8.0}],
         )
     )
     surfaced = []
@@ -227,7 +234,7 @@ def test_aquatic_follow_surfaces_when_health_drops_below_margin(monkeypatch):
     assert not combat._approach_aquatic_food(
         client,
         22,
-        "minecraft:tropical_fish",
+        "minecraft:cod",
     )
     assert surfaced == [True]
 
@@ -1625,7 +1632,7 @@ def test_submerged_bot_targets_nearby_fish_immediately(monkeypatch):
 
     def fake_nearby(_client, radius):
         looked.append(radius)
-        return [{"id": 7, "type": "minecraft:tropical_fish", "distance": 24.0}]
+        return [{"id": 7, "type": "minecraft:cod", "distance": 24.0}]
 
     monkeypatch.setattr(combat, "get_nearby_entities", fake_nearby)
 
@@ -1639,7 +1646,7 @@ def test_submerged_bot_targets_nearby_fish_immediately(monkeypatch):
         in_water=True,
     )
 
-    assert target is not None and "tropical_fish" in target["type"]
+    assert target is not None and "cod" in target["type"]
     assert looked and looked[0] == 64, "submerged search must reach fish ~48m out"
 
 
@@ -1654,7 +1661,7 @@ def test_wounded_submerged_bot_limits_aquatic_target_search(monkeypatch):
             return [
                 {
                     "id": 7,
-                    "type": "minecraft:tropical_fish",
+                    "type": "minecraft:cod",
                     "distance": 43.0,
                 }
             ]
@@ -1751,7 +1758,7 @@ def test_aquatic_approach_window_scales_with_distance(monkeypatch):
 
     emergency_food.hunt_target(
         SimpleNamespace(transport=CombatTransport()),
-        {"id": 3, "type": "minecraft:tropical_fish", "distance": 48.7,
+        {"id": 3, "type": "minecraft:cod", "distance": 48.7,
          "position": {"x": 48, "y": 62, "z": 0}},
         minimum_health=12.0,
         recovery_complete=lambda _s=None: False,
@@ -1774,13 +1781,13 @@ def test_aquatic_follow_abandons_a_target_that_never_gets_closer(monkeypatch):
         combat,
         "get_nearby_entities",
         lambda *_a, **_k: [
-            {"id": 9, "type": "minecraft:tropical_fish", "distance": 46.4}
+            {"id": 9, "type": "minecraft:cod", "distance": 46.4}
         ],
     )
     client = SimpleNamespace(transport=CombatTransport())
 
     assert combat._approach_aquatic_food(
-        client, 9, "minecraft:tropical_fish", timeout=45.0
+        client, 9, "minecraft:cod", timeout=45.0
     ) is False
 
 
@@ -1793,7 +1800,7 @@ def test_unreachable_fish_is_not_selected_again(monkeypatch):
         combat,
         "get_nearby_entities",
         lambda *_a, **_k: [
-            {"id": 9, "type": "minecraft:tropical_fish", "distance": 46.4},
+            {"id": 9, "type": "minecraft:cod", "distance": 46.4},
             {"id": 10, "type": "minecraft:salmon", "distance": 55.0},
         ],
     )
@@ -1821,7 +1828,7 @@ def test_hunt_target_records_the_unreachable_id(monkeypatch):
 
     emergency_food.hunt_target(
         SimpleNamespace(transport=CombatTransport()),
-        {"id": 9, "type": "minecraft:tropical_fish", "distance": 46.4,
+        {"id": 9, "type": "minecraft:cod", "distance": 46.4,
          "position": {"x": 46, "y": 62, "z": 0}},
         minimum_health=12.0,
         recovery_complete=lambda _s=None: False,
@@ -1880,7 +1887,7 @@ def test_submerged_bot_may_hunt_a_visible_fish_without_surfacing_first(monkeypat
 
     client = _surface_gate_client(
         in_water=True,
-        fish=[{"id": 1, "type": "minecraft:tropical_fish", "distance": 9.0}],
+        fish=[{"id": 1, "type": "minecraft:cod", "distance": 9.0}],
     )
     state = {"block_position": {"x": 0, "y": 62, "z": 0}}
 
@@ -1921,7 +1928,7 @@ def test_deep_underground_bot_surfaces_even_with_fish_nearby(monkeypatch):
 
     client = _surface_gate_client(
         in_water=True,
-        fish=[{"id": 1, "type": "minecraft:tropical_fish", "distance": 5.0}],
+        fish=[{"id": 1, "type": "minecraft:cod", "distance": 5.0}],
         y=20,
     )
     monkeypatch.setattr(emergency_food, "block_position", lambda _s: (0, 20, 0))

@@ -17,7 +17,11 @@ from .surface_egress import try_lower_surface_egress
 
 PRIMARY_LAND_FOOD = ("cow", "pig")
 SECONDARY_LAND_FOOD = ("sheep", "chicken", "rabbit")
-WATER_FOOD = ("salmon", "cod", "tropical_fish")
+# Only fish that actually feed the player. tropical_fish was listed here and
+# is NOT edible in Minecraft -- hunting one can never raise hunger, so bots in
+# lush caves (whose only fish are tropical fish) chased them indefinitely at
+# food 0. Pufferfish is excluded as edible-but-poisonous.
+WATER_FOOD = ("salmon", "cod")
 MINIMUM_FOOD_SEARCH_Y = 55
 EXPECTED_SURFACE_Y = 63
 

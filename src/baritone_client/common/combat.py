@@ -548,9 +548,15 @@ EMERGENCY_FOOD_ITEMS = [
     "minecraft:golden_apple", "minecraft:beef",
     "minecraft:porkchop", "minecraft:chicken",
     "minecraft:mutton", "minecraft:rabbit",
-    "minecraft:salmon", "minecraft:cod", "minecraft:tropical_fish",
+    "minecraft:salmon", "minecraft:cod",
     "minecraft:rotten_flesh",
 ]
+# NOT food, despite being a fish: minecraft:tropical_fish has no food value in
+# Minecraft and can never be eaten. It was listed here, so a bot that killed
+# and collected one believed it had emergency food, ate nothing, and stayed at
+# food 0. Live 2026-07-30: all four bots were in lush caves whose only fish
+# are tropical fish plus axolotls, hunting them for days at food 0/0/10/2.
+# Pufferfish is deliberately absent too -- edible but poisons the eater.
 
 # Mob-type substrings whose kill drops raw food, i.e. hunting them is itself
 # a way back to a stable hunger level.
