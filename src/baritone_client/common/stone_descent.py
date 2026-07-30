@@ -16,14 +16,27 @@ _MAX_SAFE_FALL_BLOCKS = 6
 _CARDINAL_OFFSETS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
 
-def read_block_optional(client: Any, x: int, y: int, z: int) -> Optional[str]:
-    """Best-effort single block-id read."""
-    try:
-        return client.transport.dispatch(
-            "get_block", {"x": x, "y": y, "z": z}
-        ).get("id")
-    except Exception:
-        return None
+def read_block_optional(
+    client: Any,
+    x: int,
+    y: int,
+    z: int,
+    *,
+    retries: int = 3,
+) -> Optional[str]:
+    """Read a block ID through bounded transient bridge failures."""
+    for attempt in range(max(1, retries)):
+        try:
+            block_id = client.transport.dispatch(
+                "get_block", {"x": x, "y": y, "z": z}
+            ).get("id")
+            if block_id:
+                return block_id
+        except Exception:
+            pass
+        if attempt + 1 < retries:
+            time.sleep(0.1)
+    return None
 
 
 def choose_descent_offset(

@@ -1484,7 +1484,7 @@ def test_manual_escape_descent_uses_preopened_safe_shaft(monkeypatch):
         transport.calls.append((route, payload))
         if route == "get_block":
             if payload["y"] == 63:
-                return {}
+                return {"id": "minecraft:air"}
             if payload["y"] == 62:
                 return {"id": "minecraft:stone"}
             return {"id": "minecraft:air"}
@@ -1510,6 +1510,44 @@ def test_manual_escape_descent_uses_preopened_safe_shaft(monkeypatch):
     )
     assert destinations == [(7, 63, -191)]
     assert not any(route == "dig_block" for route, _payload in transport.calls)
+
+
+def test_manual_escape_descent_retries_transient_block_reads(monkeypatch):
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+    position = {"x": 7, "y": 64, "z": -191}
+    reads = {}
+
+    def dispatch(route, payload):
+        transport.calls.append((route, payload))
+        if route == "get_block":
+            y = payload["y"]
+            reads[y] = reads.get(y, 0) + 1
+            if reads[y] == 1:
+                raise TimeoutError("transient block read")
+            return {
+                "id": "minecraft:mud" if y == 62 else "minecraft:air"
+            }
+        if route == "get_state":
+            return {"block_position": dict(position)}
+        return {}
+
+    transport.dispatch = dispatch
+
+    def goto_landing(_client, _x, y, _z, **_kwargs):
+        position["y"] = y
+        return True
+
+    monkeypatch.setattr(stone_descent, "goto", goto_landing, raising=False)
+
+    assert stone_descent.manual_column_descend(
+        client,
+        target_y=58,
+        max_steps=1,
+        require_pickaxe=False,
+    )
+    assert reads[63] >= 2
+    assert reads[62] >= 2
 
 
 def test_manual_column_descend_stops_before_an_uncontrolled_fall(monkeypatch):
