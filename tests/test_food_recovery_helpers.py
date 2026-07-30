@@ -167,7 +167,13 @@ def test_known_food_recovery_uses_nearest_persisted_food_landmark():
     )
 
     recovered = recover_food_from_known_sources(
-        SimpleNamespace(),
+        SimpleNamespace(
+            transport=SimpleNamespace(
+                dispatch=lambda *_args: {
+                    "block_position": {"x": 200, "y": 64, "z": -100}
+                }
+            )
+        ),
         state,
         {"pig": ("minecraft:porkchop", "minecraft:cooked_porkchop"),
          "cow": ("minecraft:beef", "minecraft:cooked_beef")},

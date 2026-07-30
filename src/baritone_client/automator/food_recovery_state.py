@@ -154,7 +154,12 @@ def recover_food_from_known_sources(
         else {}
     )
     if not (isinstance(source, dict) and source.get("verified")) and state:
-        source = _nearest_verified_food_location(state)
+        live = client.transport.dispatch("get_state", {})
+        position = live.get("block_position", live.get("position", {}))
+        source = _nearest_verified_food_location(
+            state,
+            anchor=(position.get("x", 0), position.get("y", 0), position.get("z", 0)),
+        )
     location = source.get("location") if isinstance(source, dict) else None
     if not (
         isinstance(location, (list, tuple))
@@ -188,13 +193,13 @@ def recover_food_from_known_sources(
     return False
 
 
-def _nearest_verified_food_location(state) -> dict:
+def _nearest_verified_food_location(state, *, anchor=None) -> dict:
     """Return the closest persisted food landmark that is not retired."""
     locations = state.custom_data.get("locations", {})
     farms = locations.get("farm", []) if isinstance(locations, dict) else []
     if not isinstance(farms, list):
         return {}
-    anchor = state.custom_data.get("homestead_anchor")
+    anchor = anchor or state.custom_data.get("homestead_anchor")
     if not isinstance(anchor, (list, tuple)) or len(anchor) < 3:
         anchor = state.custom_data.get("base_location")
     if not isinstance(anchor, (list, tuple)) or len(anchor) < 3:
@@ -213,10 +218,14 @@ def _nearest_verified_food_location(state) -> dict:
         animal_type = next(
             (tag[:-5] for tag in tags if tag.endswith("_herd")), "cow"
         )
+        raw_items = {
+            "cow": "beef", "mooshroom": "beef", "pig": "porkchop",
+            "chicken": "chicken", "sheep": "mutton", "rabbit": "rabbit",
+        }
         candidates.append((distance, {
             "location": [int(record["x"]), int(record["y"]), int(record["z"])],
             "animal_type": animal_type,
             "verified": True,
-            "raw_item": f"minecraft:{'porkchop' if animal_type == 'pig' else animal_type}",
+            "raw_item": f"minecraft:{raw_items.get(animal_type, 'beef')}",
         }))
     return min(candidates, key=lambda item: item[0])[1] if candidates else {}
