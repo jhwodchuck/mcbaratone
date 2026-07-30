@@ -9,6 +9,7 @@ from .resource_manager import ResourceManager
 from .phase_executor import PhaseExecutor, PhaseHandler
 from .phase_verifier import PhaseVerifier
 from .objective import ObjectivePlanner, default_objectives
+from .pacing import wait_with_bridge_keepalive
 from .progress_control import progression_fingerprint
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
 from .systems import SafetySystem, HungerSystem, MappingSystem
@@ -409,7 +410,7 @@ class EndGameAutomator:
                             "budget and was abandoned for this checkpoint."
                         )
                     if interruption in {"incremental_progress", "pacing_hold"}:
-                        time.sleep(30.0)
+                        wait_with_bridge_keepalive(self.client, duration=30.0)
                     elif interruption == "survival_recovery":
                         time.sleep(max(1.0, min(5.0, self.executor.retry_delay)))
                     continue
