@@ -11,7 +11,11 @@ from .food_recovery import (
     must_hold_for_critical_food,
 )
 from .combat_targeting import matches_requested_mob
-from .emergency_food import EmergencyExploration, enforce_dry_food_search_state
+from .emergency_food import (
+    EMERGENCY_FOOD_ITEMS,
+    EmergencyExploration,
+    enforce_dry_food_search_state,
+)
 from .emergency_food import hunt_target, prepare_food_search_state, select_target
 
 from ..core.exceptions import TransportError
@@ -539,24 +543,6 @@ def _threat_can_reach_player(
     except (TypeError, ValueError):
         return True
 
-
-EMERGENCY_FOOD_ITEMS = [
-    "minecraft:cooked_beef", "minecraft:cooked_porkchop",
-    "minecraft:cooked_chicken", "minecraft:cooked_mutton",
-    "minecraft:bread", "minecraft:apple", "minecraft:cooked_salmon",
-    "minecraft:cooked_cod", "minecraft:baked_potato",
-    "minecraft:golden_apple", "minecraft:beef",
-    "minecraft:porkchop", "minecraft:chicken",
-    "minecraft:mutton", "minecraft:rabbit",
-    "minecraft:salmon", "minecraft:cod",
-    "minecraft:rotten_flesh",
-]
-# NOT food, despite being a fish: minecraft:tropical_fish has no food value in
-# Minecraft and can never be eaten. It was listed here, so a bot that killed
-# and collected one believed it had emergency food, ate nothing, and stayed at
-# food 0. Live 2026-07-30: all four bots were in lush caves whose only fish
-# are tropical fish plus axolotls, hunting them for days at food 0/0/10/2.
-# Pufferfish is deliberately absent too -- edible but poisons the eater.
 
 # Mob-type substrings whose kill drops raw food, i.e. hunting them is itself
 # a way back to a stable hunger level.

@@ -18,6 +18,29 @@ from .surface_egress import try_lower_surface_egress
 
 PRIMARY_LAND_FOOD = ("cow", "pig")
 SECONDARY_LAND_FOOD = ("sheep", "chicken", "rabbit")
+EMERGENCY_FOOD_ITEMS = (
+    "minecraft:cooked_beef",
+    "minecraft:cooked_porkchop",
+    "minecraft:cooked_chicken",
+    "minecraft:cooked_mutton",
+    "minecraft:bread",
+    "minecraft:apple",
+    "minecraft:cooked_salmon",
+    "minecraft:cooked_cod",
+    "minecraft:baked_potato",
+    "minecraft:golden_apple",
+    "minecraft:beef",
+    "minecraft:porkchop",
+    "minecraft:chicken",
+    "minecraft:mutton",
+    "minecraft:rabbit",
+    "minecraft:salmon",
+    "minecraft:cod",
+    "minecraft:rotten_flesh",
+)
+# Tropical fish has no food value. Pufferfish is deliberately excluded
+# because it poisons the player.
+
 # Only fish that actually feed the player. tropical_fish was listed here and
 # is NOT edible in Minecraft -- hunting one can never raise hunger, so bots in
 # lush caves (whose only fish are tropical fish) chased them indefinitely at

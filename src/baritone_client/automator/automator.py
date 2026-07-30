@@ -233,6 +233,56 @@ class EndGameAutomator:
         return self.state.get_current_phase()
 
 
+    def _maintain_stalled_objective_graph(self) -> None:
+        """Rearm a recoverable graph or perform one bounded survival pass."""
+        from .stall_recovery import (
+            maintain_stalled_survival,
+            rearm_any_abandoned_objectives,
+            rearm_recovered_survival_objectives,
+        )
+
+        reopened = rearm_recovered_survival_objectives(
+            self.planner,
+            self.client,
+        )
+        if reopened:
+            print(
+                "SURVIVAL REPAIR: re-opened safe objectives: "
+                + ", ".join(reopened)
+            )
+            self._persist_objective_progress()
+            self._save_checkpoint()
+            self._stall_reported = False
+            return
+
+        forced = rearm_any_abandoned_objectives(
+            self.planner,
+            self.state.custom_data,
+            now=time.time(),
+        )
+        if forced:
+            print(
+                "OBJECTIVE REPAIR: nothing runnable; re-opened "
+                "abandoned objectives: " + ", ".join(forced)
+            )
+            self._persist_objective_progress()
+            self._save_checkpoint()
+            self._stall_reported = False
+            return
+
+        if not self._stall_reported:
+            self._report_stall()
+            self._stall_reported = True
+        try:
+            activity = maintain_stalled_survival(self.client)
+            print(f"  Stalled survival hold: {activity}")
+        except PlayerDeathDetected:
+            # The outer loop owns death recovery so the exact grave and
+            # pre-death inventory remain available.
+            return
+        time.sleep(5.0)
+
+
     def run(self, resume: bool = True) -> bool:
         """
         Run the automation loop.
@@ -303,63 +353,7 @@ class EndGameAutomator:
                 ready = self.planner.runnable()
                 obj = self.planner.select(ready)
                 if obj is None:
-                    from .stall_recovery import (
-                        rearm_recovered_survival_objectives,
-                    )
-
-                    reopened = rearm_recovered_survival_objectives(
-                        self.planner,
-                        self.client,
-                    )
-                    if reopened:
-                        print(
-                            "SURVIVAL REPAIR: re-opened safe objectives: "
-                            + ", ".join(reopened)
-                        )
-                        self._persist_objective_progress()
-                        self._save_checkpoint()
-                        self._stall_reported = False
-                        continue
-
-                    # Nothing runnable and the survival-specific repair above
-                    # did not apply. The objective graph is a strict chain, so
-                    # one abandoned mid-chain objective leaves every downstream
-                    # phase permanently unreachable -- and neither existing
-                    # repair covers a phase abandoned for player_death or
-                    # phase_failed. Re-open whatever is abandoned, rate-limited,
-                    # rather than holding forever. See
-                    # rearm_any_abandoned_objectives for the measured evidence.
-                    from .stall_recovery import rearm_any_abandoned_objectives
-
-                    forced = rearm_any_abandoned_objectives(
-                        self.planner,
-                        self.state.custom_data,
-                        now=time.time(),
-                    )
-                    if forced:
-                        print(
-                            "OBJECTIVE REPAIR: nothing runnable; re-opened "
-                            "abandoned objectives: " + ", ".join(forced)
-                        )
-                        self._persist_objective_progress()
-                        self._save_checkpoint()
-                        self._stall_reported = False
-                        continue
-
-                    # Still nothing runnable: hold and keep surviving.
-                    if not self._stall_reported:
-                        self._report_stall()
-                        self._stall_reported = True
-                    try:
-                        from .stall_recovery import maintain_stalled_survival
-
-                        activity = maintain_stalled_survival(self.client)
-                        print(f"  Stalled survival hold: {activity}")
-                    except PlayerDeathDetected:
-                        # The next outer-loop pass owns death recovery so the
-                        # exact grave and pre-death inventory remain available.
-                        continue
-                    time.sleep(5.0)
+                    self._maintain_stalled_objective_graph()
                     continue
 
                 phase = obj.phase
