@@ -505,3 +505,56 @@ def test_charcoal_step_requests_raw_log_when_only_planks_remain(monkeypatch):
 
     assert runner.run_charcoal_supply(runner.load())
     assert requested == [3]
+
+
+def test_homestead_step_returns_home_before_resource_work(monkeypatch):
+    state = _state_with_payloads(
+        {
+            "homestead": {
+                "anchor": [0, 64, 0],
+                "steps": {
+                    "dry_anchor": {"verified": True},
+                    "wood_reserve": {"verified": False},
+                },
+            }
+        }
+    )
+    live_state = {
+        "dimension": "minecraft:overworld",
+        "world_time": 1000,
+        "food_level": 20,
+        "health": 20,
+        "block_position": {"x": 30, "y": 64, "z": 0},
+    }
+    transport, _ = _transport_for_blocks(state_payload=live_state)
+    routes = []
+
+    def return_home(_client, x, y, z, **kwargs):
+        routes.append((x, y, z, kwargs))
+        live_state["block_position"] = {"x": x, "y": y, "z": z}
+        return True
+
+    monkeypatch.setattr("baritone_client.actions.homestead.goto", return_home)
+    monkeypatch.setattr(
+        "baritone_client.actions.homestead.gather_wood",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("resource work must wait for the next pass")
+        ),
+    )
+    runner = IncrementalHomestead(
+        SimpleNamespace(transport=transport),
+        state,
+        lambda _client: False,
+    )
+    homestead = runner.load()
+
+    assert runner.run_wood_reserve(homestead)
+    assert homestead["last_return_home"] == [0, 64, 0]
+    assert routes == [
+        (
+            0,
+            64,
+            0,
+            {"timeout": 180, "check_interval": 1.0, "tolerance": 4.0},
+        )
+    ]

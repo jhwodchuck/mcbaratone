@@ -167,7 +167,6 @@ class BootSequenceHandler(PhaseHandler):
                 return TaskResult.ok("Boot sequence complete", homestead=homestead)
 
             if step_name == "dry_anchor":
-                self._enforce_anchor_and_pacing(client, homestead, allow_far=False)
                 changed = self._run_dry_anchor_step(client, state, homestead)
             elif step_name == "wood_reserve":
                 changed = self._run_wood_reserve_step(client, state, homestead)

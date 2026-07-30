@@ -10,6 +10,7 @@ from ..automator.state_manager import Phase
 from ..common.base import place_torch, setup_base
 from ..common.homestead_lighting import perimeter_ring, partition_light_coordinates
 from ..common.inventory import count_item, craft
+from ..common.navigation import goto
 from ..common.resources import gather_stone, gather_wood
 from ..common.tasks import ProgressRecoveryRequired, SurvivalRecoveryRequired
 
@@ -80,6 +81,7 @@ class IncrementalHomestead:
         existing = existing if isinstance(existing, Mapping) else {}
         progress: dict[str, Any] = {
             "anchor": self._coordinate(raw.get("anchor")),
+            "last_return_home": self._coordinate(raw.get("last_return_home")),
             "ordered_steps": list(ORDERED_HOMESTEAD_STEPS),
             "steps": {},
         }
@@ -156,16 +158,45 @@ class IncrementalHomestead:
             },
         )
 
-    def enforce_anchor(self, homestead: dict[str, Any]) -> None:
-        """Keep BOOT work inside the local quality-of-life envelope."""
+    def enforce_anchor(self, homestead: dict[str, Any]) -> bool:
+        """Return safely to the local envelope before doing more work."""
         anchor = self._coordinate(homestead.get("anchor"))
         if anchor is None:
-            return
+            return False
         current = self.current_position()
-        if self._distance(current, anchor) > SAFE_RADIUS:
+        if self._distance(current, anchor) <= SAFE_RADIUS:
+            return False
+        state = self._state()
+        health = float(state.get("health", 0) or 0)
+        food = int(state.get("food_level", state.get("food", 0)) or 0)
+        if (
+            state.get("dimension") != "minecraft:overworld"
+            or int(state.get("world_time", 0)) % 24000 >= 12000
+            or health < 18
+            or food < 16
+        ):
             raise SurvivalRecoveryRequired(
-                "return to the homestead before starting another BOOT improvement"
+                "restore daylight survival margin before returning to the homestead"
             )
+        if not goto(
+            self.client,
+            anchor[0],
+            anchor[1],
+            anchor[2],
+            timeout=180,
+            check_interval=1.0,
+            tolerance=4.0,
+        ):
+            raise ProgressRecoveryRequired(
+                "could not complete bounded return to the homestead"
+            )
+        arrived = self.current_position()
+        if self._distance(arrived, anchor) > SAFE_RADIUS:
+            raise ProgressRecoveryRequired(
+                "return route ended outside the homestead envelope"
+            )
+        homestead["last_return_home"] = arrived
+        return True
 
     def require_construction_pacing(self) -> None:
         """Only build during a strong, daylight survival window."""
@@ -210,7 +241,8 @@ class IncrementalHomestead:
 
     def run_wood_reserve(self, homestead: dict[str, Any]) -> bool:
         """Gather only the local wood needed for starter workstations."""
-        self.enforce_anchor(homestead)
+        if self.enforce_anchor(homestead):
+            return True
         self.require_construction_pacing()
         record = self.step(homestead, "wood_reserve")
         before = self._wood_equivalents()
@@ -236,7 +268,8 @@ class IncrementalHomestead:
 
     def run_stone_reserve(self, homestead: dict[str, Any]) -> bool:
         """Gather one furnace worth of stone before placing infrastructure."""
-        self.enforce_anchor(homestead)
+        if self.enforce_anchor(homestead):
+            return True
         self.require_construction_pacing()
         record = self.step(homestead, "stone_reserve")
         before = count_item(self.client, "minecraft:cobblestone")
@@ -254,7 +287,8 @@ class IncrementalHomestead:
 
     def run_infrastructure(self, homestead: dict[str, Any]) -> bool:
         """Re-probe or place a compact table, furnace, and chest near anchor."""
-        self.enforce_anchor(homestead)
+        if self.enforce_anchor(homestead):
+            return True
         self.require_construction_pacing()
         record = self.step(homestead, "infrastructure")
         existing = self._infrastructure_record()
@@ -287,7 +321,8 @@ class IncrementalHomestead:
 
     def run_micro_farm(self, homestead: dict[str, Any]) -> bool:
         """Re-probe or add the smallest renewable crop plot."""
-        self.enforce_anchor(homestead)
+        if self.enforce_anchor(homestead):
+            return True
         self.require_construction_pacing()
         record = self.step(homestead, "micro_farm")
         if self._live_farm():
@@ -302,7 +337,8 @@ class IncrementalHomestead:
 
     def run_torch_supply(self, homestead: dict[str, Any]) -> bool:
         """Craft a small torch batch from carried, safely acquired fuel."""
-        self.enforce_anchor(homestead)
+        if self.enforce_anchor(homestead):
+            return True
         self.require_construction_pacing()
         record = self.step(homestead, "torch_supply")
         before = count_item(self.client, "minecraft:torch")
@@ -338,7 +374,8 @@ class IncrementalHomestead:
         """Prepare one local torch-fuel unit without a cave expedition."""
         from ..common import harness_ops
 
-        self.enforce_anchor(homestead)
+        if self.enforce_anchor(homestead):
+            return True
         self.require_construction_pacing()
         record = self.step(homestead, "charcoal_supply")
         coal = count_item(self.client, "minecraft:coal")
@@ -417,7 +454,8 @@ class IncrementalHomestead:
 
     def run_light_perimeter(self, homestead: dict[str, Any]) -> bool:
         """Repair exactly one missing perimeter torch and verify it live."""
-        self.enforce_anchor(homestead)
+        if self.enforce_anchor(homestead):
+            return True
         self.require_construction_pacing()
         record = self.step(homestead, "light_perimeter")
         anchor = self._coordinate(homestead.get("anchor"))
