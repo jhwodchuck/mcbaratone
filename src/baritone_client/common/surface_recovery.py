@@ -29,7 +29,10 @@ def _configure_surface_pathing(
         "#set allowBreak true",
         "#set allowPlace true",
         "#set allowDownward false",
-        "#set assumeWalkOnWater true",
+        # This is a Baritone pathfinding assumption, not a movement ability.
+        # Enabling it makes routes treat water as solid while Minecraft still
+        # lets the player sink, which can strand the bot on a riverbed.
+        "#set assumeWalkOnWater false",
     ):
         client.transport.dispatch("chat", {"message": command})
         # Chat settings apply on Minecraft ticks. Starting a path in the same

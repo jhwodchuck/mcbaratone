@@ -260,7 +260,7 @@ def test_aquatic_hunt_surfaces_until_head_reaches_air(monkeypatch):
         for route, payload in transport.calls
         if route == "chat"
     ]
-    assert messages.index("#set assumeWalkOnWater true") < messages.index(
+    assert messages.index("#set assumeWalkOnWater false") < messages.index(
         "#surface"
     )
     assert transport.calls[-2:] == [
