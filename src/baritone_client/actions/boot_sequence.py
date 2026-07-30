@@ -650,12 +650,7 @@ class StorageOrganizationAction(BaseAction):
 
     def execute(self, context: ActionContext) -> ActionResult:
         """Verify that durable storage exists for later organization."""
-        structures = getattr(context.state, "custom_data", {}).get(
-            "structures", {}
-        )
-        record = structures.get("starter_house") or structures.get(
-            "bootstrap_base", {}
-        )
+        record = nearby_infrastructure_record(context)
         position = record.get("supply_chest") if isinstance(record, dict) else None
         if not isinstance(position, (list, tuple)) or len(position) != 3:
             return ActionResult.fail("No persisted supply chest to organize")

@@ -14,6 +14,7 @@ from baritone_client.actions.boot_sequence import (
     InfrastructurePlacementAction,
     PlankCraftingAction,
     SafetyCheckAction,
+    StorageOrganizationAction,
     StoneToolCraftingAction,
 )
 from baritone_client.common.tasks import SurvivalRecoveryRequired
@@ -867,6 +868,51 @@ def test_boot_base_recovery_keeps_house_when_table_needs_repair(monkeypatch):
         "chat",
         {"message": "#waypoint save base -8 79 -121"},
     ) in calls
+
+
+def test_storage_organization_uses_nearby_bootstrap_chest():
+    local_chest = [318, 64, -415]
+    remote_chest = [-213, 69, 137]
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                return {
+                    "block_position": {"x": 310, "y": 62, "z": -418}
+                }
+            if route == "get_block":
+                position = [payload["x"], payload["y"], payload["z"]]
+                return {
+                    "id": (
+                        "minecraft:chest"
+                        if position == local_chest
+                        else "minecraft:air"
+                    )
+                }
+            return {}
+
+    state = SimpleNamespace(
+        custom_data={
+            "structures": {
+                "starter_house": {
+                    "origin": [-214, 68, 135],
+                    "supply_chest": remote_chest,
+                },
+                "bootstrap_base": {
+                    "origin": [317, 64, -417],
+                    "crafting_table": [318, 64, -416],
+                    "furnace": [319, 64, -416],
+                    "supply_chest": local_chest,
+                },
+            }
+        }
+    )
+    context = SimpleNamespace(
+        client=SimpleNamespace(transport=Transport()),
+        state=state,
+    )
+
+    assert StorageOrganizationAction().execute(context).success
 
 
 def test_final_sleep_waits_safely_when_no_bed_is_available(monkeypatch):
