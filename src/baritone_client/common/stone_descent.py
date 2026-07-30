@@ -6,6 +6,7 @@ import time
 from typing import Any, Optional
 
 from .movement_recovery import block_position
+from .navigation import goto
 from .surface_egress import try_lower_surface_egress
 
 
@@ -141,7 +142,30 @@ def manual_column_descend(
                 px, py, pz = ax, ay, az
                 break
         else:
-            print("DEBUG: Manual descend: player did not drop after breaking; stopping")
+            landing_y = previous_y - int(gap or 0) + 1
+            print(
+                "DEBUG: Manual descend: player did not drop after breaking; "
+                f"navigating to verified landing at Y={landing_y}"
+            )
+            if goto(
+                client,
+                px,
+                landing_y,
+                pz,
+                timeout=12.0,
+                tolerance=1.0,
+            ):
+                after = api._read_state_optional(
+                    client,
+                    retries=1,
+                    label="Manual descend landing",
+                )
+                if after is not None:
+                    ax, ay, az = block_position(after)
+                    if ay <= previous_y - 1:
+                        px, py, pz = ax, ay, az
+                        continue
+            print("DEBUG: Manual descend: verified landing remained unreachable")
             break
 
     api._serialized_dispatch(client, "cancel", {}, post_delay_seconds=0.0)
