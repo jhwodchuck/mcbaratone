@@ -55,6 +55,19 @@ def make_verifier(tmp_path, inventory=None, blocks=None):
     return client, resources, state, PhaseVerifier(client, resources, state)
 
 
+def live_boot_blocks(include_torch=True):
+    blocks = {
+        (10, 63, 10): "minecraft:grass_block",
+        (11, 64, 11): "minecraft:crafting_table",
+        (12, 64, 11): "minecraft:furnace",
+        (11, 64, 12): "minecraft:chest",
+        (10, 65, 10): "minecraft:wheat",
+    }
+    if include_torch:
+        blocks[(14, 65, 10)] = "minecraft:torch"
+    return blocks
+
+
 def test_verifier_covers_every_survival_gate_exactly_once(tmp_path):
     _client, _resources, _state, verifier = make_verifier(tmp_path)
     gate_ids = [gate for spec in verifier.specs.values() for gate in spec.gate_ids]
@@ -71,7 +84,11 @@ def test_food_and_iron_requires_live_items_and_persisted_food_source(tmp_path):
         {"id": "minecraft:iron_chestplate", "count": 1},
         {"id": "minecraft:iron_leggings", "count": 1},
     ]
-    _client, _resources, state, verifier = make_verifier(tmp_path, inventory)
+    _client, _resources, state, verifier = make_verifier(
+        tmp_path,
+        inventory,
+        {(10, 64, 10): "minecraft:wheat"},
+    )
 
     missing = verifier.verify(Phase.FOOD_AND_IRON, TaskResult.ok())
     assert not missing.success
@@ -85,7 +102,11 @@ def test_food_and_iron_requires_live_items_and_persisted_food_source(tmp_path):
 
 def test_boot_requires_real_survival_capabilities(tmp_path):
     inventory = [{"id": "minecraft:stone_pickaxe", "count": 1}]
-    _client, _resources, state, verifier = make_verifier(tmp_path, inventory)
+    _client, _resources, state, verifier = make_verifier(
+        tmp_path,
+        inventory,
+        live_boot_blocks(),
+    )
     state.record_phase_payload(
         Phase.BOOT_SEQUENCE,
         {"completed_actions": 10, "sequence_result": "boot ready"},
@@ -96,14 +117,123 @@ def test_boot_requires_real_survival_capabilities(tmp_path):
 
     missing = verifier.verify(Phase.BOOT_SEQUENCE, TaskResult.ok())
     assert not missing.success
-    assert "renewable starter food source persisted" in missing.reason
+    assert "homestead dry-anchor established" in missing.reason
 
-    state.custom_data["structures"]["food_source"] = {
-        "verified": True,
-        "type": "starter_crop_farm",
+    state.custom_data["homestead"] = {
+        "anchor": [10, 64, 10],
+        "steps": {
+            "infrastructure": {"verified": True},
+            "micro_farm": {"verified": True},
+            "light_perimeter": {
+                "verified": True,
+                "intended": [[14, 65, 10]],
+            },
+        },
+    }
+    state.custom_data["structures"] = {
+        "bootstrap_base": {
+            "origin": [10, 64, 10],
+            "crafting_table": [11, 64, 11],
+            "furnace": [12, 64, 11],
+            "supply_chest": [11, 64, 12],
+        },
+        "food_source": {
+            "verified": True,
+            "type": "starter_crop_farm",
+            "plots": [[10, 65, 10, "minecraft:wheat"]],
+        },
     }
     verified = verifier.verify(Phase.BOOT_SEQUENCE, TaskResult.ok())
 
+    assert verified.success
+    assert verified.gate_ids == ("BOOT",)
+
+
+def test_boot_sequence_requires_perimeter_lighting(tmp_path):
+    client, _resources, state, verifier = make_verifier(
+        tmp_path,
+        blocks=live_boot_blocks(include_torch=False),
+    )
+    state.custom_data["homestead"] = {
+        "anchor": [10, 64, 10],
+        "steps": {
+            "infrastructure": {"verified": True},
+            "micro_farm": {"verified": True},
+            "light_perimeter": {
+                "verified": False,
+                "intended": [[14, 65, 10]],
+            },
+        },
+    }
+    state.record_phase_payload(
+        Phase.BOOT_SEQUENCE,
+        {
+            "homestead": {
+                "anchor": [10, 64, 10],
+                "steps": {
+                    "infrastructure": {"verified": True},
+                    "micro_farm": {"verified": True},
+                    "light_perimeter": {
+                        "verified": False,
+                        "intended": [[14, 65, 10]],
+                    },
+                },
+            },
+        },
+    )
+    state.custom_data["structures"] = {
+        "bootstrap_base": {
+            "origin": [10, 64, 10],
+            "crafting_table": [11, 64, 11],
+            "furnace": [12, 64, 11],
+            "supply_chest": [11, 64, 12],
+        },
+        "food_source": {
+            "verified": True,
+            "plots": [[10, 65, 10, "minecraft:wheat"]],
+        },
+    }
+    state.custom_data["farm_location"] = [10, 64, 10]
+
+    missing = verifier.verify(Phase.BOOT_SEQUENCE, TaskResult.ok())
+    assert not missing.success
+    assert "light perimeter verified" in missing.reason
+
+    state.custom_data["homestead"]["steps"]["light_perimeter"] = {
+        "verified": True,
+        "intended": [[14, 65, 10]],
+    }
+
+    still_missing = verifier.verify(Phase.BOOT_SEQUENCE, TaskResult.ok())
+    assert not still_missing.success
+
+    client.transport.blocks[(14, 65, 10)] = "minecraft:torch"
+    verified = verifier.verify(Phase.BOOT_SEQUENCE, TaskResult.ok())
+    assert verified.success
+
+
+def test_boot_sequence_reconciles_legacy_infrastructure_and_farm(tmp_path):
+    _client, _resources, state, verifier = make_verifier(
+        tmp_path,
+        blocks=live_boot_blocks(),
+    )
+    state.custom_data["homestead"] = {"anchor": [10, 64, 10], "steps": {}}
+    state.custom_data["structures"] = {
+        "bootstrap_base": {
+            "origin": [10, 64, 10],
+            "crafting_table": [11, 64, 11],
+            "furnace": [12, 64, 11],
+            "supply_chest": [11, 64, 12],
+            "verified": True,
+        },
+    }
+    state.custom_data["farm_location"] = [10, 64, 10]
+    state.custom_data["homestead"]["steps"]["light_perimeter"] = {
+        "verified": True,
+        "intended": [[14, 65, 10]],
+    }
+
+    verified = verifier.verify(Phase.BOOT_SEQUENCE, TaskResult.ok())
     assert verified.success
     assert verified.gate_ids == ("BOOT",)
 

@@ -20,6 +20,7 @@ from baritone_client.actions.boot_sequence import (
 from baritone_client.common.tasks import (
     PlayerDeathDetected,
     SurvivalRecoveryRequired,
+    IncrementalProgressRequired,
 )
 
 
@@ -31,59 +32,110 @@ class RecordingState:
         self.payloads.append((phase, payload))
 
 
-def test_boot_sequence_translates_action_message_to_task_reason(monkeypatch):
-    monkeypatch.setattr(
-        boot_sequence.SequenceAction,
-        "execute",
-        lambda _sequence, _context: SimpleNamespace(success=True, message="boot ready"),
-    )
-    monkeypatch.setattr(
-        BootSequenceHandler,
-        "_plant_crops",
-        lambda _handler, _client: True,
-    )
+def test_boot_sequence_advances_only_first_unverified_step(monkeypatch):
     state = RecordingState()
+    state.custom_data = {}
+    state.record_phase_payload = state.record_phase_payload
+    dry_anchor_calls = []
 
-    result = BootSequenceHandler().execute(
-        SimpleNamespace(), SimpleNamespace(), state
-    )
+    def run_dry_anchor(_self, _client, _state, homestead):
+        dry_anchor_calls.append("dry_anchor")
+        homestead.setdefault("steps", {}).setdefault("dry_anchor", {})["verified"] = True
+        homestead["anchor"] = [0, 64, 0]
+        return True
 
-    assert result.success
-    assert result.reason == "boot ready"
+    def forbidden_step(*_args, **_kwargs):
+        pytest.fail("only one boot step should execute per invocation")
+
+    handler = BootSequenceHandler()
+    monkeypatch.setattr(BootSequenceHandler, "_run_dry_anchor_step", run_dry_anchor)
+    monkeypatch.setattr(handler, "_run_wood_reserve_step", forbidden_step)
+    monkeypatch.setattr(handler, "_run_stone_reserve_step", forbidden_step)
+    monkeypatch.setattr(handler, "_run_infrastructure_step", forbidden_step)
+    monkeypatch.setattr(handler, "_run_micro_farm_step", forbidden_step)
+    monkeypatch.setattr(handler, "_run_charcoal_supply_step", forbidden_step)
+    monkeypatch.setattr(handler, "_run_torch_supply_step", forbidden_step)
+    monkeypatch.setattr(handler, "_run_light_perimeter_step", forbidden_step)
+    monkeypatch.setattr(handler, "_ensure_dry_anchor", lambda *_args: (0, 64, 0))
+    monkeypatch.setattr(handler, "_enforce_anchor_and_pacing", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(IncrementalProgressRequired):
+        handler.execute(
+            SimpleNamespace(
+                transport=SimpleNamespace(
+                    dispatch=lambda *args, **kwargs: {
+                        "world_time": 1000,
+                        "dimension": "minecraft:overworld",
+                        "health": 20,
+                        "food_level": 20,
+                    }
+                )
+            ),
+            SimpleNamespace(),
+            state,
+        )
+
+    assert dry_anchor_calls == ["dry_anchor"]
     assert state.payloads
 
 
 def test_boot_handler_preserves_survival_recovery_signal(monkeypatch):
-    monkeypatch.setattr(
-        boot_sequence.SequenceAction,
-        "execute",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            SurvivalRecoveryRequired("recover before boot")
-        ),
-    )
+    handler = BootSequenceHandler()
+    state = RecordingState()
+    state.custom_data = {}
+    state.record_phase_payload = state.record_phase_payload
+
+    def run_dry_anchor(*_args, **_kwargs):
+        raise SurvivalRecoveryRequired("recover before boot")
+
+    monkeypatch.setattr(BootSequenceHandler, "_run_dry_anchor_step", run_dry_anchor)
+    monkeypatch.setattr(BootSequenceHandler, "_enforce_anchor_and_pacing", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(BootSequenceHandler, "_ensure_dry_anchor", lambda *_args: (0, 64, 0))
 
     with pytest.raises(SurvivalRecoveryRequired):
-        BootSequenceHandler().execute(
+        handler.execute(
+            SimpleNamespace(
+                transport=SimpleNamespace(
+                    dispatch=lambda *args, **kwargs: {
+                        "world_time": 1000,
+                        "dimension": "minecraft:overworld",
+                        "health": 20,
+                        "food_level": 20,
+                    }
+                )
+            ),
             SimpleNamespace(),
-            SimpleNamespace(),
-            RecordingState(),
+            state,
         )
 
 
 def test_boot_handler_preserves_player_death_signal(monkeypatch):
-    monkeypatch.setattr(
-        boot_sequence.SequenceAction,
-        "execute",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            PlayerDeathDetected("died during boot")
-        ),
-    )
+    handler = BootSequenceHandler()
+    state = RecordingState()
+    state.custom_data = {}
+    state.record_phase_payload = state.record_phase_payload
+
+    def run_dry_anchor(*_args, **_kwargs):
+        raise PlayerDeathDetected("died during boot")
+
+    monkeypatch.setattr(BootSequenceHandler, "_run_dry_anchor_step", run_dry_anchor)
+    monkeypatch.setattr(BootSequenceHandler, "_enforce_anchor_and_pacing", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(BootSequenceHandler, "_ensure_dry_anchor", lambda *_args: (0, 64, 0))
 
     with pytest.raises(PlayerDeathDetected):
-        BootSequenceHandler().execute(
+        handler.execute(
+            SimpleNamespace(
+                transport=SimpleNamespace(
+                    dispatch=lambda *args, **kwargs: {
+                        "world_time": 1000,
+                        "dimension": "minecraft:overworld",
+                        "health": 20,
+                        "food_level": 20,
+                    }
+                )
+            ),
             SimpleNamespace(),
-            SimpleNamespace(),
-            RecordingState(),
+            state,
         )
 
 

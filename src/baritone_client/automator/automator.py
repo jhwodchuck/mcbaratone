@@ -374,13 +374,20 @@ class EndGameAutomator:
                         "player_death",
                         "progress_recovery",
                         "survival_recovery",
+                        "incremental_progress",
                     }
                 ):
                     interruption = self.executor.interruption_reason
                     self.planner.record_evidence(
                         obj, progression_fingerprint(self.state)
                     )
-                    requeued = self.planner.mark_yielded(obj, interruption)
+                    if interruption == "incremental_progress":
+                        requeued = self.planner.mark_incremental_yield(
+                            obj,
+                            interruption,
+                        )
+                    else:
+                        requeued = self.planner.mark_yielded(obj, interruption)
                     self._persist_objective_progress()
                     self._save_checkpoint()
                     if requeued:

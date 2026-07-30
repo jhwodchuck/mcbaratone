@@ -22,6 +22,10 @@ class ProgressRecoveryRequired(RuntimeError):
     """Signal bounded world recovery that must not consume a phase retry."""
 
 
+class IncrementalProgressRequired(RuntimeError):
+    """Signal an idempotent BOOT-step improvement that should requeue without budget cost."""
+
+
 @dataclass
 class TaskResult:
     """Result of task execution."""

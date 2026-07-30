@@ -227,6 +227,119 @@ def _house_verified(evidence: _Evidence) -> bool:
     return True
 
 
+def _homestead_record(evidence: _Evidence) -> Dict[str, Any]:
+    value = evidence.custom("homestead", default={})
+    return value if isinstance(value, dict) else {}
+
+
+def _homestead_steps(evidence: _Evidence) -> Mapping[str, Mapping[str, Any]]:
+    homestead = _homestead_record(evidence)
+    entries = homestead.get("steps")
+    if isinstance(entries, Mapping):
+        return entries
+    if not isinstance(entries, list):
+        return {}
+    result = {}
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        name = entry.get("name")
+        if isinstance(name, str):
+            result[name] = entry
+    return result
+
+
+def _homestead_anchor_verified(evidence: _Evidence) -> bool:
+    anchor = _homestead_record(evidence).get("anchor")
+    if not isinstance(anchor, (list, tuple)) or len(anchor) != 3:
+        return False
+    ground = evidence.block_id((int(anchor[0]), int(anchor[1]) - 1, int(anchor[2])))
+    return (
+        evidence.state.get("dimension") == "minecraft:overworld"
+        and bool(ground)
+        and "water" not in ground
+        and "lava" not in ground
+    )
+
+
+def _homestead_lighting_verified(evidence: _Evidence) -> bool:
+    record = _homestead_steps(evidence).get("light_perimeter", {})
+    intended = record.get("intended", [])
+    if not record.get("verified") or not isinstance(intended, list) or not intended:
+        return False
+    for position in intended:
+        if not isinstance(position, (list, tuple)) or len(position) != 3:
+            return False
+        if evidence.block_id(position) not in {
+            "minecraft:torch",
+            "minecraft:wall_torch",
+        }:
+            return False
+    return True
+
+
+def _legacy_infrastructure_record(evidence: _Evidence) -> Mapping[str, Any]:
+    structures = evidence.custom("structures", default={})
+    if not isinstance(structures, Mapping):
+        return {}
+    bootstrap = structures.get("bootstrap_base")
+    if isinstance(bootstrap, Mapping):
+        return bootstrap
+    house = evidence.custom("structures", "starter_house", default={})
+    return house if isinstance(house, Mapping) else {}
+
+
+def _legacy_infrastructure_verified(evidence: _Evidence) -> bool:
+    if _house_record(evidence):
+        return _house_verified(evidence)
+    bootstrap = _legacy_infrastructure_record(evidence)
+    expected = (
+        (bootstrap.get("crafting_table"), {"minecraft:crafting_table"}),
+        (
+            bootstrap.get("furnace"),
+            {"minecraft:furnace", "minecraft:blast_furnace"},
+        ),
+        (
+            bootstrap.get("supply_chest") or bootstrap.get("chest"),
+            {"minecraft:chest", "minecraft:trapped_chest"},
+        ),
+    )
+    for position, block_ids in expected:
+        if not isinstance(position, (list, tuple)) or len(position) != 3:
+            return False
+        if evidence.block_id(position) not in block_ids:
+            return False
+    return True
+
+
+def _legacy_food_source_verified(evidence: _Evidence) -> bool:
+    crops = {
+        "minecraft:wheat",
+        "minecraft:carrots",
+        "minecraft:potatoes",
+        "minecraft:beetroots",
+    }
+    record = evidence.custom("structures", "food_source", default={})
+    plots = record.get("plots", []) if isinstance(record, Mapping) else []
+    for plot in plots:
+        if (
+            isinstance(plot, (list, tuple))
+            and len(plot) >= 3
+            and evidence.block_id(plot[:3]) in crops
+        ):
+            return True
+    location = evidence.custom("farm_location")
+    if not isinstance(location, (list, tuple)) or len(location) != 3:
+        return False
+    x, y, z = (int(value) for value in location)
+    return any(
+        evidence.block_id((x + dx, y + dy, z + dz)) in crops
+        for dx in range(-1, 2)
+        for dz in range(-1, 2)
+        for dy in (0, 1)
+    )
+
+
 def _portal_location(evidence: _Evidence) -> Any:
     locations = evidence.custom("locations", "nether_portal", default=[])
     if isinstance(locations, list) and locations:
@@ -306,41 +419,20 @@ def _specs() -> Dict[Phase, _Spec]:
         )),
         Phase.BOOT_SEQUENCE: _Spec(("BOOT",), (
             _check(
-                "boot action results persisted",
-                lambda e: int(
-                    e.payload(Phase.BOOT_SEQUENCE).get("completed_actions", 0) or 0
-                ) > 0,
+                "homestead dry-anchor established",
+                _homestead_anchor_verified,
             ),
             _check(
-                "boot sequence result persisted",
-                lambda e: bool(
-                    e.payload(Phase.BOOT_SEQUENCE).get("sequence_result")
-                ),
+                "infrastructure verified and persisted",
+                _legacy_infrastructure_verified,
             ),
             _check(
-                "survival working margin established",
-                lambda e: float(e.state.get("health", 0) or 0) >= 12
-                and int(e.state.get("food_level", e.state.get("food", 0)) or 0)
-                >= 14,
+                "farm verified and persisted",
+                _legacy_food_source_verified,
             ),
             _check(
-                "stone tool observed",
-                lambda e: e.total(STONE_TOOLS) >= 1,
-            ),
-            _check(
-                "verified bootstrap infrastructure persisted",
-                lambda e: bool(
-                    e.custom("structures", "bootstrap_base", "verified")
-                    or _house_record(e)
-                ),
-            ),
-            _check(
-                "renewable starter food source persisted",
-                lambda e: bool(
-                    e.custom("structures", "food_source", "verified")
-                    or e.custom("farm_location")
-                    or e.has_location("farm")
-                ),
+                "light perimeter verified",
+                _homestead_lighting_verified,
             ),
         )),
         Phase.FOOD_AND_IRON: _Spec(("T1204",), (

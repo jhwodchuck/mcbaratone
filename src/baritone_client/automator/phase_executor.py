@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 from .state_manager import Phase, StateManager
 from ..common.tasks import (
     PlayerDeathDetected,
+    IncrementalProgressRequired,
     ProgressRecoveryRequired,
     SurvivalRecoveryRequired,
     TaskResult,
@@ -305,6 +306,16 @@ class PhaseExecutor:
                 )
                 self.interruption_reason = "progress_recovery"
                 print(f"Phase {phase.name} yielded for world recovery: {exc}")
+                handler.on_exit(self.client, self.resources, self.state)
+                return False
+            except IncrementalProgressRequired as exc:
+                end_operation(
+                    operation,
+                    "interrupted",
+                    reason=str(exc),
+                    interruption="incremental_progress",
+                )
+                self.interruption_reason = "incremental_progress"
                 handler.on_exit(self.client, self.resources, self.state)
                 return False
             except Exception as e:

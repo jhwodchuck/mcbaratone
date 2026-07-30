@@ -2,7 +2,7 @@
 Phase 1: Boot Sequence Logic
 """
 
-from typing import Tuple, List, Optional
+from typing import List, Optional, Tuple
 import time
 from ...core.interfaces import ActionContext
 from ..phase_executor import PhaseHandler
@@ -11,6 +11,7 @@ from ..state_manager import Phase, StateManager
 from ...common import TaskResult
 from ...common.tasks import (
     PlayerDeathDetected,
+    IncrementalProgressRequired,
     ProgressRecoveryRequired,
     SurvivalRecoveryRequired,
 )
@@ -19,6 +20,7 @@ from ...common.inventory import count_item, craft, select_item
 from ...common.base import setup_base
 from ...common.combat import hunt_passive_mobs
 from ...common.runtime_artifacts import append_world_map_entry
+from ...actions.homestead import IncrementalHomestead
 
 from ...actions import (
     SequenceAction,
@@ -145,105 +147,97 @@ class BootSequenceHandler(PhaseHandler):
         return gather_wood(client, count=needed_logs)
             
     def execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
-        """
-        Execute the boot sequence using modular Actions.
-
-        Demonstrates the composability of the Actions system by breaking down
-        the monolithic boot sequence into individual, reusable actions.
-        """
-        # Legacy helper methods on this handler still need the production
-        # state when called from the modular sequence.
-        self.state = state
-
-        # Create ActionContext for dependency injection
-        context = ActionContext(
-            client=client,
-            resources=resources,
-            state=state,
-            coordination=None  # Not needed for boot sequence
-        )
-
-        # Define conditional logic for bed acquisition
-        def is_daytime(context: ActionContext) -> bool:
-            """Check if it's currently day time."""
+        """Run BOOT as ordered, durable micro-steps with resumable checkpoints."""
+        if not hasattr(client, "transport") and hasattr(client, "dispatch"):
             try:
-                state_response = context.client.transport.dispatch("get_state", {})
-                time_raw = state_response.get("world_time", 0)
-                return (time_raw % 24000) < 13000  # Day time
+                client.transport = client
             except Exception:
-                return False  # Default to night/skip on error
+                pass
+        self.state = state
+        if not hasattr(state, "custom_data"):
+            state.custom_data = {}
+        self._homestead = IncrementalHomestead(client, state, self._plant_crops)
 
-        # Build the boot sequence using Action composition
-        boot_sequence = SequenceAction([
-            # Phase 1a: Safety and Recovery
-            SafetyCheckAction(),
-            # Resource gathering and recovered-anchor navigation are also
-            # surface activities. Resumed checkpoints may be submerged or
-            # deep underground before the first wood request.
-            BootSurfaceSafetyAction(),
-            BaseRecoveryAction(),
-
-            # Phase 1b: Initial Resource Gathering
-            ConditionalWoodGatheringAction(needed_logs=4),
-            PlankCraftingAction(),
-
-            # Phase 1c: Complete the basic stone tool set.  Earlier phases
-            # already established the crafting table and gathered building
-            # materials; the generic ResourceGatheringAction neither accepts
-            # per-item constructor arguments nor belongs in this sequence.
-            StoneToolCraftingAction(),
-
-            # Phase 1d: Conditional Bed Acquisition (Day vs Night strategy)
-            ConditionalAction(
-                condition=is_daytime,
-                true_action=BedAcquisitionAction(),
-                false_action=None  # Skip if night
-            ),
-
-            # Phase 1e: Scouting and Resource Collection
-            HuntingAndScoutingAction(target_animals=10),
-
-            # Phase 1f: Base Infrastructure
-            InfrastructurePlacementAction(),
-
-            # Phase 1g: Finalization
-            FoodCookingAction(),
-            IronSmeltingAction(),
-            StorageOrganizationAction(),
-            FinalSleepAction(),
-        ])
-
-        # Execute the sequence and handle checkpoint persistence
         try:
-            result = boot_sequence.execute(context)
+            homestead = self._homestead.load()
+            self._homestead.invalidate_stale(homestead)
+            step_name = self._homestead.next_step(homestead)
+            if step_name is None:
+                self._homestead.record(homestead)
+                return TaskResult.ok("Boot sequence complete", homestead=homestead)
 
-            # Persist phase state on success
-            if result.success:
-                farm_ready = self._plant_crops(client)
-                state.record_phase_payload(Phase.BOOT_SEQUENCE, {
-                    "completed_actions": len(boot_sequence.actions),
-                    "sequence_result": result.message,
-                    "crop_farm_ready": farm_ready,
-                    "timestamp": time.time()
-                })
+            if step_name == "dry_anchor":
+                self._enforce_anchor_and_pacing(client, homestead, allow_far=False)
+                changed = self._run_dry_anchor_step(client, state, homestead)
+            elif step_name == "wood_reserve":
+                changed = self._run_wood_reserve_step(client, state, homestead)
+            elif step_name == "stone_reserve":
+                changed = self._run_stone_reserve_step(client, state, homestead)
+            elif step_name == "infrastructure":
+                changed = self._run_infrastructure_step(client, state, homestead)
+            elif step_name == "micro_farm":
+                changed = self._run_micro_farm_step(client, state, homestead)
+            elif step_name == "charcoal_supply":
+                changed = self._run_charcoal_supply_step(client, state, homestead)
+            elif step_name == "torch_supply":
+                changed = self._run_torch_supply_step(client, state, homestead)
+            elif step_name == "light_perimeter":
+                changed = self._run_light_perimeter_step(client, state, homestead)
+            else:
+                raise RuntimeError(f"Unknown BOOT step: {step_name}")
 
-            return TaskResult(success=result.success, reason=result.message)
+            if changed:
+                self._homestead.record(homestead)
+                raise IncrementalProgressRequired(f"boot step complete: {step_name}")
+
+            state.record_phase_payload(Phase.BOOT_SEQUENCE, {"homestead": homestead})
+            return TaskResult.fail(f"BOOT step {step_name} did not improve progress")
 
         except (
             PlayerDeathDetected,
             ProgressRecoveryRequired,
             SurvivalRecoveryRequired,
+            IncrementalProgressRequired,
         ):
             raise
         except Exception as e:
-            # Handle errors with checkpoint persistence
-            error_msg = f"Boot sequence failed: {e}"
             state.record_phase_payload(Phase.BOOT_SEQUENCE, {
-                "error": error_msg,
+                "error": f"Boot sequence failed: {e}",
                 "timestamp": time.time(),
-                "partial_completion": True
             })
-            return TaskResult.fail(error_msg)
+            return TaskResult.fail(f"Boot sequence failed: {e}")
+
+    def _run_dry_anchor_step(self, client, state, homestead):
+        return self._homestead.run_dry_anchor(homestead)
+
+    def _run_wood_reserve_step(self, client, state, homestead):
+        return self._homestead.run_wood_reserve(homestead)
+
+    def _run_stone_reserve_step(self, client, state, homestead):
+        return self._homestead.run_stone_reserve(homestead)
+
+    def _run_infrastructure_step(self, client, state, homestead):
+        return self._homestead.run_infrastructure(homestead)
+
+    def _run_micro_farm_step(self, client, state, homestead):
+        return self._homestead.run_micro_farm(homestead)
+
+    def _run_charcoal_supply_step(self, client, state, homestead):
+        return self._homestead.run_charcoal_supply(homestead)
+
+    def _run_torch_supply_step(self, client, state, homestead):
+        return self._homestead.run_torch_supply(homestead)
+
+    def _run_light_perimeter_step(self, client, state, homestead):
+        return self._homestead.run_light_perimeter(homestead)
+
+    def _enforce_anchor_and_pacing(self, client, homestead, allow_far):
+        if not allow_far:
+            self._homestead.enforce_anchor(homestead)
+
+    def _ensure_dry_anchor(self, client, state):
+        return tuple(self._homestead.current_position())
+
 
     def _acquire_bed(self, client) -> bool:
         """If day, hunt sheep for wool and craft bed. If night, skip (will mine instead)."""

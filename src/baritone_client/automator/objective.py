@@ -183,6 +183,13 @@ class ObjectivePlanner:
         obj.status = ObjStatus.BLOCKED
         return True
 
+    def mark_incremental_yield(self, obj: Objective, reason: str = "") -> bool:
+        """Re-queue an objective after durable progress without consuming budgets."""
+        obj.last_failure = str(reason or "incremental_progress")
+        obj.attempts = max(0, obj.attempts - 1)
+        obj.status = ObjStatus.BLOCKED
+        return True
+
     def mark_failed(self, obj: Objective) -> bool:
         """Record a failed attempt.
 

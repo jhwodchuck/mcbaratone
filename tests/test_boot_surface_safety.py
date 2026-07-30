@@ -4,7 +4,7 @@ import pytest
 
 from baritone_client.actions.boot_surface import BootSurfaceSafetyAction
 from baritone_client.automator.phases import boot_sequence
-from baritone_client.common.tasks import PlayerDeathDetected
+from baritone_client.common.tasks import IncrementalProgressRequired, PlayerDeathDetected
 
 
 def _context(position):
@@ -84,26 +84,43 @@ def test_navigation_survival_tick_raises_on_death_screen():
 
 
 def test_boot_sequence_gates_optional_exploration_on_surface(monkeypatch):
-    captured_actions = []
+    captured = []
 
-    class CapturingSequence:
-        def __init__(self, actions):
-            captured_actions.extend(actions)
+    def fail_if_called(*_args, **_kwargs):
+        captured.append(True)
+        raise AssertionError("legacy ordered SequenceAction path should not execute")
 
-        def execute(self, _context):
-            return SimpleNamespace(success=False, message="captured")
+    monkeypatch.setattr(boot_sequence, "SequenceAction", fail_if_called)
 
-    monkeypatch.setattr(boot_sequence, "SequenceAction", CapturingSequence)
-    result = boot_sequence.BootSequenceHandler().execute(
-        SimpleNamespace(),
-        SimpleNamespace(),
-        SimpleNamespace(),
+    state = SimpleNamespace(
+        custom_data={},
+        record_phase_payload=lambda *_args, **_kwargs: None,
+    )
+    handler = boot_sequence.BootSequenceHandler()
+    transport = SimpleNamespace(
+        dispatch=lambda route, _payload: {
+            "dimension": "minecraft:overworld",
+            "world_time": 1000,
+            "health": 20,
+            "food_level": 20,
+            "block_position": {"x": 0, "y": 64, "z": 0},
+        }
+        if route == "get_state"
+        else {"id": "minecraft:air"},
+    )
+    steps = []
+    monkeypatch.setattr(
+        handler,
+        "_run_dry_anchor_step",
+        lambda *args, **kwargs: steps.append("dry_anchor") or True,
+    )
+    monkeypatch.setattr(
+        handler,
+        "_enforce_anchor_and_pacing",
+        lambda *_args, **_kwargs: None,
     )
 
-    action_names = [type(action).__name__ for action in captured_actions]
-    surface_index = action_names.index("BootSurfaceSafetyAction")
-    assert surface_index < action_names.index("BaseRecoveryAction")
-    assert surface_index < action_names.index("ConditionalWoodGatheringAction")
-    assert surface_index < action_names.index("ConditionalAction")
-    assert surface_index < action_names.index("HuntingAndScoutingAction")
-    assert not result.success
+    with pytest.raises(IncrementalProgressRequired):
+        handler.execute(transport, SimpleNamespace(), state)
+    assert steps == ["dry_anchor"]
+    assert captured == []
