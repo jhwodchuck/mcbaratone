@@ -54,6 +54,21 @@ def _block_is_breathable(block_id: object) -> bool:
     return not any(token in value for token in _NON_BREATHABLE_BLOCK_TOKENS)
 
 
+def _position_is_aquatic(
+    client: Any,
+    position: tuple[int, int, int],
+) -> bool:
+    """Return whether the player's feet occupy a liquid or aquatic block."""
+    try:
+        block = client.transport.dispatch(
+            "get_block",
+            {"x": position[0], "y": position[1], "z": position[2]},
+        ).get("id", "")
+    except Exception:
+        return False
+    return not _block_is_breathable(block)
+
+
 def _loaded_breathing_level_above(
     client: Any,
     position: tuple[int, int, int],
@@ -83,6 +98,11 @@ def _start_loaded_column_ascent(
     target_y = _loaded_breathing_level_above(client, position)
     if target_y is None or target_y <= position[1]:
         return False
+    return _start_y_level_ascent(client, target_y)
+
+
+def _start_y_level_ascent(client: Any, target_y: int) -> bool:
+    """Replace the active route with an upward Baritone Y-level goal."""
     try:
         client.transport.dispatch("cancel", {})
         client.transport.dispatch(
@@ -91,8 +111,31 @@ def _start_loaded_column_ascent(
         )
     except Exception:
         return False
-    print(f"SURVIVAL: ascending loaded water column to y={target_y}")
+    print(f"SURVIVAL: starting upward Y-level ascent to y={target_y}")
     return True
+
+
+def _wait_for_dry_level(
+    client: Any,
+    *,
+    origin_y: int,
+    expected_y: int,
+    timeout: float,
+) -> Optional[tuple[int, int, int]]:
+    """Wait for an ascent route to reach breathing terrain near the surface."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    try:
+        while time.monotonic() < deadline:
+            current = block_position(client.transport.dispatch("get_state", {}))
+            if current[1] < origin_y - 2:
+                return None
+            if current[1] >= expected_y - 3 and _head_is_dry(client, current):
+                return current
+            time.sleep(0.5)
+    finally:
+        client.transport.dispatch("chat", {"message": "#stop"})
+        client.transport.dispatch("cancel", {})
+    return None
 
 
 def _head_is_dry(client: Any, position: tuple[int, int, int]) -> bool:
@@ -150,6 +193,19 @@ def reach_dry_surface(
     """Try broader surface columns, then a verified upward-only surface command."""
     ox, oy, oz = origin
     _configure_surface_pathing(client)
+    if (
+        expected_y > oy
+        and _position_is_aquatic(client, origin)
+        and _start_y_level_ascent(client, expected_y)
+    ):
+        recovered = _wait_for_dry_level(
+            client,
+            origin_y=oy,
+            expected_y=expected_y,
+            timeout=min(30.0, command_timeout),
+        )
+        if recovered is not None:
+            return recovered
     try:
         response = client.transport.dispatch(
             "find_blocks",
@@ -178,18 +234,14 @@ def reach_dry_surface(
         if current[1] >= target_y - 3 and _head_is_dry(client, current):
             return current
 
-    if not _start_loaded_column_ascent(client, origin):
+    fallback_origin = block_position(
+        client.transport.dispatch("get_state", {})
+    )
+    if not _start_loaded_column_ascent(client, fallback_origin):
         client.transport.dispatch("chat", {"message": "#surface"})
-    deadline = time.monotonic() + max(0.0, command_timeout)
-    try:
-        while time.monotonic() < deadline:
-            current = block_position(client.transport.dispatch("get_state", {}))
-            if current[1] < oy - 2:
-                return None
-            if current[1] >= expected_y - 3 and _head_is_dry(client, current):
-                return current
-            time.sleep(0.5)
-    finally:
-        client.transport.dispatch("chat", {"message": "#stop"})
-        client.transport.dispatch("cancel", {})
-    return None
+    return _wait_for_dry_level(
+        client,
+        origin_y=oy,
+        expected_y=expected_y,
+        timeout=command_timeout,
+    )

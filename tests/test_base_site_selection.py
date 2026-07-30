@@ -169,7 +169,7 @@ def test_surface_recovery_uses_loaded_dry_terrain_before_surface_command():
     assert destinations == [(20, 70, 4)]
 
 
-def test_dry_surface_uses_loaded_column_ascent_before_surface_fallback(
+def test_dry_surface_uses_expected_y_ascent_before_horizontal_candidates(
     monkeypatch,
 ):
     class Transport:
@@ -209,7 +209,8 @@ def test_dry_surface_uses_loaded_column_ascent_before_surface_fallback(
         goto=lambda *_args, **_kwargs: False,
         command_timeout=10.0,
     ) == (4, 66, 4)
-    assert ("goal", {"type": "yLevel", "value": 66}) in transport.calls
+    assert ("goal", {"type": "yLevel", "value": 69}) in transport.calls
+    assert not any(route == "find_blocks" for route, _payload in transport.calls)
     assert ("chat", {"message": "#surface"}) not in transport.calls
 
 
