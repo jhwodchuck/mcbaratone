@@ -193,7 +193,7 @@ def test_dry_surface_uses_expected_y_ascent_before_horizontal_candidates(
                 return {
                     "id": (
                         "minecraft:water"
-                        if int(payload["y"]) <= 66
+                        if int(payload["y"]) <= 65
                         else "minecraft:air"
                     )
                 }
@@ -306,7 +306,7 @@ def test_stalled_aquatic_ascent_builds_supported_shallow_water_walkway(
     assert surface_recovery.reach_dry_surface(
         SimpleNamespace(transport=transport),
         origin=(4, 62, 4),
-        expected_y=69,
+        expected_y=63,
         goto=goto,
         command_timeout=90.0,
     ) == (8, 63, 4)

@@ -143,7 +143,11 @@ def _wait_for_dry_level(
             current = block_position(client.transport.dispatch("get_state", {}))
             if current[1] < origin_y - 2:
                 return None
-            if current[1] >= expected_y - 3 and _head_is_dry(client, current):
+            if (
+                current[1] >= expected_y - 3
+                and _head_is_dry(client, current)
+                and not position_is_aquatic(client, current)
+            ):
                 return current
             time.sleep(0.5)
     finally:
