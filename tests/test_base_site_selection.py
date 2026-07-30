@@ -878,6 +878,61 @@ def test_recovered_house_progress_can_complete_base_without_rebuild(monkeypatch)
     assert "base_build_origin" not in state.custom_data
 
 
+def test_recovered_house_door_repairs_missing_support(monkeypatch):
+    class DoorTransport:
+        def __init__(self):
+            self.support = "minecraft:air"
+            self.door = "minecraft:air"
+
+        def dispatch(self, route, payload):
+            if route == "get_block":
+                position = (payload["x"], payload["y"], payload["z"])
+                if position == (10, 69, 20):
+                    return {"id": self.support}
+                if position == (10, 70, 20):
+                    return {"id": self.door, "state": {"facing": "north"}}
+                return {"id": "minecraft:air"}
+            if route == "place_block":
+                if self.support == "minecraft:air":
+                    raise RuntimeError("door target has no support")
+                self.door = payload["block"]
+            return {}
+
+    transport = DoorTransport()
+    client = SimpleNamespace(transport=transport)
+    support_repairs = []
+
+    monkeypatch.setattr(
+        "baritone_client.common.door_recovery.move_to_door_staging",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(base, "select_item", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        base,
+        "count_item",
+        lambda _client, item_id: int(item_id == "minecraft:cobblestone"),
+    )
+    monkeypatch.setattr(
+        base,
+        "robust_place",
+        lambda _client, x, y, z, item_id: (
+            support_repairs.append((x, y, z, item_id)),
+            setattr(transport, "support", item_id),
+            True,
+        )[-1],
+    )
+    monkeypatch.setattr(base.time, "sleep", lambda _seconds: None)
+
+    assert base._place_north_wall_door(
+        client,
+        10,
+        70,
+        20,
+        "minecraft:oak_door",
+    )
+    assert support_repairs == [(10, 69, 20, "minecraft:cobblestone")]
+
+
 def test_old_house_with_strong_shell_and_roof_skips_endless_floor_repair():
     progress = {
         "floor": 33,

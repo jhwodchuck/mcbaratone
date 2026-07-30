@@ -1259,6 +1259,35 @@ def _house_door_aligned(client, x: int, y: int, z: int) -> bool:
     return not facing or facing in ("north", "south")
 
 
+def _ensure_door_support(client, x: int, y: int, z: int) -> bool:
+    """Repair a missing floor block immediately below a recovered doorway."""
+    support_y = y - 1
+    support = _house_block_id(client, x, support_y, z)
+    unsupported_tokens = ("air", "water", "lava", "seagrass", "kelp")
+    if support and not any(token in support for token in unsupported_tokens):
+        return True
+
+    material = first_available_item(
+        client,
+        (
+            "minecraft:cobblestone",
+            "minecraft:cobbled_deepslate",
+            *_ALL_PLANKS,
+            "minecraft:dirt",
+        ),
+    )
+    if material is None:
+        print("Door placement blocked: no material available for doorway support")
+        return False
+    if not robust_place(client, x, support_y, z, material):
+        print("Door placement blocked: doorway support could not be repaired")
+        return False
+    repaired = _house_block_id(client, x, support_y, z)
+    return bool(repaired) and not any(
+        token in repaired for token in unsupported_tokens
+    )
+
+
 def _place_north_wall_door(client, x: int, y: int, z: int, item_id: str) -> bool:
     """Place a door from outside the north wall with a north/south facing."""
     from .door_recovery import move_to_door_staging
@@ -1305,6 +1334,9 @@ def _place_north_wall_door(client, x: int, y: int, z: int, item_id: str) -> bool
         client.transport.dispatch("chat", {"message": "#set allowBreak false"})
         if not doorway_clear:
             print("Door placement blocked: doorway cells could not be cleared")
+            return False
+
+        if not _ensure_door_support(client, x, y, z):
             return False
 
         if not select_item(client, item_id, allow_swap=True):
