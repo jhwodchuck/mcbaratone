@@ -250,10 +250,10 @@ def find_flat_ground(
                         origin=(player_x, player_y, player_z),
                         expected_y=surface_y,
                     )
-                if recovered is not None:
-                    player_x, player_y, player_z = recovered
-                    surface_y = player_y
-                    ascended = True
+            if recovered is not None:
+                player_x, player_y, player_z = recovered
+                surface_y = player_y
+                ascended = True
             if not ascended:
                 print(
                     "  Warning: could not reach the surface; refusing an "

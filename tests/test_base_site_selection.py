@@ -1261,9 +1261,13 @@ def test_surface_ascent_uses_aquatic_recovery_before_coordinate_route(monkeypatc
     calls = []
 
     class Transport:
+        def __init__(self):
+            self.position = (371, 62, 46)
+
         def dispatch(self, route, payload):
             if route == "get_state":
-                return {"block_position": {"x": 371, "y": 62, "z": 46}}
+                x, y, z = self.position
+                return {"block_position": {"x": x, "y": y, "z": z}}
             if route == "get_block":
                 x, y, z = payload["x"], payload["y"], payload["z"]
                 if (x, z) == (371, 46):           # the vine shaft
@@ -1286,14 +1290,17 @@ def test_surface_ascent_uses_aquatic_recovery_before_coordinate_route(monkeypatc
     monkeypatch.setattr(
         site_selection, "_restore_surface_navigation_policy", lambda _c: None
     )
-    monkeypatch.setattr(
-        surface_recovery,
-        "reach_dry_surface",
-        lambda *_args, **_kwargs: calls.append("aquatic") or (371, 66, 46),
-    )
+    transport = Transport()
 
-    site_selection.find_flat_ground(
-        SimpleNamespace(transport=Transport()), radius=8, footprint=1
-    )
+    def recover(*_args, **_kwargs):
+        calls.append("aquatic")
+        transport.position = (375, 63, 46)
+        return transport.position
+
+    monkeypatch.setattr(surface_recovery, "reach_dry_surface", recover)
+
+    assert site_selection.find_flat_ground(
+        SimpleNamespace(transport=transport), radius=8, footprint=1
+    ) == (375, 63, 46)
 
     assert calls == ["aquatic"]
