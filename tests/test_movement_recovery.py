@@ -137,6 +137,70 @@ def test_proven_marooned_egress_excavates_up_when_lower_routes_fail(monkeypatch)
     ]
 
 
+def test_proven_marooned_egress_descends_by_hand_after_tunnels_fail(
+    monkeypatch,
+):
+    position = {"x": 7, "y": 64, "z": -191}
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_block":
+                return {"id": "minecraft:stone"}
+            if route == "find_blocks":
+                return {"found": []}
+            if route == "get_state":
+                return {"health": 20, "block_position": dict(position)}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    monkeypatch.setattr(
+        surface_egress,
+        "supported_column_descent",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        surface_egress,
+        "harvest_shelf_dirt",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        surface_egress,
+        "try_survivable_drop",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.build_site_recovery.excavate_surface_egress",
+        lambda *_args, **_kwargs: None,
+    )
+    descents = []
+
+    def descend(_client, **kwargs):
+        descents.append(kwargs)
+        position["y"] = 59
+        return True
+
+    monkeypatch.setattr(
+        "baritone_client.common.stone_descent.manual_column_descend",
+        descend,
+    )
+
+    reached = surface_egress.try_lower_surface_egress(
+        client,
+        {"health": 20, "block_position": {"x": 7, "y": 64, "z": -191}},
+        minimum_altitude=0,
+        allow_upward_excavation=True,
+    )
+
+    assert reached == (7, 59, -191)
+    assert descents == [
+        {
+            "target_y": 58,
+            "max_steps": 6,
+            "require_pickaxe": False,
+        }
+    ]
+
+
 def test_shelf_escape_harvests_vacated_blocks_not_current_floor(monkeypatch):
     class Transport:
         def __init__(self):

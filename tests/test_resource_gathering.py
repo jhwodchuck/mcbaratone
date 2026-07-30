@@ -1376,6 +1376,54 @@ def test_manual_column_descend_breaks_one_block_at_a_time_when_supported(monkeyp
     assert not any(route == "attack_block" for route, _ in transport.calls)
 
 
+def test_manual_escape_descent_can_break_safe_floor_without_pickaxe(monkeypatch):
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport)
+    positions = iter([64, 63])
+    dug = set()
+
+    def dispatch(route, payload):
+        transport.calls.append((route, payload))
+        if route == "get_block":
+            key = (payload["x"], payload["y"], payload["z"])
+            if key in dug:
+                return {"id": "minecraft:air"}
+            return {"id": "minecraft:stone"}
+        if route == "get_state":
+            return {
+                "block_position": {"x": 7, "y": next(positions), "z": -191}
+            }
+        if route == "dig_block":
+            dug.add((payload["x"], payload["y"], payload["z"]))
+            return {"started": True}
+        return {}
+
+    transport.dispatch = dispatch
+    monkeypatch.setattr(
+        resources,
+        "_ensure_mining_pickaxe",
+        lambda _client: (_ for _ in ()).throw(
+            AssertionError("escape descent must not require a pickaxe")
+        ),
+    )
+    monkeypatch.setattr(
+        resources,
+        "select_item",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("escape descent must not select a pickaxe")
+        ),
+    )
+    monkeypatch.setattr(stone_descent.time, "sleep", lambda _seconds: None)
+
+    assert stone_descent.manual_column_descend(
+        client,
+        target_y=63,
+        max_steps=1,
+        require_pickaxe=False,
+    )
+    assert any(route == "dig_block" for route, _payload in transport.calls)
+
+
 def test_manual_column_descend_stops_before_an_uncontrolled_fall(monkeypatch):
     """If the block two below is open, breaking would exceed a 1-block drop
     -- must stop rather than risk it."""

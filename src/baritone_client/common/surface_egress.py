@@ -256,9 +256,25 @@ def try_lower_surface_egress(
     from .build_site_recovery import excavate_surface_egress
 
     print("DEBUG: Lower routes failed; excavating a bounded upward egress")
-    return excavate_surface_egress(
+    excavated = excavate_surface_egress(
         client,
         origin=block_position(latest_state),
         expected_y=max(63, origin[1] + 6),
         timeout_per_attempt=30.0,
     )
+    if excavated is not None:
+        return excavated
+
+    from .stone_descent import manual_column_descend
+
+    print(
+        "DEBUG: Upward routes failed; trying a safe hand-dug column descent"
+    )
+    if manual_column_descend(
+        client,
+        target_y=origin[1] - 6,
+        max_steps=6,
+        require_pickaxe=False,
+    ):
+        return block_position(client.transport.dispatch("get_state", {}))
+    return None

@@ -64,6 +64,7 @@ def manual_column_descend(
     *,
     target_y: int,
     max_steps: int = 40,
+    require_pickaxe: bool = True,
 ) -> bool:
     """Break an underfoot column only when a bounded landing is proven."""
     from . import resources as api
@@ -71,7 +72,9 @@ def manual_column_descend(
     state = api._read_state_optional(
         client, retries=3, label="Manual descend state"
     )
-    if state is None or not api._ensure_mining_pickaxe(client):
+    if state is None or (
+        require_pickaxe and not api._ensure_mining_pickaxe(client)
+    ):
         return False
     px, py, pz = block_position(state)
     start_y = py
@@ -104,7 +107,7 @@ def manual_column_descend(
                 f"at Y={py - int(gap or 0)}; stopping"
             )
             break
-        if not any(
+        if require_pickaxe and not any(
             api.select_item(client, item_id, allow_swap=True)
             for item_id in reversed(api.PICKAXE_ITEMS)
         ):
