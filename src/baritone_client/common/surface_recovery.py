@@ -178,7 +178,8 @@ def reach_dry_surface(
         if current[1] >= target_y - 3 and _head_is_dry(client, current):
             return current
 
-    client.transport.dispatch("chat", {"message": "#surface"})
+    if not _start_loaded_column_ascent(client, origin):
+        client.transport.dispatch("chat", {"message": "#surface"})
     deadline = time.monotonic() + max(0.0, command_timeout)
     try:
         while time.monotonic() < deadline:

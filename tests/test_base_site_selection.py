@@ -169,6 +169,50 @@ def test_surface_recovery_uses_loaded_dry_terrain_before_surface_command():
     assert destinations == [(20, 70, 4)]
 
 
+def test_dry_surface_uses_loaded_column_ascent_before_surface_fallback(
+    monkeypatch,
+):
+    class Transport:
+        def __init__(self):
+            self.levels = iter((62, 66))
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "find_blocks":
+                return {"found": []}
+            if route == "get_state":
+                return {
+                    "block_position": {
+                        "x": 4,
+                        "y": next(self.levels),
+                        "z": 4,
+                    }
+                }
+            if route == "get_block":
+                return {
+                    "id": (
+                        "minecraft:water"
+                        if int(payload["y"]) <= 66
+                        else "minecraft:air"
+                    )
+                }
+            return {}
+
+    transport = Transport()
+    monkeypatch.setattr(surface_recovery.time, "sleep", lambda _seconds: None)
+
+    assert surface_recovery.reach_dry_surface(
+        SimpleNamespace(transport=transport),
+        origin=(4, 62, 4),
+        expected_y=69,
+        goto=lambda *_args, **_kwargs: False,
+        command_timeout=10.0,
+    ) == (4, 66, 4)
+    assert ("goal", {"type": "yLevel", "value": 66}) in transport.calls
+    assert ("chat", {"message": "#surface"}) not in transport.calls
+
+
 def test_surface_recovery_excavates_when_all_surface_routes_fail(monkeypatch):
     from baritone_client.common import build_site_recovery
 
