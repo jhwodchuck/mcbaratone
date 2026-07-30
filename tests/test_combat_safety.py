@@ -236,7 +236,7 @@ def test_aquatic_hunt_surfaces_until_head_reaches_air(monkeypatch):
     class SurfaceTransport(CombatTransport):
         def __init__(self):
             super().__init__(health=18.0)
-            self.head_blocks = iter(("minecraft:water", "minecraft:air"))
+            self.block_reads = 0
 
         def dispatch(self, route, payload):
             self.calls.append((route, payload))
@@ -246,7 +246,14 @@ def test_aquatic_hunt_surfaces_until_head_reaches_air(monkeypatch):
                     "block_position": {"x": 4, "y": 61, "z": 8},
                 }
             if route == "get_block":
-                return {"id": next(self.head_blocks)}
+                self.block_reads += 1
+                return {
+                    "id": (
+                        "minecraft:water"
+                        if self.block_reads <= 33
+                        else "minecraft:air"
+                    )
+                }
             return {}
 
     transport = SurfaceTransport()
@@ -268,6 +275,45 @@ def test_aquatic_hunt_surfaces_until_head_reaches_air(monkeypatch):
         ("cancel", {}),
     ]
     assert client._aquatic_surface_failed is False
+
+
+def test_aquatic_hunt_uses_loaded_water_column_for_vertical_ascent(monkeypatch):
+    class WaterColumnTransport(CombatTransport):
+        def __init__(self):
+            super().__init__(health=18.0)
+            self.player_levels = iter((59, 59, 62))
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "health": self.health,
+                    "block_position": {
+                        "x": 4,
+                        "y": next(self.player_levels),
+                        "z": 8,
+                    },
+                }
+            if route == "get_block":
+                return {
+                    "id": (
+                        "minecraft:water"
+                        if int(payload["y"]) <= 62
+                        else "minecraft:air"
+                    )
+                }
+            return {}
+
+    transport = WaterColumnTransport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(combat.time, "sleep", lambda _seconds: None)
+
+    assert combat._surface_after_aquatic_hunt(client)
+    assert (
+        "goal",
+        {"type": "yLevel", "value": 62},
+    ) in transport.calls
+    assert ("chat", {"message": "#surface"}) not in transport.calls
 
 
 def test_aquatic_surface_aborts_downward_route(monkeypatch):

@@ -18,6 +18,14 @@ _SURFACE_BLOCKS = [
     "minecraft:stone",
 ]
 
+_NON_BREATHABLE_BLOCK_TOKENS = (
+    "water",
+    "lava",
+    "bubble_column",
+    "kelp",
+    "seagrass",
+)
+
 
 def _configure_surface_pathing(
     client: Any,
@@ -40,6 +48,53 @@ def _configure_surface_pathing(
         sleep(0.1)
 
 
+def _block_is_breathable(block_id: object) -> bool:
+    """Return whether a player's head can breathe in the reported block."""
+    value = str(block_id)
+    return not any(token in value for token in _NON_BREATHABLE_BLOCK_TOKENS)
+
+
+def _loaded_breathing_level_above(
+    client: Any,
+    position: tuple[int, int, int],
+    *,
+    scan_height: int = 32,
+) -> Optional[int]:
+    """Return the feet Y just below loaded breathing air in this column."""
+    x, y, z = position
+    for head_y in range(y + 1, y + max(1, int(scan_height)) + 1):
+        try:
+            block = client.transport.dispatch(
+                "get_block",
+                {"x": x, "y": head_y, "z": z},
+            ).get("id", "")
+        except Exception:
+            return None
+        if _block_is_breathable(block):
+            return head_y - 1
+    return None
+
+
+def _start_loaded_column_ascent(
+    client: Any,
+    position: tuple[int, int, int],
+) -> bool:
+    """Prefer an upward-only Y goal when the water surface is already loaded."""
+    target_y = _loaded_breathing_level_above(client, position)
+    if target_y is None or target_y <= position[1]:
+        return False
+    try:
+        client.transport.dispatch("cancel", {})
+        client.transport.dispatch(
+            "goal",
+            {"type": "yLevel", "value": target_y},
+        )
+    except Exception:
+        return False
+    print(f"SURVIVAL: ascending loaded water column to y={target_y}")
+    return True
+
+
 def _head_is_dry(client: Any, position: tuple[int, int, int]) -> bool:
     try:
         block = client.transport.dispatch(
@@ -48,7 +103,7 @@ def _head_is_dry(client: Any, position: tuple[int, int, int]) -> bool:
         ).get("id", "")
     except Exception:
         return False
-    return "water" not in str(block) and "lava" not in str(block)
+    return _block_is_breathable(block)
 
 
 def reach_breathing_air(
@@ -62,7 +117,8 @@ def reach_breathing_air(
     """Run ``#surface`` without allowing a bad route to descend farther."""
     initial = block_position(client.transport.dispatch("get_state", {}))
     _configure_surface_pathing(client, sleep=sleep)
-    client.transport.dispatch("chat", {"message": "#surface"})
+    if not _start_loaded_column_ascent(client, initial):
+        client.transport.dispatch("chat", {"message": "#surface"})
     deadline = clock() + max(0.0, timeout)
     try:
         while clock() < deadline:
