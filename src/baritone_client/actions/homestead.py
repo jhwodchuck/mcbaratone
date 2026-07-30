@@ -12,7 +12,11 @@ from ..common.homestead_lighting import perimeter_ring, partition_light_coordina
 from ..common.inventory import count_item, craft
 from ..common.navigation import goto
 from ..common.resources import gather_stone, gather_wood
-from ..common.tasks import ProgressRecoveryRequired, SurvivalRecoveryRequired
+from ..common.tasks import (
+    PacingHoldRequired,
+    ProgressRecoveryRequired,
+    SurvivalRecoveryRequired,
+)
 
 
 ORDERED_HOMESTEAD_STEPS = (
@@ -170,14 +174,17 @@ class IncrementalHomestead:
         state = self._state()
         health = float(state.get("health", 0) or 0)
         food = int(state.get("food_level", state.get("food", 0)) or 0)
+        if state.get("dimension") != "minecraft:overworld" or health < 12 or food <= 10:
+            raise SurvivalRecoveryRequired(
+                "critical survival recovery required before returning home"
+            )
         if (
-            state.get("dimension") != "minecraft:overworld"
-            or int(state.get("world_time", 0)) % 24000 >= 12000
+            int(state.get("world_time", 0)) % 24000 >= 12000
             or health < 18
             or food < 16
         ):
-            raise SurvivalRecoveryRequired(
-                "restore daylight survival margin before returning to the homestead"
+            raise PacingHoldRequired(
+                "wait for daylight survival margin before returning home"
             )
         if not goto(
             self.client,
@@ -205,14 +212,18 @@ class IncrementalHomestead:
         if state.get("dimension") != "minecraft:overworld":
             raise SurvivalRecoveryRequired("return to overworld before construction")
         if int(state.get("world_time", 0)) % 24000 >= 12000:
-            raise SurvivalRecoveryRequired("wait for daylight before construction")
+            raise PacingHoldRequired("wait for daylight before construction")
         if float(state.get("health", 0) or 0) < 18:
-            raise SurvivalRecoveryRequired("health below 18 before construction")
+            if float(state.get("health", 0) or 0) < 12:
+                raise SurvivalRecoveryRequired("critical health before construction")
+            raise PacingHoldRequired("health below 18 before construction")
         food = int(state.get("food_level", state.get("food", 0)) or 0)
         if food < 16:
-            raise SurvivalRecoveryRequired("food below 16 before construction")
+            if food <= 10:
+                raise SurvivalRecoveryRequired("critical hunger before construction")
+            raise PacingHoldRequired("food below 16 before construction")
         if food < 20 and not self._has_edible():
-            raise SurvivalRecoveryRequired(
+            raise PacingHoldRequired(
                 "carry food or refill hunger before construction"
             )
 

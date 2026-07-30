@@ -26,6 +26,10 @@ class IncrementalProgressRequired(RuntimeError):
     """Signal an idempotent BOOT-step improvement that should requeue without budget cost."""
 
 
+class PacingHoldRequired(RuntimeError):
+    """Signal a calm no-budget hold until construction conditions improve."""
+
+
 @dataclass
 class TaskResult:
     """Result of task execution."""

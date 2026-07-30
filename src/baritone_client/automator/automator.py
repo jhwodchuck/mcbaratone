@@ -375,14 +375,21 @@ class EndGameAutomator:
                         "progress_recovery",
                         "survival_recovery",
                         "incremental_progress",
+                        "pacing_hold",
                     }
                 ):
                     interruption = self.executor.interruption_reason
-                    self.planner.record_evidence(
-                        obj, progression_fingerprint(self.state)
-                    )
+                    if interruption != "pacing_hold":
+                        self.planner.record_evidence(
+                            obj, progression_fingerprint(self.state)
+                        )
                     if interruption == "incremental_progress":
                         requeued = self.planner.mark_incremental_yield(
+                            obj,
+                            interruption,
+                        )
+                    elif interruption == "pacing_hold":
+                        requeued = self.planner.mark_pacing_hold(
                             obj,
                             interruption,
                         )
@@ -401,7 +408,9 @@ class EndGameAutomator:
                             f"Phase {phase.name} exhausted its recovery/no-progress "
                             "budget and was abandoned for this checkpoint."
                         )
-                    if interruption == "survival_recovery":
+                    if interruption == "pacing_hold":
+                        time.sleep(30.0)
+                    elif interruption == "survival_recovery":
                         time.sleep(max(1.0, min(5.0, self.executor.retry_delay)))
                     continue
 

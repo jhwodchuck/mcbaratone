@@ -190,6 +190,13 @@ class ObjectivePlanner:
         obj.status = ObjStatus.BLOCKED
         return True
 
+    def mark_pacing_hold(self, obj: Objective, reason: str = "") -> bool:
+        """Re-queue a deliberate hold without charging failure budgets."""
+        obj.last_failure = str(reason or "pacing_hold")
+        obj.attempts = max(0, obj.attempts - 1)
+        obj.status = ObjStatus.BLOCKED
+        return True
+
     def mark_failed(self, obj: Objective) -> bool:
         """Record a failed attempt.
 

@@ -7,7 +7,11 @@ from baritone_client.automator.phase_executor import PhaseExecutor, PhaseHandler
 from baritone_client.automator.phases.boot_sequence import BootSequenceHandler
 from baritone_client.automator.state_manager import Phase
 from baritone_client.actions.homestead import IncrementalHomestead
-from baritone_client.common.tasks import IncrementalProgressRequired, SurvivalRecoveryRequired
+from baritone_client.common.tasks import (
+    IncrementalProgressRequired,
+    PacingHoldRequired,
+    SurvivalRecoveryRequired,
+)
 
 
 def _state_with_payloads(custom_data):
@@ -155,6 +159,54 @@ def test_phase_executor_yields_incremental_progress_without_retry():
     assert executor.interruption_reason == "incremental_progress"
     assert handler.calls == 1
     assert handler.exited
+
+
+def test_pacing_hold_does_not_consume_objective_budgets():
+    objective = Objective(Phase.BOOT_SEQUENCE, max_interruptions=2)
+    planner = ObjectivePlanner([objective])
+    entry = planner._by_phase[Phase.BOOT_SEQUENCE]
+    entry.attempts = 2
+    entry.interruptions = 1
+    entry.no_progress_streak = 1
+
+    planner.mark_active(entry)
+    assert planner.mark_pacing_hold(entry, "pacing_hold")
+    assert entry.status is ObjStatus.BLOCKED
+    assert entry.attempts == 2
+    assert entry.interruptions == 1
+    assert entry.no_progress_streak == 1
+
+
+def test_phase_executor_yields_pacing_hold_without_retry():
+    class PacingHandler(PhaseHandler):
+        def __init__(self):
+            self.calls = 0
+
+        def get_name(self):
+            return "Pacing hold"
+
+        def execute(self, client, resources, state):
+            self.calls += 1
+            raise PacingHoldRequired("wait calmly")
+
+    state = SimpleNamespace(
+        update_progress=lambda *_args, **_kwargs: None,
+        record_phase_payload=lambda *_args, **_kwargs: None,
+    )
+    handler = PacingHandler()
+    executor = PhaseExecutor(
+        SimpleNamespace(),
+        SimpleNamespace(refresh_inventory=lambda: None),
+        state,
+        max_retries=3,
+        retry_delay=0,
+        screenshot_enabled=False,
+    )
+    executor.register_handler(Phase.BOOT_SEQUENCE, handler)
+
+    assert not executor.execute_phase(Phase.BOOT_SEQUENCE)
+    assert executor.interruption_reason == "pacing_hold"
+    assert handler.calls == 1
 
 
 def test_boot_sequence_skips_live_verified_steps(monkeypatch):
@@ -376,8 +428,48 @@ def test_boot_construction_pacing_blocks_unsafe_or_underequipped(monkeypatch, fo
         lambda *_args, **_kwargs: None,
     )
 
-    with pytest.raises(SurvivalRecoveryRequired):
+    with pytest.raises(PacingHoldRequired):
         handler.execute(transport, SimpleNamespace(), state)
+
+
+@pytest.mark.parametrize("food_level,health", [(10, 20), (20, 11)])
+def test_boot_construction_uses_survival_recovery_for_critical_margin(
+    monkeypatch,
+    food_level,
+    health,
+):
+    state = _state_with_payloads(
+        {
+            "homestead": {
+                "anchor": [0, 64, 0],
+                "steps": {
+                    "dry_anchor": {"verified": True},
+                    "wood_reserve": {"verified": True},
+                    "plank_reserve": {"verified": True},
+                    "stone_reserve": {"verified": True},
+                    "infrastructure": {"verified": True},
+                    "micro_farm": {"verified": False},
+                },
+            }
+        }
+    )
+    transport = _transport_with_blocks(
+        {
+            "dimension": "minecraft:overworld",
+            "world_time": 1000,
+            "food_level": food_level,
+            "health": health,
+            "block_position": {"x": 0, "y": 64, "z": 0},
+        },
+        {},
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.homestead.count_item",
+        lambda *_args: 1,
+    )
+
+    with pytest.raises(SurvivalRecoveryRequired):
+        BootSequenceHandler().execute(transport, SimpleNamespace(), state)
 
 
 def test_boot_micro_farm_completes_before_optional_expansion(monkeypatch):

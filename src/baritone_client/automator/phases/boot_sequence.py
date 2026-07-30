@@ -12,6 +12,7 @@ from ...common import TaskResult
 from ...common.tasks import (
     PlayerDeathDetected,
     IncrementalProgressRequired,
+    PacingHoldRequired,
     ProgressRecoveryRequired,
     SurvivalRecoveryRequired,
 )
@@ -199,6 +200,7 @@ class BootSequenceHandler(PhaseHandler):
             ProgressRecoveryRequired,
             SurvivalRecoveryRequired,
             IncrementalProgressRequired,
+            PacingHoldRequired,
         ):
             raise
         except Exception as e:

@@ -11,6 +11,7 @@ from .state_manager import Phase, StateManager
 from ..common.tasks import (
     PlayerDeathDetected,
     IncrementalProgressRequired,
+    PacingHoldRequired,
     ProgressRecoveryRequired,
     SurvivalRecoveryRequired,
     TaskResult,
@@ -316,6 +317,16 @@ class PhaseExecutor:
                     interruption="incremental_progress",
                 )
                 self.interruption_reason = "incremental_progress"
+                handler.on_exit(self.client, self.resources, self.state)
+                return False
+            except PacingHoldRequired as exc:
+                end_operation(
+                    operation,
+                    "interrupted",
+                    reason=str(exc),
+                    interruption="pacing_hold",
+                )
+                self.interruption_reason = "pacing_hold"
                 handler.on_exit(self.client, self.resources, self.state)
                 return False
             except Exception as e:
