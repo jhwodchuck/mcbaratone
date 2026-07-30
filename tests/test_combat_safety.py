@@ -1853,3 +1853,87 @@ def test_hunt_target_aborts_after_failed_aquatic_surface(monkeypatch):
         recovery_complete=lambda _state=None: False,
         unreachable=set(),
     ) is False
+
+
+def _surface_gate_client(in_water, fish=None, y=62):
+    class T(CombatTransport):
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {"health": 6.0, "block_position": {"x": 0, "y": y, "z": 0}}
+            if route == "get_block":
+                return {"id": "minecraft:water" if in_water else "minecraft:air"}
+            if route == "get_entities":
+                return {"entities": list(fish or [])}
+            return {}
+
+    return SimpleNamespace(transport=T())
+
+
+def test_submerged_bot_may_hunt_a_visible_fish_without_surfacing_first(monkeypatch):
+    """The surface gate guards blind exploration, but it was also refusing to
+    hunt fish already in sight. Live 2026-07-30: all four bots at food
+    0/0/10/2 and health 8/6/4.5/20, every one at y=62-64 so only `in_water`
+    was blocking, cycling "reaching dry surface before exploration" while
+    surface routes were unreachable. In a lush cave the water is the larder."""
+    from baritone_client.common import emergency_food
+
+    client = _surface_gate_client(
+        in_water=True,
+        fish=[{"id": 1, "type": "minecraft:tropical_fish", "distance": 9.0}],
+    )
+    state = {"block_position": {"x": 0, "y": 62, "z": 0}}
+
+    assert emergency_food.reach_food_search_surface(client, state) is True
+    # It must NOT have attempted an ascent.
+    assert not any(r == "goto" for r, _ in client.transport.calls)
+
+
+def test_submerged_bot_with_no_fish_still_surfaces_first(monkeypatch):
+    """Blind exploration while submerged is still gated -- the original
+    intent of the check is preserved."""
+    from baritone_client.common import emergency_food
+
+    client = _surface_gate_client(in_water=True, fish=[])
+    state = {"block_position": {"x": 0, "y": 62, "z": 0}}
+    ascended = []
+    monkeypatch.setattr(
+        emergency_food,
+        "block_position",
+        lambda _s: (0, 62, 0),
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.surface_recovery.reach_dry_surface",
+        lambda *_a, **_k: ascended.append(True) or None,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.build_site_recovery.excavate_surface_egress",
+        lambda *_a, **_k: None,
+    )
+
+    assert emergency_food.reach_food_search_surface(client, state) is False
+    assert ascended, "must still try to surface when there is no visible fish"
+
+
+def test_deep_underground_bot_surfaces_even_with_fish_nearby(monkeypatch):
+    """Below MINIMUM_FOOD_SEARCH_Y the depth concern still wins."""
+    from baritone_client.common import emergency_food
+
+    client = _surface_gate_client(
+        in_water=True,
+        fish=[{"id": 1, "type": "minecraft:tropical_fish", "distance": 5.0}],
+        y=20,
+    )
+    monkeypatch.setattr(emergency_food, "block_position", lambda _s: (0, 20, 0))
+    monkeypatch.setattr(
+        "baritone_client.common.surface_recovery.reach_dry_surface",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.build_site_recovery.excavate_surface_egress",
+        lambda *_a, **_k: None,
+    )
+
+    assert emergency_food.reach_food_search_surface(
+        client, {"block_position": {"x": 0, "y": 20, "z": 0}}
+    ) is False

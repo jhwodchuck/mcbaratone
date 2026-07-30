@@ -34,6 +34,30 @@ def reach_food_search_surface(client: Any, state: Dict) -> bool:
     if position[1] >= MINIMUM_FOOD_SEARCH_Y and not in_water:
         return True
 
+    # This gate exists to stop *blind exploration* while submerged, but it was
+    # also refusing to hunt fish already in sight. In a lush cave the water is
+    # the larder: standing in it with tropical fish a few blocks away is the
+    # one case where surfacing first is strictly worse. Measured live on
+    # 2026-07-30 with all four bots at food 0/0/10/2 and health 8/6/4.5/20,
+    # every one of them at y=62-64 (so the depth half of this check passed --
+    # only `in_water` was blocking) and cycling "reaching dry surface before
+    # exploration" while surface routes were unreachable. Let a concrete
+    # nearby aquatic target through; blind exploration still has to surface.
+    if in_water and position[1] >= MINIMUM_FOOD_SEARCH_Y:
+        from . import combat as api
+
+        nearby_fish = api.find_entity_by_type(
+            client, list(WATER_FOOD), radius=32
+        )
+        if nearby_fish is not None:
+            print(
+                "RECOVERY: submerged but "
+                f"{str(nearby_fish.get('type','fish')).split(':')[-1]} is "
+                f"{float(nearby_fish.get('distance', 0)):.1f}m away; hunting "
+                "it instead of surfacing first"
+            )
+            return True
+
     from .build_site_recovery import excavate_surface_egress
     from .navigation import goto
     from .surface_recovery import reach_dry_surface
