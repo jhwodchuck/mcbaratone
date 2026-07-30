@@ -255,6 +255,14 @@ def test_aquatic_hunt_surfaces_until_head_reaches_air(monkeypatch):
 
     assert combat._surface_after_aquatic_hunt(client)
     assert ("chat", {"message": "#surface"}) in transport.calls
+    messages = [
+        payload["message"]
+        for route, payload in transport.calls
+        if route == "chat"
+    ]
+    assert messages.index("#set assumeWalkOnWater true") < messages.index(
+        "#surface"
+    )
     assert transport.calls[-2:] == [
         ("chat", {"message": "#stop"}),
         ("cancel", {}),

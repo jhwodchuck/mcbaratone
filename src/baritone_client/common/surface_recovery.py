@@ -19,6 +19,24 @@ _SURFACE_BLOCKS = [
 ]
 
 
+def _configure_surface_pathing(
+    client: Any,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Apply upward and water-surface constraints before starting movement."""
+    for command in (
+        "#set allowBreak true",
+        "#set allowPlace true",
+        "#set allowDownward false",
+        "#set assumeWalkOnWater true",
+    ):
+        client.transport.dispatch("chat", {"message": command})
+        # Chat settings apply on Minecraft ticks. Starting a path in the same
+        # instant can retain the previous unsafe value for its first plan.
+        sleep(0.1)
+
+
 def _head_is_dry(client: Any, position: tuple[int, int, int]) -> bool:
     try:
         block = client.transport.dispatch(
@@ -40,12 +58,8 @@ def reach_breathing_air(
 ) -> bool:
     """Run ``#surface`` without allowing a bad route to descend farther."""
     initial = block_position(client.transport.dispatch("get_state", {}))
-    for command in (
-        "#set allowBreak true",
-        "#set allowDownward false",
-        "#surface",
-    ):
-        client.transport.dispatch("chat", {"message": command})
+    _configure_surface_pathing(client, sleep=sleep)
+    client.transport.dispatch("chat", {"message": "#surface"})
     deadline = clock() + max(0.0, timeout)
     try:
         while clock() < deadline:
@@ -76,6 +90,7 @@ def reach_dry_surface(
 ) -> Optional[tuple[int, int, int]]:
     """Try broader surface columns, then a verified upward-only surface command."""
     ox, oy, oz = origin
+    _configure_surface_pathing(client)
     try:
         response = client.transport.dispatch(
             "find_blocks",
@@ -104,13 +119,7 @@ def reach_dry_surface(
         if current[1] >= target_y - 3 and _head_is_dry(client, current):
             return current
 
-    for command in (
-        "#set allowBreak true",
-        "#set allowPlace true",
-        "#set allowDownward false",
-        "#surface",
-    ):
-        client.transport.dispatch("chat", {"message": command})
+    client.transport.dispatch("chat", {"message": "#surface"})
     deadline = time.monotonic() + max(0.0, command_timeout)
     try:
         while time.monotonic() < deadline:
