@@ -1073,11 +1073,54 @@ def test_stone_gathering_does_not_resume_underwater_mine_after_surfacing(
         "baritone_client.common.combat.defend_or_flee",
         surface,
     )
+    monkeypatch.setattr(
+        resources, "_relocate_to_dry_stone_terrain", lambda _client: False
+    )
 
     assert not resources.gather_stone(client, count=9, timeout=30)
     mining = [call for call in transport.calls if call[0] == "mine"]
     assert len(mining) == 1
     assert transport.calls[-1] == ("cancel", {})
+
+
+def test_stone_gathering_relocates_before_resuming_after_submersion(
+    monkeypatch,
+):
+    transport = RecordingTransport()
+    client = SimpleNamespace(transport=transport, _submersion_ticks=1)
+    inventory = {"minecraft:cobblestone": 31}
+    relocations = []
+
+    monkeypatch.setattr(
+        resources,
+        "count_item",
+        lambda _client, item_id: inventory.get(item_id, 0),
+    )
+    monkeypatch.setattr(resources, "_reserve_gathering_inventory", lambda _c: True)
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _c: True)
+    monkeypatch.setattr(resources, "free_inventory_slots", lambda _c: 10)
+
+    def surface_once(_client):
+        if not relocations:
+            _client._submersion_ticks = 0
+            return True
+        return False
+
+    def relocate(_client):
+        relocations.append(True)
+        inventory["minecraft:cobblestone"] = 32
+        return True
+
+    monkeypatch.setattr(
+        "baritone_client.common.combat.defend_or_flee",
+        surface_once,
+    )
+    monkeypatch.setattr(resources, "_relocate_to_dry_stone_terrain", relocate)
+
+    assert resources.gather_stone(client, count=32, timeout=30)
+    assert relocations == [True]
+    mining = [call for call in transport.calls if call[0] == "mine"]
+    assert len(mining) == 2
 
 
 def test_descend_to_stone_layer_tunnels_down_from_surface(monkeypatch):

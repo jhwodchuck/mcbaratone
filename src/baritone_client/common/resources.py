@@ -1002,6 +1002,18 @@ def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
                          "SURVIVAL: abandoning submerged stone target "
                          "after surfacing"
                      )
+                     # The normal dry-terrain recovery ladder lives below the
+                     # stall detector. Returning here made that ladder
+                     # unreachable: every phase retry restarted the same mine
+                     # from the same flooded cell. Relocate once before any
+                     # mining process is allowed to resume.
+                     dry_relocation_attempted = True
+                     if _relocate_to_dry_stone_terrain(client):
+                         direct_failures = idle_checks = stalled_checks = 0
+                         descent_attempted = False
+                         start = _restart_stone_mining(client, count)
+                         continue
+                     client.transport.dispatch("cancel", {})
                      return False
                  # Combat happened. Resume mining.
                  client.transport.dispatch("mine", {"blocks": STONE_BLOCKS, "quantity": count + 10})
