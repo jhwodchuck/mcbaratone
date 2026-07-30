@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from baritone_client.automator.food_recovery_state import (
     get_food_search_center,
     record_failed_food_source,
+    recover_food_from_known_sources,
     remember_renewable_food_source,
 )
 from baritone_client.common.food_recovery import (
@@ -146,6 +147,38 @@ def test_observed_herd_persistence_is_centralized():
         "renewable",
         "observed",
     ]
+
+
+def test_known_food_recovery_uses_nearest_persisted_food_landmark():
+    calls = []
+    state = SimpleNamespace(
+        checkpoint_dir=None,
+        custom_data={
+            "homestead_anchor": [200, 64, -100],
+            "locations": {
+                "farm": [
+                    {"x": 148, "y": 65, "z": -143,
+                     "tags": ["food", "pig_herd"]},
+                    {"x": 900, "y": 65, "z": 900,
+                     "tags": ["food", "cow_herd"]},
+                ]
+            },
+        },
+    )
+
+    recovered = recover_food_from_known_sources(
+        SimpleNamespace(),
+        state,
+        {"pig": ("minecraft:porkchop", "minecraft:cooked_porkchop"),
+         "cow": ("minecraft:beef", "minecraft:cooked_beef")},
+        withdraw_fn=lambda *_args, **_kwargs: -1,
+        eat_fn=lambda *_args, **_kwargs: calls.append(("eat",)) or len(calls) > 1,
+        visit_herd_fn=lambda _client, _requirements, animal, **kwargs:
+            calls.append((animal, kwargs["location"])) or True,
+    )
+
+    assert recovered
+    assert calls == [("pig", [148, 65, -143]), ("eat",)]
 
 
 def test_submerged_food_search_reaches_dry_surface_even_above_y_floor(

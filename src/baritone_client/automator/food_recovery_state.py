@@ -6,6 +6,7 @@ from ..common.combat import eat_until_hunger
 from ..common.farming import harvest_wheat_farm
 from ..common.husbandry import visit_known_herd_for_loot
 from ..common.inventory import withdraw_required_from_catalog
+from .phases.iron_age_food import FOOD_ANIMALS
 
 
 _STORED_FOOD_TARGETS = {
@@ -20,6 +21,11 @@ _STORED_FOOD_TARGETS = {
     "minecraft:cooked_salmon": 8,
     "minecraft:golden_carrot": 8,
 }
+
+
+def recover_known_food(client, state) -> bool:
+    """Run the shared checkpointed-food recovery policy."""
+    return recover_food_from_known_sources(client, state, FOOD_ANIMALS)
 
 
 def get_food_search_center(
@@ -146,6 +152,8 @@ def recover_food_from_known_sources(
         if state
         else {}
     )
+    if not (isinstance(source, dict) and source.get("verified")) and state:
+        source = _nearest_verified_food_location(state)
     location = source.get("location") if isinstance(source, dict) else None
     if not (
         isinstance(location, (list, tuple))
@@ -174,3 +182,37 @@ def recover_food_from_known_sources(
             f"the source after {failures} failed visits."
         )
     return False
+
+
+def _nearest_verified_food_location(state) -> dict:
+    """Return the closest persisted food landmark that is not retired."""
+    locations = state.custom_data.get("locations", {})
+    farms = locations.get("farm", []) if isinstance(locations, dict) else []
+    if not isinstance(farms, list):
+        return {}
+    anchor = state.custom_data.get("homestead_anchor")
+    if not isinstance(anchor, (list, tuple)) or len(anchor) < 3:
+        anchor = state.custom_data.get("base_location")
+    if not isinstance(anchor, (list, tuple)) or len(anchor) < 3:
+        anchor = (0, 0, 0)
+    candidates = []
+    for record in farms:
+        if not isinstance(record, dict) or "food" not in record.get("tags", []):
+            continue
+        if record.get("verified") is False:
+            continue
+        if not all(key in record for key in ("x", "y", "z")):
+            continue
+        distance = ((float(record["x"]) - float(anchor[0])) ** 2 +
+                    (float(record["z"]) - float(anchor[2])) ** 2) ** 0.5
+        tags = record.get("tags", [])
+        animal_type = next(
+            (tag[:-5] for tag in tags if tag.endswith("_herd")), "cow"
+        )
+        candidates.append((distance, {
+            "location": [int(record["x"]), int(record["y"]), int(record["z"])],
+            "animal_type": animal_type,
+            "verified": True,
+            "raw_item": f"minecraft:{'porkchop' if animal_type == 'pig' else animal_type}",
+        }))
+    return min(candidates, key=lambda item: item[0])[1] if candidates else {}

@@ -24,7 +24,7 @@ from ...common.tasks import (
     SurvivalRecoveryRequired,
     TaskResult,
 )
-
+from ..food_recovery_state import recover_known_food
 # Modular Action Imports
 from ...actions import (
     CombatAction,
@@ -40,14 +40,11 @@ from ...actions import (
     SurvivalPhase,
 )
 from ...core.interfaces import ActionContext
-
-
 def gather_wool(client, timeout: int = 90) -> bool:
     """Gather 3 wool of the SAME color efficiently."""
     print("Action: Gathering wool (Hunting sheep for bed)...")
     from ...common.inventory import count_item
     from ...common.combat import hunt_mobs
-    
     # Minecraft beds require 3 wool of the same color.
     wool_colors = [
         "white", "black", "gray", "light_gray", "brown", 
@@ -58,7 +55,6 @@ def gather_wool(client, timeout: int = 90) -> bool:
     current_wool_counts = {}
     best_color = "white"
     max_count = 0
-    
     for color in wool_colors:
         id = f"minecraft:{color}_wool"
         # Standardize color name for some items if needed
@@ -194,7 +190,10 @@ class InitialGatheringHandler(PhaseHandler):
         except Exception:
             pass
         if not recover_health(client, minimum_health=12.0):
-            if not acquire_emergency_food(client, minimum_health=12.0):
+            recovered = recover_known_food(client, state)
+            if not recovered and not acquire_emergency_food(
+                client, minimum_health=12.0
+            ):
                 raise SurvivalRecoveryRequired(
                     "initial gathering health remains below 12 after bounded recovery"
                 )
@@ -376,8 +375,7 @@ class InitialGatheringHandler(PhaseHandler):
             return True
         return False
 
-    @staticmethod
-    def _stabilize_gathering_hunger(client, minimum_food: int = 12) -> None:
+    def _stabilize_gathering_hunger(self, client, minimum_food: int = 12) -> None:
         """Establish a working hunger margin or yield without charging a retry."""
         transport = getattr(client, "transport", None)
         if transport is None:
@@ -396,6 +394,8 @@ class InitialGatheringHandler(PhaseHandler):
             return
         print(f"  Hunger low ({food}/20) before gathering; recovering food...")
         if eat_until_hunger(client, minimum_food=minimum_food):
+            return
+        if recover_known_food(client, getattr(self, "state", None)):
             return
         if acquire_emergency_food(
             client,

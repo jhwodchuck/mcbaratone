@@ -29,6 +29,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _attempt_survival_recovery_food(client, state) -> bool:
+    """Use checkpointed food landmarks before starting blind exploration."""
+    from .food_recovery_state import recover_food_from_known_sources
+    from .phases.iron_age_food import FOOD_ANIMALS
+
+    return recover_food_from_known_sources(client, state, FOOD_ANIMALS)
+
+
 class PhaseHandler(ABC):
     """Abstract base class for phase handlers."""
     
@@ -286,6 +294,10 @@ class PhaseExecutor:
                 # chance to recover before the next attempt instead of a
                 # bare pause.
                 try:
+                    if _attempt_survival_recovery_food(self.client, self.state):
+                        time.sleep(2.0)
+                        return False
+
                     from ..common.combat import acquire_emergency_food
 
                     acquire_emergency_food(self.client, minimum_food=14, timeout=120.0)
