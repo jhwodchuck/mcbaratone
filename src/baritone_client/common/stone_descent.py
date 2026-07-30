@@ -22,7 +22,7 @@ def read_block_optional(
     y: int,
     z: int,
     *,
-    retries: int = 3,
+    retries: int = 5,
 ) -> Optional[str]:
     """Read a block ID through bounded transient bridge failures."""
     for attempt in range(max(1, retries)):
@@ -35,7 +35,11 @@ def read_block_optional(
         except Exception:
             pass
         if attempt + 1 < retries:
-            time.sleep(0.1)
+            time.sleep(0.5)
+    print(
+        "DEBUG: Block probe unavailable at "
+        f"({x}, {y}, {z}) after {max(1, retries)} attempts"
+    )
     return None
 
 

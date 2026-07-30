@@ -1523,7 +1523,7 @@ def test_manual_escape_descent_retries_transient_block_reads(monkeypatch):
         if route == "get_block":
             y = payload["y"]
             reads[y] = reads.get(y, 0) + 1
-            if reads[y] == 1:
+            if reads[y] <= 3:
                 raise TimeoutError("transient block read")
             return {
                 "id": "minecraft:mud" if y == 62 else "minecraft:air"
@@ -1533,6 +1533,7 @@ def test_manual_escape_descent_retries_transient_block_reads(monkeypatch):
         return {}
 
     transport.dispatch = dispatch
+    monkeypatch.setattr(stone_descent.time, "sleep", lambda _seconds: None)
 
     def goto_landing(_client, _x, y, _z, **_kwargs):
         position["y"] = y
