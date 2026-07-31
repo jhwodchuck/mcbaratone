@@ -608,7 +608,7 @@ class BootSequenceHandler(PhaseHandler):
                 client.transport.dispatch(
                     "mine",
                     {
-                        "blocks": ["minecraft:grass", "minecraft:tall_grass"],
+                        "blocks": ["minecraft:short_grass", "minecraft:tall_grass"],
                         "quantity": max(4, len(available)),
                     },
                 )
