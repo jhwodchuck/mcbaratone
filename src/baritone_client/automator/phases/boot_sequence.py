@@ -210,6 +210,18 @@ class BootSequenceHandler(PhaseHandler):
                 self._homestead.record(homestead)
                 raise IncrementalProgressRequired(f"boot step complete: {step_name}")
 
+            # Persist on the no-progress path too. A step that fails to reach
+            # its goal can still have recorded essential bookkeeping, and
+            # dropping it makes some failures permanent:
+            #   - light_perimeter un-verifies torch_supply when the torch
+            #     stack is empty so the supply step re-runs and crafts sticks.
+            #     Discarding that left torch_supply verified=True forever, and
+            #     Bot16 sat at 8/9 steps and 16/24 torches cycling "Need
+            #     torches (or coal/charcoal and sticks to craft)" 129 times
+            #     with 8 planks and 2 charcoal in its inventory.
+            #   - the same step stores its ground-adjusted perimeter ring, so
+            #     the whole ring was re-derived from scratch every cycle.
+            self._homestead.record(homestead)
             state.record_phase_payload(Phase.BOOT_SEQUENCE, {"homestead": homestead})
             return TaskResult.fail(f"BOOT step {step_name} did not improve progress")
 

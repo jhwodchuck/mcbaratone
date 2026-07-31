@@ -1042,3 +1042,49 @@ def test_empty_torches_reopens_supply_even_with_fuel_left(monkeypatch):
     assert homestead_payload["steps"]["torch_supply"]["verified"] is False, (
         "an empty torch stack must reopen torch_supply regardless of fuel"
     )
+
+
+def test_no_progress_step_still_persists_homestead_bookkeeping(monkeypatch):
+    """record() was called only when a step reported progress, so bookkeeping
+    written during a FAILED step was discarded. light_perimeter un-verifies
+    torch_supply when the torch stack is empty, so the supply step re-runs and
+    crafts sticks -- but that un-verify never survived. Live 2026-07-31: Bot16
+    sat at 8/9 steps and 16/24 torches cycling "Need torches (or coal/charcoal
+    and sticks to craft)" 129 times with 8 planks and 2 charcoal in hand,
+    because torch_supply stayed verified=True in the checkpoint forever."""
+    state = _state_with_payloads(
+        {
+            "homestead": {
+                "anchor": [0, 64, 0],
+                "steps": {
+                    "dry_anchor": {"verified": True},
+                    "wood_reserve": {"verified": True},
+                    "plank_reserve": {"verified": True},
+                    "stone_reserve": {"verified": True},
+                    "infrastructure": {"verified": True},
+                    "micro_farm": {"verified": True},
+                    "charcoal_supply": {"verified": True},
+                    "torch_supply": {"verified": True},
+                    "light_perimeter": {"verified": False},
+                },
+            }
+        }
+    )
+    handler = BootSequenceHandler()
+    transport, _ = _transport_for_blocks()
+
+    def failing_light_perimeter(_client, _state, homestead):
+        # Exactly what run_light_perimeter does when place_torch fails.
+        handler._homestead.step(homestead, "torch_supply")["verified"] = False
+        return False
+
+    monkeypatch.setattr(handler, "_run_light_perimeter_step", failing_light_perimeter)
+    monkeypatch.setattr(handler, "_enforce_anchor_and_pacing", lambda *_a, **_k: None)
+
+    result = handler.execute(transport, SimpleNamespace(), state)
+
+    assert not result.success
+    persisted = state.custom_data["homestead"]["steps"]["torch_supply"]["verified"]
+    assert persisted is False, (
+        "an un-verify recorded during a failed step must survive to the checkpoint"
+    )
