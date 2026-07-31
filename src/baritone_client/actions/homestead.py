@@ -218,6 +218,16 @@ class IncrementalHomestead:
                 raise SurvivalRecoveryRequired("critical health before construction")
             raise PacingHoldRequired("health below 18 before construction")
         food = int(state.get("food_level", state.get("food", 0)) or 0)
+        # Eat before holding. These gates are about *having* a survival
+        # margin, and a bot carrying food already has one -- it just has not
+        # consumed it. Yielding instead of eating deadlocks: nothing else in
+        # the loop eats at these levels, so the hold repeats forever.
+        # Measured live 2026-07-31 across an 18-bot fleet: not one bot had
+        # ever completed BOOT_SEQUENCE, and every one was cycling
+        # "yielded to pacing_hold; recovery budget 0/6". Bot12 was held on
+        # food=15 while carrying 6 mutton and 1 chicken.
+        if food < 20:
+            food = self._eat_carried_food(minimum_food=18, current_food=food)
         if food < 16:
             if food <= 10:
                 raise SurvivalRecoveryRequired("critical hunger before construction")
@@ -599,19 +609,36 @@ class IncrementalHomestead:
         return bool(ground) and "water" not in ground and "lava" not in ground
 
     def _has_edible(self) -> bool:
+        # Raw meat and fish count. They restore less hunger than cooked, but a
+        # bot carrying six raw mutton unambiguously has a survival margin --
+        # and treating it as having none was half of the live deadlock (see
+        # require_construction_pacing). Uses the same canonical list the
+        # survival code eats from, so the two can never disagree about what
+        # counts as food.
+        from ..common.combat import EMERGENCY_FOOD_ITEMS
+
         return any(
-            count_item(self.client, item) > 0
-            for item in (
-                "minecraft:bread",
-                "minecraft:cooked_beef",
-                "minecraft:cooked_chicken",
-                "minecraft:cooked_cod",
-                "minecraft:cooked_mutton",
-                "minecraft:cooked_porkchop",
-                "minecraft:cooked_salmon",
-                "minecraft:golden_carrot",
-            )
+            count_item(self.client, item) > 0 for item in EMERGENCY_FOOD_ITEMS
         )
+
+    def _eat_carried_food(self, *, minimum_food: int, current_food: int) -> int:
+        """Consume carried food, returning the resulting hunger level.
+
+        Best-effort: a failure here must not break the pacing check, which
+        will simply fall through to its normal hold.
+        """
+        try:
+            from ..common.combat import eat_until_hunger
+
+            eat_until_hunger(self.client, minimum_food=minimum_food)
+            refreshed = self._state()
+            return int(
+                refreshed.get("food_level", refreshed.get("food", current_food))
+                or current_food
+            )
+        except Exception as exc:  # bridge hiccup, nothing edible, etc.
+            print(f"  Pacing: could not eat carried food ({exc})")
+            return current_food
 
     def _wood_equivalents(self) -> int:
         logs = sum(count_item(self.client, item) for item in LOG_ITEMS)

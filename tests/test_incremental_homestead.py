@@ -778,3 +778,90 @@ def test_homestead_prefers_nearest_infrastructure_record():
 
     record = runner._infrastructure_record([0, 64, 0])
     assert record["origin"] == [0, 64, 0]
+
+
+def test_pacing_eats_carried_food_instead_of_holding_forever(monkeypatch):
+    """Live 2026-07-31, 18-bot fleet: not one bot had EVER completed
+    BOOT_SEQUENCE. Every one cycled "yielded to pacing_hold; recovery budget
+    0/6". Bot12 was held on food=15 while carrying 6 mutton and 1 chicken --
+    nothing in the loop eats at that level, so the hold repeated forever.
+    The gate is about having a survival margin; a bot carrying food has one
+    and just needs to consume it."""
+    from baritone_client.actions.homestead import IncrementalHomestead
+
+    hunger = {"food": 15}
+    ate = []
+
+    homestead = IncrementalHomestead.__new__(IncrementalHomestead)
+    homestead.client = SimpleNamespace()
+    monkeypatch.setattr(
+        IncrementalHomestead,
+        "_state",
+        lambda _self: {
+            "dimension": "minecraft:overworld",
+            "world_time": 1000,
+            "health": 20.0,
+            "food_level": hunger["food"],
+        },
+    )
+
+    def fake_eat(_client, minimum_food=14):
+        ate.append(minimum_food)
+        hunger["food"] = 20
+        return True
+
+    monkeypatch.setattr(
+        "baritone_client.common.combat.eat_until_hunger", fake_eat
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.homestead.count_item", lambda *_a: 0
+    )
+
+    # Must NOT raise: it should eat and proceed.
+    homestead.require_construction_pacing()
+    assert ate, "should have eaten carried food rather than holding"
+
+
+def test_pacing_counts_raw_meat_as_edible(monkeypatch):
+    """_has_edible only counted COOKED food, so a bot carrying six raw mutton
+    was treated as having no survival margin -- the other half of the live
+    deadlock."""
+    from baritone_client.actions.homestead import IncrementalHomestead
+
+    homestead = IncrementalHomestead.__new__(IncrementalHomestead)
+    homestead.client = SimpleNamespace()
+    monkeypatch.setattr(
+        "baritone_client.actions.homestead.count_item",
+        lambda _c, item: 6 if item == "minecraft:mutton" else 0,
+    )
+
+    assert homestead._has_edible() is True
+
+
+def test_pacing_still_holds_when_truly_out_of_food(monkeypatch):
+    """The gate's real purpose survives: no food carried and hunger low still
+    holds rather than starting a build."""
+    from baritone_client.actions.homestead import IncrementalHomestead
+
+    homestead = IncrementalHomestead.__new__(IncrementalHomestead)
+    homestead.client = SimpleNamespace()
+    monkeypatch.setattr(
+        IncrementalHomestead,
+        "_state",
+        lambda _self: {
+            "dimension": "minecraft:overworld",
+            "world_time": 1000,
+            "health": 20.0,
+            "food_level": 14,
+        },
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.combat.eat_until_hunger",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.homestead.count_item", lambda *_a: 0
+    )
+
+    with pytest.raises(PacingHoldRequired):
+        homestead.require_construction_pacing()
