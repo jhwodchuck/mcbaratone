@@ -570,6 +570,18 @@ class IncrementalHomestead:
         intended = self._coordinates(record.get("intended"))
         if not intended:
             intended = perimeter_ring(anchor)[:24]
+        # perimeter_ring puts every position at anchor_y+1, which only works on
+        # perfectly flat ground. On real terrain most of the ring floats in
+        # mid-air, and a torch needs solid support -- so robust_place fails
+        # forever and light_perimeter can never verify. Live 2026-07-31: Bot16
+        # had reached the last of nine homestead steps with 4 torches in hand,
+        # and five of its first six ring targets had air directly beneath
+        # them. Re-seat each column onto its actual local surface. Idempotent:
+        # a position already sitting on ground is returned unchanged.
+        intended = self._ground_adjusted_ring(intended)
+        if not intended:
+            record["verified"] = False
+            return False
         record["intended"] = [list(position) for position in intended]
         observed = [position for position in intended if self._is_torch(position)]
         missing, verified = partition_light_coordinates(intended, observed)
@@ -712,6 +724,80 @@ class IncrementalHomestead:
             if position is not None and self._block_at(position) in CROP_BLOCKS:
                 return True
         return False
+
+    # Exact names, not substrings: "grass_block" is solid ground while
+    # "short_grass" is a plant, and a substring test on "grass" rejects both.
+    _UNSUPPORTIVE_NAMES = frozenset(
+        {
+            "air",
+            "cave_air",
+            "void_air",
+            "water",
+            "lava",
+            "short_grass",
+            "tall_grass",
+            "fern",
+            "large_fern",
+            "dead_bush",
+            "seagrass",
+            "tall_seagrass",
+            "kelp",
+            "kelp_plant",
+            "vine",
+            "snow",
+            "torch",
+            "wall_torch",
+            "soul_torch",
+        }
+    )
+    # Anything a torch cannot displace when placed into the target slot.
+    _NON_REPLACEABLE_EXTRA = frozenset({"water", "lava"})
+
+    @classmethod
+    def _is_supportive(cls, block_id: str) -> bool:
+        if not block_id:
+            return False
+        name = block_id.split(":")[-1]
+        if name in cls._UNSUPPORTIVE_NAMES:
+            return False
+        return not (name.endswith("_sapling") or name.endswith("_sign"))
+
+    @classmethod
+    def _is_replaceable(cls, block_id: str) -> bool:
+        if not block_id:
+            return False
+        name = block_id.split(":")[-1]
+        if name in cls._NON_REPLACEABLE_EXTRA:
+            return False
+        return name in cls._UNSUPPORTIVE_NAMES
+
+    def _ground_adjusted_ring(
+        self,
+        positions: Sequence[Sequence[int]],
+        *,
+        search: int = 6,
+    ) -> list[tuple[int, int, int]]:
+        """Re-seat each ring column onto the first solid block beneath it.
+
+        Scans a bounded window up and down from the nominal height so a ring
+        laid over a slope still resolves. Columns with no solid support in
+        range are dropped rather than kept as unplaceable targets that would
+        block the step forever.
+        """
+        adjusted: list[tuple[int, int, int]] = []
+        for position in positions:
+            x, y, z = (int(value) for value in position)
+            placed = None
+            for candidate_y in range(y + search, y - search - 1, -1):
+                if not self._is_supportive(self._block_at((x, candidate_y - 1, z))):
+                    continue
+                if not self._is_replaceable(self._block_at((x, candidate_y, z))):
+                    continue
+                placed = (x, candidate_y, z)
+                break
+            if placed is not None and placed not in adjusted:
+                adjusted.append(placed)
+        return adjusted
 
     def _is_torch(self, position: Sequence[int]) -> bool:
         return self._block_at(position) in {

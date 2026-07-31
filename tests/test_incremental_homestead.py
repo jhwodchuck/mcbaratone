@@ -285,6 +285,12 @@ def test_boot_light_perimeter_repairs_one_missing_torch_per_invocation(monkeypat
         (1, 65, 0): "minecraft:torch",
         (2, 65, 0): "minecraft:air",
         (3, 65, 0): "minecraft:air",
+        # Torches need something to stand on. Without this the ring positions
+        # float in a void and are correctly refused -- which is the live bug
+        # _ground_adjusted_ring exists to catch (see Bot16, 2026-07-31).
+        (1, 64, 0): "minecraft:stone",
+        (2, 64, 0): "minecraft:stone",
+        (3, 64, 0): "minecraft:stone",
     }
     state = _state_with_payloads({"homestead": homestead_payload})
     state.custom_data["homestead"]["steps"]["light_perimeter"]["intended"] = [
@@ -929,3 +935,75 @@ def test_return_home_hold_names_the_actual_failing_condition(monkeypatch):
 
     assert "food" in msg.lower(), "must name food so hunger recovery triggers"
     assert "daylight" not in msg.lower(), "must not blame daylight in daytime"
+
+
+def _ring_homestead(blocks):
+    """blocks: {(x,y,z): id}; anything absent is air."""
+    from baritone_client.actions.homestead import IncrementalHomestead
+
+    h = IncrementalHomestead.__new__(IncrementalHomestead)
+    h.client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, payload: (
+                {"id": blocks.get(
+                    (payload["x"], payload["y"], payload["z"]), "minecraft:air"
+                )}
+                if route == "get_block"
+                else {}
+            )
+        )
+    )
+    return h
+
+
+def test_perimeter_ring_is_reseated_onto_real_ground():
+    """perimeter_ring puts every position at anchor_y+1, which only works on
+    flat ground. On real terrain most of the ring floats and a torch cannot be
+    placed. Live 2026-07-31: Bot16 reached the last of nine homestead steps
+    with 4 torches in hand and five of its first six ring targets had air
+    directly beneath them."""
+    # Nominal target y=106, but the ground here is two blocks lower.
+    blocks = {(10, 103, 5): "minecraft:stone"}
+    h = _ring_homestead(blocks)
+
+    adjusted = h._ground_adjusted_ring([(10, 106, 5)])
+
+    assert adjusted == [(10, 104, 5)], "torch must sit directly on the stone"
+
+
+def test_ring_position_already_on_ground_is_unchanged():
+    blocks = {(10, 105, 5): "minecraft:grass_block"}
+    h = _ring_homestead(blocks)
+
+    assert h._ground_adjusted_ring([(10, 106, 5)]) == [(10, 106, 5)]
+
+
+def test_ring_drops_columns_with_no_support_in_range():
+    """A column over a void must be dropped, not kept as an unplaceable target
+    that blocks the step forever."""
+    h = _ring_homestead({})  # everything is air
+
+    assert h._ground_adjusted_ring([(10, 106, 5)]) == []
+
+
+def test_ring_does_not_seat_a_torch_on_water():
+    h = _ring_homestead({(10, 104, 5): "minecraft:water"})
+
+    assert h._ground_adjusted_ring([(10, 106, 5)]) == []
+
+
+def test_grass_block_is_valid_torch_support():
+    """Substring matching on "grass" rejected grass_block (solid ground) along
+    with short_grass (a plant). Exact names only."""
+    from baritone_client.actions.homestead import IncrementalHomestead as H
+
+    assert H._is_supportive("minecraft:grass_block")
+    assert H._is_supportive("minecraft:stone")
+    assert not H._is_supportive("minecraft:short_grass")
+    assert not H._is_supportive("minecraft:air")
+    assert not H._is_supportive("minecraft:water")
+    # A torch may replace grass/air but never water or lava.
+    assert H._is_replaceable("minecraft:air")
+    assert H._is_replaceable("minecraft:short_grass")
+    assert not H._is_replaceable("minecraft:water")
+    assert not H._is_replaceable("minecraft:stone")
