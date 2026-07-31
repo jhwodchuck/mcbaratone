@@ -50,6 +50,7 @@ MINIMUM_FOOD_SEARCH_Y = 55
 EXPECTED_SURFACE_Y = 63
 MINIMUM_IMMEDIATE_AQUATIC_HUNT_HEALTH = 12.0
 MAX_IMMEDIATE_AQUATIC_FOOD_DISTANCE = 4.5
+MAX_RECENT_DRY_ANCHOR_DISTANCE = 96.0
 
 
 def _expected_food_search_y(
@@ -108,6 +109,91 @@ def _is_safe_immediate_aquatic_target(
     )
 
 
+def _remember_dry_food_anchor(
+    client: Any,
+    position: tuple[int, int, int],
+) -> None:
+    """Keep a controller-local escape point for the current food attempt."""
+    client._emergency_food_dry_anchor = tuple(int(value) for value in position)
+
+
+def _return_to_recent_dry_food_anchor(
+    client: Any,
+    state: Dict,
+    origin: tuple[int, int, int],
+    *,
+    timeout: float = 30.0,
+) -> bool:
+    """Make one health-monitored return to recently verified dry ground."""
+    raw_anchor = getattr(client, "_emergency_food_dry_anchor", None)
+    if not isinstance(raw_anchor, (list, tuple)) or len(raw_anchor) != 3:
+        return False
+    try:
+        anchor = tuple(int(value) for value in raw_anchor)
+    except (TypeError, ValueError):
+        return False
+    distance = (
+        (anchor[0] - origin[0]) ** 2 + (anchor[2] - origin[2]) ** 2
+    ) ** 0.5
+    if distance > MAX_RECENT_DRY_ANCHOR_DISTANCE:
+        return False
+    if not _is_dry_food_search_surface(client, anchor):
+        return False
+
+    initial_health = float(state.get("health", 0.0) or 0.0)
+    if initial_health < MINIMUM_IMMEDIATE_AQUATIC_HUNT_HEALTH:
+        return False
+    print(
+        "RECOVERY: returning from water to recent dry food-search anchor "
+        f"{anchor}"
+    )
+    from .surface_recovery import _configure_surface_pathing
+
+    _configure_surface_pathing(client)
+    client.transport.dispatch(
+        "goto",
+        {"x": anchor[0], "y": anchor[1], "z": anchor[2]},
+    )
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    idle_checks = 0
+    try:
+        while time.monotonic() < deadline:
+            current_state = client.transport.dispatch("get_state", {})
+            health = float(current_state.get("health", 0.0) or 0.0)
+            if (
+                current_state.get("is_dead", current_state.get("dead", False))
+                or health <= 0.0
+                or health < initial_health - 0.5
+            ):
+                print(
+                    "RECOVERY: dry-anchor return lost health; "
+                    "aborting before another drowning cycle"
+                )
+                return False
+            current = block_position(current_state)
+            current_distance = sum(
+                (current[index] - anchor[index]) ** 2
+                for index in range(3)
+            ) ** 0.5
+            if (
+                current_distance <= 3.0
+                and _is_dry_food_search_surface(client, current)
+            ):
+                _remember_dry_food_anchor(client, current)
+                print(f"RECOVERY: returned to dry food-search anchor {current}")
+                return True
+            if current_state.get("is_pathing", True):
+                idle_checks = 0
+            else:
+                idle_checks += 1
+                if idle_checks >= 2:
+                    return False
+            time.sleep(0.5)
+    finally:
+        client.transport.dispatch("cancel", {})
+    return False
+
+
 def reach_food_search_surface(client: Any, state: Dict) -> bool:
     """Reach dry Overworld surface terrain before blind food exploration."""
     position = block_position(state)
@@ -119,6 +205,14 @@ def reach_food_search_surface(client: Any, state: Dict) -> bool:
         client, state
     )
     if position[1] >= expected_y - 3 and not in_water:
+        _remember_dry_food_anchor(client, position)
+        return True
+
+    if in_water and _return_to_recent_dry_food_anchor(
+        client,
+        state,
+        position,
+    ):
         return True
 
     # A fish already within melee reach can be a bounded food action. Never
@@ -171,9 +265,10 @@ def reach_food_search_surface(client: Any, state: Dict) -> bool:
             origin=position,
             expected_y=expected_y,
         )
-    return recovered is not None and _is_dry_food_search_surface(
-        client, recovered
-    )
+    if recovered is None or not _is_dry_food_search_surface(client, recovered):
+        return False
+    _remember_dry_food_anchor(client, recovered)
+    return True
 
 
 def prepare_food_search_state(client: Any, state: Dict) -> Optional[Dict]:
