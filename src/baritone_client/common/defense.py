@@ -212,11 +212,14 @@ def _conditional_is_active(
     distance: float,
 ) -> bool:
     explicit = _explicit_aggression(entity, player_state)
+    if entity_type == "spider":
+        # Mob targets can briefly clear between melee hits.  A daytime spider
+        # already inside contact range is therefore unsafe even when the
+        # sampled aggression flag is false.
+        world_time = int(player_state.get("world_time", 13000)) % 24000
+        return explicit is True or world_time >= 12000 or distance <= 5.0
     if explicit is not None:
         return explicit
-    if entity_type == "spider":
-        world_time = int(player_state.get("world_time", 13000)) % 24000
-        return world_time >= 12000 or distance <= 5.0
     if entity_type == "enderman":
         # Without an anger signal, only treat immediate contact range as an
         # active threat.  Merely seeing an Enderman must not start a fight.

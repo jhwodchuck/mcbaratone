@@ -47,6 +47,20 @@ def test_conditional_enderman_requires_aggression_or_contact():
     assert [threat.entity["id"] for threat in threats] == [2]
 
 
+def test_daytime_spider_in_melee_range_overrides_stale_calm_metadata():
+    """A spider at contact range is unsafe even between target updates."""
+    distant = _entity(1, "spider", 8, 8, 0, is_aggressive=False)
+    touching = _entity(2, "spider", 3, 3, 0, is_aggressive=False)
+    state = {
+        "world_time": 1000,
+        "block_position": {"x": 0, "y": 64, "z": 0},
+    }
+
+    threats = assess_threats([distant, touching], state)
+
+    assert [threat.entity["id"] for threat in threats] == [2]
+
+
 def test_closing_ranged_threat_outranks_nearer_basic_melee():
     zombie = _entity(1, "zombie", 5, 5, 0)
     skeleton = _entity(2, "skeleton", 9, 9, 0)
