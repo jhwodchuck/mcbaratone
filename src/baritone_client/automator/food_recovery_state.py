@@ -20,6 +20,17 @@ _STORED_FOOD_TARGETS = {
     "minecraft:cooked_salmon": 8,
     "minecraft:golden_carrot": 8,
 }
+MAX_FOOD_SEARCH_ANCHOR_DRIFT = 96.0
+
+
+def _horizontal_distance(
+    first: tuple[float, float, float],
+    second: tuple[float, float, float],
+) -> float:
+    """Return horizontal distance between two world positions."""
+    return (
+        (first[0] - second[0]) ** 2 + (first[2] - second[2]) ** 2
+    ) ** 0.5
 
 
 def recover_known_food(client, state) -> bool:
@@ -68,6 +79,19 @@ def get_food_search_anchor(
     recovery = state.custom_data.setdefault("survival_recovery", {})
     anchor = recovery.get("food_search_anchor")
     if isinstance(anchor, (list, tuple)) and len(anchor) == 3:
+        persisted = tuple(float(value) for value in anchor)
+        durable = _durable_food_search_anchor(state)
+        if (
+            durable is not None
+            and _horizontal_distance(persisted, durable)
+            > MAX_FOOD_SEARCH_ANCHOR_DRIFT
+        ):
+            print(
+                "RECOVERY: rebasing stale food-search anchor to "
+                f"re-anchored home {durable}"
+            )
+            recovery["food_search_anchor"] = list(durable)
+            return durable
         live = read_state(client, "Food recovery center validation") or {}
         position = live.get("block_position", live.get("position", {}))
         if all(axis in position for axis in ("x", "z")):
@@ -91,7 +115,7 @@ def get_food_search_anchor(
                 )
                 recovery["food_search_anchor"] = list(rebased)
                 return rebased
-        return tuple(float(value) for value in anchor)
+        return persisted
 
     live = read_state(client, "Food recovery origin") or {}
     position = live.get("block_position", live.get("position", {}))
