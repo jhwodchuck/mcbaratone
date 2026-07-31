@@ -41,6 +41,24 @@ from ...actions import (
     FinalSleepAction,
 )
 
+
+def _surface_soil(block_id, candidate, max_rise: int = 6):
+    """Promote a buried soil search hit to tillable soil with air above it."""
+    if candidate is None:
+        return None
+    x, y, z = (int(value) for value in candidate)
+    tillable = {"minecraft:farmland", "minecraft:dirt", "minecraft:grass_block"}
+    air = {"minecraft:air", "minecraft:cave_air"}
+    for rise in range(max_rise + 1):
+        surface_y = y + rise
+        if (
+            block_id(x, surface_y, z) in tillable
+            and block_id(x, surface_y + 1, z) in air
+        ):
+            return (x, surface_y, z)
+    return None
+
+
 class BootSequenceHandler(PhaseHandler):
     """Phase 1: Shelter, Food, Tools - Hour 0-1."""
     
@@ -561,7 +579,7 @@ class BootSequenceHandler(PhaseHandler):
                 ["minecraft:farmland", "minecraft:dirt", "minecraft:grass_block"],
                 radius=20,
             )
-            if soil is not None:
+            if (soil := _surface_soil(block_id, soil)) is not None:
                 center = tuple(int(value) for value in soil)
             else:
                 water = find_nearby_block(client, ["minecraft:water"], radius=16)

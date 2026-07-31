@@ -84,3 +84,39 @@ def test_crop_bootstrap_prefers_dry_soil_over_natural_water(monkeypatch):
 
     assert not handler._plant_crops(client)
     assert destinations == [(10, 65, 10)]
+
+
+def test_crop_bootstrap_promotes_buried_dirt_candidate_to_surface(monkeypatch):
+    """Dirt search hits below topsoil must not become underground plots."""
+    destinations = []
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_block":
+                block_y = payload["y"]
+                if block_y in {64, 65}:
+                    return {"id": "minecraft:dirt"}
+                if block_y == 66:
+                    return {"id": "minecraft:grass_block"}
+                return {"id": "minecraft:air"}
+            return {}
+
+    handler = BootSequenceHandler()
+    handler.state = SimpleNamespace(custom_data={})
+    client = SimpleNamespace(transport=Transport())
+
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.find_nearby_block",
+        lambda _client, block_ids, **_kwargs: (
+            (10, 64, 10) if "minecraft:dirt" in block_ids else None
+        ),
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.goto",
+        lambda _client, x, y, z, **_kwargs: destinations.append((x, y, z)) or True,
+    )
+    monkeypatch.setattr(boot_sequence, "count_item", lambda *_args: 0)
+    monkeypatch.setattr(boot_sequence.time, "sleep", lambda _seconds: None)
+
+    assert not handler._plant_crops(client)
+    assert destinations == [(10, 67, 10)]
