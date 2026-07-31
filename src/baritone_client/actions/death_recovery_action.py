@@ -9,7 +9,7 @@ from ..core.exceptions import TransportError
 from ..actions.base import BaseAction
 from ..common.nether import find_nearest_portal
 from ..common import goto
-from ..common.combat import secure_recovery_area
+from ..common.combat import defend_or_flee, secure_recovery_area
 from ..common.inventory import get_inventory, reset_inventory_cache
 from ..automator.state_manager import Phase
 from .death_recovery_state import (
@@ -208,6 +208,28 @@ def _checkpointed_retreat(state) -> Optional[Tuple[int, int, int]]:
     return None
 
 
+def _guard_grave_approach(client) -> None:
+    """Abort a naked grave route as soon as survival needs intervention."""
+    state = client.transport.dispatch("get_state", {})
+    health = float(state.get("health", 20) or 0)
+    food = int(state.get("food_level", 20) or 0)
+    if health < 12.0 or food < 6:
+        print(
+            "RECOVERY: abandoning grave approach at unsafe survival margin "
+            f"(health={health:.1f}, food={food})"
+        )
+    elif not defend_or_flee(client):
+        return
+    else:
+        print(
+            "RECOVERY: abandoning grave approach after combat-defense "
+            "intervention"
+        )
+    client._last_navigation_survival_abort = True
+    client.transport.dispatch("cancel", {})
+    raise RuntimeError("unsafe grave approach interrupted")
+
+
 def _reach_overworld_grave(
     client,
     death_coords: Tuple[int, int, int],
@@ -230,11 +252,12 @@ def _reach_overworld_grave(
             death_coords[1],
             death_coords[2],
             timeout=120,
+            on_tick=lambda: _guard_grave_approach(client),
         )
         if getattr(client, "_last_navigation_survival_abort", False):
             print(
-                "RECOVERY: abandoning submerged grave approach after "
-                "surfacing intervention"
+                "RECOVERY: abandoning unsafe grave approach after "
+                "survival intervention"
             )
             return False
         final_state = client.transport.dispatch("get_state", {})

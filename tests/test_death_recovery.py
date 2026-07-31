@@ -556,6 +556,36 @@ def test_submerged_grave_approach_stops_after_first_survival_abort(monkeypatch):
     assert approaches == [True]
 
 
+def test_grave_approach_aborts_after_first_combat_intervention(monkeypatch):
+    transport = RecoveryTransport({})
+    transport.dead = False
+    client = SimpleNamespace(transport=transport)
+    approaches = []
+
+    monkeypatch.setattr(
+        death_recovery_action,
+        "defend_or_flee",
+        lambda _client: True,
+        raising=False,
+    )
+
+    def guarded_goto(_client, *_args, on_tick=None, **_kwargs):
+        approaches.append(True)
+        assert on_tick is not None
+        try:
+            on_tick()
+        except RuntimeError:
+            return False
+        return True
+
+    monkeypatch.setattr(death_recovery_action, "goto", guarded_goto)
+
+    assert not death_recovery_action._reach_overworld_grave(
+        client, (94, 13, 353), attempts=2
+    )
+    assert approaches == [True]
+
+
 def test_lost_grave_still_fails_when_bootstrap_fails(monkeypatch):
     context = _context(
         {"x": -70, "y": 62, "z": -120, "dimension": "minecraft:overworld"}
