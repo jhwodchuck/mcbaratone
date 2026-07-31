@@ -1685,6 +1685,13 @@ def craft_recipe_manual(
         # spruce planks in hand.
         if selector in ("#planks", "_planks"):
             return item_id.endswith("_planks")
+        # Same class of bug as the plank selector above: a "#coals" placement
+        # never matched a literal item id, so a bot holding charcoal could not
+        # manually craft torches. Coal and charcoal are interchangeable for
+        # every recipe that burns them. Confirmed live: Bot16 held 6 charcoal
+        # and 4 sticks and failed torch_supply 50 times.
+        if selector in ("#coals", "any_coal"):
+            return item_id in ("minecraft:coal", "minecraft:charcoal")
         return item_id == selector
 
     def read_slots():

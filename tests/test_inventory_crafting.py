@@ -888,6 +888,8 @@ def test_manual_grid_recipe_shapes_match_vanilla():
     # Ingredient totals per vanilla; a wrong shape silently crafts nothing.
     expected_counts = {
         "minecraft:stick": {"#planks": 2},
+        # Vanilla torch is one coal OR charcoal above one stick, yielding 4.
+        "minecraft:torch": {"#coals": 1, "minecraft:stick": 1},
         "minecraft:bucket": {"minecraft:iron_ingot": 3},
         "minecraft:shield": {"#planks": 6, "minecraft:iron_ingot": 1},
         "minecraft:flint_and_steel": {"minecraft:iron_ingot": 1, "minecraft:flint": 1},
@@ -1374,3 +1376,47 @@ def test_stale_cache_would_report_phantom_without_reset():
     assert inventory.count_item(client, "minecraft:wooden_pickaxe") == 1
     # Clean up module state so the cache does not leak into other tests.
     inventory.reset_inventory_cache()
+
+
+def test_torch_recipe_accepts_charcoal_not_just_coal():
+    """Charcoal crafts torches exactly like coal. Requiring literal
+    minecraft:coal made a bot that had smelted its own charcoal report
+    "Missing ingredients for minecraft:torch" forever. Live 2026-07-31: Bot16
+    held 6 charcoal, 4 sticks and 0 coal and failed torch_supply 50 times --
+    the last step blocking the fleet's first ever BOOT_SEQUENCE completion."""
+    from baritone_client.automator.resource_manager import ResourceManager
+
+    recipe = ResourceManager.DEFAULT_RECIPES["minecraft:torch"]
+    ingredients = dict(recipe["ingredients"])
+    assert "#coals" in ingredients, "torch must accept coal OR charcoal"
+    assert "minecraft:coal" not in ingredients
+    assert "minecraft:charcoal" in ResourceManager.EQUIVALENCIES["#coals"]
+
+
+def test_torch_has_a_manual_grid_fallback():
+    """There was no manual fallback for torches, so when the bridge craft
+    reported "Missing ingredients" and auto_craft reported "Recipe not found",
+    every method failed."""
+    from baritone_client.common.inventory import _MANUAL_GRID_RECIPES
+
+    spec = _MANUAL_GRID_RECIPES["minecraft:torch"]
+    assert spec["output"] == 4
+    placements = dict((item, slot) for item, slot in spec["placements"])
+    # Fuel directly above the stick: slots 1 and 4 in a row-major 3x3.
+    assert placements["#coals"] == 1
+    assert placements["minecraft:stick"] == 4
+
+
+def test_manual_placement_selector_matches_charcoal():
+    """A "#coals" placement never matched a literal item id, so a bot holding
+    charcoal could not manually craft torches."""
+    import re
+    from pathlib import Path
+
+    source = Path("tests/functional/shared/inventory_ops.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"#coals", "any_coal"' in source, (
+        "the manual placement matcher must resolve the #coals selector"
+    )
+    assert "minecraft:charcoal" in source

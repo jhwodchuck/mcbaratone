@@ -149,7 +149,13 @@ class ResourceManager:
         "minecraft:crafting_table": {"ingredients": [("#planks", 4)], "yield": 1},
         "minecraft:furnace": {"ingredients": [("minecraft:cobblestone", 8)], "yield": 1},
         "minecraft:chest": {"ingredients": [("#planks", 8)], "yield": 1},
-        "minecraft:torch": {"ingredients": [("minecraft:coal", 1), ("minecraft:stick", 1)], "yield": 4},
+        # Charcoal crafts torches exactly like coal. Requiring literal
+        # minecraft:coal made a bot that had smelted its own charcoal report
+        # "Missing ingredients for minecraft:torch" forever. Live 2026-07-31:
+        # Bot16 held 6 charcoal, 4 sticks and 0 coal, and failed torch_supply
+        # 50 times -- it was the last step blocking the fleet's first ever
+        # BOOT_SEQUENCE completion. #coals already existed in EQUIVALENCIES.
+        "minecraft:torch": {"ingredients": [("#coals", 1), ("minecraft:stick", 1)], "yield": 4},
         # Wooden tools
         "minecraft:wooden_pickaxe": {"ingredients": [("#planks", 3), ("minecraft:stick", 2)], "yield": 1},
         "minecraft:wooden_sword": {"ingredients": [("#planks", 2), ("minecraft:stick", 1)], "yield": 1},

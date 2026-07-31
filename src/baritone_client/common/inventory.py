@@ -513,6 +513,19 @@ _MANUAL_GRID_RECIPES: Dict[str, Dict] = {
         ],
         "output": 4,
     },
+    # Fuel above a stick -> four torches. There was no manual fallback for
+    # torches at all, so when the bridge's craft reported "Missing
+    # ingredients" (it wants literal coal) and auto_craft reported "Recipe
+    # not found", every method failed. Live 2026-07-31: Bot16 sat on 6
+    # charcoal and 4 sticks failing torch_supply 50 times, the last step
+    # standing between the fleet and its first BOOT_SEQUENCE completion.
+    "minecraft:torch": {
+        "placements": [
+            ("#coals", 1),
+            ("minecraft:stick", 4),
+        ],
+        "output": 4,
+    },
     "minecraft:bucket": {
         "placements": [
             ("minecraft:iron_ingot", 1),
