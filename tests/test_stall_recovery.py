@@ -278,3 +278,83 @@ def test_full_rearm_is_rate_limited_so_it_cannot_hot_loop():
     assert rearm_any_abandoned_objectives(
         planner, custom_data, now=1400.0, cooldown_seconds=300.0
     ) == ["BOOT_SEQUENCE"], "and retry once the cooldown expires"
+
+
+def test_cooldown_stall_is_not_reported_as_terminal(monkeypatch):
+    """scripts/monitor/autonomous_run.py treats the exact string "Automation
+    stalled: no runnable objective remains." as a terminal safety stop and
+    refuses to relaunch. rearm_any_abandoned_objectives is rate limited, so
+    during its cooldown it returns nothing even though the graph recovers on
+    the next pass -- printing the terminal string then permanently kills a bot
+    for a condition that self-heals. Live 2026-07-31: Bot18 and Bot19 were
+    both stopped with "objective graph has no runnable objective; manual
+    repair required"."""
+    import io, contextlib
+    from baritone_client.automator.automator import EndGameAutomator
+
+    planner, _ = _abandoned_boot_planner()
+    auto = EndGameAutomator.__new__(EndGameAutomator)
+    auto.planner = planner
+    auto._stall_reported = False
+    auto.client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda *_a, **_k: {"health": 20.0, "food_level": 20}
+        )
+    )
+    # Cooldown already consumed, so the forced re-arm declines this pass.
+    auto.state = SimpleNamespace(custom_data={"last_full_objective_rearm": 1_000_000.0})
+    auto._persist_objective_progress = lambda: None
+    auto._save_checkpoint = lambda: None
+    monkeypatch.setattr(
+        "baritone_client.automator.stall_recovery.maintain_stalled_survival",
+        lambda _c: "holding",
+    )
+    monkeypatch.setattr(
+        "baritone_client.automator.automator.time.time", lambda: 1_000_100.0
+    )
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        auto._maintain_stalled_objective_graph()
+    out = buf.getvalue()
+
+    assert "no runnable objective remains" not in out, (
+        "must not emit the terminal string while the graph is still recoverable"
+    )
+    assert "recoverable" in out
+
+
+def test_truly_dead_graph_still_reports_terminal_stall(monkeypatch):
+    """A graph with nothing left to re-open is genuinely stuck and must still
+    surface the terminal string so the supervisor stops relaunching."""
+    import io, contextlib
+    from baritone_client.automator.automator import EndGameAutomator
+
+    planner = ObjectivePlanner(default_objectives())
+    for objective in planner.objectives:
+        objective.status = ObjStatus.DONE
+    # Nothing abandoned/blocked, nothing runnable, not complete.
+    planner._by_phase[Phase.MEGABASE_INIT].status = ObjStatus.PENDING
+    planner._by_phase[Phase.WORLD_UNLOCK].status = ObjStatus.PENDING
+
+    auto = EndGameAutomator.__new__(EndGameAutomator)
+    auto.planner = planner
+    auto._stall_reported = False
+    auto.client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda *_a, **_k: {"health": 20.0, "food_level": 20}
+        )
+    )
+    auto.state = SimpleNamespace(custom_data={})
+    auto._persist_objective_progress = lambda: None
+    auto._save_checkpoint = lambda: None
+    monkeypatch.setattr(
+        "baritone_client.automator.stall_recovery.maintain_stalled_survival",
+        lambda _c: "holding",
+    )
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        auto._maintain_stalled_objective_graph()
+
+    assert "no runnable objective remains" in buf.getvalue()

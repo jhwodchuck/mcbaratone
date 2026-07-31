@@ -271,7 +271,30 @@ class EndGameAutomator:
             self._stall_reported = False
             return
 
-        if not self._stall_reported:
+        # Only report a *terminal-looking* stall when the graph genuinely has
+        # nothing left to re-open. rearm_any_abandoned_objectives is rate
+        # limited, so during its cooldown it returns nothing even though the
+        # graph will recover on the next pass. scripts/monitor/autonomous_run.py
+        # treats the exact string "Automation stalled: no runnable objective
+        # remains." as a terminal safety stop and refuses to relaunch, so
+        # printing it during a cooldown permanently kills a bot for a
+        # condition that self-heals in five minutes. Live 2026-07-31: Bot18
+        # and Bot19 were both stopped this way with
+        # "objective graph has no runnable objective; manual repair required".
+        from .objective import ObjStatus
+
+        recoverable = any(
+            objective.status in {ObjStatus.BLOCKED, ObjStatus.ABANDONED}
+            for objective in self.planner.objectives
+        )
+        if recoverable:
+            if not self._stall_reported:
+                print(
+                    "  Objective graph is stalled but recoverable; waiting for "
+                    "the re-arm cooldown to expire."
+                )
+                self._stall_reported = True
+        elif not self._stall_reported:
             self._report_stall()
             self._stall_reported = True
         try:
