@@ -735,6 +735,7 @@ def acquire_emergency_food(
         origin_z,
         max_exploration_distance,
     )
+    exploration.resume_waypoint_rotation(client)
     exploration.movement.reset(state)
 
     def stop_exploring() -> None:

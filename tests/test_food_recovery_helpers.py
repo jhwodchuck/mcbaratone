@@ -14,6 +14,34 @@ from baritone_client.common.food_recovery import (
 from baritone_client.common import emergency_food
 
 
+def test_emergency_exploration_rotates_direction_across_recovery_attempts():
+    calls = []
+
+    class Transport:
+        @staticmethod
+        def dispatch(route, payload):
+            calls.append((route, payload))
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    state = {"block_position": {"x": 0, "y": 64, "z": 0}}
+
+    first = emergency_food.EmergencyExploration(0, 0, 32)
+    first.resume_waypoint_rotation(client)
+    first.start(client, state)
+
+    second = emergency_food.EmergencyExploration(0, 0, 32)
+    second.resume_waypoint_rotation(client)
+    second.start(client, state)
+
+    assert [
+        payload for route, payload in calls if route == "explore"
+    ] == [
+        {"x": 24, "z": 0},
+        {"x": 0, "z": 24},
+    ]
+
+
 def test_critical_food_search_holds_only_near_death_or_starving():
     # Near-death (below the fixed critical floor) with unstable food -> hold.
     assert must_hold_for_critical_food(

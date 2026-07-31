@@ -444,11 +444,22 @@ class EmergencyExploration:
     exploring: bool = False
     sprint_suppressed: bool = False
     surface_egress_attempted: bool = False
+    waypoint_cursor: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         self.waypoints = ExplorationWaypoints(
             self.origin_x, self.origin_z, self.maximum_radius
         )
+
+    def resume_waypoint_rotation(self, client: Any) -> None:
+        """Continue with the next direction across bounded recovery attempts."""
+        try:
+            cursor = int(getattr(client, "_emergency_food_waypoint_cursor", 0))
+        except (TypeError, ValueError):
+            cursor = 0
+        self.waypoint_cursor = max(0, cursor)
+        for _ in range(self.waypoint_cursor):
+            self.waypoints.next()
 
     def start(self, client: Any, state: Dict) -> None:
         """Start or rotate toward a non-zero bounded exploration target."""
@@ -456,6 +467,8 @@ class EmergencyExploration:
             client.transport.dispatch("cancel", {})
             client.transport.dispatch("chat", {"message": "#stop"})
         target_x, target_z = self.waypoints.next()
+        self.waypoint_cursor += 1
+        client._emergency_food_waypoint_cursor = self.waypoint_cursor
         print(
             "RECOVERY: no passive food source loaded; rotating bounded "
             f"daylight exploration toward ({target_x}, {target_z})"
