@@ -7,7 +7,38 @@ from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
 from ...common import explore_until
 from ...common.base import wait_for_safe_daylight
+from ...common.movement_recovery import block_position
+from ...common.navigation import goto
+from ...common.surface_recovery import position_is_aquatic, reach_dry_surface
 from ...common.tasks import TaskResult, ActionTask, SequentialTask
+
+
+def _secure_exploration_endpoint(
+    client,
+    base_coords: tuple[int, int, int],
+) -> tuple[int, int, int] | None:
+    """Return a dry post-scout position or fail closed after bounded recovery."""
+    state = client.transport.dispatch("get_state", {})
+    current = block_position(state)
+    if not position_is_aquatic(client, current):
+        return current
+
+    print(
+        "SPAWN_BOOTSTRAP: exploration ended in water at "
+        f"{current}; reaching dry ground before progression"
+    )
+    recovered = reach_dry_surface(
+        client,
+        origin=current,
+        expected_y=max(base_coords[1], current[1]),
+        goto=goto,
+        search_radius=32,
+        attempt_limit=6,
+        command_timeout=45.0,
+    )
+    if recovered is None or position_is_aquatic(client, recovered):
+        return None
+    return recovered
 
 
 class SpawnBootstrapHandler(PhaseHandler):
@@ -68,7 +99,6 @@ class SpawnBootstrapHandler(PhaseHandler):
             max_distance=64,
             timeout=15,
         )
-        exploration = TaskResult.ok("Scouting complete", success=True)
 
         # Skip supply gathering due to threading issues in current bridge setup
         supply_result = TaskResult.ok("Supply gathering skipped due to bridge threading constraints")
@@ -79,6 +109,16 @@ class SpawnBootstrapHandler(PhaseHandler):
         # valid place for the gathering phase to start, while spawn_coords are
         # still recorded as a waypoint in StateManager.
         client.transport.dispatch("cancel", {})
+        endpoint = _secure_exploration_endpoint(client, base_coords)
+        if endpoint is None:
+            return TaskResult.fail(
+                "Spawn bootstrap could not prove a dry exploration endpoint"
+            )
+        exploration = TaskResult.ok(
+            "Scouting complete",
+            success=True,
+            endpoint=endpoint,
+        )
         return_home = TaskResult.ok(
             "Exploration endpoint retained; unsafe tree-top return skipped",
             origin=base_coords,

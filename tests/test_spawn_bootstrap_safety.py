@@ -262,6 +262,56 @@ def test_bootstrap_keeps_safe_exploration_endpoint(monkeypatch):
     assert any(route == "cancel" for route, _payload in transport.calls)
 
 
+def test_bootstrap_rejects_aquatic_exploration_endpoint(monkeypatch):
+    base_state = {
+        "world_time": 1000,
+        "is_dead": False,
+        "health": 20,
+        "block_position": {"x": 308, "y": 66, "z": 533},
+    }
+    aquatic_state = {
+        **base_state,
+        "block_position": {"x": 312, "y": 55, "z": 576},
+    }
+
+    class AquaticEndpointTransport(SequenceTransport):
+        def dispatch(self, route, payload, **kwargs):
+            if route == "get_block":
+                self.calls.append((route, payload))
+                return {"id": "minecraft:water"}
+            return super().dispatch(route, payload, **kwargs)
+
+    transport = AquaticEndpointTransport(
+        [base_state, base_state, aquatic_state]
+    )
+    client = SimpleNamespace(
+        transport=transport,
+        mission=SimpleNamespace(
+            macro=lambda *_args, **_kwargs: {"settingsApplied": 5}
+        ),
+    )
+    monkeypatch.setattr(
+        spawn_bootstrap,
+        "explore_until",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        spawn_bootstrap,
+        "reach_dry_surface",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+
+    result = SpawnBootstrapHandler().execute(
+        client,
+        ReadyResources(),
+        SimpleNamespace(),
+    )
+
+    assert not result.success
+    assert "dry exploration endpoint" in result.reason
+
+
 def test_initial_gathering_stops_when_daylight_gate_fails(monkeypatch):
     client = SimpleNamespace(transport=SequenceTransport([{"world_time": 18000, "is_dead": False}]))
     monkeypatch.setattr(initial_gathering, "sleep_through_night", lambda _client: False)
