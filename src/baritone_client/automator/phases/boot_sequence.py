@@ -508,9 +508,9 @@ class BootSequenceHandler(PhaseHandler):
 
         The operation is deliberately idempotent: existing crops count as
         success, only dirt/grass is tilled, and every new crop is confirmed by
-        a world read before it is persisted. Natural water is preferred for a
-        compact irrigated plot; a dry starter row remains useful when the bot
-        has no bucket yet.
+        a world read before it is persisted. Nearby dry soil is preferred so
+        the bootstrap cannot route down a bank or into deep natural water; a
+        compact irrigated plot remains the fallback when no soil is found.
         """
         from ...common.navigation import find_nearby_block, goto
 
@@ -556,18 +556,18 @@ class BootSequenceHandler(PhaseHandler):
                 center = None
 
         if center is None:
-            water = find_nearby_block(client, ["minecraft:water"], radius=16)
-            if water is not None:
-                center = tuple(int(value) for value in water)
-                irrigated = True
+            soil = find_nearby_block(
+                client,
+                ["minecraft:farmland", "minecraft:dirt", "minecraft:grass_block"],
+                radius=20,
+            )
+            if soil is not None:
+                center = tuple(int(value) for value in soil)
             else:
-                soil = find_nearby_block(
-                    client,
-                    ["minecraft:farmland", "minecraft:dirt", "minecraft:grass_block"],
-                    radius=20,
-                )
-                if soil is not None:
-                    center = tuple(int(value) for value in soil)
+                water = find_nearby_block(client, ["minecraft:water"], radius=16)
+                if water is not None:
+                    center = tuple(int(value) for value in water)
+                    irrigated = True
 
         if center is None:
             print("  Crop farm deferred: no reachable soil or water found")

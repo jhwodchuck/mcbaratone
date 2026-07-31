@@ -47,3 +47,40 @@ def test_crop_bootstrap_mines_current_short_grass_id(monkeypatch):
             "quantity": 9,
         }
     ]
+
+
+def test_crop_bootstrap_prefers_dry_soil_over_natural_water(monkeypatch):
+    """A nearby shoreline must not pull crop bootstrap into natural water."""
+    destinations = []
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_block":
+                return {
+                    "id": "minecraft:grass_block"
+                    if payload["y"] == 64
+                    else "minecraft:air"
+                }
+            return {}
+
+    handler = BootSequenceHandler()
+    handler.state = SimpleNamespace(custom_data={})
+    client = SimpleNamespace(transport=Transport())
+
+    def find_plot(_client, block_ids, **_kwargs):
+        if "minecraft:water" in block_ids:
+            return (0, 64, 0)
+        return (10, 64, 10)
+
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.find_nearby_block", find_plot
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.goto",
+        lambda _client, x, y, z, **_kwargs: destinations.append((x, y, z)) or True,
+    )
+    monkeypatch.setattr(boot_sequence, "count_item", lambda *_args: 0)
+    monkeypatch.setattr(boot_sequence.time, "sleep", lambda _seconds: None)
+
+    assert not handler._plant_crops(client)
+    assert destinations == [(10, 65, 10)]
