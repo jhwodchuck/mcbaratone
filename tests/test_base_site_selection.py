@@ -221,7 +221,7 @@ def test_loaded_breathing_ascent_falls_back_to_surface_when_stalled():
             self.states = iter(
                 (
                     {"block_position": {"x": 4, "y": 60, "z": 4}},
-                    {"block_position": {"x": 4, "y": 60, "z": 4}},
+                    {"block_position": {"x": 4, "y": 61, "z": 4}},
                     {"block_position": {"x": 4, "y": 60, "z": 4}},
                     {"block_position": {"x": 4, "y": 62, "z": 4}},
                 )
@@ -262,7 +262,6 @@ def test_breathing_air_reaches_loaded_shore_before_sinking(monkeypatch):
             self.states = iter(
                 (
                     {"block_position": {"x": 4, "y": 60, "z": 4}},
-                    {"block_position": {"x": 4, "y": 62, "z": 4}},
                 )
             )
 
@@ -295,7 +294,7 @@ def test_breathing_air_reaches_loaded_shore_before_sinking(monkeypatch):
         sleep=lambda _seconds: None,
         clock=iter((0.0, 0.5)).__next__,
     )
-    assert shore_origins == [(4, 62, 4)]
+    assert shore_origins == [(4, 60, 4)]
 
 
 def test_loaded_shore_candidates_reject_lower_cave_ledges():

@@ -410,6 +410,13 @@ def reach_breathing_air(
     """Run ``#surface`` without allowing a bad route to descend farther."""
     initial = block_position(client.transport.dispatch("get_state", {}))
     _configure_surface_pathing(client, sleep=sleep)
+    shore = _swim_to_loaded_dry_shore(
+        client,
+        initial,
+        timeout=min(15.0, max(8.0, timeout)),
+    )
+    if shore is not None:
+        return True
     loaded_ascent = _start_loaded_column_ascent(client, initial)
     if not loaded_ascent:
         client.transport.dispatch("chat", {"message": "#surface"})
@@ -440,11 +447,7 @@ def reach_breathing_air(
                 return False
             if current[1] > highest_y:
                 highest_y = current[1]
-                progress_deadline = now + min(
-                    3.0,
-                    max(1.0, timeout * 0.4),
-                )
-            elif loaded_ascent and now >= progress_deadline:
+            if loaded_ascent and now >= progress_deadline:
                 print(
                     "SURVIVAL: loaded-column ascent made no vertical "
                     "progress; falling back to #surface"
