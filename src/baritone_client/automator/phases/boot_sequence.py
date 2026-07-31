@@ -649,7 +649,7 @@ class BootSequenceHandler(PhaseHandler):
             None,
         )
         if needs_tilling and selected_hoe is None:
-            if craft(client, "minecraft:wooden_hoe", 1):
+            if craft(client, "minecraft:wooden_hoe", 1) and goto(client, cx, cy + 1, cz):
                 selected_hoe = "minecraft:wooden_hoe"
 
         for px, py, pz, original_ground in available:

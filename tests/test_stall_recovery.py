@@ -96,6 +96,17 @@ def test_hoe_crafting_repair_rearms_revision_35_checkpoint():
     assert custom_data["objective_runtime_revision"] == OBJECTIVE_RUNTIME_REVISION
 
 
+def test_farm_return_repair_rearms_revision_36_checkpoint():
+    """The post-craft return repair must reopen bots exhausted on revision 36."""
+    planner = ObjectivePlanner(default_objectives())
+    objective = planner._by_phase[Phase.BOOT_SEQUENCE]
+    objective.status = ObjStatus.ABANDONED
+    custom_data = {"objective_runtime_revision": 36}
+
+    assert rearm_abandoned_objectives(planner, custom_data) == ["BOOT_SEQUENCE"]
+    assert custom_data["objective_runtime_revision"] == OBJECTIVE_RUNTIME_REVISION
+
+
 def test_stalled_survival_actively_recovers_low_food(monkeypatch):
     client = SimpleNamespace(
         transport=SimpleNamespace(

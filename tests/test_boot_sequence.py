@@ -186,6 +186,7 @@ def test_boot_crop_planting_verifies_and_persists_irrigated_plot(monkeypatch):
     )
     handler = BootSequenceHandler()
     handler.state = state
+    destinations = []
 
     monkeypatch.setattr(
         "baritone_client.common.navigation.find_nearby_block",
@@ -195,7 +196,7 @@ def test_boot_crop_planting_verifies_and_persists_irrigated_plot(monkeypatch):
     )
     monkeypatch.setattr(
         "baritone_client.common.navigation.goto",
-        lambda *_args, **_kwargs: True,
+        lambda _client, x, y, z, **_kwargs: destinations.append((x, y, z)) or True,
     )
     monkeypatch.setattr(
         boot_sequence,
@@ -230,6 +231,7 @@ def test_boot_crop_planting_verifies_and_persists_irrigated_plot(monkeypatch):
     assert farm["irrigated"] is True
     assert farm["planted"] == 2
     assert inventory["minecraft:wooden_hoe"] == 1
+    assert destinations == [(0, 65, 0), (0, 65, 0)]
     assert state.custom_data["farm_location"] == [0, 64, 0]
     assert len(locations) == 1
 
