@@ -1151,3 +1151,49 @@ def test_low_hunger_with_no_food_still_blocks_construction(monkeypatch):
 
     with pytest.raises(PacingHoldRequired):
         h.require_construction_pacing()
+
+
+def test_perimeter_ring_is_spaced_not_a_solid_wall_of_torches():
+    """The ring used to emit every block of the perimeter -- 32 contiguous,
+    mutually adjacent positions. A torch emits light 14 falling 1 per block
+    and hostiles need light 0 to spawn, so one torch covers a 9x9 footprint;
+    a solid ring is pure waste. Each torch also costs a stick plus a
+    coal/charcoal, and on 2026-07-31 Bot16 stalled at 16/24 placed with 0
+    torches, 0 sticks and 2 charcoal, unable to finish the ring it was told
+    to build. Reported by the user watching the game live."""
+    from baritone_client.common.homestead_lighting import perimeter_ring
+    import itertools
+
+    ring = perimeter_ring([0, 64, 0])
+
+    assert len(ring) <= 12, f"ring should be sparse, got {len(ring)} torches"
+    adjacent = sum(
+        1
+        for (ax, _, az), (bx, _, bz) in itertools.combinations(ring, 2)
+        if abs(ax - bx) + abs(az - bz) == 1
+    )
+    assert adjacent == 0, "no two torches should sit on adjacent blocks"
+
+
+def test_perimeter_ring_keeps_the_corners_and_bounds_the_gaps():
+    """Corners anchor the coverage; gaps must stay well inside a torch's
+    14-block light radius."""
+    from baritone_client.common.homestead_lighting import perimeter_ring
+
+    ring = perimeter_ring([0, 64, 0], radius=4)
+    positions = {(x, z) for x, _, z in ring}
+
+    assert {(-4, -4), (4, -4), (-4, 4), (4, 4)} <= positions
+    gaps = [
+        max(abs(ax - bx), abs(az - bz))
+        for (ax, _, az), (bx, _, bz) in zip(ring, ring[1:])
+    ]
+    assert max(gaps) <= 6, f"gap {max(gaps)} risks a dark spot"
+
+
+def test_perimeter_ring_spacing_is_configurable():
+    from baritone_client.common.homestead_lighting import perimeter_ring
+
+    dense = perimeter_ring([0, 64, 0], spacing=2)
+    sparse = perimeter_ring([0, 64, 0], spacing=8)
+    assert len(dense) > len(sparse)

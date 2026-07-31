@@ -13,28 +13,63 @@ from typing import Iterable, List, Sequence, Tuple
 Coordinate = Tuple[int, int, int]
 
 
-def perimeter_ring(anchor: Sequence[int], radius: int = 4) -> List[Coordinate]:
-    """Return a deterministic square ring around ``anchor`` excluding duplicates."""
+def perimeter_ring(
+    anchor: Sequence[int],
+    radius: int = 4,
+    spacing: int = 4,
+) -> List[Coordinate]:
+    """Return a deterministic, *spaced* square ring around ``anchor``.
+
+    ``spacing`` is the gap in blocks between adjacent torches along the ring.
+
+    This used to emit every block of the perimeter -- 32 contiguous positions
+    for the default radius, all mutually adjacent. That is a solid wall of
+    torches, and it is pure waste: a torch emits light level 14 falling by 1
+    per block, and hostile mobs need light level 0 to spawn, so a single torch
+    comfortably covers a 9x9 footprint. The bot was being asked to craft and
+    place ~24 torches where a handful suffices.
+
+    It was not merely cosmetic. Each torch costs a stick plus a coal/charcoal,
+    and on 2026-07-31 the fleet's furthest-along bot (Bot16, 8/9 homestead
+    steps) stalled at 16/24 placed with 0 torches, 0 sticks and 2 charcoal
+    left, unable to finish the ring it had been told to build. Spacing the
+    ring cuts the requirement by roughly two thirds while still lighting the
+    footprint, and always keeps the four corners so coverage stays even.
+    """
     if len(anchor) != 3:
         return []
     ax, ay, az = (int(value) for value in anchor)
     max_radius = max(1, int(radius))
-    positions: List[Coordinate] = []
+    step = max(1, int(spacing))
     y = int(ay) + 1
 
-    for x in range(ax - max_radius, ax + max_radius + 1):
-        positions.append((x, y, az - max_radius))
-        positions.append((x, y, az + max_radius))
-    for z in range(az - max_radius + 1, az + max_radius):
-        positions.append((ax - max_radius, y, z))
-        positions.append((ax + max_radius, y, z))
+    corners = {
+        (ax - max_radius, y, az - max_radius),
+        (ax + max_radius, y, az - max_radius),
+        (ax - max_radius, y, az + max_radius),
+        (ax + max_radius, y, az + max_radius),
+    }
 
-    unique = []
+    # Walk the ring in a stable order so the sampled subset is deterministic.
+    walk: List[Coordinate] = []
+    for x in range(ax - max_radius, ax + max_radius + 1):
+        walk.append((x, y, az - max_radius))
+    for z in range(az - max_radius + 1, az + max_radius + 1):
+        walk.append((ax + max_radius, y, z))
+    for x in range(ax + max_radius - 1, ax - max_radius - 1, -1):
+        walk.append((x, y, az + max_radius))
+    for z in range(az + max_radius - 1, az - max_radius, -1):
+        walk.append((ax - max_radius, y, z))
+
+    unique: List[Coordinate] = []
     seen = set()
-    for pos in positions:
-        if pos not in seen:
-            seen.add(pos)
-            unique.append(pos)
+    for index, pos in enumerate(walk):
+        if pos in seen:
+            continue
+        if index % step and pos not in corners:
+            continue
+        seen.add(pos)
+        unique.append(pos)
     return unique
 
 
