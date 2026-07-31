@@ -116,3 +116,37 @@ def test_harness_ops_move_near_returns_false_when_alive_but_blocked(monkeypatch)
     monkeypatch.setattr(harness_ops, "make_ctx", lambda _c: object())
 
     assert harness_ops.move_near(client, 1, 2, 3) is False
+
+
+def test_harness_context_accepts_current_player_inventory_menu(monkeypatch):
+    from baritone_client.common import harness_ops
+
+    class Context:
+        def __init__(self, client):
+            self.client = client
+            self.events = []
+
+        def log_event(self, event):
+            self.events.append(event)
+
+    class Transport:
+        def dispatch(self, route, _payload, **_kwargs):
+            assert route == "get_screen"
+            return {
+                "type": "InventoryMenu",
+                "slots": [{"slot": slot} for slot in range(46)],
+            }
+
+    command_facade = object()
+    client = type(
+        "Client",
+        (),
+        {"transport": Transport(), "command": command_facade},
+    )()
+    monkeypatch.setattr(harness_ops, "_load", lambda: {"TestContext": Context})
+
+    context = harness_ops.make_ctx(client)
+    screen = context.client.transport.dispatch("get_screen", {})
+
+    assert screen["type"] == "PlayerScreenHandler"
+    assert context.client.command is command_facade

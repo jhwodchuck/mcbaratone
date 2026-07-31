@@ -34,6 +34,55 @@ if os.path.isdir(os.path.join(_REPO_ROOT, "tests")) and _REPO_ROOT not in sys.pa
     sys.path.insert(0, _REPO_ROOT)
 
 
+def _normalize_player_inventory_screen(response):
+    """Map current Minecraft's player-menu name to the harness ABI."""
+    if not isinstance(response, dict):
+        return response
+    screen = response.get("data", response)
+    if not isinstance(screen, dict):
+        return response
+    slots = screen.get("slots")
+    if screen.get("type") != "InventoryMenu" or not isinstance(slots, list):
+        return response
+    if len(slots) < 46:
+        return response
+
+    normalized_screen = dict(screen)
+    normalized_screen["type"] = "PlayerScreenHandler"
+    if screen is response:
+        return normalized_screen
+    normalized_response = dict(response)
+    normalized_response["data"] = normalized_screen
+    return normalized_response
+
+
+class _HarnessTransportAdapter:
+    """Normalize version-specific bridge responses used by harness helpers."""
+
+    def __init__(self, transport):
+        self._transport = transport
+
+    def dispatch(self, route, payload, **kwargs):
+        response = self._transport.dispatch(route, payload, **kwargs)
+        if route == "get_screen":
+            return _normalize_player_inventory_screen(response)
+        return response
+
+    def __getattr__(self, name):
+        return getattr(self._transport, name)
+
+
+class _HarnessClientAdapter:
+    """Preserve the Client API while adapting its transport for the harness."""
+
+    def __init__(self, client):
+        self._client = client
+        self.transport = _HarnessTransportAdapter(client.transport)
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+
 def _load():
     """Resolve harness imports on first use; returns dict or None."""
     global _harness, _import_error
@@ -84,7 +133,7 @@ def make_ctx(client):
     h = _load()
     if h is None:
         raise RuntimeError(f"harness library unavailable: {_import_error}")
-    ctx = h["TestContext"](client=client)
+    ctx = h["TestContext"](client=_HarnessClientAdapter(client))
 
     # TestContext.log_event only records to ctx.events; in the automator we
     # want those diagnostics in the controller log.
