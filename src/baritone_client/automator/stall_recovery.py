@@ -14,7 +14,7 @@ from typing import Any, MutableMapping
 from .objective import ObjStatus, ObjectivePlanner
 
 
-OBJECTIVE_RUNTIME_REVISION = 33
+OBJECTIVE_RUNTIME_REVISION = 34
 
 
 def rearm_abandoned_objectives(
