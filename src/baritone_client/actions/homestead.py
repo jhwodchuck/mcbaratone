@@ -242,7 +242,7 @@ class IncrementalHomestead:
             raise SurvivalRecoveryRequired("dry anchor requires overworld")
         if int(state.get("world_time", 0)) % 24000 >= 12000:
             raise SurvivalRecoveryRequired("wait for daylight before selecting anchor")
-        anchor = self.current_position()
+        anchor = self._initial_homestead_anchor(homestead)
         if not self._dry_ground(anchor):
             record["verified"] = False
             raise ProgressRecoveryRequired("dry anchor requires non-liquid ground")
@@ -250,6 +250,37 @@ class IncrementalHomestead:
         self.state.custom_data["homestead_anchor"] = anchor
         record.update(verified=True, evidence="live_dry_anchor")
         return True
+
+    def _initial_homestead_anchor(self, homestead: dict[str, Any]) -> list[int]:
+        """Return to the bootstrap home before adopting a first homestead."""
+        bootstrap_home = self._bootstrap_home()
+        if bootstrap_home is None:
+            return self.current_position()
+        homestead["anchor"] = bootstrap_home
+        self.enforce_anchor(homestead)
+        return self.current_position()
+
+    def _bootstrap_home(self) -> Optional[list[int]]:
+        """Read the durable SPAWN_BOOTSTRAP return-home coordinate."""
+        payload = {}
+        get_payload = getattr(self.state, "get_phase_payload", None)
+        if callable(get_payload):
+            candidate = get_payload(Phase.SPAWN_BOOTSTRAP)
+            if isinstance(candidate, Mapping):
+                payload = candidate
+        if not payload:
+            payloads = getattr(self.state, "custom_data", {}).get(
+                "phase_payloads",
+                {},
+            )
+            if isinstance(payloads, Mapping):
+                candidate = payloads.get("SPAWN_BOOTSTRAP", {})
+                if isinstance(candidate, Mapping):
+                    payload = candidate
+        return_home = payload.get("return_home", {})
+        if not isinstance(return_home, Mapping):
+            return None
+        return self._coordinate(return_home.get("origin"))
 
     def run_wood_reserve(self, homestead: dict[str, Any]) -> bool:
         """Gather only the local wood needed for starter workstations."""

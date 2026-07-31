@@ -658,6 +658,57 @@ def test_homestead_step_returns_home_before_resource_work(monkeypatch):
     ]
 
 
+def test_first_homestead_returns_to_bootstrap_home_after_remote_recovery(
+    monkeypatch,
+):
+    home = [-160, 63, -320]
+    remote_grave = {"x": -241, "y": 64, "z": -158}
+    state = _state_with_payloads(
+        {
+            "phase_payloads": {
+                "SPAWN_BOOTSTRAP": {
+                    "return_home": {"origin": home},
+                }
+            }
+        }
+    )
+    live_state = {
+        "dimension": "minecraft:overworld",
+        "world_time": 1000,
+        "food_level": 20,
+        "health": 20,
+        "block_position": remote_grave,
+    }
+    transport, blocks = _transport_for_blocks(state_payload=live_state)
+    blocks[(home[0], home[1] - 1, home[2])] = "minecraft:grass_block"
+    routes = []
+
+    def return_home(_client, x, y, z, **kwargs):
+        routes.append((x, y, z, kwargs))
+        live_state["block_position"] = {"x": x, "y": y, "z": z}
+        return True
+
+    monkeypatch.setattr("baritone_client.actions.homestead.goto", return_home)
+    runner = IncrementalHomestead(
+        SimpleNamespace(transport=transport),
+        state,
+        lambda _client: False,
+    )
+    homestead = runner.load()
+
+    assert runner.run_dry_anchor(homestead)
+    assert homestead["anchor"] == home
+    assert state.custom_data["homestead_anchor"] == home
+    assert routes == [
+        (
+            home[0],
+            home[1],
+            home[2],
+            {"timeout": 180, "check_interval": 1.0, "tolerance": 4.0},
+        )
+    ]
+
+
 def test_infrastructure_rearms_planks_before_replaying_setup(monkeypatch):
     state = _state_with_payloads(
         {
