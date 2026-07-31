@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from baritone_client.automator.food_recovery_state import (
+    get_food_search_anchor,
     get_food_search_center,
     record_failed_food_source,
     recover_food_from_known_sources,
@@ -84,7 +85,7 @@ def test_food_search_center_rebases_after_distant_respawn():
     state = SimpleNamespace(
         custom_data={
             "survival_recovery": {
-                "food_search_center": [-669.0, 165.0],
+                "food_search_anchor": [-669.0, 64.0, 165.0],
             }
         }
     )
@@ -93,10 +94,79 @@ def test_food_search_center_rebases_after_distant_respawn():
         return {"block_position": {"x": -42, "z": 28}}
 
     assert get_food_search_center(None, state, read_state) == (-42.0, 28.0)
-    assert state.custom_data["survival_recovery"]["food_search_center"] == [
+    assert state.custom_data["survival_recovery"]["food_search_anchor"] == [
         -42.0,
+        64.0,
         28.0,
     ]
+
+
+def test_food_search_anchor_prefers_reanchored_spawn_home():
+    state = SimpleNamespace(
+        custom_data={
+            "phase_payloads": {
+                "SPAWN_BOOTSTRAP": {
+                    "return_home": {"origin": [-160, 63, -320]}
+                }
+            }
+        }
+    )
+
+    anchor = get_food_search_anchor(
+        None,
+        state,
+        lambda *_args: {
+            "block_position": {"x": -119, "y": 70, "z": -179}
+        },
+    )
+
+    assert anchor == (-160.0, 63.0, -320.0)
+    assert state.custom_data["survival_recovery"]["food_search_anchor"] == [
+        -160.0,
+        63.0,
+        -320.0,
+    ]
+
+
+def test_phase_food_search_returns_home_instead_of_rebasing(monkeypatch):
+    from baritone_client.common import combat
+
+    far_state = {
+        "health": 20.0,
+        "food_level": 6,
+        "world_time": 1000,
+        "dimension": "minecraft:overworld",
+        "block_position": {"x": 150, "y": 64, "z": 20},
+    }
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: (
+                dict(far_state) if route == "get_state" else {}
+            )
+        )
+    )
+    returns = []
+
+    monkeypatch.setattr(combat, "recover_health", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        combat,
+        "prepare_food_search_state",
+        lambda _client, _state: dict(far_state),
+    )
+    monkeypatch.setattr(
+        combat,
+        "return_to_food_search_anchor",
+        lambda _client, anchor: returns.append(anchor) or False,
+    )
+
+    assert not combat.acquire_emergency_food(
+        client,
+        minimum_food=14,
+        timeout=0,
+        exploration_center=(10.0, 64.0, 20.0),
+        return_to_exploration_center=True,
+    )
+    assert returns == [(10.0, 64.0, 20.0)]
 
 
 def test_bounded_search_rebases_a_center_outside_its_safety_radius():

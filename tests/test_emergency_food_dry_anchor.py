@@ -69,3 +69,38 @@ def test_submerged_food_search_returns_to_recent_dry_anchor(monkeypatch):
         "goto",
         {"x": -174, "y": 67, "z": -331},
     ) in client.transport.calls
+
+
+def test_exhausted_food_search_returns_to_checkpoint_anchor(monkeypatch):
+    current = {"x": 110, "y": 64, "z": 20}
+    transport = DryAnchorTransport(
+        {
+            "health": 20.0,
+            "is_pathing": False,
+            "block_position": current,
+        }
+    )
+    client = SimpleNamespace(transport=transport)
+    routed = []
+
+    def route_to_anchor(_client, x, y, z, **kwargs):
+        routed.append((x, y, z, kwargs))
+        current.update({"x": x, "y": y, "z": z})
+        return True
+
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.goto",
+        route_to_anchor,
+    )
+    monkeypatch.setattr(
+        emergency_food,
+        "_is_dry_food_search_surface",
+        lambda _client, position: tuple(position) == (10, 64, 20),
+    )
+
+    assert emergency_food.return_to_food_search_anchor(
+        client,
+        (10.0, 64.0, 20.0),
+    )
+    assert routed[0][:3] == (10, 64, 20)
+    assert client._emergency_food_dry_anchor == (10, 64, 20)

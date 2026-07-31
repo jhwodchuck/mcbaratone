@@ -29,22 +29,45 @@ def recover_known_food(client, state) -> bool:
     return recover_food_from_known_sources(client, state, FOOD_ANIMALS)
 
 
-def get_food_search_center(
+def _durable_food_search_anchor(state) -> Optional[tuple[float, float, float]]:
+    """Prefer the re-anchored spawn-bootstrap home for survival searches."""
+    if state is None:
+        return None
+    custom_data = state.custom_data
+    phase_payloads = custom_data.get("phase_payloads", {})
+    spawn_payload = phase_payloads.get("SPAWN_BOOTSTRAP", {})
+    return_home = spawn_payload.get("return_home", {})
+    candidates = (
+        return_home.get("origin"),
+        custom_data.get("base_location"),
+        custom_data.get("homestead_anchor"),
+    )
+    for candidate in candidates:
+        if isinstance(candidate, (list, tuple)) and len(candidate) == 3:
+            try:
+                return tuple(float(value) for value in candidate)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def get_food_search_anchor(
     client,
     state,
     read_state: Callable,
-) -> tuple[float, float]:
-    """Return one stable exploration origin across repeated phase retries."""
+) -> tuple[float, float, float]:
+    """Return one stable 3D home anchor across repeated phase retries."""
     if state is None:
         live = read_state(client, "Food recovery origin") or {}
         position = live.get("block_position", live.get("position", {}))
         return (
             float(position.get("x", 0) or 0),
+            float(position.get("y", 64) or 64),
             float(position.get("z", 0) or 0),
         )
     recovery = state.custom_data.setdefault("survival_recovery", {})
-    center = recovery.get("food_search_center")
-    if isinstance(center, (list, tuple)) and len(center) == 2:
+    anchor = recovery.get("food_search_anchor")
+    if isinstance(anchor, (list, tuple)) and len(anchor) == 3:
         live = read_state(client, "Food recovery center validation") or {}
         position = live.get("block_position", live.get("position", {}))
         if all(axis in position for axis in ("x", "z")):
@@ -53,25 +76,42 @@ def get_food_search_center(
                 float(position["z"]),
             )
             distance = (
-                (current[0] - float(center[0])) ** 2
-                + (current[1] - float(center[1])) ** 2
+                (current[0] - float(anchor[0])) ** 2
+                + (current[1] - float(anchor[2])) ** 2
             ) ** 0.5
             if distance > 384.0:
                 print(
-                    "RECOVERY: rebasing stale food-search center "
+                    "RECOVERY: rebasing stale food-search anchor "
                     f"after {distance:.1f} blocks"
                 )
-                recovery["food_search_center"] = [current[0], current[1]]
-                return current
-        return (float(center[0]), float(center[1]))
+                rebased = (
+                    current[0],
+                    float(position.get("y", 64) or 64),
+                    current[1],
+                )
+                recovery["food_search_anchor"] = list(rebased)
+                return rebased
+        return tuple(float(value) for value in anchor)
+
     live = read_state(client, "Food recovery origin") or {}
     position = live.get("block_position", live.get("position", {}))
-    center = [
+    anchor = _durable_food_search_anchor(state) or (
         float(position.get("x", 0) or 0),
+        float(position.get("y", 64) or 64),
         float(position.get("z", 0) or 0),
-    ]
-    recovery["food_search_center"] = center
-    return (center[0], center[1])
+    )
+    recovery["food_search_anchor"] = list(anchor)
+    return anchor
+
+
+def get_food_search_center(
+    client,
+    state,
+    read_state: Callable,
+) -> tuple[float, float]:
+    """Compatibility wrapper returning the stable anchor's horizontal center."""
+    anchor = get_food_search_anchor(client, state, read_state)
+    return (anchor[0], anchor[2])
 
 
 def remember_renewable_food_source(

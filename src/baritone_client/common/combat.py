@@ -16,7 +16,14 @@ from .emergency_food import (
     EmergencyExploration,
     enforce_dry_food_search_state,
 )
-from .emergency_food import hunt_target, prepare_food_search_state, select_target
+from .emergency_food import (
+    hunt_target,
+    prepare_food_search_state,
+    return_to_food_search_anchor,
+    select_target,
+)
+from .health_recovery import recover_health
+from .movement_recovery import block_position
 
 from ..core.exceptions import TransportError
 
@@ -658,53 +665,14 @@ def heal_if_needed(client, threshold: float = 10.0) -> bool:
     return False
 
 
-def recover_health(
-    client,
-    minimum_health: float = 12.0,
-    timeout: float = 45.0,
-) -> bool:
-    """Hold position and consume available food until work is safe to resume."""
-    state = client.transport.dispatch("get_state", {})
-    health = float(state.get("health", 20) or 0)
-    if health >= minimum_health:
-        return True
-
-    print(f"RECOVERY: health {health:.1f}/{minimum_health:.1f}; stopping work")
-    client.transport.dispatch("cancel", {})
-    client.transport.dispatch("chat", {"message": "#stop"})
-
-    deadline = time.time() + timeout
-    last_food_attempt = 0.0
-    while time.time() < deadline:
-        state = client.transport.dispatch("get_state", {})
-        health = float(state.get("health", 20) or 0)
-        if health >= minimum_health:
-            print(f"RECOVERY: safe to resume at {health:.1f} health")
-            return True
-        if health <= 0:
-            ensure_alive(client)
-            return False
-
-        now = time.time()
-        if now - last_food_attempt >= 4.0:
-            last_food_attempt = now
-            if not heal_if_needed(client, threshold=minimum_health):
-                if _emergency_food_count(client) == 0:
-                    print("RECOVERY: no edible food available; refusing unsafe work")
-                    return False
-        time.sleep(2)
-
-    print(f"RECOVERY: timed out below safe health ({health:.1f})")
-    return False
-
-
 def acquire_emergency_food(
     client,
     minimum_health: float = 12.0,
     minimum_food: int = 14,
     timeout: float = 240.0,
     max_exploration_distance: float = 96.0,
-    exploration_center: Optional[tuple[float, float]] = None,
+    exploration_center: Optional[tuple[float, ...]] = None,
+    return_to_exploration_center: bool = False,
     renewable_source_callback: Optional[
         Callable[[str, tuple[int, int, int]], None]
     ] = None,
@@ -748,11 +716,20 @@ def acquire_emergency_food(
     if state is None:
         return False
     position = state.get("block_position", state.get("position", {}))
-    origin_x, origin_z = bounded_exploration_origin(
-        position,
-        exploration_center,
-        max_exploration_distance,
-    )
+    stable_anchor = None
+    if (
+        return_to_exploration_center
+        and isinstance(exploration_center, (list, tuple))
+        and len(exploration_center) == 3
+    ):
+        stable_anchor = tuple(float(value) for value in exploration_center)
+        origin_x, origin_z = stable_anchor[0], stable_anchor[2]
+    else:
+        origin_x, origin_z = bounded_exploration_origin(
+            position,
+            exploration_center,
+            max_exploration_distance,
+        )
     exploration = EmergencyExploration(
         origin_x,
         origin_z,
@@ -768,6 +745,25 @@ def acquire_emergency_food(
     # died before a source loaded. Restore the normal setting on every bounded
     # exit through ``stop_exploring``.
     exploration.suppress_sprint(client)
+    if stable_anchor is not None:
+        current = block_position(state)
+        distance_from_anchor = (
+            (current[0] - stable_anchor[0]) ** 2
+            + (current[2] - stable_anchor[2]) ** 2
+        ) ** 0.5
+        if distance_from_anchor > max_exploration_distance:
+            if not return_to_food_search_anchor(client, stable_anchor):
+                stop_exploring()
+                return False
+            state = prepare_food_search_state(
+                client,
+                client.transport.dispatch("get_state", {}),
+            )
+            if state is None:
+                stop_exploring()
+                return False
+            cached_state = state
+            exploration.movement.reset(state)
     # A bot already near death cannot regenerate without eating, and cannot
     # eat without exploring: holding indefinitely guarantees it never
     # recovers. Give the hold a short, bounded grace period (a genuinely new
@@ -829,11 +825,14 @@ def acquire_emergency_food(
         current_z = float(position.get("z", state.get("z", origin_z)) or origin_z)
         distance = ((current_x - origin_x) ** 2 + (current_z - origin_z) ** 2) ** 0.5
         if distance > max_exploration_distance:
-            stop_exploring()
             print(
                 "RECOVERY: emergency food search reached its "
                 f"{max_exploration_distance:.0f}-block safety radius"
             )
+            if stable_anchor is not None:
+                client.transport.dispatch("cancel", {})
+                return_to_food_search_anchor(client, stable_anchor)
+            stop_exploring()
             return False
 
         threats = scan_for_threats(client, radius=16, player_state=state)

@@ -37,6 +37,24 @@ def _attempt_survival_recovery_food(client, state) -> bool:
     return recover_food_from_known_sources(client, state, FOOD_ANIMALS)
 
 
+def _acquire_checkpointed_emergency_food(client, state) -> bool:
+    """Keep repeated blind food searches centered on durable home state."""
+    from .food_recovery_state import get_food_search_anchor
+    from ..common.combat import acquire_emergency_food
+
+    def read_live_state(active_client, _label):
+        return active_client.transport.dispatch("get_state", {})
+
+    food_anchor = get_food_search_anchor(client, state, read_live_state)
+    return acquire_emergency_food(
+        client,
+        minimum_food=14,
+        timeout=120.0,
+        exploration_center=food_anchor,
+        return_to_exploration_center=True,
+    )
+
+
 class PhaseHandler(ABC):
     """Abstract base class for phase handlers."""
     
@@ -298,9 +316,10 @@ class PhaseExecutor:
                         time.sleep(2.0)
                         return False
 
-                    from ..common.combat import acquire_emergency_food
-
-                    acquire_emergency_food(self.client, minimum_food=14, timeout=120.0)
+                    _acquire_checkpointed_emergency_food(
+                        self.client,
+                        self.state,
+                    )
                 except PlayerDeathDetected:
                     raise
                 except Exception as food_exc:

@@ -117,6 +117,54 @@ def _remember_dry_food_anchor(
     client._emergency_food_dry_anchor = tuple(int(value) for value in position)
 
 
+def return_to_food_search_anchor(
+    client: Any,
+    anchor: tuple[float, float, float],
+    *,
+    timeout: float = 120.0,
+) -> bool:
+    """Return a bounded search to its checkpoint-backed dry home anchor."""
+    target = tuple(int(round(value)) for value in anchor)
+    state = client.transport.dispatch("get_state", {})
+    current = block_position(state)
+    distance = sum(
+        (current[index] - target[index]) ** 2 for index in range(3)
+    ) ** 0.5
+    if distance <= 3.0 and _is_dry_food_search_surface(client, current):
+        _remember_dry_food_anchor(client, current)
+        return True
+
+    print(
+        "RECOVERY: returning exhausted food search to stable home anchor "
+        f"{target}"
+    )
+    from .navigation import goto
+
+    reached = goto(
+        client,
+        target[0],
+        target[1],
+        target[2],
+        timeout=max(1, int(timeout)),
+        check_interval=0.5,
+        tolerance=3.0,
+    )
+    if not reached:
+        print("RECOVERY: stable food-search anchor was not safely reachable")
+        return False
+    refreshed = client.transport.dispatch("get_state", {})
+    arrived = block_position(refreshed)
+    if not _is_dry_food_search_surface(client, arrived):
+        print(
+            "RECOVERY: rejected non-dry arrival at stable food-search anchor "
+            f"{arrived}"
+        )
+        return False
+    _remember_dry_food_anchor(client, arrived)
+    print(f"RECOVERY: returned to stable food-search anchor {arrived}")
+    return True
+
+
 def _return_to_recent_dry_food_anchor(
     client: Any,
     state: Dict,

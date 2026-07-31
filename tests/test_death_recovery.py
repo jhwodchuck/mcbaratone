@@ -373,6 +373,13 @@ def test_survival_recovery_actively_seeks_food_before_retrying(monkeypatch):
             self.exited = True
 
     state = SimpleNamespace(
+        custom_data={
+            "phase_payloads": {
+                "SPAWN_BOOTSTRAP": {
+                    "return_home": {"origin": [10, 64, 20]}
+                }
+            }
+        },
         update_progress=lambda *_args, **_kwargs: None,
         record_phase_payload=lambda *_args, **_kwargs: None,
     )
@@ -395,7 +402,14 @@ def test_survival_recovery_actively_seeks_food_before_retrying(monkeypatch):
 
     assert not executor.execute_phase(Phase.FOOD_AND_IRON)
     assert executor.interruption_reason == "survival_recovery"
-    assert attempts == [{"minimum_food": 14, "timeout": 120.0}]
+    assert attempts == [
+        {
+            "minimum_food": 14,
+            "timeout": 120.0,
+            "exploration_center": (10.0, 64.0, 20.0),
+            "return_to_exploration_center": True,
+        }
+    ]
 
 
 def test_survival_recovery_food_attempt_failure_does_not_crash_the_executor(
@@ -417,6 +431,7 @@ def test_survival_recovery_food_attempt_failure_does_not_crash_the_executor(
             pass
 
     state = SimpleNamespace(
+        custom_data={},
         update_progress=lambda *_args, **_kwargs: None,
         record_phase_payload=lambda *_args, **_kwargs: None,
     )
