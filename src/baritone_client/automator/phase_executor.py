@@ -19,6 +19,7 @@ from ..common.tasks import (
 )
 from .resource_manager import ResourceManager
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
+from .pacing import wait_with_bridge_keepalive
 import logging
 
 from ..observability import begin_operation, end_operation
@@ -53,6 +54,11 @@ def _acquire_checkpointed_emergency_food(client, state) -> bool:
         exploration_center=food_anchor,
         return_to_exploration_center=True,
     )
+
+
+def _wait_before_retry(client, retry_delay: float) -> None:
+    """Keep combat supervision active during an ordinary phase retry delay."""
+    wait_with_bridge_keepalive(client, duration=retry_delay)
 
 
 class PhaseHandler(ABC):
@@ -383,7 +389,7 @@ class PhaseExecutor:
             retries += 1
             if retries <= self.max_retries:
                 print(f"Retry {retries}/{self.max_retries} in {self.retry_delay}s...")
-                time.sleep(self.retry_delay)
+                _wait_before_retry(self.client, self.retry_delay)
         
         print(f"Phase {phase.name} failed after {self.max_retries} retries")
         
