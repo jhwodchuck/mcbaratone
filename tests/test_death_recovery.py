@@ -587,6 +587,37 @@ def test_aquatic_death_abandons_grave_before_navigation(monkeypatch):
     assert not result.data["recovered"]
 
 
+def test_death_recovery_defers_respawn_while_killer_remains(monkeypatch):
+    context = _context(
+        {"x": -129, "y": 68, "z": -94, "dimension": "minecraft:overworld"}
+    )
+    monkeypatch.setattr(
+        death_recovery_action,
+        "scan_for_threats",
+        lambda *_args, **_kwargs: [
+            {"type": "minecraft:zombie", "distance": 0.8}
+        ],
+        raising=False,
+    )
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        death_recovery_action,
+        "goto",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a hostile death area must not be re-entered"
+        ),
+    )
+
+    result = DeathRecoveryAction().execute(context)
+
+    assert not result.success
+    assert result.data["respawn_deferred"]
+    assert context.client.transport.dead
+    assert not any(
+        route == "respawn" for route, _payload in context.client.transport.calls
+    )
+
+
 def test_grave_approach_aborts_after_first_combat_intervention(monkeypatch):
     transport = RecoveryTransport({})
     transport.dead = False

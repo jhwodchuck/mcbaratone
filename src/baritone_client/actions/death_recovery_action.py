@@ -9,7 +9,11 @@ from ..core.exceptions import TransportError
 from ..actions.base import BaseAction
 from ..common.nether import find_nearest_portal
 from ..common import goto
-from ..common.combat import defend_or_flee, secure_recovery_area
+from ..common.combat import (
+    defend_or_flee,
+    scan_for_threats,
+    secure_recovery_area,
+)
 from ..common.inventory import get_inventory, reset_inventory_cache
 from ..common.surface_recovery import position_is_aquatic
 from ..automator.state_manager import Phase
@@ -144,6 +148,48 @@ def _player_alive(client) -> bool:
     except Exception:
         return False
     return not state.get("is_dead", False) and float(state.get("health", 0) or 0) > 0
+
+
+def _wait_for_clear_death_area(
+    client,
+    *,
+    attempts: int = 15,
+    clear_polls: int = 2,
+    poll_interval: float = 2.0,
+) -> bool:
+    """Keep the player dead until its nearby killer pack has dispersed."""
+    clear_count = 0
+    for attempt in range(1, max(1, int(attempts)) + 1):
+        threats = scan_for_threats(client, radius=16)
+        if threats:
+            clear_count = 0
+            nearest = threats[0]
+            print(
+                "RECOVERY: deferring respawn while "
+                f"{nearest.get('type', 'hostiles')} remains nearby "
+                f"({attempt}/{attempts})"
+            )
+        else:
+            clear_count += 1
+            if clear_count >= max(1, int(clear_polls)):
+                print("RECOVERY: death area remained clear; respawning")
+                return True
+        time.sleep(max(0.0, poll_interval))
+    print("RECOVERY: death area stayed hostile; leaving player safely unrespawned")
+    return False
+
+
+def _respawn_after_death_area_clears(client) -> Optional[ActionResult]:
+    """Respawn only after consecutive clear observations of the death area."""
+    if not _wait_for_clear_death_area(client):
+        return ActionResult.fail(
+            "Respawn deferred until the death area clears",
+            respawn_deferred=True,
+        )
+    client.transport.dispatch("respawn", {})
+    reset_inventory_cache()
+    time.sleep(2.0)
+    return None
 
 
 def _death_was_aquatic(
@@ -429,6 +475,24 @@ def _rebuild_after_lethal_grave(context: ActionContext, abandoned: Dict) -> Acti
     )
 
 
+def _abandon_or_defer_repeated_grave(
+    context: ActionContext,
+    recovery_state: Dict,
+) -> Optional[ActionResult]:
+    """Open a repeated-grave circuit only after its killer pack disperses."""
+    if int(recovery_state.get("unsafe_failures", 0)) < 1:
+        return None
+    if not _wait_for_clear_death_area(context.client):
+        return ActionResult.fail(
+            "Respawn deferred until the repeated grave area clears",
+            respawn_deferred=True,
+        )
+    abandoned = abandon_repeated_unsafe_pending_recovery(context.state, {})
+    if abandoned is None:
+        return None
+    return _rebuild_after_lethal_grave(context, abandoned)
+
+
 class DeathRecoveryAction(BaseAction):
     """
     Action to handle player death and recovery.
@@ -462,12 +526,11 @@ class DeathRecoveryAction(BaseAction):
                 and len(pending_location) == 3
             )
             if resuming_pending:
-                abandoned = abandon_repeated_unsafe_pending_recovery(
-                    context.state,
-                    {},
+                repeated_result = _abandon_or_defer_repeated_grave(
+                    context, recovery_state
                 )
-                if abandoned is not None:
-                    return _rebuild_after_lethal_grave(context, abandoned)
+                if repeated_result is not None:
+                    return repeated_result
                 stored_expected = recovery_state.get("expected_critical", {})
                 if isinstance(stored_expected, dict):
                     expected_critical = {
@@ -497,9 +560,9 @@ class DeathRecoveryAction(BaseAction):
                 _persist_pending_recovery(context.state, expected_critical)
             print("\n!!! PLAYER DIED !!!")
             print("Starting recovery sequence...")
-            context.client.transport.dispatch("respawn", {})
-            reset_inventory_cache()  # dropped-on-death items must not linger in cache
-            time.sleep(2.0)
+            respawn_failure = _respawn_after_death_area_clears(context.client)
+            if respawn_failure is not None:
+                return respawn_failure
             # Get death location and recover items
             try:
                 response = context.client.transport.dispatch("get_death_location", {})
