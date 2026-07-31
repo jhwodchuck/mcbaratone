@@ -1619,13 +1619,8 @@ def test_relocate_reports_failure_when_separation_never_grows(monkeypatch):
     assert not combat._relocate_away_from(client, threat, distance=28, timeout=3)
 
 
-def test_submerged_bot_targets_nearby_fish_immediately(monkeypatch):
-    """Live: Bot07/Bot08 sat at 8.0/7.3 health in lush caves, feet in water,
-    with 8-10 tropical fish inside 128 blocks -- their only available food --
-    and never targeted one. The 16-block aquatic cap plus the land-search
-    delay exist to stop a bot on LAND being dragged into water after a fish it
-    cannot reach; a bot already submerged has nothing left to be dragged into,
-    and a lush cave has no land animals to wait for."""
+def test_submerged_bot_does_not_target_distant_fish(monkeypatch):
+    """Submersion is a reason to surface, not permission for a long pursuit."""
     from baritone_client.common import emergency_food
 
     looked = []
@@ -1646,8 +1641,8 @@ def test_submerged_bot_targets_nearby_fish_immediately(monkeypatch):
         in_water=True,
     )
 
-    assert target is not None and "cod" in target["type"]
-    assert looked and looked[0] == 64, "submerged search must reach fish ~48m out"
+    assert target is None
+    assert looked == [5]
 
 
 def test_wounded_submerged_bot_limits_aquatic_target_search(monkeypatch):
@@ -1680,7 +1675,7 @@ def test_wounded_submerged_bot_limits_aquatic_target_search(monkeypatch):
     )
 
     assert target is None
-    assert radii == [16]
+    assert radii == [5]
 
 
 def test_dry_bot_still_waits_before_chasing_fish(monkeypatch):
@@ -1800,8 +1795,8 @@ def test_unreachable_fish_is_not_selected_again(monkeypatch):
         combat,
         "get_nearby_entities",
         lambda *_a, **_k: [
-            {"id": 9, "type": "minecraft:cod", "distance": 46.4},
-            {"id": 10, "type": "minecraft:salmon", "distance": 55.0},
+            {"id": 9, "type": "minecraft:cod", "distance": 3.0},
+            {"id": 10, "type": "minecraft:salmon", "distance": 4.0},
         ],
     )
     client = SimpleNamespace(transport=CombatTransport())
@@ -1862,12 +1857,12 @@ def test_hunt_target_aborts_after_failed_aquatic_surface(monkeypatch):
     ) is False
 
 
-def _surface_gate_client(in_water, fish=None, y=62):
+def _surface_gate_client(in_water, fish=None, y=62, health=6.0):
     class T(CombatTransport):
         def dispatch(self, route, payload):
             self.calls.append((route, payload))
             if route == "get_state":
-                return {"health": 6.0, "block_position": {"x": 0, "y": y, "z": 0}}
+                return {"health": health, "block_position": {"x": 0, "y": y, "z": 0}}
             if route == "get_block":
                 return {"id": "minecraft:water" if in_water else "minecraft:air"}
             if route == "get_entities":
@@ -1877,19 +1872,19 @@ def _surface_gate_client(in_water, fish=None, y=62):
     return SimpleNamespace(transport=T())
 
 
-def test_submerged_bot_may_hunt_a_visible_fish_without_surfacing_first(monkeypatch):
-    """The surface gate guards blind exploration, but it was also refusing to
-    hunt fish already in sight. Live 2026-07-30: all four bots at food
-    0/0/10/2 and health 8/6/4.5/20, every one at y=62-64 so only `in_water`
-    was blocking, cycling "reaching dry surface before exploration" while
-    surface routes were unreachable. In a lush cave the water is the larder."""
+def test_submerged_bot_may_take_healthy_melee_range_fish():
+    """The exception remains bounded to one target already within reach."""
     from baritone_client.common import emergency_food
 
     client = _surface_gate_client(
         in_water=True,
-        fish=[{"id": 1, "type": "minecraft:cod", "distance": 9.0}],
+        fish=[{"id": 1, "type": "minecraft:cod", "distance": 4.0}],
+        health=20.0,
     )
-    state = {"block_position": {"x": 0, "y": 62, "z": 0}}
+    state = {
+        "health": 20.0,
+        "block_position": {"x": 0, "y": 62, "z": 0},
+    }
 
     assert emergency_food.reach_food_search_surface(client, state) is True
     # It must NOT have attempted an ascent.

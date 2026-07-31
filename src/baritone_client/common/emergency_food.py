@@ -48,6 +48,8 @@ EMERGENCY_FOOD_ITEMS = (
 WATER_FOOD = ("salmon", "cod")
 MINIMUM_FOOD_SEARCH_Y = 55
 EXPECTED_SURFACE_Y = 63
+MINIMUM_IMMEDIATE_AQUATIC_HUNT_HEALTH = 12.0
+MAX_IMMEDIATE_AQUATIC_FOOD_DISTANCE = 4.5
 
 
 def _expected_food_search_y(
@@ -88,6 +90,24 @@ def _is_dry_food_search_surface(
     )
 
 
+def _is_safe_immediate_aquatic_target(
+    state: Dict,
+    target: Optional[Dict],
+) -> bool:
+    """Allow only a healthy, already-in-reach fish target while submerged."""
+    if target is None:
+        return False
+    try:
+        distance = float(target.get("distance", float("inf")))
+        health = float(state.get("health", 0.0))
+    except (TypeError, ValueError):
+        return False
+    return (
+        health >= MINIMUM_IMMEDIATE_AQUATIC_HUNT_HEALTH
+        and 0.0 <= distance <= MAX_IMMEDIATE_AQUATIC_FOOD_DISTANCE
+    )
+
+
 def reach_food_search_surface(client: Any, state: Dict) -> bool:
     """Reach dry Overworld surface terrain before blind food exploration."""
     position = block_position(state)
@@ -101,27 +121,24 @@ def reach_food_search_surface(client: Any, state: Dict) -> bool:
     if position[1] >= expected_y - 3 and not in_water:
         return True
 
-    # This gate exists to stop *blind exploration* while submerged, but it was
-    # also refusing to hunt fish already in sight. In a lush cave the water is
-    # the larder: standing in it with tropical fish a few blocks away is the
-    # one case where surfacing first is strictly worse. Measured live on
-    # 2026-07-30 with all four bots at food 0/0/10/2 and health 8/6/4.5/20,
-    # every one of them at y=62-64 (so the depth half of this check passed --
-    # only `in_water` was blocking) and cycling "reaching dry surface before
-    # exploration" while surface routes were unreachable. Let a concrete
-    # nearby aquatic target through; blind exploration still has to surface.
+    # A fish already within melee reach can be a bounded food action. Never
+    # turn this exception into an underwater approach: live Bot14 telemetry
+    # showed full health collapse between 15-second samples while following
+    # cod and salmon 20-28 blocks through a cold ocean.
     if in_water and position[1] >= MINIMUM_FOOD_SEARCH_Y:
         from . import combat as api
 
         nearby_fish = api.find_entity_by_type(
-            client, list(WATER_FOOD), radius=32
+            client,
+            list(WATER_FOOD),
+            radius=int(MAX_IMMEDIATE_AQUATIC_FOOD_DISTANCE) + 1,
         )
-        if nearby_fish is not None:
+        if _is_safe_immediate_aquatic_target(state, nearby_fish):
             print(
-                "RECOVERY: submerged but "
+                "RECOVERY: healthy and submerged with immediate "
                 f"{str(nearby_fish.get('type','fish')).split(':')[-1]} is "
-                f"{float(nearby_fish.get('distance', 0)):.1f}m away; hunting "
-                "it instead of surfacing first"
+                f"{float(nearby_fish.get('distance', 0)):.1f}m away; allowing "
+                "one bounded aquatic food action"
             )
             return True
 
@@ -204,10 +221,10 @@ def select_target(
     aquatic_search_radius: int = 64,
     unreachable: Optional[set] = None,
 ) -> Optional[Dict]:
-    """Choose a renewable land target, with nearby fish as fallback.
+    """Choose a renewable land target, with immediate fish as fallback.
 
-    ``in_water`` reports that the player is already submerged, which lifts the
-    normal restrictions on aquatic targets -- see the fallback below.
+    ``in_water`` never lifts the aquatic distance bound: submerged bots must
+    surface instead of following fish through open water.
     ``unreachable`` holds entity ids already proven unapproachable.
     """
     from . import combat as api
@@ -240,13 +257,6 @@ def select_target(
         if len(group) == 2 and current_food <= 2:
             return min(group, key=lambda entity: float(entity.get("distance", 999)))
 
-    # Standing in water changes the calculus. The 16-block cap exists so a
-    # bot on land is not dragged into water chasing a distant fish it can
-    # never reach -- but a bot already submerged has nothing left to be
-    # dragged into, and in a lush cave there are no land animals to wait for,
-    # so the land-search delay is pure starvation. Live: Bot07 and Bot08 sat
-    # at 8.0/7.3 health in lush caves, feet in water, with 8-10 tropical fish
-    # inside 128 blocks -- their only food source -- and never targeted one.
     def nearest_fish(radius: int) -> Optional[Dict]:
         # find_entity_by_type only ever returns the single nearest match, so a
         # blocked fish would otherwise mask every one behind it. Scan and pick
@@ -259,24 +269,24 @@ def select_target(
                 for water_type in WATER_FOOD
             )
             and usable(entity)
+            and 0.0
+            <= float(entity.get("distance", float("inf")))
+            <= MAX_IMMEDIATE_AQUATIC_FOOD_DISTANCE
         ]
         if not candidates:
             return None
         return min(candidates, key=lambda e: float(e.get("distance", 999)))
 
     if in_water:
-        # 64, not something tighter: measured live, the nearest fish to a
-        # starving bot in a lush cave sat at 48.7m, and a radius-48 query
-        # returned nothing at all. A shorter leash simply means never eating.
-        target = nearest_fish(min(64, max(1, int(aquatic_search_radius))))
+        target = nearest_fish(
+            min(
+                int(MAX_IMMEDIATE_AQUATIC_FOOD_DISTANCE) + 1,
+                max(1, int(aquatic_search_radius)),
+            )
+        )
         if target is not None:
             return target
 
-    water_fallback_after = min(90.0, max(15.0, timeout / 2.0))
-    if in_water and (
-        current_food <= 6 or elapsed >= water_fallback_after
-    ):
-        return nearest_fish(min(16, max(1, int(aquatic_search_radius))))
     return None
 
 

@@ -309,3 +309,35 @@ def test_low_dry_ledge_does_not_satisfy_food_surface_recovery(monkeypatch):
 
     assert emergency_food.reach_food_search_surface(client, state)
     assert excavations[0]["expected_y"] == 84
+
+
+def test_submerged_food_selection_rejects_distant_fish(monkeypatch):
+    """Regression: Bot14 repeatedly drowned following fish 20-28 blocks."""
+    from baritone_client.common import combat
+
+    radii = []
+
+    def nearby(_client, radius):
+        radii.append(radius)
+        return [
+            {
+                "id": 14,
+                "type": "minecraft:cod",
+                "distance": 20.9,
+            }
+        ]
+
+    monkeypatch.setattr(combat, "get_nearby_entities", nearby)
+
+    target = emergency_food.select_target(
+        SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_args: {})),
+        [],
+        current_food=0,
+        elapsed=120.0,
+        timeout=240.0,
+        renewable_source_callback=None,
+        in_water=True,
+    )
+
+    assert target is None
+    assert radii == [5]
