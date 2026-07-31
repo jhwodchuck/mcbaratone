@@ -364,7 +364,34 @@ class PhaseExecutor:
                     interruption="pacing_hold",
                 )
                 self.interruption_reason = "pacing_hold"
+                print(f"Phase {phase.name} yielded for pacing hold: {exc}")
                 handler.on_exit(self.client, self.resources, self.state)
+                # A hunger-driven pacing hold is otherwise unrecoverable. The
+                # pacing gates demand food>=16 (and carried reserves), but
+                # emergency food acquisition only triggers at food<=10 or
+                # health<12 -- so a bot between those bands is too hungry to
+                # work and not hungry enough to go eat, and holds forever.
+                # Measured live 2026-07-31 across 19 bots: zero BOOT_SEQUENCE
+                # completions ever, with bots parked at food 11-17 and no
+                # carried food, yielding 83+ times each. Close the band by
+                # actively acquiring food for exactly those holds.
+                if any(
+                    token in str(exc).lower()
+                    for token in ("food", "hunger", "carry")
+                ):
+                    try:
+                        from ..common.combat import acquire_emergency_food
+
+                        acquire_emergency_food(
+                            self.client, minimum_food=18, timeout=180.0
+                        )
+                    except PlayerDeathDetected:
+                        raise
+                    except Exception as food_exc:
+                        print(
+                            f"Phase {phase.name} pacing-hold food attempt "
+                            f"failed non-fatally: {food_exc}"
+                        )
                 return False
             except Exception as e:
                 end_operation(

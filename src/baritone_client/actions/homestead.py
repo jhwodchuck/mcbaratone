@@ -178,6 +178,12 @@ class IncrementalHomestead:
             raise SurvivalRecoveryRequired(
                 "critical survival recovery required before returning home"
             )
+        # Same eat-before-holding rule as require_construction_pacing: this
+        # gate was holding bots that were carrying food. Live 2026-07-31:
+        # Bot15 sat at food=11 with a chicken and a beef in its inventory,
+        # held here 249 times.
+        if food < 16:
+            food = self._eat_carried_food(minimum_food=18, current_food=food)
         if (
             int(state.get("world_time", 0)) % 24000 >= 12000
             or health < 18

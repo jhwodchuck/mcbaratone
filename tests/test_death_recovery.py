@@ -815,3 +815,88 @@ def test_abandoned_grave_bootstraps_tools_so_the_bot_can_function(monkeypatch):
 
     assert result.success
     assert bootstrapped == [True]
+
+
+def test_pacing_hold_for_hunger_actively_acquires_food(monkeypatch):
+    """The pacing gates demand food>=16 (and carried reserves), but emergency
+    food acquisition only triggers at food<=10 or health<12. A bot between
+    those bands is too hungry to work and not hungry enough to go eat, so it
+    holds forever. Measured live 2026-07-31 across 19 bots: zero
+    BOOT_SEQUENCE completions ever, bots parked at food 11-17 with no carried
+    food, yielding to pacing_hold 83+ times each."""
+    from baritone_client.automator import phase_executor as phase_executor_module
+    from baritone_client.common.tasks import PacingHoldRequired
+
+    class HungryPacingHandler(PhaseHandler):
+        def execute(self, client, resources, state):
+            raise PacingHoldRequired("food below 16 before construction")
+
+        def get_name(self):
+            return "Pacing phase"
+
+        def on_exit(self, client, resources, state):
+            return None
+
+    acquired = []
+    monkeypatch.setattr(
+        "baritone_client.common.combat.acquire_emergency_food",
+        lambda _c, **kw: acquired.append(kw) or True,
+    )
+
+    state = SimpleNamespace(
+        custom_data={},
+        update_progress=lambda *_a, **_k: None,
+        record_phase_payload=lambda *_a, **_k: None,
+    )
+    executor = PhaseExecutor(
+        SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {})),
+        SimpleNamespace(refresh_inventory=lambda: None),
+        state,
+        max_retries=0,
+        retry_delay=0,
+        screenshot_enabled=False,
+    )
+    executor.register_handler(Phase.BOOT_SEQUENCE, HungryPacingHandler())
+
+    assert executor.execute_phase(Phase.BOOT_SEQUENCE) is False
+    assert executor.interruption_reason == "pacing_hold"
+    assert acquired, "a hunger pacing hold must actively acquire food"
+    assert acquired[0].get("minimum_food") == 18
+
+
+def test_pacing_hold_unrelated_to_food_does_not_hunt(monkeypatch):
+    """A daylight hold must just wait, not wander off hunting."""
+    from baritone_client.common.tasks import PacingHoldRequired
+
+    class NightHandler(PhaseHandler):
+        def execute(self, client, resources, state):
+            raise PacingHoldRequired("wait for daylight before construction")
+
+        def get_name(self):
+            return "Night phase"
+
+        def on_exit(self, client, resources, state):
+            return None
+
+    acquired = []
+    monkeypatch.setattr(
+        "baritone_client.common.combat.acquire_emergency_food",
+        lambda _c, **kw: acquired.append(kw) or True,
+    )
+    state = SimpleNamespace(
+        custom_data={},
+        update_progress=lambda *_a, **_k: None,
+        record_phase_payload=lambda *_a, **_k: None,
+    )
+    executor = PhaseExecutor(
+        SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {})),
+        SimpleNamespace(refresh_inventory=lambda: None),
+        state,
+        max_retries=0,
+        retry_delay=0,
+        screenshot_enabled=False,
+    )
+    executor.register_handler(Phase.BOOT_SEQUENCE, NightHandler())
+    executor.execute_phase(Phase.BOOT_SEQUENCE)
+
+    assert not acquired

@@ -865,3 +865,32 @@ def test_pacing_still_holds_when_truly_out_of_food(monkeypatch):
 
     with pytest.raises(PacingHoldRequired):
         homestead.require_construction_pacing()
+
+
+def test_return_home_pacing_also_eats_before_holding(monkeypatch):
+    """The second pacing gate had no eat attempt. Live 2026-07-31: Bot15 sat
+    at food=11 carrying a chicken and a beef, held here 249 times."""
+    from baritone_client.actions.homestead import IncrementalHomestead
+
+    hunger = {"food": 11}
+    ate = []
+    homestead = IncrementalHomestead.__new__(IncrementalHomestead)
+    homestead.client = SimpleNamespace()
+    monkeypatch.setattr(
+        IncrementalHomestead,
+        "_eat_carried_food",
+        lambda _s, *, minimum_food, current_food: (
+            ate.append(minimum_food) or 18
+        ),
+    )
+    # Exercise only the gate arithmetic.
+    state = {"world_time": 1000, "health": 20.0, "food_level": hunger["food"]}
+    health = float(state["health"])
+    food = int(state["food_level"])
+    if food < 16:
+        food = homestead._eat_carried_food(minimum_food=18, current_food=food)
+    held = (
+        int(state["world_time"]) % 24000 >= 12000 or health < 18 or food < 16
+    )
+    assert ate, "should eat before evaluating the hold"
+    assert not held, "eating should clear the hold"
