@@ -475,17 +475,10 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
     }
 
     private boolean matchesIngredient(String ingredient, String itemId) {
-        if (ingredient.equals(itemId)) return true;
-
-        if (ingredient.equals("any_log")) {
-            return itemId.endsWith("_log") || itemId.contains("_wood");
-        }
-
-        if (ingredient.equals("any_planks")) {
-            return itemId.endsWith("_planks");
-        }
-
-        return false;
+        // Delegate to the one shared implementation. This logic was previously
+        // duplicated across three craft handlers, which is why none of them
+        // ever learned that charcoal substitutes for coal.
+        return CraftCommandHandler.matchesSelector(ingredient, itemId);
     }
 
     private int countItemInInventory(Minecraft client, String itemId) {
@@ -585,7 +578,7 @@ public class AdvancedCraftCommandHandler extends AbstractCommandHandler {
 
             case "minecraft:torch":
                 return new CraftRecipe(recipeId, 4, false,
-                    new String[]{"minecraft:coal", null, "minecraft:stick", null},
+                    new String[]{"any_coal", null, "minecraft:stick", null},
                     Arrays.asList("stick"));
 
             default:

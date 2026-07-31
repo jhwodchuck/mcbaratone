@@ -171,8 +171,9 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
 
             // Torch
             case "minecraft:torch":
+                // any_coal: charcoal is interchangeable with coal here.
                 return new CraftRecipe(recipeId, 4, false, new String[] {
-                        "minecraft:coal", null,
+                        "any_coal", null,
                         "minecraft:stick", null
                 });
 
@@ -456,15 +457,10 @@ public class AutoCraftCommandHandler extends AsyncCommandHandler {
 
             String stackId = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
 
-            if (itemId.equals("any_log")) {
-                if (stackId.endsWith("_log") || stackId.contains("_wood")) {
-                    count += stack.getCount();
-                }
-            } else if (itemId.equals("any_planks")) {
-                if (stackId.endsWith("_planks")) {
-                    count += stack.getCount();
-                }
-            } else if (stackId.equals(itemId)) {
+            // Shared matcher: see CraftCommandHandler.matchesSelector. The
+            // inline copies here and in AdvancedCraftCommandHandler are why
+            // charcoal was never accepted for torches.
+            if (CraftCommandHandler.matchesSelector(itemId, stackId)) {
                 count += stack.getCount();
             }
         }

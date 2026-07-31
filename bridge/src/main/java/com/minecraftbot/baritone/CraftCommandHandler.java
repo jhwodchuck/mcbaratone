@@ -352,8 +352,10 @@ public class CraftCommandHandler implements CommandHandler {
 
             // --- Essentials ---
             case "minecraft:torch":
+                // any_coal, not minecraft:coal -- charcoal works identically
+                // and is what a bot smelts for itself early on.
                 return new CraftRecipe(recipeId, 4, false, new String[]{
-                    "minecraft:coal", null,
+                    "any_coal", null,
                     "minecraft:stick", null
                 });
             case "minecraft:bucket":
@@ -481,25 +483,47 @@ public class CraftCommandHandler implements CommandHandler {
         return true;
     }
     
+    /**
+     * Single source of truth for whether an inventory stack satisfies a recipe
+     * selector.
+     *
+     * <p>This logic used to be hand-inlined at three call sites
+     * ({@link #countItemInInventory}, and twice in {@link #findItemSlot}), which
+     * is exactly why "any_coal" was never added anywhere: the torch recipe
+     * asked for literal {@code minecraft:coal} and a bot that had smelted its
+     * own charcoal was told "Missing ingredients for minecraft:torch" forever.
+     * Charcoal and coal are interchangeable in every recipe that burns them.
+     * Confirmed live on 2026-07-31: Bot16 held 6 charcoal, 4 sticks and 0 coal
+     * and could not craft a single torch.
+     */
+    static boolean matchesSelector(String selector, String stackId) {
+        if (selector == null || stackId == null) {
+            return false;
+        }
+        switch (selector) {
+            case "any_log":
+                return stackId.endsWith("_log") || stackId.contains("_wood");
+            case "any_planks":
+                return stackId.endsWith("_planks");
+            case "any_coal":
+                return stackId.equals("minecraft:coal")
+                    || stackId.equals("minecraft:charcoal");
+            default:
+                return selector.equals(stackId);
+        }
+    }
+
     private int countItemInInventory(Minecraft client, String itemId) {
         Inventory inv = client.player.getInventory();
         int count = 0;
-        
+
         for (int i = 0; i < inv.getContainerSize(); i++) {
             ItemStack stack = inv.getItem(i);
             if (stack.isEmpty()) continue;
-            
+
             String stackId = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
-            
-            if (itemId.equals("any_log")) {
-                if (stackId.endsWith("_log") || stackId.contains("_wood")) {
-                    count += stack.getCount();
-                }
-            } else if (itemId.equals("any_planks")) {
-                if (stackId.endsWith("_planks")) {
-                    count += stack.getCount();
-                }
-            } else if (itemId.equals(stackId)) {
+
+            if (matchesSelector(itemId, stackId)) {
                 count += stack.getCount();
             }
         }
@@ -515,9 +539,7 @@ public class CraftCommandHandler implements CommandHandler {
         ItemStack cursor = client.player.containerMenu.getCarried();
         if (!cursor.isEmpty()) {
             String cursorId = BuiltInRegistries.ITEM.getKey(cursor.getItem()).toString();
-            if (itemId.equals(cursorId) || 
-               (itemId.equals("any_log") && (cursorId.endsWith("_log") || cursorId.contains("_wood"))) ||
-               (itemId.equals("any_planks") && cursorId.endsWith("_planks"))) {
+            if (matchesSelector(itemId, cursorId)) {
                 LOGGER.info("  FOUND {} in CURSOR stack", itemId);
                 return -2; // Special value for cursor
             }
@@ -532,21 +554,9 @@ public class CraftCommandHandler implements CommandHandler {
             
             String stackId = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
             
-            if (itemId.equals("any_log")) {
-                if (stackId.endsWith("_log") || stackId.contains("_wood")) {
-                    int dst = screenSlotFromInvSlot(i, isTable);
-                    LOGGER.info("  FOUND any_log ({}) in inv {} -> screen {}", stackId, i, dst);
-                    return dst;
-                }
-            } else if (itemId.equals("any_planks")) {
-                if (stackId.endsWith("_planks")) {
-                    int dst = screenSlotFromInvSlot(i, isTable);
-                    LOGGER.info("  FOUND any_planks ({}) in inv {} -> screen {}", stackId, i, dst);
-                    return dst;
-                }
-            } else if (itemId.equals(stackId)) {
+            if (matchesSelector(itemId, stackId)) {
                 int dst = screenSlotFromInvSlot(i, isTable);
-                LOGGER.info("  FOUND {} in inv {} -> screen {}", stackId, i, dst);
+                LOGGER.info("  FOUND {} ({}) in inv {} -> screen {}", itemId, stackId, i, dst);
                 return dst;
             }
         }
