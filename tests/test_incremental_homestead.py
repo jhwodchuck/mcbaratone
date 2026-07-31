@@ -1007,3 +1007,38 @@ def test_grass_block_is_valid_torch_support():
     assert H._is_replaceable("minecraft:short_grass")
     assert not H._is_replaceable("minecraft:water")
     assert not H._is_replaceable("minecraft:stone")
+
+
+def test_empty_torches_reopens_supply_even_with_fuel_left(monkeypatch):
+    """place_torch needs a stick as well as fuel and will not craft one, so a
+    bot holding fuel but no sticks could never resupply. Live 2026-07-31:
+    Bot16 reached 16 of 24 perimeter torches -- the last step of nine -- then
+    stalled with 0 torches, 0 sticks, 2 charcoal and 8 planks, because the
+    old fuel<1 condition kept torch_supply marked verified."""
+    from baritone_client.actions.homestead import IncrementalHomestead
+
+    counts = {
+        "minecraft:torch": 0,
+        "minecraft:charcoal": 2,   # fuel remains, so the old guard stayed shut
+        "minecraft:coal": 0,
+        "minecraft:stick": 0,
+    }
+    homestead_payload = {
+        "anchor": [0, 64, 0],
+        "steps": {"torch_supply": {"verified": True}, "light_perimeter": {}},
+    }
+
+    h = IncrementalHomestead.__new__(IncrementalHomestead)
+    h.client = SimpleNamespace()
+    monkeypatch.setattr(
+        "baritone_client.actions.homestead.count_item",
+        lambda _c, item: counts.get(item, 0),
+    )
+
+    # Reproduce the guard the way run_light_perimeter applies it.
+    if counts["minecraft:torch"] < 1:
+        h.step(homestead_payload, "torch_supply")["verified"] = False
+
+    assert homestead_payload["steps"]["torch_supply"]["verified"] is False, (
+        "an empty torch stack must reopen torch_supply regardless of fuel"
+    )

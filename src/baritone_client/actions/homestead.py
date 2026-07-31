@@ -594,10 +594,16 @@ class IncrementalHomestead:
         record["verified"] = False
         target = missing[0]
         if not place_torch(self.client, *target):
-            fuel = count_item(self.client, "minecraft:coal") + count_item(
-                self.client, "minecraft:charcoal"
-            )
-            if count_item(self.client, "minecraft:torch") < 1 and fuel < 1:
+            # Re-open torch_supply whenever the torches are gone, not only
+            # when the fuel is gone too. place_torch needs a stick as well as
+            # fuel and will not craft one, so a bot holding fuel but no sticks
+            # could never resupply and never finish the ring. Live 2026-07-31:
+            # Bot16 reached 16 of 24 perimeter torches -- the last step of
+            # nine -- then stalled with 0 torches, 0 sticks, 2 charcoal and 8
+            # planks, because fuel>=1 kept torch_supply marked verified.
+            # run_torch_supply crafts the sticks first, so simply letting it
+            # run again resolves this.
+            if count_item(self.client, "minecraft:torch") < 1:
                 self.step(homestead, "torch_supply")["verified"] = False
             return False
         if not self._is_torch(target):
