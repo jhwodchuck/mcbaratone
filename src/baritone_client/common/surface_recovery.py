@@ -401,11 +401,18 @@ def reach_breathing_air(
     """Run ``#surface`` without allowing a bad route to descend farther."""
     initial = block_position(client.transport.dispatch("get_state", {}))
     _configure_surface_pathing(client, sleep=sleep)
-    if not _start_loaded_column_ascent(client, initial):
+    loaded_ascent = _start_loaded_column_ascent(client, initial)
+    if not loaded_ascent:
         client.transport.dispatch("chat", {"message": "#surface"})
-    deadline = clock() + max(0.0, timeout)
+    started_at = clock()
+    deadline = started_at + max(0.0, timeout)
+    highest_y = initial[1]
+    progress_deadline = started_at + min(3.0, max(1.0, timeout * 0.4))
     try:
-        while clock() < deadline:
+        while True:
+            now = clock()
+            if now >= deadline:
+                return False
             state = client.transport.dispatch("get_state", {})
             ensure_alive(client, state)
             current = block_position(state)
@@ -414,8 +421,22 @@ def reach_breathing_air(
             if current[1] < initial[1] - 2:
                 print("SURVIVAL: surface route moved downward; aborting it")
                 return False
+            if current[1] > highest_y:
+                highest_y = current[1]
+                progress_deadline = now + min(
+                    3.0,
+                    max(1.0, timeout * 0.4),
+                )
+            elif loaded_ascent and now >= progress_deadline:
+                print(
+                    "SURVIVAL: loaded-column ascent made no vertical "
+                    "progress; falling back to #surface"
+                )
+                client.transport.dispatch("chat", {"message": "#stop"})
+                client.transport.dispatch("cancel", {})
+                client.transport.dispatch("chat", {"message": "#surface"})
+                loaded_ascent = False
             sleep(0.5)
-        return False
     finally:
         client.transport.dispatch("chat", {"message": "#stop"})
         client.transport.dispatch("cancel", {})

@@ -214,6 +214,47 @@ def test_dry_surface_uses_expected_y_ascent_before_horizontal_candidates(
     assert ("chat", {"message": "#surface"}) not in transport.calls
 
 
+def test_loaded_breathing_ascent_falls_back_to_surface_when_stalled():
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.states = iter(
+                (
+                    {"block_position": {"x": 4, "y": 60, "z": 4}},
+                    {"block_position": {"x": 4, "y": 60, "z": 4}},
+                    {"block_position": {"x": 4, "y": 60, "z": 4}},
+                    {"block_position": {"x": 4, "y": 62, "z": 4}},
+                )
+            )
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return next(self.states)
+            if route == "get_block":
+                return {
+                    "id": (
+                        "minecraft:water"
+                        if int(payload["y"]) <= 62
+                        else "minecraft:air"
+                    )
+                }
+            return {}
+
+    transport = Transport()
+    clock = iter((0.0, 0.5, 3.1, 4.0)).__next__
+
+    assert surface_recovery.reach_breathing_air(
+        SimpleNamespace(transport=transport),
+        timeout=10.0,
+        ensure_alive=lambda *_args: None,
+        sleep=lambda _seconds: None,
+        clock=clock,
+    )
+    assert ("goal", {"type": "yLevel", "value": 62}) in transport.calls
+    assert ("chat", {"message": "#surface"}) in transport.calls
+
+
 def test_stalled_aquatic_ascent_yields_to_excavation_without_route_retries(
     monkeypatch,
 ):
