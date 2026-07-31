@@ -1896,8 +1896,11 @@ def test_submerged_bot_with_no_fish_still_surfaces_first(monkeypatch):
     intent of the check is preserved."""
     from baritone_client.common import emergency_food
 
-    client = _surface_gate_client(in_water=True, fish=[])
-    state = {"block_position": {"x": 0, "y": 62, "z": 0}}
+    client = _surface_gate_client(in_water=True, fish=[], health=20.0)
+    state = {
+        "health": 20.0,
+        "block_position": {"x": 0, "y": 62, "z": 0},
+    }
     ascended = []
     monkeypatch.setattr(
         emergency_food,
@@ -1915,6 +1918,38 @@ def test_submerged_bot_with_no_fish_still_surfaces_first(monkeypatch):
 
     assert emergency_food.reach_food_search_surface(client, state) is False
     assert ascended, "must still try to surface when there is no visible fish"
+
+
+def test_critical_submerged_bot_refuses_prolonged_surface_excavation(
+    monkeypatch,
+):
+    """A near-death Bot15 drowned in the excavation fallback."""
+    from baritone_client.common import emergency_food
+
+    client = _surface_gate_client(in_water=True, fish=[], health=8.0)
+    state = {
+        "health": 8.0,
+        "block_position": {"x": 0, "y": 62, "z": 0},
+    }
+    ascended = []
+    excavated = []
+    monkeypatch.setattr(
+        emergency_food,
+        "block_position",
+        lambda _state: (0, 62, 0),
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.surface_recovery.reach_dry_surface",
+        lambda *_args, **_kwargs: ascended.append(True) or None,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.build_site_recovery.excavate_surface_egress",
+        lambda *_args, **_kwargs: excavated.append(True) or None,
+    )
+
+    assert not emergency_food.reach_food_search_surface(client, state)
+    assert not ascended
+    assert not excavated
 
 
 def test_deep_underground_bot_surfaces_even_with_fish_nearby(monkeypatch):

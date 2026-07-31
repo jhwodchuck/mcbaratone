@@ -189,7 +189,10 @@ def _return_to_recent_dry_food_anchor(
         return False
 
     initial_health = float(state.get("health", 0.0) or 0.0)
-    if initial_health < MINIMUM_IMMEDIATE_AQUATIC_HUNT_HEALTH:
+    if (
+        initial_health < MINIMUM_IMMEDIATE_AQUATIC_HUNT_HEALTH
+        and distance > 32.0
+    ):
         return False
     print(
         "RECOVERY: returning from water to recent dry food-search anchor "
@@ -262,6 +265,17 @@ def reach_food_search_surface(client: Any, state: Dict) -> bool:
         position,
     ):
         return True
+
+    if (
+        in_water
+        and float(state.get("health", 20.0) or 0.0)
+        < MINIMUM_IMMEDIATE_AQUATIC_HUNT_HEALTH
+    ):
+        print(
+            "RECOVERY: critical health and no reachable dry anchor; "
+            "refusing a prolonged surface excavation"
+        )
+        return False
 
     # A fish already within melee reach can be a bounded food action. Never
     # turn this exception into an underwater approach: live Bot14 telemetry

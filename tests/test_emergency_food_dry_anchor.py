@@ -19,7 +19,7 @@ def test_submerged_food_search_returns_to_recent_dry_anchor(monkeypatch):
     """Bot15 drowned after forgetting dry ground beside its home chest."""
     dry_position = (-174, 67, -331)
     dry_state = {
-        "health": 19.0,
+        "health": 8.0,
         "is_pathing": False,
         "block_position": {
             "x": dry_position[0],
@@ -29,7 +29,7 @@ def test_submerged_food_search_returns_to_recent_dry_anchor(monkeypatch):
     }
     client = SimpleNamespace(transport=DryAnchorTransport(dry_state))
     wet_state = {
-        "health": 19.0,
+        "health": 8.0,
         "is_pathing": False,
         "block_position": {"x": -175, "y": 59, "z": -309},
     }
