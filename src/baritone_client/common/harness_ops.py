@@ -296,6 +296,40 @@ def craft_planks_manual(client, plank_id: str, output_count: int = 4) -> bool:
     )
 
 
+_SELECTOR_MEMBERS = {
+    "#coals": ("minecraft:coal", "minecraft:charcoal"),
+    "any_coal": ("minecraft:coal", "minecraft:charcoal"),
+}
+
+
+def _resolve_placement_selectors(client, placements):
+    """Replace tag selectors with a concrete item the player is carrying.
+
+    The bridge's native ``place_recipe`` only understands literal item ids --
+    it rejected a "#coals" selector outright with "Missing ingredient
+    '#coals' for grid slot 1", forcing every such craft down the slow Python
+    per-click path (or failing entirely). Resolving here lets both paths work
+    and keeps the recipe tables tag-based. Selectors with no carried member,
+    and ones the harness resolves itself such as "#planks", pass through
+    untouched.
+    """
+    from .inventory import count_item
+
+    resolved = []
+    for selector, slot in placements:
+        members = _SELECTOR_MEMBERS.get(selector)
+        if members:
+            carried = next(
+                (item for item in members if count_item(client, item) > 0),
+                None,
+            )
+            if carried is not None:
+                resolved.append((carried, slot))
+                continue
+        resolved.append((selector, slot))
+    return resolved
+
+
 def craft_recipe_manual(
     client,
     result_id: str,
@@ -310,7 +344,7 @@ def craft_recipe_manual(
     Python per-click path if the bridge doesn't support the command or
     returns an error.
     """
-    placements_list = list(placements)
+    placements_list = _resolve_placement_selectors(client, placements)
 
     if not _load()["ensure_crafting_output_space"](make_ctx(client)):
         return False

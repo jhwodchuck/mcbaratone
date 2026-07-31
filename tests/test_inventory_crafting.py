@@ -1420,3 +1420,43 @@ def test_manual_placement_selector_matches_charcoal():
         "the manual placement matcher must resolve the #coals selector"
     )
     assert "minecraft:charcoal" in source
+
+
+def test_placement_selectors_resolve_to_a_carried_item(monkeypatch):
+    """The bridge's native place_recipe only understands literal item ids and
+    rejected a "#coals" selector outright ("Missing ingredient '#coals' for
+    grid slot 1"). Resolving to whichever fuel the bot actually carries lets
+    the fast path work. Live 2026-07-31: Bot16 held 6 charcoal, 0 coal."""
+    from baritone_client.common import harness_ops
+
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.count_item",
+        lambda _c, item: 6 if item == "minecraft:charcoal" else 0,
+    )
+    resolved = harness_ops._resolve_placement_selectors(
+        object(), [("#coals", 1), ("minecraft:stick", 4)]
+    )
+    assert resolved == [("minecraft:charcoal", 1), ("minecraft:stick", 4)]
+
+
+def test_placement_selector_passes_through_when_nothing_carried(monkeypatch):
+    """With no member carried the selector is left alone so the existing
+    error path still reports the real missing ingredient."""
+    from baritone_client.common import harness_ops
+
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.count_item", lambda _c, _i: 0
+    )
+    resolved = harness_ops._resolve_placement_selectors(object(), [("#coals", 1)])
+    assert resolved == [("#coals", 1)]
+
+
+def test_plank_selector_is_left_for_the_harness(monkeypatch):
+    """#planks is resolved by the harness matcher itself; do not rewrite it."""
+    from baritone_client.common import harness_ops
+
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.count_item", lambda _c, _i: 9
+    )
+    resolved = harness_ops._resolve_placement_selectors(object(), [("#planks", 1)])
+    assert resolved == [("#planks", 1)]
