@@ -307,7 +307,7 @@ def _loaded_dry_shore_candidates(
     search_radius: int = 64,
 ) -> list[tuple[int, int, int]]:
     """Return nearby loaded ground columns with verified dry standing space."""
-    ox, _oy, oz = origin
+    ox, oy, oz = origin
     try:
         response = client.transport.dispatch(
             "find_blocks",
@@ -329,7 +329,11 @@ def _loaded_dry_shore_candidates(
     candidates = []
     for (x, z), y in highest_by_column.items():
         distance_sq = (x - ox) ** 2 + (z - oz) ** 2
-        if distance_sq < 6**2 or distance_sq > search_radius**2:
+        if (
+            distance_sq < 6**2
+            or distance_sq > search_radius**2
+            or y < oy - 2
+        ):
             continue
         position = (x, y, z)
         if position_is_aquatic(client, position) or not _head_is_dry(
@@ -351,13 +355,18 @@ def _swim_to_loaded_dry_shore(
     timeout: float = 30.0,
 ) -> Optional[tuple[int, int, int]]:
     """Use one bounded raw route from surface water to verified loaded land."""
-    for target in _loaded_dry_shore_candidates(client, origin)[:2]:
+    candidates = _loaded_dry_shore_candidates(client, origin)[:2]
+    if not candidates:
+        return None
+    deadline = time.monotonic() + max(0.0, timeout)
+    for target in candidates:
+        if time.monotonic() >= deadline:
+            break
         client.transport.dispatch("cancel", {})
         client.transport.dispatch(
             "goto",
             {"x": target[0], "y": target[1], "z": target[2]},
         )
-        deadline = time.monotonic() + max(0.0, timeout)
         checks = 0
         while time.monotonic() < deadline:
             state = client.transport.dispatch("get_state", {})
@@ -417,6 +426,14 @@ def reach_breathing_air(
             ensure_alive(client, state)
             current = block_position(state)
             if _head_is_dry(client, current):
+                if position_is_aquatic(client, current):
+                    shore = _swim_to_loaded_dry_shore(
+                        client,
+                        current,
+                        timeout=min(15.0, max(8.0, timeout)),
+                    )
+                    if shore is not None:
+                        return True
                 return True
             if current[1] < initial[1] - 2:
                 print("SURVIVAL: surface route moved downward; aborting it")

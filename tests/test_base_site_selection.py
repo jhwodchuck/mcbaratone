@@ -255,6 +255,71 @@ def test_loaded_breathing_ascent_falls_back_to_surface_when_stalled():
     assert ("chat", {"message": "#surface"}) in transport.calls
 
 
+def test_breathing_air_reaches_loaded_shore_before_sinking(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.states = iter(
+                (
+                    {"block_position": {"x": 4, "y": 60, "z": 4}},
+                    {"block_position": {"x": 4, "y": 62, "z": 4}},
+                )
+            )
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return next(self.states)
+            if route == "get_block":
+                return {
+                    "id": (
+                        "minecraft:water"
+                        if int(payload["y"]) <= 62
+                        else "minecraft:air"
+                    )
+                }
+            return {}
+
+    shore_origins = []
+    monkeypatch.setattr(
+        surface_recovery,
+        "_swim_to_loaded_dry_shore",
+        lambda _client, origin, **_kwargs: shore_origins.append(origin)
+        or (12, 63, 4),
+    )
+
+    assert surface_recovery.reach_breathing_air(
+        SimpleNamespace(transport=Transport()),
+        timeout=10.0,
+        ensure_alive=lambda *_args: None,
+        sleep=lambda _seconds: None,
+        clock=iter((0.0, 0.5)).__next__,
+    )
+    assert shore_origins == [(4, 62, 4)]
+
+
+def test_loaded_shore_candidates_reject_lower_cave_ledges():
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "find_blocks":
+                return {
+                    "found": [
+                        {"x": 10, "y": 50, "z": 4},
+                        {"x": 12, "y": 62, "z": 4},
+                    ]
+                }
+            if route == "get_block":
+                return {"id": "minecraft:air"}
+            return {}
+
+    candidates = surface_recovery._loaded_dry_shore_candidates(
+        SimpleNamespace(transport=Transport()),
+        (4, 62, 4),
+    )
+
+    assert candidates == [(12, 63, 4)]
+
+
 def test_stalled_aquatic_ascent_yields_to_excavation_without_route_retries(
     monkeypatch,
 ):
@@ -435,7 +500,7 @@ def test_deep_surface_water_uses_verified_loaded_shore_route(monkeypatch):
     monkeypatch.setattr(
         surface_recovery.time,
         "monotonic",
-        iter((0.0, 0.0, 13.0, 20.0, 20.0)).__next__,
+        iter((0.0, 0.0, 13.0, 20.0, 20.0, 21.0)).__next__,
     )
     monkeypatch.setattr(surface_recovery.time, "sleep", lambda _seconds: None)
 
