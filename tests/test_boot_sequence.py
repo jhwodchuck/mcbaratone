@@ -204,9 +204,12 @@ def test_boot_crop_planting_verifies_and_persists_irrigated_plot(monkeypatch):
         lambda _client, item_id: inventory.get(item_id, 0),
     )
 
-    def select(_client, item_id):
+    selections = []
+
+    def select(_client, item_id, allow_swap=False):
         if inventory.get(item_id, 0) <= 0:
             return False
+        selections.append((item_id, allow_swap))
         transport.selected = item_id
         return True
 
@@ -232,6 +235,7 @@ def test_boot_crop_planting_verifies_and_persists_irrigated_plot(monkeypatch):
     assert farm["planted"] == 2
     assert inventory["minecraft:wooden_hoe"] == 1
     assert destinations == [(0, 65, 0), (0, 65, 0)]
+    assert selections and all(allow_swap for _item, allow_swap in selections)
     assert state.custom_data["farm_location"] == [0, 64, 0]
     assert len(locations) == 1
 

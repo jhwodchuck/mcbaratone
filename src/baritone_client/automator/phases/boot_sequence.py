@@ -658,7 +658,7 @@ class BootSequenceHandler(PhaseHandler):
 
             ground = original_ground
             if ground != "minecraft:farmland":
-                if selected_hoe is None or not select_item(client, selected_hoe):
+                if selected_hoe is None or not select_item(client, selected_hoe, allow_swap=True):
                     continue
                 try:
                     client.transport.dispatch("look_at", {"x": px, "y": py, "z": pz})
@@ -683,7 +683,7 @@ class BootSequenceHandler(PhaseHandler):
                 ),
                 None,
             )
-            if crop is None or not select_item(client, crop[0]):
+            if crop is None or not select_item(client, crop[0], allow_swap=True):
                 continue
             client.transport.dispatch(
                 "interact_block", {"x": px, "y": py, "z": pz}

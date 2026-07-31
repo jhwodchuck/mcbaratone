@@ -107,6 +107,17 @@ def test_farm_return_repair_rearms_revision_36_checkpoint():
     assert custom_data["objective_runtime_revision"] == OBJECTIVE_RUNTIME_REVISION
 
 
+def test_crop_hotbar_repair_rearms_revision_37_checkpoint():
+    """The hotbar-swap repair must reopen bots exhausted on revision 37."""
+    planner = ObjectivePlanner(default_objectives())
+    objective = planner._by_phase[Phase.BOOT_SEQUENCE]
+    objective.status = ObjStatus.ABANDONED
+    custom_data = {"objective_runtime_revision": 37}
+
+    assert rearm_abandoned_objectives(planner, custom_data) == ["BOOT_SEQUENCE"]
+    assert custom_data["objective_runtime_revision"] == OBJECTIVE_RUNTIME_REVISION
+
+
 def test_stalled_survival_actively_recovers_low_food(monkeypatch):
     client = SimpleNamespace(
         transport=SimpleNamespace(
