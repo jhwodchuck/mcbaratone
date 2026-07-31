@@ -375,9 +375,13 @@ class PhaseExecutor:
                 # completions ever, with bots parked at food 11-17 and no
                 # carried food, yielding 83+ times each. Close the band by
                 # actively acquiring food for exactly those holds.
+                # "health" counts: Minecraft only regenerates health at
+                # food>=18, so a health-driven hold is equally unrecoverable
+                # without eating. Daylight holds are excluded -- those really
+                # do just need to wait.
                 if any(
                     token in str(exc).lower()
-                    for token in ("food", "hunger", "carry")
+                    for token in ("food", "hunger", "carry", "health")
                 ):
                     try:
                         from ..common.combat import acquire_emergency_food

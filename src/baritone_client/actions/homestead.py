@@ -184,13 +184,23 @@ class IncrementalHomestead:
         # held here 249 times.
         if food < 16:
             food = self._eat_carried_food(minimum_food=18, current_food=food)
-        if (
-            int(state.get("world_time", 0)) % 24000 >= 12000
-            or health < 18
-            or food < 16
-        ):
+        # Name the condition that actually failed. This message read "wait for
+        # daylight survival margin" no matter which of the three checks
+        # tripped, which made it both undiagnosable from logs and invisible to
+        # the executor's hunger-hold recovery (that matches on food/hunger
+        # wording). Live 2026-07-31: Bot13 and Bot17 yielded here 357 times on
+        # food<16 while the log claimed they were waiting for daylight, and no
+        # food acquisition ever ran.
+        reasons = []
+        if int(state.get("world_time", 0)) % 24000 >= 12000:
+            reasons.append("waiting for daylight")
+        if health < 18:
+            reasons.append(f"health {health:.0f} below 18")
+        if food < 16:
+            reasons.append(f"food {food} below 16")
+        if reasons:
             raise PacingHoldRequired(
-                "wait for daylight survival margin before returning home"
+                "survival margin before returning home: " + ", ".join(reasons)
             )
         if not goto(
             self.client,

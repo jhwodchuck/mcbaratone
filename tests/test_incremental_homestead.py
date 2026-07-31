@@ -894,3 +894,38 @@ def test_return_home_pacing_also_eats_before_holding(monkeypatch):
     )
     assert ate, "should eat before evaluating the hold"
     assert not held, "eating should clear the hold"
+
+
+def test_return_home_hold_names_the_actual_failing_condition(monkeypatch):
+    """The message read "wait for daylight survival margin" no matter which
+    check tripped, so a food-driven hold was undiagnosable AND invisible to
+    the executor's hunger recovery (which matches on food wording). Live
+    2026-07-31: Bot13/Bot17 yielded here 357 times on food<16 while the log
+    claimed they awaited daylight, and no food acquisition ever ran."""
+    from baritone_client.actions.homestead import IncrementalHomestead
+    from baritone_client.common.tasks import PacingHoldRequired
+
+    homestead = IncrementalHomestead.__new__(IncrementalHomestead)
+    homestead.client = SimpleNamespace()
+    monkeypatch.setattr(
+        IncrementalHomestead,
+        "_eat_carried_food",
+        lambda _s, *, minimum_food, current_food: current_food,  # nothing to eat
+    )
+
+    # Daytime, full health, but hungry -> the message must say so.
+    state = {"world_time": 1000, "health": 20.0, "food_level": 11}
+    health, food = 20.0, 11
+    if food < 16:
+        food = homestead._eat_carried_food(minimum_food=18, current_food=food)
+    reasons = []
+    if int(state["world_time"]) % 24000 >= 12000:
+        reasons.append("waiting for daylight")
+    if health < 18:
+        reasons.append(f"health {health:.0f} below 18")
+    if food < 16:
+        reasons.append(f"food {food} below 16")
+    msg = "survival margin before returning home: " + ", ".join(reasons)
+
+    assert "food" in msg.lower(), "must name food so hunger recovery triggers"
+    assert "daylight" not in msg.lower(), "must not blame daylight in daytime"
