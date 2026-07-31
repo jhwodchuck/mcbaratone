@@ -248,10 +248,24 @@ class IncrementalHomestead:
             if food <= 10:
                 raise SurvivalRecoveryRequired("critical hunger before construction")
             raise PacingHoldRequired("food below 16 before construction")
-        if food < 20 and not self._has_edible():
-            raise PacingHoldRequired(
-                "carry food or refill hunger before construction"
-            )
+        # Deliberately NOT requiring a carried snack on top of the food>=16
+        # floor above. That extra condition was unsatisfiable in practice and
+        # deadlocked the lead bot.
+        #
+        # It read `food < 20 and not self._has_edible()`. Hunger is almost
+        # never exactly 20, so it effectively demanded carried food always --
+        # while nothing in the loop acquires any in the 16..19 band, because
+        # acquire_emergency_food returns immediately once hunger already meets
+        # its target. Live 2026-07-31: Bot16, the furthest-along bot in the
+        # fleet at 8/9 homestead steps, sat at food=19 and full health with an
+        # empty larder, yielding "carry food or refill hunger before
+        # construction" with zero recovery attempts, unable to satisfy a gate
+        # nothing could satisfy for it.
+        #
+        # The food>=16 floor (which now eats carried food first) is the real
+        # survival margin for a bounded, local build step. If a future step
+        # genuinely needs a travel reserve, it should acquire one explicitly
+        # rather than hold for one that never arrives.
 
     def run_dry_anchor(self, homestead: dict[str, Any]) -> bool:
         """Select or live-revalidate a dry local anchor."""

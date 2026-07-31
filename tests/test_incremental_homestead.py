@@ -389,7 +389,13 @@ def test_boot_light_perimeter_failed_placement_not_persisted_as_verified(monkeyp
         (20, 20, 14000, {"minecraft:bread": 2}),  # night
         (20, 17, 1000, {"minecraft:bread": 2}),  # low health
         (15, 20, 1000, {"minecraft:bread": 2}),  # low food
-        (19, 20, 1000, {}),  # not full and no safe edible
+        # REMOVED 2026-07-31: (19, 20, 1000, {}) -- "not full and no safe
+        # edible". That case asserted a gate that was unsatisfiable in
+        # production: hunger is almost never exactly 20, so it demanded
+        # carried food always, while nothing acquires any in the 16..19 band.
+        # It deadlocked Bot16, the furthest-along bot in the fleet, at 8/9
+        # homestead steps. Comfortable hunger with full health in daylight is
+        # now allowed to build; see require_construction_pacing.
     ],
 )
 def test_boot_construction_pacing_blocks_unsafe_or_underequipped(monkeypatch, food_level, health, day_time, edible_counts):
@@ -1088,3 +1094,60 @@ def test_no_progress_step_still_persists_homestead_bookkeeping(monkeypatch):
     assert persisted is False, (
         "an un-verify recorded during a failed step must survive to the checkpoint"
     )
+
+
+def test_comfortable_hunger_without_a_snack_does_not_block_construction(monkeypatch):
+    """The old `food < 20 and not _has_edible()` gate was unsatisfiable:
+    hunger is almost never exactly 20, so it demanded carried food always,
+    while nothing acquires any in the 16..19 band (acquire_emergency_food
+    returns immediately once hunger meets its target). Live 2026-07-31: Bot16,
+    the furthest-along bot at 8/9 steps, sat at food=19 and full health with an
+    empty larder yielding "carry food or refill hunger before construction"
+    with zero recovery attempts."""
+    from baritone_client.actions.homestead import IncrementalHomestead
+
+    h = IncrementalHomestead.__new__(IncrementalHomestead)
+    h.client = SimpleNamespace()
+    monkeypatch.setattr(
+        IncrementalHomestead,
+        "_state",
+        lambda _s: {
+            "dimension": "minecraft:overworld",
+            "world_time": 1000,
+            "health": 20.0,
+            "food_level": 19,
+        },
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.homestead.count_item", lambda *_a: 0
+    )
+
+    # Must not raise: comfortable hunger, full health, daylight.
+    h.require_construction_pacing()
+
+
+def test_low_hunger_with_no_food_still_blocks_construction(monkeypatch):
+    """The real survival floor is preserved."""
+    from baritone_client.actions.homestead import IncrementalHomestead
+
+    h = IncrementalHomestead.__new__(IncrementalHomestead)
+    h.client = SimpleNamespace()
+    monkeypatch.setattr(
+        IncrementalHomestead,
+        "_state",
+        lambda _s: {
+            "dimension": "minecraft:overworld",
+            "world_time": 1000,
+            "health": 20.0,
+            "food_level": 13,
+        },
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.combat.eat_until_hunger", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.homestead.count_item", lambda *_a: 0
+    )
+
+    with pytest.raises(PacingHoldRequired):
+        h.require_construction_pacing()
