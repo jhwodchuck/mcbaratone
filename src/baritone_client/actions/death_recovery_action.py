@@ -11,6 +11,7 @@ from ..common.nether import find_nearest_portal
 from ..common import goto
 from ..common.combat import defend_or_flee, secure_recovery_area
 from ..common.inventory import get_inventory, reset_inventory_cache
+from ..common.surface_recovery import position_is_aquatic
 from ..automator.state_manager import Phase
 from .death_recovery_state import (
     abandon_repeated_unsafe_pending_recovery,
@@ -145,6 +146,36 @@ def _player_alive(client) -> bool:
     return not state.get("is_dead", False) and float(state.get("health", 0) or 0) > 0
 
 
+def _death_was_aquatic(
+    client,
+    death_position: Dict,
+    death_dimension: str,
+) -> bool:
+    """Classify a loaded death block before respawn can unload its chunk."""
+    if not death_position or "nether" in death_dimension.lower():
+        return False
+    try:
+        return position_is_aquatic(
+            client,
+            (
+                int(death_position.get("x", 0)),
+                int(death_position.get("y", 0)),
+                int(death_position.get("z", 0)),
+            ),
+        )
+    except Exception:
+        # Existing in-route survival checks protect graves whose block probe
+        # is unavailable.
+        return False
+
+
+def _death_details(client, state: Dict) -> Tuple[Dict, str, bool]:
+    """Return death position, dimension, and pre-respawn aquatic evidence."""
+    position = state.get("block_position", state.get("position", {}))
+    dimension = state.get("dimension", "minecraft:overworld")
+    return position, dimension, _death_was_aquatic(client, position, dimension)
+
+
 def _bootstrap_starter_pickaxe(client) -> bool:
     """Re-craft a minimum wooden pickaxe after a lost grave.
 
@@ -235,8 +266,13 @@ def _reach_overworld_grave(
     death_coords: Tuple[int, int, int],
     *,
     attempts: int = 2,
+    known_aquatic: bool = False,
 ) -> bool:
     """Reach a grave across repeated naked deaths without losing its target."""
+    if known_aquatic:
+        print("RECOVERY: abandoning known aquatic grave before navigation")
+        client._last_navigation_survival_abort = True
+        return False
     for attempt in range(1, max(1, int(attempts)) + 1):
         state = client.transport.dispatch("get_state", {})
         if state.get("is_dead", False) or float(state.get("health", 20) or 0) <= 0:
@@ -413,8 +449,9 @@ class DeathRecoveryAction(BaseAction):
                 return ActionResult.ok("Death recovery deferred due transport timeout")
             if not state.get("is_dead", False) and state.get("health", 20) > 0:
                 return handle_alive_pending_recovery(context, state, get_inventory)
-            death_position = state.get("block_position", state.get("position", {}))
-            death_dimension = state.get("dimension", "minecraft:overworld")
+            death_position, death_dimension, death_was_aquatic = _death_details(
+                context.client, state
+            )
             expected_critical = _critical_inventory(get_inventory(context.client))
             recovery_state = context.state.custom_data.setdefault(
                 "death_recovery", {}
@@ -506,12 +543,11 @@ class DeathRecoveryAction(BaseAction):
                     )
 
                 else:
-                    # Died in Overworld - standard recovery.  Resume the
-                    # interrupted phase after pickup; completed earlier phases
-                    # remain valid and should not be replayed.
+                    # Preserve completed phases after Overworld recovery.
                     success = _reach_overworld_grave(
                         context.client,
                         death_coords,
+                        known_aquatic=death_was_aquatic,
                     )
                     if success:
                         print("Recovered items from death location")

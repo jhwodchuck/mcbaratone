@@ -556,6 +556,37 @@ def test_submerged_grave_approach_stops_after_first_survival_abort(monkeypatch):
     assert approaches == [True]
 
 
+def test_aquatic_death_abandons_grave_before_navigation(monkeypatch):
+    context = _context(
+        {"x": -507, "y": 52, "z": 117, "dimension": "minecraft:overworld"}
+    )
+    monkeypatch.setattr(
+        death_recovery_action,
+        "position_is_aquatic",
+        lambda *_args: True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        death_recovery_action,
+        "goto",
+        lambda *_args, **_kwargs: pytest.fail(
+            "known aquatic grave must not be approached"
+        ),
+    )
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        death_recovery_action,
+        "_bootstrap_starter_pickaxe",
+        lambda _client: True,
+    )
+
+    result = DeathRecoveryAction().execute(context)
+
+    assert result.success
+    assert result.data["bootstrapped_tools"]
+    assert not result.data["recovered"]
+
+
 def test_grave_approach_aborts_after_first_combat_intervention(monkeypatch):
     transport = RecoveryTransport({})
     transport.dead = False
