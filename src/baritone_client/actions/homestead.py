@@ -582,8 +582,17 @@ class IncrementalHomestead:
             record["verified"] = False
             return False
         intended = self._coordinates(record.get("intended"))
-        if not intended:
-            intended = perimeter_ring(anchor)[:24]
+        fresh = perimeter_ring(anchor)[:24]
+        # Adopt the current lighting policy even when a denser ring is already
+        # stored. perimeter_ring used to emit every perimeter block (32
+        # positions, shoulder to shoulder); it now samples them. Without this,
+        # a bot that recorded the old dense ring keeps chasing ~24 torches
+        # forever -- Bot16 was still on a stored 24-position ring after the
+        # spacing fix shipped, so the change reached no existing bot. Torches
+        # already placed stay placed and simply re-verify against the smaller
+        # set.
+        if not intended or len(intended) > len(fresh):
+            intended = fresh
         # perimeter_ring puts every position at anchor_y+1, which only works on
         # perfectly flat ground. On real terrain most of the ring floats in
         # mid-air, and a torch needs solid support -- so robust_place fails

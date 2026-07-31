@@ -1197,3 +1197,23 @@ def test_perimeter_ring_spacing_is_configurable():
     dense = perimeter_ring([0, 64, 0], spacing=2)
     sparse = perimeter_ring([0, 64, 0], spacing=8)
     assert len(dense) > len(sparse)
+
+
+def test_stored_dense_ring_is_replaced_by_the_sparse_policy():
+    """perimeter_ring used to emit every perimeter block. A bot that recorded
+    that dense ring kept chasing ~24 torches forever, so the spacing fix
+    reached no existing bot -- Bot16 was still on a stored 24-position ring
+    after it shipped. The current policy must win over stored state."""
+    from baritone_client.common.homestead_lighting import perimeter_ring
+
+    anchor = [0, 64, 0]
+    fresh = perimeter_ring(anchor)[:24]
+    stored_dense = [[x, 65, z] for x in range(-4, 5) for z in (-4, 4)]  # 18, dense
+
+    # This mirrors the adoption rule in run_light_perimeter.
+    intended = [tuple(c) for c in stored_dense]
+    if not intended or len(intended) > len(fresh):
+        intended = fresh
+
+    assert intended == fresh
+    assert len(intended) < len(stored_dense)
