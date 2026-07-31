@@ -7,6 +7,7 @@ from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
 from ...common import explore_until
 from ...common.base import wait_for_safe_daylight
+from ...common.combat import acquire_emergency_food
 from ...common.movement_recovery import block_position
 from ...common.navigation import goto
 from ...common.surface_recovery import position_is_aquatic, reach_dry_surface
@@ -39,6 +40,31 @@ def _secure_exploration_endpoint(
     if recovered is None or position_is_aquatic(client, recovered):
         return None
     return recovered
+
+
+def _secure_survival_margin(
+    client,
+    base_coords: tuple[int, int, int],
+) -> bool:
+    """Recover critical health or hunger before any spawn-area scouting."""
+    state = client.transport.dispatch("get_state", {})
+    health = float(state.get("health", 20) or 0)
+    food = int(state.get("food_level", state.get("food", 20)) or 0)
+    if health >= 12.0 and food >= 14:
+        return True
+    print(
+        "SPAWN_BOOTSTRAP: survival margin is too low for scouting "
+        f"(health={health:.1f}, food={food}); recovering locally"
+    )
+    return acquire_emergency_food(
+        client,
+        minimum_health=12.0,
+        minimum_food=14,
+        timeout=120.0,
+        max_exploration_distance=32.0,
+        exploration_center=base_coords,
+        return_to_exploration_center=True,
+    )
 
 
 class SpawnBootstrapHandler(PhaseHandler):
@@ -90,6 +116,11 @@ class SpawnBootstrapHandler(PhaseHandler):
         # and fully autonomous.
         if not wait_for_safe_daylight(client):
             return TaskResult.fail("Spawn bootstrap could not reach safe daylight")
+
+        if not _secure_survival_margin(client, base_coords):
+            return TaskResult.fail(
+                "Spawn bootstrap could not establish a safe survival margin"
+            )
 
         # Scout briefly to load chunks
         print("Scouting spawn area...")

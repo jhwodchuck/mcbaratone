@@ -312,6 +312,59 @@ def test_bootstrap_rejects_aquatic_exploration_endpoint(monkeypatch):
     assert "dry exploration endpoint" in result.reason
 
 
+def test_bootstrap_recovers_critical_health_before_scouting(monkeypatch):
+    transport = SequenceTransport(
+        [
+            {
+                "world_time": 1000,
+                "is_dead": False,
+                "health": 8.0,
+                "food_level": 17,
+                "block_position": {"x": -160, "y": 63, "z": -320},
+            }
+        ]
+    )
+    client = SimpleNamespace(
+        transport=transport,
+        mission=SimpleNamespace(
+            macro=lambda *_args, **_kwargs: {"settingsApplied": 5}
+        ),
+    )
+    recovery_calls = []
+
+    def recover(_client, **kwargs):
+        recovery_calls.append(kwargs)
+        return False
+
+    monkeypatch.setattr(spawn_bootstrap, "acquire_emergency_food", recover)
+    monkeypatch.setattr(
+        spawn_bootstrap,
+        "explore_until",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("critical-health bot must not scout")
+        ),
+    )
+
+    result = SpawnBootstrapHandler().execute(
+        client,
+        ReadyResources(),
+        SimpleNamespace(),
+    )
+
+    assert not result.success
+    assert "safe survival margin" in result.reason
+    assert recovery_calls == [
+        {
+            "minimum_health": 12.0,
+            "minimum_food": 14,
+            "timeout": 120.0,
+            "max_exploration_distance": 32.0,
+            "exploration_center": (-160, 63, -320),
+            "return_to_exploration_center": True,
+        }
+    ]
+
+
 def test_initial_gathering_stops_when_daylight_gate_fails(monkeypatch):
     client = SimpleNamespace(transport=SequenceTransport([{"world_time": 18000, "is_dead": False}]))
     monkeypatch.setattr(initial_gathering, "sleep_through_night", lambda _client: False)
