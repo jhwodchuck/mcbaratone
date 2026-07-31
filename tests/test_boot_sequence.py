@@ -149,7 +149,7 @@ def test_boot_crop_planting_verifies_and_persists_irrigated_plot(monkeypatch):
                 blocks[(x, 65, z)] = "minecraft:air"
 
     inventory = {
-        "minecraft:wooden_hoe": 1,
+        "minecraft:wooden_hoe": 0,
         "minecraft:wheat_seeds": 2,
     }
 
@@ -210,6 +210,18 @@ def test_boot_crop_planting_verifies_and_persists_irrigated_plot(monkeypatch):
         return True
 
     monkeypatch.setattr(boot_sequence, "select_item", select)
+    monkeypatch.setattr(
+        boot_sequence,
+        "ensure_supplies",
+        lambda *_args, **_kwargs: SimpleNamespace(success=False),
+    )
+
+    def craft_hoe(_client, item_id, count):
+        assert (item_id, count) == ("minecraft:wooden_hoe", 1)
+        inventory[item_id] += count
+        return True
+
+    monkeypatch.setattr(boot_sequence, "craft", craft_hoe)
     monkeypatch.setattr(boot_sequence.time, "sleep", lambda _seconds: None)
 
     assert handler._plant_crops(client)
@@ -217,6 +229,7 @@ def test_boot_crop_planting_verifies_and_persists_irrigated_plot(monkeypatch):
     assert farm["verified"] is True
     assert farm["irrigated"] is True
     assert farm["planted"] == 2
+    assert inventory["minecraft:wooden_hoe"] == 1
     assert state.custom_data["farm_location"] == [0, 64, 0]
     assert len(locations) == 1
 

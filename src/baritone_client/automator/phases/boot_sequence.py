@@ -649,8 +649,7 @@ class BootSequenceHandler(PhaseHandler):
             None,
         )
         if needs_tilling and selected_hoe is None:
-            result = ensure_supplies(client, {"minecraft:wooden_hoe": 1}, timeout=120)
-            if result.success:
+            if craft(client, "minecraft:wooden_hoe", 1):
                 selected_hoe = "minecraft:wooden_hoe"
 
         for px, py, pz, original_ground in available:
