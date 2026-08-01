@@ -526,6 +526,123 @@ _MANUAL_GRID_RECIPES: Dict[str, Dict] = {
         ],
         "output": 4,
     },
+    # BOOT_SEQUENCE / BASE_CONSTRUCTION infrastructure. Planks and the
+    # crafting table intentionally stay on their dedicated 2x2 bootstrap
+    # drivers: requiring an open table to craft the table would deadlock a
+    # fresh or post-death inventory.
+    "minecraft:furnace": {
+        "placements": [
+            ("minecraft:cobblestone", 1),
+            ("minecraft:cobblestone", 2),
+            ("minecraft:cobblestone", 3),
+            ("minecraft:cobblestone", 4),
+            ("minecraft:cobblestone", 6),
+            ("minecraft:cobblestone", 7),
+            ("minecraft:cobblestone", 8),
+            ("minecraft:cobblestone", 9),
+        ],
+    },
+    "minecraft:chest": {
+        "placements": [
+            ("#planks", 1),
+            ("#planks", 2),
+            ("#planks", 3),
+            ("#planks", 4),
+            ("#planks", 6),
+            ("#planks", 7),
+            ("#planks", 8),
+            ("#planks", 9),
+        ],
+    },
+    "minecraft:white_bed": {
+        "placements": [
+            ("minecraft:white_wool", 1),
+            ("minecraft:white_wool", 2),
+            ("minecraft:white_wool", 3),
+            ("#planks", 4),
+            ("#planks", 5),
+            ("#planks", 6),
+        ],
+    },
+    # The starter-house repair path derives the door id from the carried
+    # plank family. Keep these selectors literal so mixed planks cannot craft
+    # a different door from the expected output.
+    **{
+        f"minecraft:{wood}_door": {
+            "placements": [
+                (f"minecraft:{wood}_planks", 1),
+                (f"minecraft:{wood}_planks", 2),
+                (f"minecraft:{wood}_planks", 4),
+                (f"minecraft:{wood}_planks", 5),
+                (f"minecraft:{wood}_planks", 7),
+                (f"minecraft:{wood}_planks", 8),
+            ],
+            "output": 3,
+        }
+        for wood in (
+            "oak",
+            "spruce",
+            "birch",
+            "jungle",
+            "acacia",
+            "dark_oak",
+            "mangrove",
+            "cherry",
+            "bamboo",
+        )
+    },
+    # BOOT_SEQUENCE tools and farm equipment.
+    "minecraft:wooden_hoe": {
+        "placements": [
+            ("#planks", 1),
+            ("#planks", 2),
+            ("minecraft:stick", 5),
+            ("minecraft:stick", 8),
+        ],
+    },
+    **{
+        f"minecraft:stone_{tool}": {
+            "placements": [
+                *(("minecraft:cobblestone", slot) for slot in head_slots),
+                *(("minecraft:stick", slot) for slot in stick_slots),
+            ],
+        }
+        for tool, head_slots, stick_slots in (
+            ("pickaxe", (1, 2, 3), (5, 8)),
+            ("axe", (1, 2, 4), (5, 8)),
+            ("shovel", (2,), (5, 8)),
+            ("sword", (2, 5), (8,)),
+        )
+    },
+    # FOOD_AND_IRON completion and deep-mining preparation can demand the
+    # complete iron loadout, not only the pickaxe and sword in the verifier.
+    **{
+        f"minecraft:iron_{tool}": {
+            "placements": [
+                *(("minecraft:iron_ingot", slot) for slot in head_slots),
+                *(("minecraft:stick", slot) for slot in stick_slots),
+            ],
+        }
+        for tool, head_slots, stick_slots in (
+            ("pickaxe", (1, 2, 3), (5, 8)),
+            ("axe", (1, 2, 4), (5, 8)),
+            ("shovel", (2,), (5, 8)),
+            ("sword", (2, 5), (8,)),
+        )
+    },
+    **{
+        f"minecraft:iron_{piece}": {
+            "placements": [
+                ("minecraft:iron_ingot", slot) for slot in slots
+            ],
+        }
+        for piece, slots in (
+            ("helmet", (1, 2, 3, 4, 6)),
+            ("chestplate", (1, 3, 4, 5, 6, 7, 8, 9)),
+            ("leggings", (1, 2, 3, 4, 6, 7, 9)),
+            ("boots", (4, 6, 7, 9)),
+        )
+    },
     "minecraft:bucket": {
         "placements": [
             ("minecraft:iron_ingot", 1),
@@ -786,7 +903,18 @@ def craft(client, item_id: str, count: int = 1) -> bool:
     if harness_ops.available():
         name = item_id.split(":")[-1]
         manual = None
-        if harness_ops.parse_tool_id(item_id):
+        if item_id in _MANUAL_GRID_RECIPES and item_id != "minecraft:stick":
+            spec = _MANUAL_GRID_RECIPES[item_id]
+            output_per_recipe = spec.get("output", 1)
+            crafts = max(1, (count + output_per_recipe - 1) // output_per_recipe)
+            manual = lambda: harness_ops.craft_recipe_manual(
+                client,
+                item_id,
+                spec["placements"],
+                crafts=crafts,
+                output_per_recipe=output_per_recipe,
+            )
+        elif harness_ops.parse_tool_id(item_id):
             manual = lambda: harness_ops.craft_tool_manual(client, item_id)
         elif harness_ops.parse_armor_id(item_id):
             manual = lambda: harness_ops.craft_armor_manual(client, item_id)

@@ -209,14 +209,18 @@ def test_food_and_iron_resumes_from_log_state_for_second_pickaxe(monkeypatch):
     monkeypatch.setattr(harness_ops, "available", lambda: True)
     monkeypatch.setattr(harness_ops, "ensure_crafting_table_open", lambda _client: True)
 
-    def manual_tool(_client, item_id):
+    # iron_pickaxe now has an explicit _MANUAL_GRID_RECIPES entry, which takes
+    # precedence over the generic tool driver, so the verified path is
+    # craft_recipe_manual. The plank/stick dependency resolution under test is
+    # unchanged either way.
+    def manual_recipe(_client, item_id, _placements, crafts=1, output_per_recipe=1):
         assert item_id == "minecraft:iron_pickaxe"
         transport.items["minecraft:iron_ingot"] -= 3
         transport.items["minecraft:stick"] -= 2
         transport.items[item_id] += 1
         return True
 
-    monkeypatch.setattr(harness_ops, "craft_tool_manual", manual_tool)
+    monkeypatch.setattr(harness_ops, "craft_recipe_manual", manual_recipe)
 
     assert inventory.craft(client, "minecraft:iron_pickaxe", 1) is True
 
@@ -268,24 +272,39 @@ def test_crafting_table_manual_fallback_does_not_require_existing_table(monkeypa
 
 
 def test_furnace_manual_fallback_requires_verified_table(monkeypatch):
+    # Furnace moved onto the shared _MANUAL_GRID_RECIPES driver, so it now
+    # routes through craft_recipe_manual (8 cobblestone ringing an empty
+    # centre) rather than the bespoke craft_furnace_manual. The table must
+    # still be opened and verified first.
     transport = DummyTransport()
     client = DummyClient(transport)
     calls = []
     monkeypatch.setattr(inventory, "_wait_craft_result", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        inventory,
+        "count_item",
+        lambda _client, item_id: 1 if item_id == "minecraft:crafting_table" else 0,
+    )
     monkeypatch.setattr(harness_ops, "available", lambda: True)
     monkeypatch.setattr(
         harness_ops,
         "ensure_crafting_table_open",
         lambda _client: calls.append("table") or True,
     )
-    monkeypatch.setattr(
-        harness_ops,
-        "craft_furnace_manual",
-        lambda _client: calls.append("furnace") or True,
-    )
+
+    def manual_recipe(_client, result_id, placements, crafts=1, output_per_recipe=1):
+        calls.append(("recipe", result_id, tuple(placements)))
+        return True
+
+    monkeypatch.setattr(harness_ops, "craft_recipe_manual", manual_recipe)
 
     assert inventory.craft(client, "minecraft:furnace", 1) is True
-    assert calls == ["table", "furnace"]
+    expected_placements = tuple(
+        inventory._MANUAL_GRID_RECIPES["minecraft:furnace"]["placements"]
+    )
+    assert calls == ["table", ("recipe", "minecraft:furnace", expected_placements)]
+    # Centre slot 5 stays empty; filling it is a different (and wrong) recipe.
+    assert 5 not in [slot for _sel, slot in expected_placements]
 
 
 def test_bucket_manual_fallback_places_iron_v_recipe(monkeypatch):
@@ -886,7 +905,37 @@ def test_stick_plank_prep_still_fails_closed_when_no_wood_exists(monkeypatch):
 
 def test_manual_grid_recipe_shapes_match_vanilla():
     # Ingredient totals per vanilla; a wrong shape silently crafts nothing.
+    # Doors all share the 6-planks-in-a-2x3 shape and yield 3. The selector is
+    # the literal plank family (not "#planks") so a mixed-wood inventory cannot
+    # craft a door of the wrong type than the caller asked for.
+    door_woods = (
+        "acacia", "bamboo", "birch", "cherry", "dark_oak",
+        "jungle", "mangrove", "oak", "spruce",
+    )
     expected_counts = {
+        f"minecraft:{wood}_door": {f"minecraft:{wood}_planks": 6}
+        for wood in door_woods
+    }
+    expected_counts.update({
+        # BOOT_SEQUENCE infrastructure and the starter-house entryway.
+        "minecraft:furnace": {"minecraft:cobblestone": 8},
+        "minecraft:chest": {"#planks": 8},
+        "minecraft:white_bed": {"minecraft:white_wool": 3, "#planks": 3},
+        "minecraft:wooden_hoe": {"#planks": 2, "minecraft:stick": 2},
+        # Stone tools.
+        "minecraft:stone_sword": {"minecraft:cobblestone": 2, "minecraft:stick": 1},
+        "minecraft:stone_shovel": {"minecraft:cobblestone": 1, "minecraft:stick": 2},
+        "minecraft:stone_pickaxe": {"minecraft:cobblestone": 3, "minecraft:stick": 2},
+        "minecraft:stone_axe": {"minecraft:cobblestone": 3, "minecraft:stick": 2},
+        # Iron tools and armour.
+        "minecraft:iron_sword": {"minecraft:iron_ingot": 2, "minecraft:stick": 1},
+        "minecraft:iron_shovel": {"minecraft:iron_ingot": 1, "minecraft:stick": 2},
+        "minecraft:iron_pickaxe": {"minecraft:iron_ingot": 3, "minecraft:stick": 2},
+        "minecraft:iron_axe": {"minecraft:iron_ingot": 3, "minecraft:stick": 2},
+        "minecraft:iron_helmet": {"minecraft:iron_ingot": 5},
+        "minecraft:iron_chestplate": {"minecraft:iron_ingot": 8},
+        "minecraft:iron_leggings": {"minecraft:iron_ingot": 7},
+        "minecraft:iron_boots": {"minecraft:iron_ingot": 4},
         "minecraft:stick": {"#planks": 2},
         # Vanilla torch is one coal OR charcoal above one stick, yielding 4.
         "minecraft:torch": {"#coals": 1, "minecraft:stick": 1},
@@ -917,7 +966,7 @@ def test_manual_grid_recipe_shapes_match_vanilla():
             "minecraft:feather": 1,
         },
         "minecraft:ladder": {"minecraft:stick": 7},
-    }
+    })
     assert set(inventory._MANUAL_GRID_RECIPES) == set(expected_counts)
     for item_id, spec in inventory._MANUAL_GRID_RECIPES.items():
         placements = spec["placements"]
@@ -950,6 +999,14 @@ def test_every_manual_grid_recipe_routes_to_manual_driver(monkeypatch):
         monkeypatch.setattr(harness_ops, "available", lambda: True)
         monkeypatch.setattr(harness_ops, "ensure_crafting_table_open", lambda _c: True)
         monkeypatch.setattr(harness_ops, "craft_recipe_manual", fake_recipe_manual)
+        # The table now carries tool recipes (stone/iron tools, wooden_hoe), so
+        # craft() runs its plank/stick dependency guards first. Those are
+        # covered by their own tests; stub them here so this test stays about
+        # routing rather than re-exercising a live gather_wood loop.
+        monkeypatch.setattr(
+            inventory, "_ensure_wooden_tool_ingredients", lambda *_a, **_k: True
+        )
+        monkeypatch.setattr(inventory, "ensure_tool_sticks", lambda *_a, **_k: True)
 
         assert inventory.craft(client, item_id, 1) is True, item_id
         output = spec.get("output", 1)
