@@ -290,8 +290,6 @@ def _legacy_infrastructure_record(evidence: _Evidence) -> Mapping[str, Any]:
 
 
 def _legacy_infrastructure_verified(evidence: _Evidence) -> bool:
-    if _house_record(evidence):
-        return _house_verified(evidence)
     bootstrap = _legacy_infrastructure_record(evidence)
     expected = (
         (bootstrap.get("crafting_table"), {"minecraft:crafting_table"}),
@@ -306,10 +304,17 @@ def _legacy_infrastructure_verified(evidence: _Evidence) -> bool:
     )
     for position, block_ids in expected:
         if not isinstance(position, (list, tuple)) or len(position) != 3:
-            return False
+            break
         if evidence.block_id(position) not in block_ids:
-            return False
-    return True
+            break
+    else:
+        return True
+
+    # BOOT_SEQUENCE precedes BASE_CONSTRUCTION. A partial starter-house record
+    # from an interrupted later attempt must not hide a complete bootstrap
+    # table/furnace/chest, but a complete live house remains valid fallback
+    # evidence for older checkpoints without usable bootstrap coordinates.
+    return bool(_house_record(evidence)) and _house_verified(evidence)
 
 
 def _legacy_food_source_verified(evidence: _Evidence) -> bool:

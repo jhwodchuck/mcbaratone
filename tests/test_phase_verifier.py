@@ -238,6 +238,45 @@ def test_boot_sequence_reconciles_legacy_infrastructure_and_farm(tmp_path):
     assert verified.gate_ids == ("BOOT",)
 
 
+def test_boot_sequence_prefers_valid_bootstrap_over_partial_house(tmp_path):
+    _client, _resources, state, verifier = make_verifier(
+        tmp_path,
+        blocks=live_boot_blocks(),
+    )
+    state.custom_data["homestead"] = {
+        "anchor": [10, 64, 10],
+        "steps": {
+            "light_perimeter": {
+                "verified": True,
+                "intended": [[14, 65, 10]],
+            },
+        },
+    }
+    state.custom_data["structures"] = {
+        "bootstrap_base": {
+            "origin": [10, 64, 10],
+            "crafting_table": [11, 64, 11],
+            "furnace": [12, 64, 11],
+            "supply_chest": [11, 64, 12],
+            "verified": True,
+        },
+        "starter_house": {
+            "origin": [30, 64, 30],
+            "door": [30, 65, 33],
+            "crafting_table": [31, 65, 31],
+            "supply_chest": [31, 65, 32],
+        },
+        "food_source": {
+            "plots": [[10, 65, 10, "minecraft:wheat"]],
+        },
+    }
+
+    verified = verifier.verify(Phase.BOOT_SEQUENCE, TaskResult.ok())
+
+    assert verified.success
+    assert verified.gate_ids == ("BOOT",)
+
+
 def test_initial_gathering_counts_items_deposited_in_verified_storage(tmp_path):
     inventory = [{"id": "minecraft:stone_pickaxe", "count": 1}]
     client, _resources, state, verifier = make_verifier(tmp_path, inventory)
