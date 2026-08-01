@@ -280,6 +280,44 @@ def test_full_rearm_is_rate_limited_so_it_cannot_hot_loop():
     ) == ["BOOT_SEQUENCE"], "and retry once the cooldown expires"
 
 
+def test_default_rearm_cooldown_keeps_idle_time_bounded():
+    """The default is what production uses -- Automator omits the argument.
+
+    A 300s default dominated fleet wall-clock: the stall branch sleeps 5s per
+    pass, so one abandonment cost ~60 idle passes. Measured 2026-07-31, Bot07
+    logged 9,296 stall holds (~12.9h asleep) against 1,002 placements. Guard
+    the default directly so it cannot drift back up unnoticed.
+    """
+    import inspect
+
+    from baritone_client.automator.stall_recovery import (
+        rearm_any_abandoned_objectives,
+    )
+
+    default = inspect.signature(
+        rearm_any_abandoned_objectives
+    ).parameters["cooldown_seconds"].default
+    assert default <= 60.0, "idle tax per abandonment must stay under a minute"
+
+    planner, objective = _abandoned_boot_planner()
+    custom_data = {}
+
+    # Called exactly as Automator calls it -- no explicit cooldown.
+    assert rearm_any_abandoned_objectives(
+        planner, custom_data, now=1000.0
+    ) == ["BOOT_SEQUENCE"]
+
+    # Still blocks the hot-loop this guard exists to prevent.
+    objective.status = ObjStatus.ABANDONED
+    assert rearm_any_abandoned_objectives(
+        planner, custom_data, now=1001.0
+    ) == [], "an instantly-failing phase must not ping-pong"
+
+    assert rearm_any_abandoned_objectives(
+        planner, custom_data, now=1000.0 + default + 1.0
+    ) == ["BOOT_SEQUENCE"], "and must retry once the default cooldown expires"
+
+
 def test_cooldown_stall_is_not_reported_as_terminal(monkeypatch):
     """scripts/monitor/autonomous_run.py treats the exact string "Automation
     stalled: no runnable objective remains." as a terminal safety stop and
@@ -302,6 +340,16 @@ def test_cooldown_stall_is_not_reported_as_terminal(monkeypatch):
         )
     )
     # Cooldown already consumed, so the forced re-arm declines this pass.
+    # Derive the clock offset from the real default: hardcoding a gap couples
+    # this fixture to whatever the cooldown happens to be, and it silently
+    # stopped exercising the decline path when the default dropped to 45s.
+    import inspect
+
+    from baritone_client.automator import stall_recovery as _stall_recovery
+
+    cooldown = inspect.signature(
+        _stall_recovery.rearm_any_abandoned_objectives
+    ).parameters["cooldown_seconds"].default
     auto.state = SimpleNamespace(custom_data={"last_full_objective_rearm": 1_000_000.0})
     auto._persist_objective_progress = lambda: None
     auto._save_checkpoint = lambda: None
@@ -310,7 +358,8 @@ def test_cooldown_stall_is_not_reported_as_terminal(monkeypatch):
         lambda _c: "holding",
     )
     monkeypatch.setattr(
-        "baritone_client.automator.automator.time.time", lambda: 1_000_100.0
+        "baritone_client.automator.automator.time.time",
+        lambda: 1_000_000.0 + cooldown / 2.0,
     )
 
     buf = io.StringIO()

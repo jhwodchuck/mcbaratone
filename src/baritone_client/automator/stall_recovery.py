@@ -87,7 +87,7 @@ def rearm_any_abandoned_objectives(
     custom_data: MutableMapping[str, Any],
     *,
     now: float,
-    cooldown_seconds: float = 300.0,
+    cooldown_seconds: float = 45.0,
 ) -> list[str]:
     """Last-resort re-open of ANY abandoned objective when nothing can run.
 
@@ -113,6 +113,14 @@ def rearm_any_abandoned_objectives(
     creeper wanders off, trees regrow, the bot respawns elsewhere -- so
     retrying later is genuinely likely to succeed. Rate-limited so a phase
     that fails instantly cannot hot-loop between abandonment and re-arm.
+
+    The cooldown was 300s, which dominated fleet wall-clock: the stall branch
+    sleeps 5s per pass, so one abandonment cost ~60 idle passes. Measured over
+    2026-07-31, Bot07 logged 9,296 stall holds (~12.9 hours asleep) against
+    1,002 block placements, and Bot18 5,398 (~7.5 hours) against 234. The
+    bots were not slow, they were idle. 45s still blocks the hot-loop this
+    guard exists to prevent (a phase that fails in under a second cannot
+    ping-pong) while cutting the idle tax by ~85%.
     """
     last = custom_data.get("last_full_objective_rearm")
     try:
