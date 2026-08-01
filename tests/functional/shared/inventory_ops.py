@@ -337,8 +337,26 @@ def do_open_container(ctx, pos: Tuple[int, int, int], timeout: float = 3.0) -> b
         return False
     
     if dist > 5.0:
-        ctx.log_event(f"Too far from container at {pos}: {dist:.1f} blocks")
-        return False
+        # Walk into reach before giving up. Callers that already approach (see
+        # the chest path above) never hit this, but the smelting path opens a
+        # furnace straight from a stored coordinate, and a bot that drifted a
+        # couple of blocks while working could never recover: the step failed,
+        # the phase retried, and it failed at the same distance forever.
+        # Live 2026-08-01: Bot07 sat 6.1 blocks from its own furnace -- barely
+        # outside the ~4.5 block reach -- and logged 419 retries with zero
+        # blocks placed, because nothing ever moved it those two blocks.
+        ctx.log_event(
+            f"Too far from container at {pos}: {dist:.1f} blocks; approaching"
+        )
+        move_near(ctx, pos[0], pos[1], pos[2], timeout=15.0)
+        px, py, pz = ctx.get_position()
+        dist = ((px - pos[0]) ** 2 + (py - pos[1]) ** 2 + (pz - pos[2]) ** 2) ** 0.5
+        if dist > 5.0:
+            ctx.log_event(
+                f"Still too far from container at {pos} after approach: "
+                f"{dist:.1f} blocks"
+            )
+            return False
 
     block_lower = (block_at or "").lower()
     expected_total_slots = None

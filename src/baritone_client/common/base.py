@@ -2,6 +2,7 @@
 Base building utilities - Shelter, storage, and infrastructure.
 """
 
+import contextlib
 import math
 import time
 from typing import Optional, Tuple
@@ -115,9 +116,29 @@ def safe_place_block(client, x, y, z, max_depth=2, block_id: str | None = None) 
     except Exception as e:
         msg = str(e)
         if "No solid block found to place against" in msg and max_depth > 0:
-            print(f"  Placing support block at ({x}, {y-1}, {z})...")
-            # Recursive call with depth limit
-            if safe_place_block(client, x, y - 1, z, max_depth - 1, block_id=block_id):
+            # The bridge already scans all six directions for something to
+            # place against, so reaching here means the target is genuinely
+            # floating and we must manufacture a neighbour.
+            #
+            # This used to only ever build downward. Under a roof that means
+            # dropping support blocks into the room below: wrong material in
+            # the wrong place, and each of those is itself unsupported, so one
+            # miss cascades into a column of junk through the interior. Try
+            # the lateral neighbours first -- for a roof course or a wall the
+            # real support is the block beside it -- and fall back to below
+            # only when nothing else works.
+            for sx, sy, sz in (
+                (x - 1, y, z),
+                (x + 1, y, z),
+                (x, y, z - 1),
+                (x, y, z + 1),
+                (x, y - 1, z),
+            ):
+                print(f"  Placing support block at ({sx}, {sy}, {sz})...")
+                if not safe_place_block(
+                    client, sx, sy, sz, max_depth - 1, block_id=block_id
+                ):
+                    continue
                 time.sleep(0.2)
                 try:
                     payload = {"x": x, "y": y, "z": z}
@@ -126,7 +147,9 @@ def safe_place_block(client, x, y, z, max_depth=2, block_id: str | None = None) 
                     client.transport.dispatch("place_block", payload)
                     return True
                 except Exception:
-                    pass
+                    # That neighbour did not unblock it; try the next face
+                    # rather than giving up on the whole placement.
+                    continue
         elif "Target position is already occupied" in msg:
              return True
         
@@ -1567,20 +1590,29 @@ def build_good_house(client, x: int, y: int, z: int) -> bool:
         repaired = 0
         failed = 0
 
-        def guarded_structure_place(px, py, pz, material):
-            """Prevent Baritone's approach from mining the structure itself."""
-            client.transport.dispatch(
-                "chat",
-                {"message": "#set allowBreak false"},
-            )
+        @contextlib.contextmanager
+        def structure_guard():
+            """Hold allowBreak off for a whole batch of structure placements.
+
+            This guard used to wrap each individual block, so a 49-block floor
+            spent 49 settings toggles, 49 cancels and 49 restores talking to
+            the controller instead of building. Worse, the per-block cancel
+            landed between placements and tore down the approach path the very
+            next block had just started, so the batch fought itself. One
+            guarded region per floor/wall/roof course keeps the protection --
+            Baritone still never mines the structure while placing it -- at a
+            fraction of the chatter.
+            """
+            client.transport.dispatch("chat", {"message": "#set allowBreak false"})
             try:
-                return robust_place(client, px, py, pz, material)
+                yield
             finally:
                 client.transport.dispatch("cancel", {})
-                client.transport.dispatch(
-                    "chat",
-                    {"message": "#set allowBreak true"},
-                )
+                client.transport.dispatch("chat", {"message": "#set allowBreak true"})
+
+        def guarded_structure_place(px, py, pz, material):
+            """Place one block; the caller owns the allowBreak guard."""
+            return robust_place(client, px, py, pz, material)
 
         def put(px, py, pz, role, material):
             nonlocal repaired, failed
@@ -1607,17 +1639,18 @@ def build_good_house(client, x: int, y: int, z: int) -> bool:
                 else "minecraft:cobbled_deepslate"
             )
             floor_budget = min(len(missing_floor), available_floor_blocks)
-            for tx, ty, tz, role in missing_floor[:floor_budget]:
-                if count_item(client, floor_material) <= 0:
-                    alternate = (
-                        "minecraft:cobbled_deepslate"
-                        if floor_material == "minecraft:cobblestone"
-                        else "minecraft:cobblestone"
-                    )
-                    if count_item(client, alternate) <= 0:
-                        break
-                    floor_material = alternate
-                put(tx, ty, tz, role, floor_material)
+            with structure_guard():
+                for tx, ty, tz, role in missing_floor[:floor_budget]:
+                    if count_item(client, floor_material) <= 0:
+                        alternate = (
+                            "minecraft:cobbled_deepslate"
+                            if floor_material == "minecraft:cobblestone"
+                            else "minecraft:cobblestone"
+                        )
+                        if count_item(client, alternate) <= 0:
+                            break
+                        floor_material = alternate
+                    put(tx, ty, tz, role, floor_material)
             if floor_budget < len(missing_floor):
                 print(
                     "Good house incremental floor batch complete; "
@@ -1630,8 +1663,9 @@ def build_good_house(client, x: int, y: int, z: int) -> bool:
         roof_targets = [target for target in missing_shell if target[3] == "roof"]
         if wall_targets:
             print(f"Repairing Good House Walls ({len(wall_targets)} targets)...")
-            for tx, ty, tz, role in wall_targets:
-                put(tx, ty, tz, role, plank_material())
+            with structure_guard():
+                for tx, ty, tz, role in wall_targets:
+                    put(tx, ty, tz, role, plank_material())
 
         # 3. Roof. Recheck the time between slow stages; a brand-new house can
         # take most of a Minecraft day even when it starts just after dawn.
@@ -1640,8 +1674,9 @@ def build_good_house(client, x: int, y: int, z: int) -> bool:
             if not _wait_for_build_window(client, latest_start=roof_latest_start):
                 return False
             print(f"Repairing Roof ({len(roof_targets)} targets)...")
-            for tx, ty, tz, role in roof_targets:
-                put(tx, ty, tz, role, plank_material())
+            with structure_guard():
+                for tx, ty, tz, role in roof_targets:
+                    put(tx, ty, tz, role, plank_material())
 
         # 4. Door (doorway was left open; no mining needed)
         door_item = first_available_item(client, _ALL_DOORS) if not door_present else None

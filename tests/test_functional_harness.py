@@ -540,3 +540,140 @@ def test_manual_crafting_table_recovers_from_full_inventory(monkeypatch):
     assert inventory_ops.craft_crafting_table_manual(Context())
     assert (9, "THROW", 1) in clicks
     assert (0, "QUICK_MOVE", 0) in clicks
+
+
+def test_out_of_reach_container_is_approached_before_giving_up(monkeypatch):
+    """A container just outside reach must be walked to, not abandoned.
+
+    Live 2026-08-01: Bot07 stood 6.1 blocks from its own furnace -- barely
+    past the ~4.5 block reach -- and logged 419 retries with zero blocks
+    placed. do_open_container returned False on the distance check without
+    ever moving, so every retry failed at exactly the same distance.
+    """
+
+    class Transport:
+        def dispatch(self, _route, _payload=None):
+            return {}
+
+    class Context:
+        def __init__(self):
+            self.events = []
+            # Starts out of reach; move_near closes the gap.
+            self.position = (-182.0, 104.0, -383.0)
+            self.client = type("C", (), {"transport": Transport()})()
+
+        def log_event(self, event):
+            self.events.append(event)
+
+        def get_position(self):
+            return self.position
+
+    ctx = Context()
+    approached = []
+
+    def fake_move_near(_ctx, x, y, z, timeout=20.0):
+        approached.append((x, y, z))
+        _ctx.position = (x + 1.0, y, z)  # now within reach
+        return True
+
+    monkeypatch.setattr(inventory_ops, "block_id_at", lambda *_a: "minecraft:furnace")
+    monkeypatch.setattr(inventory_ops, "move_near", fake_move_near)
+    monkeypatch.setattr(inventory_ops, "close_screen", lambda *_a, **_k: None)
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        inventory_ops, "robust_interact_block", lambda *_a, **_k: False
+    )
+
+    # The open itself fails against this stub transport; the reach gate is
+    # what matters -- it must no longer short-circuit before moving.
+    inventory_ops.do_open_container(ctx, (-188, 104, -382), timeout=0.1)
+
+    assert approached == [(-188, 104, -382)], "must walk to the container"
+    assert not any("Still too far" in e for e in ctx.events)
+
+
+def test_container_still_out_of_reach_after_approach_gives_up(monkeypatch):
+    """If the approach cannot close the gap, fail rather than loop."""
+
+    class Context:
+        def __init__(self):
+            self.events = []
+            self.position = (-182.0, 104.0, -383.0)
+            self.client = None
+
+        def log_event(self, event):
+            self.events.append(event)
+
+        def get_position(self):
+            return self.position
+
+    ctx = Context()
+
+    monkeypatch.setattr(inventory_ops, "block_id_at", lambda *_a: "minecraft:furnace")
+    # Pathing fails: position never changes.
+    monkeypatch.setattr(
+        inventory_ops, "move_near", lambda *_a, **_k: False
+    )
+
+    assert inventory_ops.do_open_container(ctx, (-188, 104, -382), timeout=0.1) is False
+    assert any("Still too far" in e for e in ctx.events)
+
+
+def test_adjacent_support_finds_a_lateral_neighbour():
+    """A roof interior has air below but a solid block beside it.
+
+    Aiming at the target's own empty centre (the old below-only behaviour)
+    aims at nothing; the placement must aim at the real neighbour.
+    """
+    from tests.functional.shared import block_ops
+
+    class Context:
+        def get_block(self, x, y, z):
+            # Only the block to the west is solid -- e.g. the roof block
+            # placed immediately before this one.
+            if (x, y, z) == (9, 70, 5):
+                return {"id": "minecraft:oak_planks"}
+            return {"id": "minecraft:air"}
+
+        client = None
+
+    assert block_ops.adjacent_support(Context(), 10, 70, 5) == (9, 70, 5)
+
+
+def test_adjacent_support_prefers_the_block_below():
+    from tests.functional.shared import block_ops
+
+    class Context:
+        def get_block(self, x, y, z):
+            if (x, y, z) in {(10, 69, 5), (9, 70, 5)}:
+                return {"id": "minecraft:stone"}
+            return {"id": "minecraft:air"}
+
+        client = None
+
+    assert block_ops.adjacent_support(Context(), 10, 70, 5) == (10, 69, 5)
+
+
+def test_adjacent_support_ignores_liquids():
+    """Water is replaceable, so the bridge does not count it as support."""
+    from tests.functional.shared import block_ops
+
+    class Context:
+        def get_block(self, x, y, z):
+            return {"id": "minecraft:water"}
+
+        client = None
+
+    assert block_ops.adjacent_support(Context(), 10, 70, 5) is None
+
+
+def test_adjacent_support_returns_none_when_floating():
+    from tests.functional.shared import block_ops
+
+    class Context:
+        def get_block(self, x, y, z):
+            return {"id": "minecraft:air"}
+
+        client = None
+
+    assert block_ops.adjacent_support(Context(), 10, 70, 5) is None

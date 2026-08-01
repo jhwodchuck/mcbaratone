@@ -95,6 +95,46 @@ def is_liquid(block_id: str) -> bool:
     return "water" in block_id or "lava" in block_id or "bubble_column" in block_id
 
 
+# Below first: it is the most common and most stable face. Then the four
+# lateral neighbours, which is what a roof interior or a continuing wall course
+# actually has. Above last -- it works, but hanging a block off a ceiling is
+# the least likely intent.
+_SUPPORT_OFFSETS = (
+    (0, -1, 0),
+    (-1, 0, 0),
+    (1, 0, 0),
+    (0, 0, -1),
+    (0, 0, 1),
+    (0, 1, 0),
+)
+
+
+def adjacent_support(
+    ctx,
+    x: Union[int, float],
+    y: Union[int, float],
+    z: Union[int, float],
+) -> Optional[Tuple[int, int, int]]:
+    """Return a neighbouring block solid enough to place against, if any.
+
+    Minecraft places a block by clicking the face of an adjacent solid block,
+    so a target whose only support is lateral is perfectly placeable -- the
+    caller just has to aim at that neighbour rather than at the target's own
+    empty centre.
+
+    Liquids are excluded: the bridge treats a replaceable block as no support,
+    and water/lava would be displaced rather than built against.
+    """
+    x, y, z = int(x), int(y), int(z)
+    for dx, dy, dz in _SUPPORT_OFFSETS:
+        neighbour = (x + dx, y + dy, z + dz)
+        block = block_id_at(ctx, *neighbour)
+        if not block or "air" in block or is_liquid(block):
+            continue
+        return neighbour
+    return None
+
+
 def in_range(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, float], max_dist: float = 4.5) -> bool:
     """Check if position is within interaction range.
 
@@ -534,9 +574,20 @@ def place_block_at(ctx, x: Union[int, float], y: Union[int, float], z: Union[int
     try:
         if not select_item(ctx.client, block_type, allow_swap=True):
             return False
-        block_below = block_id_at(ctx, x, y - 1, z)
-        if block_below and "air" not in block_below:
-            ctx.client.transport.dispatch("look_at", {"x": x + 0.5, "y": y - 0.5, "z": z + 0.5})
+        # Aim at whichever neighbour the placement will actually go against.
+        # This used to consider only the block below and otherwise stare at the
+        # target's own empty centre, which aims at nothing for any position
+        # supported from the side -- exactly the case for a roof interior or
+        # the continuation of a wall course, where the support is the block
+        # just placed beside it. The bridge picks its own face by scanning all
+        # six directions, so aiming at a real neighbour keeps the client's
+        # raycast consistent with the face the server will use.
+        support = adjacent_support(ctx, x, y, z)
+        if support is not None:
+            sx, sy, sz = support
+            ctx.client.transport.dispatch(
+                "look_at", {"x": sx + 0.5, "y": sy + 0.5, "z": sz + 0.5}
+            )
         else:
             ctx.client.transport.dispatch("look_at", {"x": x + 0.5, "y": y + 0.5, "z": z + 0.5})
         payload = {
