@@ -601,6 +601,20 @@ class IncrementalHomestead:
         # and five of its first six ring targets had air directly beneath
         # them. Re-seat each column onto its actual local surface. Idempotent:
         # a position already sitting on ground is returned unchanged.
+        #
+        # Rebase every column to anchor height before re-seating. The scan
+        # window is relative to the height it is handed, so feeding it a
+        # stored position re-derives that position from itself and any bad
+        # height becomes permanent: a torch once seated on a cave roof or
+        # cliff lip can never come back down to the floor, even after the
+        # anchor moves. Live 2026-08-01: Bot18 carried a y=114 column against
+        # a y=105 anchor -- seated while the anchor was still y=107, and 8
+        # blocks above the floor is far outside the ~4.5 block reach, so
+        # Minecraft rejected every placement and light_perimeter (its last
+        # homestead step) retried forever. Anchor-relative rebasing is a
+        # no-op for a correctly seated ring, since re-seating finds the same
+        # ground again.
+        intended = [(x, anchor[1] + 1, z) for x, _y, z in intended]
         intended = self._ground_adjusted_ring(intended)
         if not intended:
             record["verified"] = False

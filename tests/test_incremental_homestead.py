@@ -1217,3 +1217,71 @@ def test_stored_dense_ring_is_replaced_by_the_sparse_policy():
 
     assert intended == fresh
     assert len(intended) < len(stored_dense)
+
+
+def test_stale_high_ring_column_is_rebased_onto_the_anchor_floor(monkeypatch):
+    """A column seated on an overhang must come back down when the anchor moves.
+
+    _ground_adjusted_ring scans relative to the height it is given, so feeding
+    it a stored position re-derives that position from itself -- a bad height
+    is self-perpetuating. Live 2026-08-01: Bot18 carried a y=114 column against
+    a y=105 anchor (seated while the anchor was still y=107). Eight blocks up
+    is outside the ~4.5 block reach, so Minecraft rejected every placement and
+    light_perimeter -- its last homestead step -- retried forever.
+    """
+    homestead_payload = {
+        "anchor": [0, 105, 0],
+        "steps": {
+            "dry_anchor": {"verified": True},
+            "wood_reserve": {"verified": True},
+            "plank_reserve": {"verified": True},
+            "stone_reserve": {"verified": True},
+            "infrastructure": {"verified": True},
+            "micro_farm": {"verified": True},
+            "charcoal_supply": {"verified": True},
+            "torch_supply": {"verified": True},
+            "light_perimeter": {
+                "verified": False,
+                # Stale: seated against a y=107 anchor onto the overhang.
+                "intended": [[4, 114, 0]],
+                "verified_positions": [],
+            },
+        },
+    }
+    blocks = {
+        # Overhang the stale column is stuck on...
+        (4, 113, 0): "minecraft:stone",
+        # ...and the real floor at anchor level, where it belongs.
+        (4, 105, 0): "minecraft:stone",
+    }
+    state = _state_with_payloads({"homestead": homestead_payload})
+    transport = _transport_with_blocks(
+        {
+            "dimension": "minecraft:overworld",
+            "world_time": 1000,
+            "food_level": 20,
+            "health": 20,
+            "block_position": {"x": 0, "y": 105, "z": 0},
+        },
+        blocks,
+    )
+    handler = BootSequenceHandler()
+    handler.state = state
+
+    placements = []
+
+    def place(_client, x, y, z):
+        placements.append((x, y, z))
+        blocks[(x, y, z)] = "minecraft:torch"
+        return True
+
+    monkeypatch.setattr("baritone_client.actions.homestead.place_torch", place)
+
+    with pytest.raises(IncrementalProgressRequired):
+        handler.execute(transport, SimpleNamespace(), state)
+
+    assert placements == [(4, 106, 0)], (
+        "torch must be placed on the anchor-level floor, not the overhang"
+    )
+    payload = state.custom_data["homestead"]["steps"]["light_perimeter"]
+    assert [tuple(p) for p in payload["intended"]] == [(4, 106, 0)]
