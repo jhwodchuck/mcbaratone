@@ -1,8 +1,8 @@
 """Persistent, world-scoped catalog of containers and last-known contents.
 
-The catalog is intentionally per run directory.  A long-running bot can safely
-accumulate hundreds of chests while checkpoints stay small, and SQLite gives
-atomic updates if a monitor reads the catalog while the controller writes it.
+Fleet workers share one catalog so a container observed by one bot is available
+to every bot in the same world.  Standalone runs retain a private catalog.
+SQLite provides atomic updates while controllers and monitors access it.
 """
 
 from __future__ import annotations
@@ -18,6 +18,8 @@ from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence, T
 
 SCHEMA_VERSION = 1
 DEFAULT_CATALOG_NAME = "storage_catalog.sqlite3"
+SHARED_CATALOG_ENV = "MC_SHARED_STORAGE_CATALOG"
+FLEET_DIRECTORY_NAMES = {"aternos", "headlessmc"}
 
 
 def _run_directory(state=None) -> Path:
@@ -44,6 +46,23 @@ def _world_id(state, run_dir: Path) -> str:
     identity = getattr(state, "bound_world_identity", None) if state else None
     stable_hash = getattr(identity, "stable_hash", None)
     return str(stable_hash or _checkpoint_world_id(run_dir) or "unscoped-world")
+
+
+def _catalog_path(run_dir: Path) -> Path:
+    """Return a shared fleet path when ``run_dir`` has a known bot layout."""
+    override = os.environ.get(SHARED_CATALOG_ENV)
+    if override:
+        return Path(override).resolve()
+
+    bot_dir = run_dir.parent if run_dir.name == "controller" else run_dir
+    fleet_dir = bot_dir.parent
+    if (
+        bot_dir.name.lower().startswith("bot")
+        and bot_dir.name[3:].isdigit()
+        and fleet_dir.name.lower() in FLEET_DIRECTORY_NAMES
+    ):
+        return fleet_dir / "shared" / DEFAULT_CATALOG_NAME
+    return run_dir / DEFAULT_CATALOG_NAME
 
 
 def _dimension(client) -> str:
@@ -397,7 +416,7 @@ def catalog_for(client, state=None) -> StorageCatalog:
     ):
         raise RuntimeError("storage catalog has no persistent client context")
     run_dir = _run_directory(state)
-    return StorageCatalog(run_dir / DEFAULT_CATALOG_NAME, _world_id(state, run_dir))
+    return StorageCatalog(_catalog_path(run_dir), _world_id(state, run_dir))
 
 
 def catalog_from_run_dir(
@@ -406,7 +425,7 @@ def catalog_from_run_dir(
     """Open a catalog for operator tooling without a live bridge client."""
     resolved = Path(run_dir).resolve()
     return StorageCatalog(
-        resolved / DEFAULT_CATALOG_NAME,
+        _catalog_path(resolved),
         world_id or _checkpoint_world_id(resolved) or "unscoped-world",
     )
 

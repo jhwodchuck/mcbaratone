@@ -116,6 +116,36 @@ def test_worlds_do_not_share_inventory_rows(tmp_path):
     assert world_b.find_item("minecraft:emerald") == []
 
 
+def test_fleet_bots_share_catalog_without_crossing_worlds(tmp_path):
+    fleet = tmp_path / "runs" / "headlessmc"
+    bot07 = fleet / "Bot07" / "controller"
+    bot16 = fleet / "Bot16" / "controller"
+    bot07.mkdir(parents=True)
+    bot16.mkdir(parents=True)
+
+    world_id = "mcbaratone-world-v1:shared"
+    first = StorageCatalog(
+        fleet / "shared" / "storage_catalog.sqlite3",
+        world_id,
+    )
+    first.register_container(
+        (-184, 106, -392),
+        dimension="minecraft:overworld",
+        purpose="fleet_depot",
+    )
+
+    from baritone_client.common.storage_catalog import catalog_from_run_dir
+
+    second = catalog_from_run_dir(bot16, world_id)
+    isolated_world = catalog_from_run_dir(bot07, "mcbaratone-world-v1:other")
+
+    assert second.path == fleet / "shared" / "storage_catalog.sqlite3"
+    assert [(row["x"], row["y"], row["z"]) for row in second.list_containers()] == [
+        (-184, 106, -392)
+    ]
+    assert isolated_world.list_containers() == []
+
+
 def test_checkpoint_landmarks_seed_without_claiming_inventory(tmp_path):
     state = _State(tmp_path)
     state.custom_data = {
