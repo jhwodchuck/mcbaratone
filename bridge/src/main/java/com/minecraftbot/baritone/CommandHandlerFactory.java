@@ -102,6 +102,7 @@ public class CommandHandlerFactory {
 
         // Phase 4: Advanced Features
         registerHandler("entity_interact", EntityInteractionCommandHandler.class);
+        registerHandler("entity_transport", EntityTransportCommandHandler.class);
         registerHandler("advanced_goal", AdvancedGoalCommandHandler.class);
         registerHandler("craft_advanced", AdvancedCraftCommandHandler.class);
 
