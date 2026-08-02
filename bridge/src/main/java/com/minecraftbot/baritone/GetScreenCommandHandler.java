@@ -5,10 +5,10 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import java.net.Socket;
 import net.minecraft.client.Minecraft;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.MerchantMenu;
 import net.minecraft.world.inventory.Slot;
-import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.trading.MerchantOffers;
 
 /**
  * Handler for the get_screen command - returns current screen info.
@@ -40,10 +40,27 @@ public class GetScreenCommandHandler extends AbstractCommandHandler {
                 JsonArray slots = new JsonArray();
                 for (int i = 0; i < handler.slots.size(); i++) {
                     Slot slot = handler.slots.get(i);
-                    slots.add(serializeItemStack(slot.getItem(), i));
+                    slots.add(ItemStackJsonSerializer.serialize(slot.getItem(), i));
                 }
                 data.add("slots", slots);
                 data.addProperty("total_slots", handler.slots.size());
+
+                if (handler instanceof MerchantMenu merchantMenu) {
+                    MerchantOffers offers = merchantMenu.getOffers();
+                    JsonArray merchantOffers = new JsonArray();
+                    for (int i = 0; i < offers.size(); i++) {
+                        merchantOffers.add(ItemStackJsonSerializer.serializeMerchantOffer(offers.get(i), i));
+                    }
+                    data.add("merchant_offers", merchantOffers);
+
+                    JsonObject merchant = new JsonObject();
+                    merchant.addProperty("trader_level", merchantMenu.getTraderLevel());
+                    merchant.addProperty("trader_xp", merchantMenu.getTraderXp());
+                    merchant.addProperty("future_trader_xp", merchantMenu.getFutureTraderXp());
+                    merchant.addProperty("can_restock", merchantMenu.canRestock());
+                    merchant.addProperty("show_progress_bar", merchantMenu.showProgressBar());
+                    data.add("merchant", merchant);
+                }
 
                 return CommandResult.success(data);
             }).get();
@@ -52,22 +69,4 @@ public class GetScreenCommandHandler extends AbstractCommandHandler {
         }
     }
 
-    private JsonObject serializeItemStack(ItemStack stack, int slot) {
-        JsonObject itemData = new JsonObject();
-        itemData.addProperty("slot", slot);
-
-        if (stack.isEmpty()) {
-            itemData.addProperty("id", "minecraft:air");
-            itemData.addProperty("count", 0);
-        } else {
-            itemData.addProperty("id", BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
-            itemData.addProperty("count", stack.getCount());
-            itemData.addProperty("max_count", stack.getMaxStackSize());
-            itemData.addProperty("damage", stack.getDamageValue());
-            itemData.addProperty("max_damage", stack.getMaxDamage());
-            itemData.addProperty("name", stack.getItem().toString());
-        }
-
-        return itemData;
-    }
 }

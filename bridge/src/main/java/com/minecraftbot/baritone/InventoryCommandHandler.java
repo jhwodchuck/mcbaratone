@@ -8,10 +8,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import net.minecraft.client.Minecraft;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.inventory.ContainerInput;
-import net.minecraft.world.item.ItemStack;
 
 /**
  * Command handler for inventory operations: get_inventory, inventory_click.
@@ -54,18 +52,18 @@ public class InventoryCommandHandler extends AbstractCommandHandler {
                 // Main Inventory (0-35)
                 JsonArray mainInventory = new JsonArray();
                 for (int i = 0; i < 36; i++) {
-                    mainInventory.add(serializeItemStack(inv.getItem(i), i));
+                    mainInventory.add(ItemStackJsonSerializer.serialize(inv.getItem(i), i));
                 }
 
                 // Armor (Slots 36-39)
                 JsonArray armorInventory = new JsonArray();
                 for (int i = 0; i < 4; i++) {
-                    armorInventory.add(serializeItemStack(inv.getItem(36 + i), i));
+                    armorInventory.add(ItemStackJsonSerializer.serialize(inv.getItem(36 + i), i));
                 }
 
                 // Offhand (Slot 40)
                 JsonArray offhandInventory = new JsonArray();
-                offhandInventory.add(serializeItemStack(inv.getItem(40), 0));
+                offhandInventory.add(ItemStackJsonSerializer.serialize(inv.getItem(40), 0));
 
                 JsonObject data = new JsonObject();
                 data.add("inventory", mainInventory);
@@ -131,22 +129,4 @@ public class InventoryCommandHandler extends AbstractCommandHandler {
         }
     }
 
-    private JsonObject serializeItemStack(ItemStack stack, int slot) {
-        JsonObject itemData = new JsonObject();
-        itemData.addProperty("slot", slot);
-
-        if (stack.isEmpty()) {
-            itemData.addProperty("id", "minecraft:air");
-            itemData.addProperty("count", 0);
-        } else {
-            itemData.addProperty("id", BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
-            itemData.addProperty("count", stack.getCount());
-            itemData.addProperty("max_count", stack.getMaxStackSize());
-            itemData.addProperty("damage", stack.getDamageValue());
-            itemData.addProperty("max_damage", stack.getMaxDamage());
-            itemData.addProperty("name", stack.getItem().toString()); // Safer fallback
-        }
-
-        return itemData;
-    }
 }
