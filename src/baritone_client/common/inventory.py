@@ -147,6 +147,26 @@ def select_item(client, item_id: str, allow_swap: bool = False) -> bool:
         return True
     
     if allow_swap:
+        # Prefer the harness implementation: it picks an *empty* hotbar slot
+        # when one exists, only displaces an occupied slot when it has to, and
+        # returns the slot the item actually landed in so the right one gets
+        # selected. The native path below always targets hotbar 0 and then
+        # selects slot 0 regardless of where the stack ended up, so a full
+        # hotbar left the main hand holding the wrong item -- or nothing.
+        # Live 2026-07-31 that stranded Bot16's torches in slot 16, Bot18's
+        # furnace and chest in 33/34, and Bot05's crafting table in 34, and
+        # every place_block then failed with "Main hand is empty!".
+        from . import harness_ops
+
+        if harness_ops.available():
+            try:
+                moved = harness_ops.ensure_item_in_hotbar(client, item_id)
+                if moved is not None:
+                    client.transport.dispatch("select_slot", {"slot": int(moved)})
+                    return True
+            except Exception as exc:
+                print(f"  harness hotbar swap unavailable ({exc}); using native swap")
+
         # Move to Hotbar 0 (Protocol 36)
         # Use PICKUP sequence
         client.transport.dispatch('inventory_click', {'slot': slot, 'type': 'PICKUP', 'button': 0})
@@ -158,7 +178,7 @@ def select_item(client, item_id: str, allow_swap: bool = False) -> bool:
         client.transport.dispatch('select_slot', {'slot': 0})
         time.sleep(0.2)
         return True
-        
+
     return False
 
 
@@ -629,6 +649,59 @@ _MANUAL_GRID_RECIPES: Dict[str, Dict] = {
             ("shovel", (2,), (5, 8)),
             ("sword", (2, 5), (8,)),
         )
+    },
+    # Diamond tier. The harness carries craft_diamond_pickaxe_manual and
+    # craft_diamond_axe_manual, but neither had a grid recipe here, so a bot
+    # that mined diamonds could not turn them into tools. That is a hard stop
+    # rather than an inefficiency: obsidian for the nether portal can only be
+    # mined with a diamond pickaxe, so NETHER_AND_BLAZE is unreachable
+    # without this.
+    **{
+        f"minecraft:diamond_{tool}": {
+            "placements": [
+                *(("minecraft:diamond", slot) for slot in head_slots),
+                *(("minecraft:stick", slot) for slot in stick_slots),
+            ],
+        }
+        for tool, head_slots, stick_slots in (
+            ("pickaxe", (1, 2, 3), (5, 8)),
+            ("axe", (1, 2, 4), (5, 8)),
+            ("shovel", (2,), (5, 8)),
+            ("sword", (2, 5), (8,)),
+        )
+    },
+    # Wooden tier: the bootstrap loadout after a death that loses everything.
+    **{
+        f"minecraft:wooden_{tool}": {
+            "placements": [
+                *(("#planks", slot) for slot in head_slots),
+                *(("minecraft:stick", slot) for slot in stick_slots),
+            ],
+        }
+        for tool, head_slots, stick_slots in (
+            ("pickaxe", (1, 2, 3), (5, 8)),
+            ("axe", (1, 2, 4), (5, 8)),
+            ("shovel", (2,), (5, 8)),
+            ("sword", (2, 5), (8,)),
+        )
+    },
+    # Hoe variants beyond the wooden one already present; the micro-farm and
+    # the FOOD_AND_IRON farm both till with whatever hoe is carried.
+    "minecraft:stone_hoe": {
+        "placements": [
+            ("minecraft:cobblestone", 1),
+            ("minecraft:cobblestone", 2),
+            ("minecraft:stick", 5),
+            ("minecraft:stick", 8),
+        ],
+    },
+    "minecraft:iron_hoe": {
+        "placements": [
+            ("minecraft:iron_ingot", 1),
+            ("minecraft:iron_ingot", 2),
+            ("minecraft:stick", 5),
+            ("minecraft:stick", 8),
+        ],
     },
     **{
         f"minecraft:iron_{piece}": {
