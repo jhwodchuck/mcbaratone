@@ -92,11 +92,14 @@ def _load():
         return None
     try:
         from tests.utils.mc_harness.context import TestContext
+        from tests.utils.mc_harness import inventory as mc_inventory
         from tests.functional.shared import inventory_ops as inv_ops
         from tests.functional.shared import block_ops
 
         _harness = {
             "TestContext": TestContext,
+            "ensure_item_in_hotbar": mc_inventory.ensure_item_in_hotbar,
+            "select_hotbar_item": mc_inventory.select_hotbar_item,
             "ensure_crafting_table_open": inv_ops.ensure_crafting_table_open,
             "craft_tool_manual_generic": inv_ops._craft_tool_manual_generic,
             "craft_armor_manual_generic": inv_ops._craft_armor_manual_generic,
@@ -112,6 +115,8 @@ def _load():
             "open_container": inv_ops.do_open_container,
             "count_any_planks": inv_ops.count_any_planks,
             "count_all_logs": inv_ops.count_all_logs,
+            "bot_build_hollow_box": block_ops.bot_build_hollow_box,
+            "deposit_inventory_to_supply_chest": inv_ops.deposit_inventory_to_supply_chest,
             "bot_place_block": block_ops.bot_place_block,
             "place_block_at": block_ops.place_block_at,
             "find_place_pos_near": block_ops.find_place_pos_near,
@@ -444,3 +449,248 @@ def count_any_planks(client) -> int:
 
 def count_all_logs(client) -> int:
     return _load()["count_all_logs"](make_ctx(client))
+
+
+# ---------------------------------------------------------------------------
+# Storage capacity and double-chest overflow.
+#
+# Ported from tests/functional/extended_suite_1100.py, which has run this
+# logic over 100+ consecutive live sessions. Production had reimplemented
+# storage without any of it: no notion of a chest being full, no double
+# chests, and no way to grow capacity -- so when carried slots ran out the
+# only recourse was dropping items on the ground. Live 2026-08-02 that had
+# all four bots aborting the deep-mining descent roughly hourly to shed ore
+# they had nowhere to put.
+# ---------------------------------------------------------------------------
+
+# A container screen carries the 36 player slots after the container's own.
+# 27 chest slots -> 63 total (single), 54 -> 90 (double).
+_PLAYER_SCREEN_SLOTS = 36
+
+_NON_SUPPORT_TOKENS = (
+    "grass", "flower", "fern", "sapling", "dead_bush", "torch",
+    "fire", "leaf_litter", "snow", "leaves",
+)
+
+
+def _is_solid_support_block(block_id) -> bool:
+    """Whether a block can carry a chest placed on top of it."""
+    value = str(block_id or "")
+    if not value:
+        return False
+    if "air" in value or "water" in value or "lava" in value:
+        return False
+    # grass_block is real ground; short_grass and friends are not.
+    if any(token in value for token in _NON_SUPPORT_TOKENS) and "grass_block" not in value:
+        return False
+    return True
+
+
+def _is_placeable_target(block_id) -> bool:
+    """Whether a chest may be placed into this coordinate."""
+    value = str(block_id or "")
+    if not value:
+        return False
+    if "chest" in value:
+        return False
+    return "air" in value or "water" in value or "lava" in value
+
+
+def _block_at(client, x, y, z) -> str:
+    try:
+        return str(
+            client.transport.dispatch("get_block", {"x": int(x), "y": int(y), "z": int(z)}).get("id", "")
+        )
+    except Exception:
+        return ""
+
+
+def open_container_slots(client):
+    """Return ``(slots, chest_slots)`` for the currently open container.
+
+    Returns None when the open screen is not a container -- the player's own
+    inventory screen also reports slots, which is exactly how a blocked chest
+    was mistaken for an open one.
+    """
+    try:
+        screen = client.transport.dispatch("get_screen", {})
+    except Exception:
+        return None
+    data = screen.get("data", screen)
+    slots = data.get("slots", []) or []
+    total = int(data.get("total_slots") or 0) or len(slots)
+    if total <= _PLAYER_SCREEN_SLOTS:
+        return None
+    return slots, total - _PLAYER_SCREEN_SLOTS
+
+
+def chest_is_full(client, chest_pos, timeout=4.0):
+    """Return True/False, or None when the chest could not be inspected."""
+    h = _load()
+    if h is None:
+        return None
+    if not open_container(client, tuple(chest_pos), timeout=timeout):
+        return None
+    info = open_container_slots(client)
+    if not info:
+        close_container(client)
+        return None
+    slots, chest_slots = info
+    occupied = sum(
+        1
+        for item in slots
+        if 0 <= int(item.get("slot", -1)) < chest_slots
+        and item.get("id") not in (None, "", "minecraft:air")
+    )
+    close_container(client)
+    return occupied >= chest_slots
+
+
+def close_container(client) -> None:
+    try:
+        client.transport.dispatch("close_screen", {})
+    except Exception:
+        pass
+
+
+def find_double_chest_spot(client, radius: int = 8):
+    """Find an adjacent pair of coordinates that can hold a double chest.
+
+    Searched from the player's current position rather than a stored home:
+    a persisted anchor can sit in an unloaded or floating region, which is
+    how bots ended up trying to build storage in mid-air.
+    """
+    try:
+        state = client.transport.dispatch("get_state", {})
+        pos = state.get("block_position") or state.get("position") or {}
+        px, py, pz = (int(pos.get(a, 0)) for a in ("x", "y", "z"))
+    except Exception:
+        return None
+
+    for dx in range(-radius, radius + 1):
+        for dz in range(-radius, radius + 1):
+            first = (px + dx, py, pz + dz)
+            if not _is_placeable_target(_block_at(client, *first)):
+                continue
+            if not _is_solid_support_block(_block_at(client, first[0], first[1] - 1, first[2])):
+                continue
+            for ox, oz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                second = (first[0] + ox, first[1], first[2] + oz)
+                if not _is_placeable_target(_block_at(client, *second)):
+                    continue
+                if not _is_solid_support_block(_block_at(client, second[0], second[1] - 1, second[2])):
+                    continue
+                return first, second
+    return None
+
+
+def create_double_chest(client):
+    """Place a merged double chest and return ``(first, second)``.
+
+    The second chest is placed from a position perpendicular to the pair.
+    Standing in line with them makes Minecraft resolve the placement against
+    the first chest's face, which yields two separate single chests instead
+    of one 54-slot double.
+    """
+    from .inventory import count_item
+
+    h = _load()
+    if h is None:
+        return None
+    if count_item(client, "minecraft:chest") < 2:
+        return None
+    spot = find_double_chest_spot(client)
+    if spot is None:
+        print("  STORAGE: no room for a double chest nearby")
+        return None
+    first, second = spot
+
+    if not move_near(client, *first, timeout=20.0):
+        return None
+    if not place_block_exact(client, first[0], first[1], first[2], "minecraft:chest"):
+        print(f"  STORAGE: failed to place first chest at {first}")
+        return None
+
+    dx = second[0] - first[0]
+    dz = second[2] - first[2]
+    perp = (first[0], first[1], first[2] + 1) if dx else (first[0] + 1, first[1], first[2])
+    move_near(client, *perp, timeout=10.0)
+
+    if not place_block_exact(client, second[0], second[1], second[2], "minecraft:chest"):
+        print(f"  STORAGE: failed to place second chest at {second}")
+        return None
+    print(f"  STORAGE: built double chest at {first}/{second}")
+    return first, second
+
+
+def ensure_item_in_hotbar(client, item_id: str):
+    """Move ``item_id`` into the hotbar and return the slot it now occupies.
+
+    Returns None when the item is not carried at all.
+
+    Production's own swap hardcoded hotbar slot 0 and then issued
+    ``select_slot 0`` regardless of where the item actually landed. This
+    picks an *empty* hotbar slot when one exists, only displaces an occupied
+    slot when it must, and reports the real slot so the caller selects the
+    right one. Only the hotbar can reach the main hand, so an item stranded
+    in slots 9-35 is unusable -- live 2026-07-31 that stranded Bot16's
+    torches, Bot18's furnace and chest, and Bot05's crafting table.
+    """
+    h = _load()
+    if h is None:
+        return None
+    return h["ensure_item_in_hotbar"](make_ctx(client), item_id)
+
+
+def select_hotbar_item(client, item_id: str) -> bool:
+    """Ensure ``item_id`` is in the hotbar and select that exact slot."""
+    h = _load()
+    if h is None:
+        return False
+    return bool(h["select_hotbar_item"](make_ctx(client), item_id))
+
+
+def build_hollow_box(client, min_x, min_y, min_z, max_x, max_y, max_z, wall_block) -> bool:
+    """Build the four walls of a box using survival placement.
+
+    The harness moves the bot around the perimeter, keeps out of liquids and
+    checks support before each placement. BASE_CONSTRUCTION places its shell
+    a block at a time from wherever it happens to stand, which is why walls
+    stall when a course starts out of reach.
+
+    Survival-safe: this is block_ops (real placement), not the mc_harness
+    world module, whose fill/clear_box run the server's /fill command and
+    must never be exposed to the survival controller.
+    """
+    h = _load()
+    if h is None:
+        return False
+    return bool(
+        h["bot_build_hollow_box"](
+            make_ctx(client),
+            int(min_x), int(min_y), int(min_z),
+            int(max_x), int(max_y), int(max_z),
+            wall_block,
+        )
+    )
+
+
+def deposit_across_chests(client, chest_positions, chest_meta=None) -> bool:
+    """Empty the carried inventory across several chests, not just one.
+
+    ``deposit_excess_to_chest`` targets a single chest with an allow-list, so
+    once that chest is full the bot has nowhere to put anything and falls back
+    to dropping. This walks a list of chests in order, which pairs with the
+    double-chest overflow: build capacity, then actually use all of it.
+    """
+    h = _load()
+    if h is None:
+        return False
+    positions = [tuple(int(v) for v in pos) for pos in chest_positions]
+    if not positions:
+        return False
+    return bool(
+        h["deposit_inventory_to_supply_chest"](
+            make_ctx(client), positions, chest_meta or {}
+        )
+    )

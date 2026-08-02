@@ -287,6 +287,51 @@ def _ensure_mining_pickaxe(client) -> bool:
     return ensure_supplies(client, {replacement: 1}).success
 
 
+def equip_best_pickaxe(client, pickaxe_ids: Optional[list[str]] = None) -> bool:
+    """Put the pickaxe with the most usable durability into the main hand.
+
+    Ported from the harness's get_best_tool_durability, which measures each
+    tool's remaining uses and moves the best one to the hotbar. Production had
+    equip_best_weapon and equip_best_armor but no pickaxe equivalent, and
+    equip_best_weapon walks a fixed tier list and returns on first match --
+    so a nearly-spent diamond pickaxe wins over a fresh iron one, and a
+    pickaxe sitting outside the hotbar is never reachable at all.
+
+    Live 2026-08-02: Bot17 failed "Prepare deep-mining tools + bucket"
+    repeatedly while carrying two worn iron pickaxes; the kit check measures
+    total durability but nothing ever equipped the better tool.
+    """
+    from .inventory import select_item
+
+    allowed = list(pickaxe_ids or PICKAXE_ITEMS)
+    try:
+        response = client.transport.dispatch("get_inventory", {})
+    except Exception:
+        return False
+    data = response.get("data", response)
+
+    best = None  # (remaining, tier_rank, item_id)
+    for section in ("inventory", "offhand"):
+        for item in data.get(section, []) or []:
+            item_id = str(item.get("id", ""))
+            if item_id not in allowed or int(item.get("count", 0) or 0) <= 0:
+                continue
+            maximum = int(item.get("max_damage", PICKAXE_MAX_DAMAGE.get(item_id, 0)) or 0)
+            remaining = max(0, maximum - max(0, int(item.get("damage", 0) or 0)))
+            if remaining <= 0:
+                continue
+            tier = _PICKAXE_TIERS.index(item_id) if item_id in _PICKAXE_TIERS else -1
+            candidate = (remaining, tier, item_id)
+            if best is None or candidate > best:
+                best = candidate
+
+    if best is None:
+        return False
+    # select_item routes through the harness hotbar swap, so a pickaxe in the
+    # main inventory is moved into a reachable slot rather than silently left.
+    return bool(select_item(client, best[2], allow_swap=True))
+
+
 def remaining_pickaxe_durability(
     client,
     pickaxe_ids: Optional[list[str]] = None,
@@ -2336,6 +2381,59 @@ def _reserve_gathering_inventory(client, minimum_free_slots: int = 3) -> bool:
     return manage_inventory(client, minimum_free_slots=required)
 
 
+def _store_surplus_in_chest(client, required: int) -> bool:
+    """Deposit surplus into catalogued storage, growing it if every chest is full.
+
+    Returns True only when the requested free slots actually materialised, so
+    the caller still falls through to bounded discarding if storage cannot
+    take the load (no chests craftable, nowhere to place one, all unreachable).
+    """
+    from . import harness_ops
+    from .inventory import deposit_excess_to_chest, free_inventory_slots
+
+    if not harness_ops.available():
+        return False
+
+    containers = []
+    try:
+        from .storage_catalog import catalog_for
+
+        # list_containers already excludes status='missing', so a phantom
+        # coordinate is never walked to again.
+        for row in catalog_for(client).list_containers():
+            try:
+                containers.append((int(row["x"]), int(row["y"]), int(row["z"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+    except Exception as exc:
+        print(f"  STORAGE: container list unavailable ({exc})")
+
+    for position in containers:
+        try:
+            if harness_ops.chest_is_full(client, position):
+                continue
+            if deposit_excess_to_chest(client, tuple(position)) > 0:
+                if free_inventory_slots(client) >= required:
+                    return True
+        except Exception as exc:
+            print(f"  STORAGE: deposit to {tuple(position)} failed ({exc})")
+
+    # Every known chest is full (or there are none): add capacity.
+    try:
+        created = harness_ops.create_double_chest(client)
+    except Exception as exc:
+        print(f"  STORAGE: could not build overflow storage ({exc})")
+        return False
+    if not created:
+        return False
+    try:
+        deposit_excess_to_chest(client, tuple(created[0]))
+    except Exception as exc:
+        print(f"  STORAGE: deposit to new double chest failed ({exc})")
+        return False
+    return free_inventory_slots(client) >= required
+
+
 def manage_inventory(client, minimum_free_slots: int = 1) -> bool:
     """Reserve carried slots for progression outputs by dropping bounded junk.
 
@@ -2348,6 +2446,15 @@ def manage_inventory(client, minimum_free_slots: int = 1) -> bool:
 
     required = max(0, int(minimum_free_slots))
     if free_inventory_slots(client) >= required:
+        return True
+
+    # Prefer banking the surplus over destroying it. Suite 1100 has grown
+    # storage this way for 100+ live runs: use a chest that still has room,
+    # and when they are all full build another double chest rather than
+    # dropping. Production had no notion of a chest being full and no way to
+    # add capacity, so the only recourse was the discard tiers below -- which
+    # is why bots shed hard-won ore on the ground every time they filled up.
+    if _store_surplus_in_chest(client, required):
         return True
 
     print(
