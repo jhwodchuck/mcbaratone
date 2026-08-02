@@ -76,7 +76,10 @@ def await_builder_idle(client, timeout: float = 600.0, poll: float = 2.0, settle
             state = client.transport.dispatch("get_state", {})
             is_pathing = state.get("is_pathing", False)
         except Exception:
-            is_pathing = False
+            # A failed observation is not evidence that the builder is idle.
+            idle_streak = 0
+            time.sleep(poll)
+            continue
 
         if is_pathing:
             idle_streak = 0
@@ -207,24 +210,33 @@ def terraform_ring(
             client, chunk_x, chunk_z, target_y,
             fill_block=fill_block, clear_margin=clear_margin, fill_depth=fill_depth,
         )
-        completed += 1
+        if not result.success:
+            return TaskResult.fail(
+                result.reason,
+                ring=ring,
+                failed_chunk=(chunk_x, chunk_z),
+                chunks_completed=completed,
+                chunks_total=total,
+            )
 
+        completed += 1
         if progress is not None:
             progress["next_index"] = i + 1
             progress["total"] = total
-
         if on_chunk_done:
             on_chunk_done(i + 1, total, (chunk_x, chunk_z))
-
-        if not result.success:
-            # Keep going even if one chunk fails (e.g. transient timeout) -
-            # this job is meant to run unattended for a long time.
-            print(f"  [terraform] chunk ({chunk_x},{chunk_z}) reported an issue: {result.reason}")
 
     if progress is not None:
         progress["next_index"] = total
 
-    return TaskResult.ok(f"Terraformed ring {ring} ({completed} chunks processed)", ring=ring, chunks=completed)
+    return TaskResult.ok(
+        f"Terraformed ring {ring} ({completed} chunks processed)",
+        ring=ring,
+        chunks=completed,
+        chunks_completed=completed,
+        chunks_total=total,
+        progress_complete=True,
+    )
 
 
 def terraform_area(
@@ -237,6 +249,7 @@ def terraform_area(
     fill_depth: int = 12,
     progress: Optional[Dict[str, Any]] = None,
     on_chunk_done: Optional[Callable[[int, int, Tuple[int, int]], None]] = None,
+    skip_chunks: Optional[set[Tuple[int, int]]] = None,
 ) -> TaskResult:
     """
     Terraform a bounded disk of chunks (radius `radius_chunks`) around a center
@@ -247,30 +260,71 @@ def terraform_area(
     offsets = list(disk_chunk_offsets(radius_chunks))
     total = len(offsets)
     start_index = (progress or {}).get("next_index", 0)
+    skipped_origins = set(skip_chunks or set())
+    area_origins = {
+        (
+            ((center_x + dcx * CHUNK_SIZE) // CHUNK_SIZE) * CHUNK_SIZE,
+            ((center_z + dcz * CHUNK_SIZE) // CHUNK_SIZE) * CHUNK_SIZE,
+        )
+        for dcx, dcz in offsets
+    }
+    skipped_origins.intersection_update(area_origins)
+    completed_origins = set()
+    if progress is not None:
+        completed_origins = {
+            tuple(value)
+            for value in progress.get("completed_chunks", [])
+            if isinstance(value, (list, tuple)) and len(value) == 2
+        }
+    completed_origins.difference_update(skipped_origins)
 
-    completed = 0
     for i in range(start_index, total):
         dcx, dcz = offsets[i]
         chunk_x = center_x + dcx * CHUNK_SIZE
         chunk_z = center_z + dcz * CHUNK_SIZE
+        chunk_origin = (
+            (chunk_x // CHUNK_SIZE) * CHUNK_SIZE,
+            (chunk_z // CHUNK_SIZE) * CHUNK_SIZE,
+        )
+
+        if chunk_origin in skipped_origins:
+            if progress is not None:
+                progress["next_index"] = i + 1
+                progress["total"] = total
+            continue
 
         result = terraform_chunk(
             client, chunk_x, chunk_z, target_y,
             fill_block=fill_block, clear_margin=clear_margin, fill_depth=fill_depth,
         )
-        completed += 1
+        if not result.success:
+            return TaskResult.fail(
+                result.reason,
+                failed_chunk=(chunk_x, chunk_z),
+                chunks_completed=len(completed_origins),
+                chunks_total=total - len(skipped_origins),
+                radius_chunks=radius_chunks,
+            )
 
+        completed_origins.add(chunk_origin)
         if progress is not None:
             progress["next_index"] = i + 1
             progress["total"] = total
-
+            progress["completed_chunks"] = [
+                list(value) for value in sorted(completed_origins)
+            ]
         if on_chunk_done:
             on_chunk_done(i + 1, total, (chunk_x, chunk_z))
 
-        if not result.success:
-            print(f"  [terraform] chunk ({chunk_x},{chunk_z}) reported an issue: {result.reason}")
-
+    completed = len(completed_origins)
+    operation_total = total - len(skipped_origins)
     return TaskResult.ok(
-        f"Terraformed {completed}/{total} chunks within radius {radius_chunks}",
-        chunks=completed, radius=radius_chunks,
+        f"Terraformed {completed}/{operation_total} unprotected chunks",
+        chunks=completed,
+        chunks_completed=completed,
+        chunks_total=operation_total,
+        progress_entries_total=total,
+        skipped_chunks=[list(value) for value in sorted(skipped_origins)],
+        radius_chunks=radius_chunks,
+        progress_complete=True,
     )

@@ -319,7 +319,7 @@ class EndGameAutomator:
             resume: Whether to attempt checkpoint resumption
             
         Returns:
-            True if dragon defeated, False if stopped/failed
+            True if the terminal city objective is verified, False if stopped/failed
         """
         self._running = True
         
@@ -480,8 +480,8 @@ class EndGameAutomator:
             if self.planner.is_complete():
                 self.state.set_phase(Phase.COMPLETE)
                 print("\n" + "="*60)
-                print("  🐉 ENDER DRAGON DEFEATED! 🎉")
-                print("  EndGame Automation Complete!")
+                print("  Terminal city objective verified.")
+                print("  Endgame and bounded postgame automation complete.")
                 print("="*60 + "\n")
 
                 if self.on_complete:
@@ -554,7 +554,8 @@ class EndGameAutomator:
                 print(f"\n>>> Suite {suite_name} COMPLETED SUCCESSFULLY!")
                 return True
             else:
-                print(f"\n!!! Suite {suite_name} FAILED: {result.reason}")
+                reason = getattr(result, "reason", getattr(result, "message", ""))
+                print(f"\n!!! Suite {suite_name} FAILED: {reason}")
                 return False
                 
         except KeyboardInterrupt:

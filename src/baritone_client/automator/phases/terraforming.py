@@ -1,31 +1,63 @@
-"""
-Terraforming Phase - Flatten and reshape the world after the main mission.
-
-NOT YET WIRED IN: this handler follows the same PhaseHandler contract as the
-others in this package (see phase_executor.PhaseHandler), but it is
-deliberately not registered in `phases/__init__.py`, `state_manager.Phase`,
-or `automator.EndGameAutomator.register_default_handlers`. Those three files
-are shared/hot during active bridge/live-bot work, so wiring this in was left
-as a small, explicit step rather than done silently here:
-
-    1. Add `TERRAFORM = auto()` to the `Phase` enum in state_manager.py
-       (right before `COMPLETE`).
-    2. Export `TerraformingHandler` from `phases/__init__.py` (same pattern as
-       the other handlers).
-    3. In `EndGameAutomator.register_default_handlers`, add:
-       `self.register_handler(Phase.TERRAFORM, TerraformingHandler())`
-
-Until then, this can be used standalone (see terraform_forever.py at the repo
-root), which does the same job as an unattended, ever-expanding job that
-doesn't require touching the Phase enum at all - the more natural fit, since
-"terraform the world" has no real finish line.
-"""
+"""Bounded, checkpointed terraforming after megabase initialization."""
 
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
-from ..state_manager import StateManager
+from ..state_manager import Phase, StateManager
 from ...common import TaskResult
-from ...common.terraform import terraform_area
+from ...common.terraform import CHUNK_SIZE, terraform_area
+
+
+def _position(value):
+    try:
+        if isinstance(value, dict) and all(axis in value for axis in ("x", "z")):
+            return int(value["x"]), int(value["z"])
+        if isinstance(value, (list, tuple)) and len(value) >= 3:
+            return int(value[0]), int(value[2])
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _preserved_chunk_origins(state: StateManager, names) -> tuple[set, list[str]]:
+    """Resolve the megabase handoff's named preserves into whole chunks."""
+    structures = state.custom_data.get("structures", {})
+    locations = state.custom_data.get("locations", {})
+    resolved = {}
+
+    beacon = structures.get("beacon", {}) if isinstance(structures, dict) else {}
+    resolved["beacon"] = [_position(beacon.get("location"))]
+    for category in ("end_portal", "nether_portal"):
+        entries = locations.get(category, []) if isinstance(locations, dict) else []
+        resolved[category] = [
+            _position(entry)
+            for entry in entries
+            if isinstance(entry, dict)
+            and "nether" not in str(entry.get("dimension", "overworld")).lower()
+        ]
+
+    storage = []
+    if isinstance(structures, dict):
+        for key in ("starter_house", "bootstrap_base"):
+            record = structures.get(key, {})
+            if isinstance(record, dict):
+                storage.append(_position(record.get("supply_chest")))
+    if isinstance(locations, dict):
+        for category in ("storage", "chest", "supply_chest"):
+            storage.extend(_position(entry) for entry in locations.get(category, []))
+    resolved["storage"] = storage
+
+    chunks = set()
+    missing = []
+    for name in names:
+        positions = [value for value in resolved.get(str(name), []) if value]
+        if not positions:
+            missing.append(str(name))
+            continue
+        chunks.update(
+            ((x // CHUNK_SIZE) * CHUNK_SIZE, (z // CHUNK_SIZE) * CHUNK_SIZE)
+            for x, z in positions
+        )
+    return chunks, missing
 
 
 class TerraformingHandler(PhaseHandler):
@@ -39,14 +71,31 @@ class TerraformingHandler(PhaseHandler):
         return "Terraforming"
 
     def execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
+        plan = state.custom_data.get("terraform_plan")
+        if not isinstance(plan, dict):
+            return TaskResult.fail("Megabase terraform plan is missing")
+        center = plan.get("center")
+        if not isinstance(center, (list, tuple)) or len(center) != 2:
+            return TaskResult.fail("Terraform plan center is invalid")
         try:
-            world_state = client.transport.dispatch("get_state", {})
-            pos = world_state.get("block_position", world_state.get("position", {}))
-            center_x = int(pos.get("x", 0))
-            center_z = int(pos.get("z", 0))
-            target_y = int(pos.get("y", 64))
-        except Exception as exc:
-            return TaskResult.fail(f"Unable to read player position: {exc}")
+            center_x, center_z = (int(value) for value in center)
+            target_y = int(plan["target_y"])
+            radius_chunks = int(plan.get("radius_chunks", self.radius_chunks))
+        except (KeyError, TypeError, ValueError) as exc:
+            return TaskResult.fail(f"Terraform plan is invalid: {exc}")
+        if radius_chunks < 0:
+            return TaskResult.fail("Terraform radius must be non-negative")
+        preserve_names = plan.get("preserve", [])
+        if not isinstance(preserve_names, list):
+            return TaskResult.fail("Terraform preserve list is invalid")
+        protected_chunks, missing_preserves = _preserved_chunk_origins(
+            state, preserve_names
+        )
+        if missing_preserves:
+            return TaskResult.fail(
+                "Terraform preserve locations are unresolved",
+                missing_preserves=missing_preserves,
+            )
 
         progress = state.custom_data.setdefault("terraform_progress", {})
 
@@ -56,9 +105,42 @@ class TerraformingHandler(PhaseHandler):
         result = terraform_area(
             client,
             center_x, center_z, target_y,
-            radius_chunks=self.radius_chunks,
+            radius_chunks=radius_chunks,
             fill_block=self.fill_block,
             progress=progress,
             on_chunk_done=on_chunk_done,
+            skip_chunks=protected_chunks,
         )
-        return result
+        if not result.success:
+            return result
+
+        chunks_total = int(result.data.get("chunks_total", 0) or 0)
+        chunks_completed = int(result.data.get("chunks_completed", 0) or 0)
+        progress_entries_total = int(
+            result.data.get("progress_entries_total", 0) or 0
+        )
+        if (
+            chunks_total <= 0
+            or chunks_completed != chunks_total
+            or int(progress.get("next_index", 0) or 0) != progress_entries_total
+        ):
+            return TaskResult.fail(
+                "Terraform operation did not reach its persisted boundary",
+                chunks_completed=chunks_completed,
+                chunks_total=chunks_total,
+            )
+        payload = {
+            "verified_operations": True,
+            "progress_complete": True,
+            "chunks_completed": chunks_completed,
+            "chunks_total": chunks_total,
+            "progress_entries_total": progress_entries_total,
+            "skipped_chunks": result.data.get("skipped_chunks", []),
+            "center": [center_x, center_z],
+            "target_y": target_y,
+            "radius_chunks": radius_chunks,
+            "fill_block": self.fill_block,
+            "terraform_plan": dict(plan),
+        }
+        state.record_phase_payload(Phase.TERRAFORM, payload)
+        return TaskResult.ok("Bounded terraform plan completed", **payload)

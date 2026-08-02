@@ -109,16 +109,19 @@ def build_hollow_building(
         return TaskResult.fail("Building floor fill timed out", origin=(x, y, z))
 
     # 4. Optional distinct roof layer.
-    if roof_block:
-        build_box(client, x, y2, z, x2, y2, z2, roof_block, timeout=timeout)
+    if roof_block and not build_box(
+        client, x, y2, z, x2, y2, z2, roof_block, timeout=timeout
+    ):
+        return TaskResult.fail("Building roof fill timed out", origin=(x, y, z))
 
     # 5. Doorway: clear a 1x2 opening at the middle of the chosen wall.
-    _cut_doorway(client, x, y, z, x2, z2, door_side, timeout=timeout)
+    if not _cut_doorway(client, x, y, z, x2, z2, door_side, timeout=timeout):
+        return TaskResult.fail("Building doorway cut timed out", origin=(x, y, z))
 
     return TaskResult.ok("Building constructed", origin=(x, y, z), size=(width, depth, height))
 
 
-def _cut_doorway(client, x, y, z, x2, z2, side, timeout=120.0) -> None:
+def _cut_doorway(client, x, y, z, x2, z2, side, timeout=120.0) -> bool:
     mid_x = (x + x2) // 2
     mid_z = (z + z2) // 2
     if side == "south":
@@ -129,7 +132,9 @@ def _cut_doorway(client, x, y, z, x2, z2, side, timeout=120.0) -> None:
         dx1, dz1, dx2, dz2 = x2, mid_z, x2, mid_z
     else:  # west
         dx1, dz1, dx2, dz2 = x, mid_z, x, mid_z
-    build_box(client, dx1, y + 1, dz1, dx2, y + 2, dz2, "air", timeout=timeout)
+    return build_box(
+        client, dx1, y + 1, dz1, dx2, y + 2, dz2, "air", timeout=timeout
+    )
 
 
 def pave_road(
@@ -228,13 +233,18 @@ def district_ring_offsets(ring: int):
 
 # --- District builders -----------------------------------------------------
 
-def _flatten_district(client, ox: int, oz: int, target_y: int, on_chunk=None) -> None:
+def _flatten_district(
+    client, ox: int, oz: int, target_y: int, on_chunk=None
+) -> TaskResult:
     """Terraform every chunk of the district footprint to target_y."""
     for cx in range(ox, ox + DISTRICT_SIZE, CHUNK_SIZE):
         for cz in range(oz, oz + DISTRICT_SIZE, CHUNK_SIZE):
-            terraform_chunk(client, cx, cz, target_y)
+            result = terraform_chunk(client, cx, cz, target_y)
+            if not result.success:
+                return TaskResult.fail(result.reason, failed_chunk=(cx, cz))
             if on_chunk:
                 on_chunk((cx, cz))
+    return TaskResult.ok("District terrain flattened")
 
 
 def build_plaza(client, ox: int, oz: int, target_y: int, timeout: float = 600.0) -> TaskResult:
@@ -244,8 +254,18 @@ def build_plaza(client, ox: int, oz: int, target_y: int, timeout: float = 600.0)
         return TaskResult.fail("Plaza paving timed out", origin=(ox, oz))
     # 3x3 beacon base at plaza center, one layer above the pavement.
     mx, mz = (ox + x2) // 2, (oz + z2) // 2
-    build_box(client, mx - 1, target_y + 1, mz - 1, mx + 1, target_y + 1, mz + 1,
-              PALETTE["beacon_base"], timeout=timeout)
+    if not build_box(
+        client,
+        mx - 1,
+        target_y + 1,
+        mz - 1,
+        mx + 1,
+        target_y + 1,
+        mz + 1,
+        PALETTE["beacon_base"],
+        timeout=timeout,
+    ):
+        return TaskResult.fail("Beacon foundation timed out", origin=(ox, oz))
     return TaskResult.ok("Plaza built", origin=(ox, oz))
 
 
@@ -305,12 +325,24 @@ def build_farm(client, ox, oz, target_y, timeout=600.0) -> TaskResult:
     if not build_box(client, ix1, target_y + 1, iz1, ix2, target_y + 2, iz2, PALETTE["wall"], timeout=timeout):
         return TaskResult.fail("Farm wall timed out", origin=(ox, oz))
     # Hollow the interior of the wall back out.
-    build_box(client, ix1 + 1, target_y + 1, iz1 + 1, ix2 - 1, target_y + 2, iz2 - 1, "air", timeout=timeout)
+    if not build_box(
+        client, ix1 + 1, target_y + 1, iz1 + 1,
+        ix2 - 1, target_y + 2, iz2 - 1, "air", timeout=timeout,
+    ):
+        return TaskResult.fail("Farm interior clear timed out", origin=(ox, oz))
     # Farmland floor.
-    build_box(client, ix1, target_y, iz1, ix2, target_y, iz2, PALETTE["farmland"], timeout=timeout)
+    if not build_box(
+        client, ix1, target_y, iz1, ix2, target_y, iz2,
+        PALETTE["farmland"], timeout=timeout,
+    ):
+        return TaskResult.fail("Farm floor timed out", origin=(ox, oz))
     # Central water hydration strip (1-wide) at floor level.
     mz = (iz1 + iz2) // 2
-    build_box(client, ix1 + 1, target_y, mz, ix2 - 1, target_y, mz, PALETTE["water"], timeout=timeout)
+    if not build_box(
+        client, ix1 + 1, target_y, mz, ix2 - 1, target_y, mz,
+        PALETTE["water"], timeout=timeout,
+    ):
+        return TaskResult.fail("Farm irrigation timed out", origin=(ox, oz))
     return TaskResult.ok("Farm plot built", origin=(ox, oz))
 
 
@@ -348,13 +380,32 @@ def build_district(
     role = role_for(dcx, dcz)
 
     if flatten:
-        _flatten_district(client, ox, oz, target_y)
+        flatten_result = _flatten_district(client, ox, oz, target_y)
+        if not flatten_result.success:
+            return TaskResult.fail(
+                flatten_result.reason,
+                role=role,
+                origin=(ox, oz),
+                district=(dcx, dcz),
+                **flatten_result.data,
+            )
 
     if with_roads:
         # Pave the two lower-edge road margins; neighbors pave their own, so the
         # whole grid ends up connected without double-paving every seam.
-        pave_road(client, ox, oz, x2, oz + ROAD_WIDTH - 1, target_y, timeout=timeout)          # south edge
-        pave_road(client, ox, oz, ox + ROAD_WIDTH - 1, z2, target_y, timeout=timeout)          # west edge
+        south_ok = pave_road(
+            client, ox, oz, x2, oz + ROAD_WIDTH - 1, target_y, timeout=timeout
+        )
+        west_ok = pave_road(
+            client, ox, oz, ox + ROAD_WIDTH - 1, z2, target_y, timeout=timeout
+        )
+        if not south_ok or not west_ok:
+            return TaskResult.fail(
+                "District road paving timed out",
+                role=role,
+                origin=(ox, oz),
+                district=(dcx, dcz),
+            )
         if with_rail:
             mid = oz + ROAD_WIDTH // 2
             lay_rail(client, ox, mid, x2, mid, target_y)
@@ -402,19 +453,30 @@ def build_ring(
             client, center_x, center_z, dcx, dcz, target_y,
             flatten=flatten, with_roads=with_roads, with_rail=with_rail, timeout=timeout,
         )
-        built += 1
+        if not result.success:
+            return TaskResult.fail(
+                result.reason,
+                ring=ring,
+                failed_district=result.data.get("district", (dcx, dcz)),
+                districts_completed=built,
+                districts_total=total,
+            )
 
+        built += 1
         if progress is not None:
             progress["next_index"] = i + 1
             progress["total"] = total
-
         if on_district_done:
             on_district_done(i + 1, total, result.data)
-
-        if not result.success:
-            print(f"  [city] district {result.data.get('district')} issue: {result.reason}")
 
     if progress is not None:
         progress["next_index"] = total
 
-    return TaskResult.ok(f"Built ring {ring} ({built} districts)", ring=ring, districts=built)
+    return TaskResult.ok(
+        f"Built ring {ring} ({built} districts)",
+        ring=ring,
+        districts=built,
+        districts_completed=built,
+        districts_total=total,
+        progress_complete=True,
+    )

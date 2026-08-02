@@ -41,7 +41,6 @@ class Phase(Enum):
     CITY_BUILD = auto()         # Phase 15: Build city infrastructure
     COMPLETE = auto()           # Victory!
 
-
 @dataclass
 class Checkpoint:
     """Checkpoint data for resumption."""

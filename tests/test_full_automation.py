@@ -233,6 +233,8 @@ class TestFullAutomation(unittest.TestCase):
             (Phase.TOOL_PERFECTION, "Tool Perfection"),
             (Phase.WORLD_UNLOCK, "World Unlock"),
             (Phase.MEGABASE_INIT, "Megabase Initialization"),
+            (Phase.TERRAFORM, "Terraform"),
+            (Phase.CITY_BUILD, "City Build"),
         ]
 
         for phase, name in phase_handlers:

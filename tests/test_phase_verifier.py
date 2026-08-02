@@ -80,7 +80,47 @@ def test_verifier_covers_every_survival_gate_exactly_once(tmp_path):
     _client, _resources, _state, verifier = make_verifier(tmp_path)
     gate_ids = [gate for spec in verifier.specs.values() for gate in spec.gate_ids]
     survival_ids = [gate for gate in gate_ids if gate.startswith("T")]
-    assert survival_ids == [f"T{number}" for number in range(1200, 1214)]
+    assert survival_ids == [f"T{number}" for number in range(1200, 1216)]
+
+
+def test_postgame_verifiers_require_completed_persisted_operations(tmp_path):
+    _client, _resources, state, verifier = make_verifier(tmp_path)
+    terraform_data = {
+        "verified_operations": True,
+        "progress_complete": True,
+        "chunks_completed": 9,
+        "chunks_total": 9,
+        "progress_entries_total": 9,
+        "terraform_plan": {"center": [0, 0], "target_y": 64},
+    }
+    state.custom_data["terraform_progress"] = {"next_index": 9, "total": 9}
+    assert verifier.verify(
+        Phase.TERRAFORM, TaskResult.ok("done", **terraform_data)
+    ).success
+
+    incomplete = dict(terraform_data, chunks_completed=8)
+    assert not verifier.verify(
+        Phase.TERRAFORM, TaskResult.ok("partial", **incomplete)
+    ).success
+
+    city_data = {
+        "verified_operations": True,
+        "progress_complete": True,
+        "rings_completed": 3,
+        "districts_completed": 25,
+    }
+    state.custom_data["city_progress"] = {
+        "ring": 3,
+        "districts_completed": 25,
+    }
+    assert verifier.verify(
+        Phase.CITY_BUILD, TaskResult.ok("done", **city_data)
+    ).success
+
+    state.custom_data["city_progress"]["districts_completed"] = 24
+    assert not verifier.verify(
+        Phase.CITY_BUILD, TaskResult.ok("stale", **city_data)
+    ).success
 
 
 def test_food_and_iron_requires_live_items_and_persisted_food_source(tmp_path):

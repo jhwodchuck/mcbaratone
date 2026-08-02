@@ -8,6 +8,8 @@ Minecraft/bridge connection is needed.
 
 from unittest.mock import patch
 
+from baritone_client.common.tasks import TaskResult
+
 from baritone_client.common.terraform import (
     CHUNK_SIZE,
     chunk_ring_offsets,
@@ -114,3 +116,27 @@ def test_terraform_area_reports_full_disk(mock_client):
 
     assert result.success
     assert result.data["chunks"] == 9  # 3x3 disk
+
+
+def test_terraform_area_skips_protected_chunks_and_checkpoints_them(mock_client):
+    progress = {}
+    protected = {(0, 0)}
+    with patch(
+        "baritone_client.common.terraform.terraform_chunk",
+        return_value=TaskResult.ok("done"),
+    ) as terraform:
+        result = terraform_area(
+            mock_client,
+            center_x=0,
+            center_z=0,
+            target_y=64,
+            radius_chunks=1,
+            progress=progress,
+            skip_chunks=protected,
+        )
+
+    assert result.success
+    assert terraform.call_count == 8
+    assert result.data["chunks_completed"] == result.data["chunks_total"] == 8
+    assert result.data["skipped_chunks"] == [[0, 0]]
+    assert progress["next_index"] == progress["total"] == 9

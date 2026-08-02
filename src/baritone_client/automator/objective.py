@@ -287,10 +287,18 @@ class ObjectivePlanner:
 
     def restore_linear(self, current_phase: Phase) -> None:
         """Back-compat resume for old checkpoints that only persisted a single
-        ``current_phase``: treat every phase earlier in enum order as DONE."""
+        ``current_phase``: treat every historical phase earlier in enum order
+        as DONE.
+
+        ``COMPLETE`` used to follow ``MEGABASE_INIT`` directly.  Such a legacy
+        checkpoint cannot attest postgame work added later, so it resumes with
+        TERRAFORM pending instead of silently crediting new objectives.
+        """
         order = list(Phase)
         try:
             idx = order.index(current_phase)
         except ValueError:
             return
+        if current_phase is Phase.COMPLETE and Phase.TERRAFORM in order:
+            idx = order.index(Phase.TERRAFORM)
         self.restore([p for p in order[:idx] if p in self._by_phase])

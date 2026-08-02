@@ -187,13 +187,13 @@ class CompletionAndResumeTest(unittest.TestCase):
 
     def test_is_complete_only_when_terminal_done(self):
         planner = ObjectivePlanner(default_objectives())
-        # Complete everything except the terminal MEGABASE_INIT.
+        # Complete everything except the terminal CITY_BUILD objective.
         for o in planner.objectives:
             if not o.terminal:
                 o.status = ObjStatus.DONE
         self.assertFalse(planner.is_complete())
 
-        planner._by_phase[Phase.MEGABASE_INIT].status = ObjStatus.DONE
+        planner._by_phase[Phase.CITY_BUILD].status = ObjStatus.DONE
         self.assertTrue(planner.is_complete())
 
     def test_restore_marks_completed_and_resets_rest(self):
@@ -213,6 +213,19 @@ class CompletionAndResumeTest(unittest.TestCase):
         self.assertNotIn(Phase.BOOT_SEQUENCE, planner.completed_phases())
         # ...so BOOT_SEQUENCE is the frontier.
         self.assertEqual(planner.select(planner.runnable()).phase, Phase.BOOT_SEQUENCE)
+
+    def test_legacy_complete_does_not_attest_new_postgame_phases(self):
+        planner = ObjectivePlanner(default_objectives())
+        planner.restore_linear(Phase.COMPLETE)
+
+        self.assertIn(Phase.MEGABASE_INIT, planner.completed_phases())
+        self.assertNotIn(Phase.TERRAFORM, planner.completed_phases())
+        self.assertNotIn(Phase.CITY_BUILD, planner.completed_phases())
+        self.assertFalse(planner.is_complete())
+        self.assertEqual(
+            planner.select(planner.runnable()).phase,
+            Phase.TERRAFORM,
+        )
 
 
 if __name__ == "__main__":

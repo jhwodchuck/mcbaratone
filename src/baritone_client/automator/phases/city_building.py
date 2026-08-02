@@ -1,29 +1,8 @@
-"""
-City Building Phase - Build out the terraformed world into a megabase city.
-
-NOT YET WIRED IN (same rationale as phases/terraforming.py): this handler
-follows the PhaseHandler contract but is deliberately not registered in
-`phases/__init__.py`, `state_manager.Phase`, or
-`automator.EndGameAutomator.register_default_handlers`, because those three
-files are shared/hot during active bridge and live-bot work.
-
-To integrate later:
-    1. Add `CITY_BUILD = auto()` to the `Phase` enum in state_manager.py
-       (after TERRAFORM, before `COMPLETE`).
-    2. Export `CityBuildingHandler` from `phases/__init__.py`.
-    3. In `EndGameAutomator.register_default_handlers`, add:
-       `self.register_handler(Phase.CITY_BUILD, CityBuildingHandler())`
-
-Until then, use the standalone runner `city_builder_forever.py`, which does
-the same job unbounded and resumably - the better fit, since "build out the
-world into cities" has no natural end state.
-
-See plans/CITY_BUILD_PLAN.md for the full design.
-"""
+"""Build a bounded, checkpointed city over the verified terraform area."""
 
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
-from ..state_manager import StateManager
+from ..state_manager import Phase, StateManager
 from ...common import TaskResult
 from ...common.city import build_ring
 
@@ -34,7 +13,7 @@ class CityBuildingHandler(PhaseHandler):
     def __init__(
         self,
         rings: int = 2,
-        flatten: bool = True,
+        flatten: bool = False,
         with_roads: bool = True,
         with_rail: bool = False,
     ):
@@ -47,18 +26,21 @@ class CityBuildingHandler(PhaseHandler):
         return "City Build-Out"
 
     def execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
+        terraform = state.get_phase_payload(Phase.TERRAFORM)
+        center = terraform.get("center")
+        if not isinstance(center, (list, tuple)) or len(center) != 2:
+            return TaskResult.fail("Verified terraform center is missing")
         try:
-            world_state = client.transport.dispatch("get_state", {})
-            pos = world_state.get("block_position", world_state.get("position", {}))
-            center_x = int(pos.get("x", 0))
-            center_z = int(pos.get("z", 0))
-            target_y = int(pos.get("y", 64))
-        except Exception as exc:
-            return TaskResult.fail(f"Unable to read player position: {exc}")
+            center_x, center_z = (int(value) for value in center)
+            target_y = int(terraform["target_y"])
+        except (KeyError, TypeError, ValueError) as exc:
+            return TaskResult.fail(f"Terraform handoff is invalid: {exc}")
 
         city_progress = state.custom_data.setdefault("city_progress", {})
-        start_ring = city_progress.get("ring", 0)
-        districts_built = 0
+        # Ring zero contains the megabase beacon and storage handoff.  The
+        # city expands around that protected civic core.
+        start_ring = int(city_progress.get("ring", 1) or 1)
+        districts_built = int(city_progress.get("districts_completed", 0) or 0)
 
         for ring in range(start_ring, self.rings + 1):
             ring_progress = city_progress.setdefault("ring_progress", {})
@@ -77,14 +59,28 @@ class CityBuildingHandler(PhaseHandler):
                 progress=ring_progress,
                 on_district_done=on_district_done,
             )
-            districts_built += result.data.get("districts", 0)
+            if not result.success:
+                return result
+            # A resumed ring reports only work performed in this invocation;
+            # once it reaches the boundary, credit the ring's full size.
+            districts_built += int(result.data.get("districts_total", 0) or 0)
 
             city_progress["ring"] = ring + 1
             city_progress["ring_progress"] = {}
+            city_progress["districts_completed"] = districts_built
 
+        if int(city_progress.get("ring", 0) or 0) != self.rings + 1:
+            return TaskResult.fail("City build did not reach its bounded ring target")
+        payload = {
+            "verified_operations": True,
+            "progress_complete": True,
+            "rings_completed": self.rings + 1,
+            "districts_completed": districts_built,
+            "center": [center_x, center_z],
+            "target_y": target_y,
+        }
+        state.record_phase_payload(Phase.CITY_BUILD, payload)
         return TaskResult.ok(
             f"City build-out complete through ring {self.rings}",
-            rings=self.rings,
-            districts=districts_built,
-            center=(center_x, target_y, center_z),
+            **payload,
         )

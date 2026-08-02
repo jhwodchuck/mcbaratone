@@ -262,15 +262,19 @@ def test_build_ring_is_resumable_via_progress_dict(mock_client):
     assert progress["next_index"] == 8
 
 
-def test_build_ring_continues_past_a_failed_district(mock_client):
-    """One bad district shouldn't abort an unattended multi-hour run."""
+def test_build_ring_stops_at_a_failed_district_without_advancing_progress(mock_client):
+    """A failed district cannot be credited or skipped by a phase checkpoint."""
     outcomes = [
         city_mod.TaskResult.fail("boom", role="farm", origin=(0, 0), district=(1, 0)),
         city_mod.TaskResult.ok("fine", role="storage", origin=(0, 0), district=(1, 1)),
     ]
+    progress = {}
     with patch.object(city_mod, "build_district", side_effect=outcomes * 4) as bd:
-        result = build_ring(mock_client, 0, 0, target_y=64, ring=1)
+        result = build_ring(
+            mock_client, 0, 0, target_y=64, ring=1, progress=progress
+        )
 
-    assert result.success
-    assert bd.call_count == 8
-    assert result.data["districts"] == 8
+    assert not result.success
+    assert bd.call_count == 1
+    assert progress.get("next_index", 0) == 0
+    assert result.data["districts_completed"] == 0

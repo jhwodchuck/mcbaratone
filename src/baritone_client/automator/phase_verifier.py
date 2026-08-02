@@ -574,9 +574,56 @@ def _industrial_specs() -> Dict[Phase, _Spec]:
         )),
     }
 
-def _specs() -> Dict[Phase, _Spec]:
-    """Return postconditions aligned with Survival gates T1200-T1213."""
+def _postgame_specs() -> Dict[Phase, _Spec]:
+    """Return bounded postgame gates kept separate from legacy survival gates."""
     return {
+        Phase.TERRAFORM: _Spec(("T1214",), (
+            _check(
+                "terraform operations completed successfully",
+                lambda e: bool(e.payload(Phase.TERRAFORM).get("verified_operations")),
+            ),
+            _check(
+                "terraform payload reached its bounded target",
+                lambda e: bool(e.payload(Phase.TERRAFORM).get("progress_complete"))
+                and int(e.payload(Phase.TERRAFORM).get("chunks_completed", 0)) > 0
+                and int(e.payload(Phase.TERRAFORM).get("chunks_completed", 0))
+                == int(e.payload(Phase.TERRAFORM).get("chunks_total", -1)),
+            ),
+            _check(
+                "terraform progress persisted consistently",
+                lambda e: int(e.custom("terraform_progress", "next_index", default=-1))
+                == int(e.payload(Phase.TERRAFORM).get("progress_entries_total", -2)),
+            ),
+            _check(
+                "terraform plan persisted",
+                lambda e: bool(e.payload(Phase.TERRAFORM).get("terraform_plan")),
+            ),
+        )),
+        Phase.CITY_BUILD: _Spec(("T1215",), (
+            _check(
+                "city operations completed successfully",
+                lambda e: bool(e.payload(Phase.CITY_BUILD).get("verified_operations")),
+            ),
+            _check(
+                "city payload reached its bounded target",
+                lambda e: bool(e.payload(Phase.CITY_BUILD).get("progress_complete"))
+                and int(e.payload(Phase.CITY_BUILD).get("districts_completed", 0)) > 0
+                and int(e.payload(Phase.CITY_BUILD).get("rings_completed", 0)) > 0,
+            ),
+            _check(
+                "city progress persisted consistently",
+                lambda e: int(e.custom("city_progress", "districts_completed", default=-1))
+                == int(e.payload(Phase.CITY_BUILD).get("districts_completed", -2))
+                and int(e.custom("city_progress", "ring", default=-1))
+                == int(e.payload(Phase.CITY_BUILD).get("rings_completed", -2)),
+            ),
+        )),
+    }
+
+
+def _specs() -> Dict[Phase, _Spec]:
+    """Return postconditions aligned with Survival and postgame gates."""
+    specs = {
         Phase.BRIDGE_CHECK: _Spec(
             ("T1200",),
             (
@@ -753,27 +800,9 @@ def _specs() -> Dict[Phase, _Spec]:
                 or bool(e.custom("structures", "beacon", "verified")),
             ),
         )),
-        Phase.TERRAFORM: _Spec(("T1214",), (
-            _check(
-                "terraform progress persisted in payload",
-                lambda e: bool(e.payload(Phase.TERRAFORM)),
-            ),
-            _check(
-                "terraform ring configuration persisted",
-                lambda e: bool(e.custom("terraform") or e.payload(Phase.TERRAFORM).get("terraform_plan")),
-            ),
-        )),
-        Phase.CITY_BUILD: _Spec(("T1215",), (
-            _check(
-                "city build result recorded",
-                lambda e: bool(e.payload(Phase.CITY_BUILD).get("districts", 0)),
-            ),
-            _check(
-                "city build progress persisted",
-                lambda e: isinstance(e.custom("city_progress"), dict),
-            ),
-        )),
     }
+    specs.update(_postgame_specs())
+    return specs
 
 
 class PhaseVerifier:
