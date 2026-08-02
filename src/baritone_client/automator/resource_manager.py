@@ -264,10 +264,10 @@ class ResourceManager:
             "minecraft:flint_and_steel": 1,
         },
         Phase.VILLAGER_INFRA: {
-            "minecraft:villager_spawn_egg": 0, # Representing villagers captured
+            "minecraft:bread": 6,
         },
         Phase.XP_ENGINE: {
-            "minecraft:experience_bottle": 0, # Representing level 30 capacity
+            "minecraft:iron_sword": 1,
         },
         Phase.IRON_FARM: {
             "minecraft:iron_ingot": 0, # Representing starting iron farm

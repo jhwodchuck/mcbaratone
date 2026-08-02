@@ -12,17 +12,17 @@ from baritone_client.automator.resource_manager import ResourceManager
 from baritone_client.automator.state_manager import Phase, StateManager
 from baritone_client.automator.phases.iron_farm import IronFarmHandler
 from baritone_client.automator.phases.trading import ToolPerfectionHandler
-from baritone_client.automator.phases.villager import VillagerInfraHandler
-from baritone_client.automator.phases.xp_engine import XpEngineHandler
 from baritone_client.common.tasks import TaskResult
 from baritone_client.common.storage_catalog import catalog_for
 from baritone_client.world_identity import WorldIdentity
 
 
 class FakeTransport:
-    def __init__(self, inventory=None, blocks=None):
+    def __init__(self, inventory=None, blocks=None, *, state=None, entities=None):
         self.inventory = inventory or []
         self.blocks = blocks or {}
+        self.state = state or {}
+        self.entities = entities or []
 
     def dispatch(self, route, payload, **_kwargs):
         if route == "get_state":
@@ -31,12 +31,15 @@ class FakeTransport:
                 "food_level": 20,
                 "is_dead": False,
                 "dimension": "minecraft:overworld",
+                **self.state,
             }
         if route == "get_inventory":
             return {"inventory": list(self.inventory), "armor": [], "offhand": []}
         if route == "get_block":
             position = (payload["x"], payload["y"], payload["z"])
             return {"id": self.blocks.get(position, "minecraft:air")}
+        if route == "get_entities":
+            return {"entities": list(self.entities)}
         return {}
 
 
@@ -48,8 +51,10 @@ class SuccessfulHandler(PhaseHandler):
         return TaskResult.ok("handler said success")
 
 
-def make_verifier(tmp_path, inventory=None, blocks=None):
-    client = SimpleNamespace(transport=FakeTransport(inventory, blocks))
+def make_verifier(tmp_path, inventory=None, blocks=None, *, live_state=None, entities=None):
+    client = SimpleNamespace(
+        transport=FakeTransport(inventory, blocks, state=live_state, entities=entities)
+    )
     resources = ResourceManager(client)
     state = StateManager(checkpoint_dir=tmp_path)
     return client, resources, state, PhaseVerifier(client, resources, state)
@@ -327,8 +332,6 @@ def test_spawn_bootstrap_requires_a_durable_world_seed(tmp_path):
 def test_unimplemented_handlers_fail_explicitly(tmp_path):
     client, resources, state, _verifier = make_verifier(tmp_path)
     handlers = (
-        VillagerInfraHandler(),
-        XpEngineHandler(),
         IronFarmHandler(),
         ToolPerfectionHandler(),
     )
@@ -336,6 +339,49 @@ def test_unimplemented_handlers_fail_explicitly(tmp_path):
         result = handler.execute(client, resources, state)
         assert not result.success
         assert "not implemented" in result.reason
+
+
+def test_villager_and_xp_specs_require_live_world_evidence(tmp_path):
+    beds = {(10 + index, 64, 12): "minecraft:white_bed" for index in range(6)}
+    beds[(20, 40, 20)] = "minecraft:spawner"
+    child = {
+        "uuid": "new-baby",
+        "type": "minecraft:villager",
+        "is_baby": True,
+    }
+    _client, _resources, _state, verifier = make_verifier(
+        tmp_path,
+        blocks=beds,
+        live_state={"experience_level": 30},
+        entities=[child],
+    )
+
+    villager_result = TaskResult.ok(
+        breeder={
+            "location": [11, 64, 10],
+            "required_beds": 3,
+            "bed_blocks": [[10 + index, 64, 12] for index in range(6)],
+            "verified": True,
+        },
+        breeding={"offspring_observed": True, "offspring_uuid": "new-baby"},
+    )
+    xp_result = TaskResult.ok(
+        farm={"location": [20, 40, 20], "verified": True},
+        grind={
+            "achieved_level": 30,
+            "target_level": 30,
+            "encounters": 1,
+            "xp_gained": 5,
+        },
+    )
+
+    assert verifier.verify(Phase.VILLAGER_INFRA, villager_result).success
+    assert verifier.verify(Phase.XP_ENGINE, xp_result).success
+
+    verifier.client.transport.entities = []
+    verifier.client.transport.state["experience_level"] = 29
+    assert not verifier.verify(Phase.VILLAGER_INFRA, villager_result).success
+    assert not verifier.verify(Phase.XP_ENGINE, xp_result).success
 
 
 def test_resume_audit_rewinds_pre_verifier_completion(tmp_path):

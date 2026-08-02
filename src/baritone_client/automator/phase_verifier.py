@@ -174,6 +174,13 @@ class _Evidence:
         )
         return str(response.get("id") or response.get("type") or response.get("block") or "")
 
+    def entities(self, radius: int = 32) -> list[Dict[str, Any]]:
+        response = self._unwrap(
+            self.client.transport.dispatch("get_entities", {"radius": int(radius)})
+        )
+        entities = response.get("entities")
+        return [value for value in entities or [] if isinstance(value, dict)]
+
 
 def _check(description: str, predicate: Callable[[_Evidence], bool]) -> _Check:
     return _Check(description, predicate)
@@ -370,6 +377,62 @@ def _flag(evidence: _Evidence, *paths: Sequence[str]) -> bool:
     return any(bool(evidence.custom(*path)) for path in paths)
 
 
+def _villager_breeder_verified(evidence: _Evidence) -> bool:
+    payload = evidence.payload(Phase.VILLAGER_INFRA)
+    breeder = payload.get("breeder") if isinstance(payload, Mapping) else None
+    breeding = payload.get("breeding") if isinstance(payload, Mapping) else None
+    if not isinstance(breeder, Mapping) or not isinstance(breeding, Mapping):
+        return False
+    if not breeder.get("verified") or not breeding.get("offspring_observed"):
+        return False
+    bed_blocks = breeder.get("bed_blocks")
+    required_beds = int(breeder.get("required_beds", 0) or 0)
+    if not isinstance(bed_blocks, list) or required_beds < 3:
+        return False
+    live_bed_blocks = sum(
+        1
+        for position in bed_blocks
+        if isinstance(position, (list, tuple))
+        and len(position) == 3
+        and evidence.block_id(position).endswith("_bed")
+    )
+    if live_bed_blocks < required_beds * 2:
+        return False
+    offspring_uuid = str(breeding.get("offspring_uuid") or "")
+    return bool(offspring_uuid) and any(
+        str(entity.get("uuid") or "") == offspring_uuid
+        and entity.get("type") == "minecraft:villager"
+        and bool(entity.get("is_baby"))
+        for entity in evidence.entities(32)
+    )
+
+
+def _xp_engine_verified(evidence: _Evidence) -> bool:
+    payload = evidence.payload(Phase.XP_ENGINE)
+    farm = payload.get("farm") if isinstance(payload, Mapping) else None
+    grind = payload.get("grind") if isinstance(payload, Mapping) else None
+    if not isinstance(farm, Mapping) or not isinstance(grind, Mapping):
+        return False
+    location = farm.get("location")
+    if not isinstance(location, (list, tuple)) or len(location) != 3:
+        return False
+    try:
+        achieved = int(grind.get("achieved_level", 0) or 0)
+        encounters = int(grind.get("encounters", 0) or 0)
+        xp_gained = int(grind.get("xp_gained", 0) or 0)
+        live_level = int(evidence.state.get("experience_level", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return (
+        farm.get("verified") is True
+        and evidence.block_id(location) == "minecraft:spawner"
+        and achieved >= 30
+        and encounters > 0
+        and xp_gained > 0
+        and live_level >= 30
+    )
+
+
 def _specs() -> Dict[Phase, _Spec]:
     """Return postconditions aligned with Survival gates T1200-T1213."""
     return {
@@ -479,6 +542,18 @@ def _specs() -> Dict[Phase, _Spec]:
                 "Nether fortress location persisted",
                 lambda e: e.has_location("nether_fortress")
                 or bool(e.custom("nether_fortress")),
+            ),
+        )),
+        Phase.VILLAGER_INFRA: _Spec(("VILLAGER_INFRA",), (
+            _check(
+                "bed capacity and newly observed villager offspring verified in-world",
+                _villager_breeder_verified,
+            ),
+        )),
+        Phase.XP_ENGINE: _Spec(("XP_ENGINE",), (
+            _check(
+                "live spawner source and level-30 XP postcondition verified",
+                _xp_engine_verified,
             ),
         )),
         Phase.WORLD_UNLOCK: _Spec(("T1208", "T1209", "T1210", "T1211", "T1212"), (
