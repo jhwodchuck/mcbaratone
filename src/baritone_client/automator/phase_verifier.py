@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from math import dist
 from typing import Any, Callable, Dict, Iterable, Mapping, Sequence, Tuple
 
 from .state_manager import Phase, StateManager
@@ -100,6 +101,7 @@ class _Evidence:
             self.stored_inventory = catalog_for(client, state).inventory_totals()
         except (OSError, RuntimeError, ValueError):
             self.stored_inventory = {}
+        self._entity_cache: Dict[int, Tuple[Dict[str, Any], ...]] = {}
 
     def _observed_inventory(self, current: Mapping[str, int]) -> Dict[str, int]:
         """Match Suite 1200's best-known current-or-checkpoint item counts."""
@@ -174,12 +176,18 @@ class _Evidence:
         )
         return str(response.get("id") or response.get("type") or response.get("block") or "")
 
-    def entities(self, radius: int = 32) -> list[Dict[str, Any]]:
-        response = self._unwrap(
-            self.client.transport.dispatch("get_entities", {"radius": int(radius)})
-        )
-        entities = response.get("entities")
-        return [value for value in entities or [] if isinstance(value, dict)]
+    def entities(self, radius: int = 32) -> Tuple[Dict[str, Any], ...]:
+        """Capture the registered get_entities route's real schema lazily."""
+        bounded = max(1, min(64, int(radius)))
+        if bounded not in self._entity_cache:
+            response = self._unwrap(
+                self.client.transport.dispatch("get_entities", {"radius": bounded})
+            )
+            values = response.get("entities", [])
+            self._entity_cache[bounded] = tuple(
+                dict(value) for value in values if isinstance(value, Mapping)
+            ) if isinstance(values, list) else ()
+        return self._entity_cache[bounded]
 
 
 def _check(description: str, predicate: Callable[[_Evidence], bool]) -> _Check:
@@ -433,6 +441,139 @@ def _xp_engine_verified(evidence: _Evidence) -> bool:
     )
 
 
+def _position(value: Any) -> Tuple[int, int, int] | None:
+    try:
+        if isinstance(value, Mapping):
+            return int(value["x"]), int(value["y"]), int(value["z"])
+        if isinstance(value, (list, tuple)) and len(value) >= 3:
+            return int(value[0]), int(value[1]), int(value[2])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return None
+
+
+def _farm_entities(
+    evidence: _Evidence,
+    entity_type: str,
+    radius: float,
+) -> Tuple[Dict[str, Any], ...]:
+    anchor = _position(evidence.payload(Phase.IRON_FARM).get("farm_location"))
+    if anchor is None:
+        return ()
+    matches = []
+    for entity in evidence.entities(max(16, int(radius) + 4)):
+        if str(entity.get("type", "")) != entity_type:
+            continue
+        location = _position(entity.get("position"))
+        if location is not None and dist(anchor, location) <= radius:
+            matches.append(entity)
+    return tuple(matches)
+
+
+def _iron_structure_verified(evidence: _Evidence) -> bool:
+    payload = evidence.payload(Phase.IRON_FARM)
+    anchor = _position(payload.get("farm_location"))
+    witnesses = payload.get("structure_witnesses")
+    if anchor is None or not isinstance(witnesses, Mapping):
+        return False
+
+    def positions(name: str) -> Tuple[Tuple[int, int, int], ...]:
+        raw = witnesses.get(name)
+        if not isinstance(raw, list):
+            return ()
+        return tuple(position for value in raw if (position := _position(value)) is not None)
+
+    beds = positions("beds")
+    platform = positions("spawn_platform")
+    hopper = _position(witnesses.get("hopper"))
+    chest = _position(witnesses.get("chest"))
+    all_positions = beds + platform + ((hopper,) if hopper else ()) + ((chest,) if chest else ())
+    if (
+        len(set(beds)) < 3
+        or len(set(platform)) < 9
+        or hopper is None
+        or chest is None
+    ):
+        return False
+    if any(dist(anchor, position) > 16 for position in all_positions):
+        return False
+    if any(not evidence.block_id(position).endswith("_bed") for position in beds):
+        return False
+    if evidence.block_id(hopper) != "minecraft:hopper":
+        return False
+    if evidence.block_id(chest) not in {"minecraft:chest", "minecraft:trapped_chest"}:
+        return False
+    air = {
+        "",
+        "minecraft:air",
+        "minecraft:cave_air",
+        "minecraft:void_air",
+        "minecraft:water",
+        "minecraft:lava",
+    }
+    return all(evidence.block_id(position) not in air for position in platform)
+
+
+def _adult_farm_villagers(evidence: _Evidence) -> int:
+    return sum(
+        1
+        for entity in _farm_entities(evidence, "minecraft:villager", 8)
+        if not bool(entity.get("is_baby", False))
+    )
+
+
+def _live_librarians(evidence: _Evidence) -> int:
+    return sum(
+        1
+        for entity in evidence.entities(32)
+        if str(entity.get("type", "")) == "minecraft:villager"
+        and str(entity.get("profession", "")) == "minecraft:librarian"
+        and not bool(entity.get("is_baby", False))
+    )
+
+
+def _industrial_specs() -> Dict[Phase, _Spec]:
+    """Postconditions for objectives beyond the numbered Survival suite."""
+    return {
+        Phase.IRON_FARM: _Spec(("IRON_FARM",), (
+            _check(
+                "versioned iron-farm evidence recorded",
+                lambda e: e.payload(Phase.IRON_FARM).get("verification_version") == 1,
+            ),
+            _check("three adult villagers visible at farm", lambda e: _adult_farm_villagers(e) >= 3),
+            _check(
+                "captured zombie visible at farm",
+                lambda e: bool(_farm_entities(e, "minecraft:zombie", 8)),
+            ),
+            _check("farm structure witnesses verified in-world", _iron_structure_verified),
+            _check(
+                "farm-adjacent iron golem visible",
+                lambda e: bool(_farm_entities(e, "minecraft:iron_golem", 16)),
+            ),
+            _check(
+                "handler reported no implementation blocker",
+                lambda e: not e.payload(Phase.IRON_FARM).get("implementation_blocker"),
+            ),
+        )),
+        Phase.TOOL_PERFECTION: _Spec(("LIBRARIAN_BOOKS",), (
+            _check(
+                "versioned trading evidence recorded",
+                lambda e: e.payload(Phase.TOOL_PERFECTION).get("verification_version") == 1,
+            ),
+            _check("adult librarian visible", lambda e: _live_librarians(e) >= 1),
+            _check(
+                "all required book enchantments verified from item components",
+                lambda e: {
+                    "mending", "efficiency", "unbreaking", "fortune"
+                }.issubset(set(e.payload(Phase.TOOL_PERFECTION).get("verified_enchantments", []))),
+            ),
+            _check(
+                "handler reported no implementation blocker",
+                lambda e: not e.payload(Phase.TOOL_PERFECTION).get("implementation_blocker"),
+            ),
+        )),
+    }
+
 def _specs() -> Dict[Phase, _Spec]:
     """Return postconditions aligned with Survival gates T1200-T1213."""
     return {
@@ -592,6 +733,7 @@ def _specs() -> Dict[Phase, _Spec]:
             _check("Elytra observed", lambda e: e.count("minecraft:elytra") >= 1),
             _check("at least five shulker boxes observed", lambda e: e.total(SHULKER_BOXES) >= 5),
         )),
+        **_industrial_specs(),
         Phase.MEGABASE_INIT: _Spec(("T1213",), (
             _check(
                 "megabase location persisted",

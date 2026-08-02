@@ -1,79 +1,138 @@
-"""
-Phase 7: Iron Farm Logic
-"""
+"""Phase 7: verify an honestly constructed survival iron farm."""
 
-from typing import Tuple
+from __future__ import annotations
+
+from typing import Any, Dict, Mapping, Tuple
+
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
-from ...common import TaskResult, SequentialTask, ActionTask
+from ...common import TaskResult
+from ...common.iron_farm import (
+    add_zombie_to_farm,
+    adult_villagers_near,
+    build_iron_farm,
+    detect_farm_entities,
+    detect_farm_structure,
+    get_player_farm_position,
+    move_villagers_to_farm,
+    start_iron_production,
+)
+
+
+def _position(value: Any) -> Tuple[int, int, int] | None:
+    try:
+        if isinstance(value, Mapping):
+            return int(value["x"]), int(value["y"]), int(value["z"])
+        if isinstance(value, (list, tuple)) and len(value) >= 3:
+            return int(value[0]), int(value[1]), int(value[2])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return None
+
+
+def _valid_payload(payload: Dict[str, Any]) -> bool:
+    return (
+        payload.get("verification_version") == 1
+        and _position(payload.get("farm_location")) is not None
+        and isinstance(payload.get("adult_villager_count"), int)
+        and all(
+            isinstance(payload.get(key), bool)
+            for key in (
+                "villagers_verified",
+                "zombie_verified",
+                "structure_verified",
+                "production_verified",
+            )
+        )
+    )
+
 
 class IronFarmHandler(PhaseHandler):
-    """Phase 7: Iron farm construction - Hour 6-7."""
-    
+    """Verify live farm evidence without administrative entity/world mutations."""
+
     def get_name(self) -> str:
         return "Iron Farm (Hour 6-7)"
-    
-    def execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
-        return TaskResult.fail("Iron farm construction is not implemented")
 
-    def _legacy_execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
-        """Retained implementation scaffold; not production-complete."""
-        # Set farm location in state
-        pos_response = client.transport.dispatch("get_state", {})
-        if 'error' in pos_response:
-            return TaskResult.fail("Could not get player position")
+    def execute(
+        self,
+        client: Any,
+        resources: ResourceManager,
+        state: StateManager,
+    ) -> TaskResult:
+        # Inventory counts cannot establish that an iron farm exists, so this
+        # phase intentionally does not use ResourceManager.phase_ready_result.
+        previous = state.get_phase_payload(Phase.IRON_FARM)
+        anchor = _position(previous.get("farm_location"))
+        if anchor is None:
+            try:
+                anchor = get_player_farm_position(client)
+            except (TypeError, ValueError, KeyError) as exc:
+                return TaskResult.fail(f"Could not establish iron-farm anchor: {exc}")
 
-        pos = pos_response.get('position', [0, 64, 0])
-        # Handle position as dict or list
-        if isinstance(pos, list) and len(pos) >= 3:
-             center_x, center_y, center_z = int(pos[0]), int(pos[1]), int(pos[2])
-        else:
-             center_x = int(pos.get('x', 0))
-             center_y = int(pos.get('y', 64))
-             center_z = int(pos.get('z', 0))
-             
-        farm_location = (center_x + 40, center_y, center_z + 40)  # Offset from current position
+        witnesses = previous.get("structure_witnesses")
+        if not isinstance(witnesses, Mapping):
+            witnesses = {}
 
-        state.record_phase_payload(Phase.IRON_FARM, {"farm_location": farm_location})
+        try:
+            villagers = adult_villagers_near(client, anchor)
+            entities = detect_farm_entities(client, anchor, limit=16)
+            structure_verified = detect_farm_structure(client, anchor, witnesses)
+        except Exception as exc:
+            return TaskResult.fail(f"Could not capture iron-farm evidence: {exc}")
 
-        tasks = [
-            ActionTask("Move 3 villagers to farm location", lambda c: self._move_villagers(c, farm_location)),
-            ActionTask("Add zombie to farm", lambda c: self._add_zombie(c, farm_location)),
-            ActionTask("Construct iron farm", lambda c: self._build_iron_farm(c, farm_location)),
-            ActionTask("Start iron production", lambda c: self._start_production(c, farm_location)),
-        ]
+        payload: Dict[str, Any] = {
+            "verification_version": 1,
+            "farm_location": list(anchor),
+            "structure_witnesses": dict(witnesses),
+            "adult_villager_count": len(villagers),
+            "entity_counts": entities,
+            "villagers_verified": len(villagers) >= 3,
+            "zombie_verified": entities.get("minecraft:zombie", 0) >= 1,
+            "structure_verified": bool(structure_verified),
+            "production_verified": entities.get("minecraft:iron_golem", 0) >= 1,
+        }
+        if not _valid_payload(payload):
+            return TaskResult.fail("Iron-farm evidence payload validation failed")
 
-        executor = SequentialTask("Iron Farm", tasks)
-        result = executor.run(client)
+        missing = []
+        if not payload["villagers_verified"]:
+            missing.append(
+                "three adult villagers are not already at the farm; the current bridge "
+                "has no survival villager-transport primitive"
+            )
+        if not payload["zombie_verified"]:
+            missing.append(
+                "a captured zombie is not visible at the farm; the current bridge has "
+                "no survival zombie-capture primitive"
+            )
+        if not payload["structure_verified"]:
+            missing.append(
+                "live beds, hopper, chest, and spawn-platform witnesses are absent; "
+                "the current bridge has no complete iron-farm builder"
+            )
+        if not payload["production_verified"]:
+            missing.append("no farm-adjacent iron golem is visible as production evidence")
 
-        if result.success:
-            state.record_phase_payload(Phase.IRON_FARM, {
-                "farm_location": farm_location,
-                "villagers_moved": True,
-                "zombie_added": True,
-                "farm_constructed": True,
-                "production_started": True
-            })
+        if missing:
+            payload["implementation_blocker"] = "; ".join(missing)
+            state.record_phase_payload(Phase.IRON_FARM, payload)
+            return TaskResult.fail(payload["implementation_blocker"], **payload)
 
-        return result
+        payload["implementation_blocker"] = None
+        state.record_phase_payload(Phase.IRON_FARM, payload)
+        return TaskResult.ok("Existing survival iron farm verified", **payload)
 
-    def _move_villagers(self, client, farm_location: Tuple[int, int, int]) -> bool:
-        """Transport 3 villagers to the iron farm location."""
-        print(f"Iron-farm villager transport is not implemented for {farm_location}")
-        return False
+    # Compatibility hooks remain observational and fail closed.  Older callers
+    # may still invoke them, but they never issue invented bridge commands.
+    def _move_villagers(self, client: Any, farm_location: Tuple[int, int, int]) -> bool:
+        return move_villagers_to_farm(client, [], farm_location)
 
-    def _add_zombie(self, client, farm_location: Tuple[int, int, int]) -> bool:
-        """Capture and add a zombie to scare villagers."""
-        print(f"Iron-farm zombie capture is not implemented for {farm_location}")
-        return False
+    def _add_zombie(self, client: Any, farm_location: Tuple[int, int, int]) -> bool:
+        return add_zombie_to_farm(client, farm_location)
 
-    def _build_iron_farm(self, client, farm_location: Tuple[int, int, int]) -> bool:
-        """Construct the iron farm structure."""
-        print(f"Iron farm construction is not implemented for {farm_location}")
-        return False
+    def _build_iron_farm(self, client: Any, farm_location: Tuple[int, int, int]) -> bool:
+        return build_iron_farm(client, *farm_location)
 
-    def _start_production(self, client, farm_location: Tuple[int, int, int]) -> bool:
-        """Verify iron golems are spawning."""
-        print(f"Iron production verification is not implemented for {farm_location}")
-        return False
+    def _start_production(self, client: Any, farm_location: Tuple[int, int, int]) -> bool:
+        return start_iron_production(client, farm_location)

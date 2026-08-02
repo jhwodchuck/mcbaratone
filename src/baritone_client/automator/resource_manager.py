@@ -269,12 +269,12 @@ class ResourceManager:
         Phase.XP_ENGINE: {
             "minecraft:iron_sword": 1,
         },
-        Phase.IRON_FARM: {
-            "minecraft:iron_ingot": 0, # Representing starting iron farm
-        },
-        Phase.TOOL_PERFECTION: {
-            "minecraft:enchanted_book": 1, # Representing Mending
-        },
+        # These objectives are world-state/component verified.  An iron count
+        # cannot prove a farm and a generic enchanted-book count cannot prove
+        # Mending (or any other specific enchantment), so inventory must never
+        # short-circuit their handlers or PhaseVerifier checks.
+        Phase.IRON_FARM: {},
+        Phase.TOOL_PERFECTION: {},
         Phase.WORLD_UNLOCK: {
             "minecraft:shulker_box": 5,
             "minecraft:ender_eye": 12,

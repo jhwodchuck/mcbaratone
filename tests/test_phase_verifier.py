@@ -31,8 +31,11 @@ class FakeTransport:
                 "food_level": 20,
                 "is_dead": False,
                 "dimension": "minecraft:overworld",
+                "block_position": {"x": 10, "y": 64, "z": 10},
                 **self.state,
             }
+        if route == "get_entities":
+            return {"entities": list(self.entities), "count": len(self.entities)}
         if route == "get_inventory":
             return {"inventory": list(self.inventory), "armor": [], "offhand": []}
         if route == "get_block":
@@ -329,18 +332,6 @@ def test_spawn_bootstrap_requires_a_durable_world_seed(tmp_path):
     assert verifier.verify(Phase.SPAWN_BOOTSTRAP, TaskResult.ok()).success
 
 
-def test_unimplemented_handlers_fail_explicitly(tmp_path):
-    client, resources, state, _verifier = make_verifier(tmp_path)
-    handlers = (
-        IronFarmHandler(),
-        ToolPerfectionHandler(),
-    )
-    for handler in handlers:
-        result = handler.execute(client, resources, state)
-        assert not result.success
-        assert "not implemented" in result.reason
-
-
 def test_villager_and_xp_specs_require_live_world_evidence(tmp_path):
     beds = {(10 + index, 64, 12): "minecraft:white_bed" for index in range(6)}
     beds[(20, 40, 20)] = "minecraft:spawner"
@@ -382,6 +373,89 @@ def test_villager_and_xp_specs_require_live_world_evidence(tmp_path):
     verifier.client.transport.state["experience_level"] = 29
     assert not verifier.verify(Phase.VILLAGER_INFRA, villager_result).success
     assert not verifier.verify(Phase.XP_ENGINE, xp_result).success
+
+
+def test_supported_industrial_handlers_report_exact_bridge_blockers(tmp_path):
+    client, resources, state, _verifier = make_verifier(tmp_path)
+
+    iron = IronFarmHandler().execute(client, resources, state)
+    trading = ToolPerfectionHandler().execute(client, resources, state)
+
+    assert not iron.success
+    assert "current bridge has no survival villager-transport primitive" in iron.reason
+    assert not trading.success
+    assert "stored enchantment components and merchant offers" in trading.reason
+
+
+def test_industrial_phase_verifiers_require_live_real_schema_evidence(tmp_path):
+    witnesses = {
+        "beds": [[8, 64, 8], [9, 64, 8], [10, 64, 8]],
+        "hopper": [10, 63, 10],
+        "chest": [10, 62, 10],
+        "spawn_platform": [
+            [x, 66, z]
+            for x in range(9, 12)
+            for z in range(9, 12)
+        ],
+    }
+    blocks = {tuple(position): "minecraft:white_bed" for position in witnesses["beds"]}
+    blocks[tuple(witnesses["hopper"])] = "minecraft:hopper"
+    blocks[tuple(witnesses["chest"])] = "minecraft:chest"
+    blocks.update({tuple(position): "minecraft:stone" for position in witnesses["spawn_platform"]})
+    entities = [
+        {
+            "id": index,
+            "type": "minecraft:villager",
+            "is_baby": False,
+            "position": {"x": 9 + index, "y": 64, "z": 10},
+        }
+        for index in range(3)
+    ] + [
+        {
+            "id": 10,
+            "type": "minecraft:zombie",
+            "position": {"x": 10, "y": 64, "z": 11},
+        },
+        {
+            "id": 11,
+            "type": "minecraft:iron_golem",
+            "position": {"x": 12, "y": 64, "z": 10},
+        },
+        {
+            "id": 12,
+            "type": "minecraft:villager",
+            "profession": "minecraft:librarian",
+            "is_baby": False,
+            "position": {"x": 11, "y": 64, "z": 10},
+        },
+    ]
+    _client, _resources, _state, verifier = make_verifier(
+        tmp_path,
+        blocks=blocks,
+        entities=entities,
+    )
+
+    iron_payload = {
+        "verification_version": 1,
+        "farm_location": [10, 64, 10],
+        "structure_witnesses": witnesses,
+        "implementation_blocker": None,
+    }
+    iron = verifier.verify(Phase.IRON_FARM, TaskResult.ok(**iron_payload))
+    assert iron.success
+    assert iron.gate_ids == ("IRON_FARM",)
+
+    trading_payload = {
+        "verification_version": 1,
+        "verified_enchantments": ["mending", "efficiency", "unbreaking", "fortune"],
+        "implementation_blocker": None,
+    }
+    trading = verifier.verify(
+        Phase.TOOL_PERFECTION,
+        TaskResult.ok(**trading_payload),
+    )
+    assert trading.success
+    assert trading.gate_ids == ("LIBRARIAN_BOOKS",)
 
 
 def test_resume_audit_rewinds_pre_verifier_completion(tmp_path):
