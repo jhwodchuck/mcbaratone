@@ -2178,3 +2178,173 @@ def test_building_stone_is_still_retained_in_bulk(monkeypatch):
 
     src = inspect.getsource(res.manage_inventory)
     assert '"minecraft:cobblestone": 128' in src
+
+
+def _slots(chest_slots, occupied):
+    """Build a container screen payload: chest slots then the 36 player slots."""
+    items = []
+    for i in range(chest_slots):
+        items.append({"slot": i, "id": "minecraft:cobblestone" if i < occupied else "minecraft:air"})
+    for i in range(chest_slots, chest_slots + 36):
+        items.append({"slot": i, "id": "minecraft:air"})
+    return {"slots": items, "total_slots": chest_slots + 36}
+
+
+def test_chest_slot_parsing_distinguishes_single_from_double():
+    """27 chest slots -> 63 total; 54 -> 90. A 36-slot player screen is not a
+    container at all, which is how a blocked chest read as 'open'."""
+    from baritone_client.common import harness_ops
+
+    def client_for(payload):
+        return SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: payload))
+
+    assert harness_ops.open_container_slots(client_for(_slots(27, 0)))[1] == 27
+    assert harness_ops.open_container_slots(client_for(_slots(54, 0)))[1] == 54
+    # Player inventory screen only -- must not be treated as a container.
+    assert harness_ops.open_container_slots(
+        client_for({"slots": [{"slot": i, "id": "minecraft:air"} for i in range(36)], "total_slots": 36})
+    ) is None
+
+
+def test_chest_support_and_placement_predicates():
+    from baritone_client.common import harness_ops
+
+    assert harness_ops._is_solid_support_block("minecraft:grass_block")
+    assert harness_ops._is_solid_support_block("minecraft:stone")
+    assert not harness_ops._is_solid_support_block("minecraft:short_grass")
+    assert not harness_ops._is_solid_support_block("minecraft:air")
+    assert not harness_ops._is_solid_support_block("minecraft:water")
+
+    assert harness_ops._is_placeable_target("minecraft:air")
+    assert not harness_ops._is_placeable_target("minecraft:stone")
+    # Never stack a chest onto an existing chest.
+    assert not harness_ops._is_placeable_target("minecraft:chest")
+
+
+def test_manage_inventory_banks_surplus_before_discarding(monkeypatch):
+    """Storing beats destroying: the discard tiers must not run when a chest
+    with room can take the load."""
+    from baritone_client.common import resources as res
+
+    dropped = []
+    monkeypatch.setattr("baritone_client.common.inventory.drop_items",
+                        lambda *a, **k: dropped.append(a) or 0)
+    monkeypatch.setattr(res, "_store_surplus_in_chest", lambda _c, _r: True)
+    monkeypatch.setattr("baritone_client.common.inventory.free_inventory_slots",
+                        lambda _c: 0)
+
+    assert res.manage_inventory(SimpleNamespace(), minimum_free_slots=3) is True
+    assert dropped == [], "nothing should be destroyed when storage accepted it"
+
+
+def test_manage_inventory_still_discards_when_storage_cannot_help(monkeypatch):
+    """If storage is unavailable the bounded discard path must still run."""
+    from baritone_client.common import resources as res
+
+    free = {"n": 0}
+    def fake_drop(_client, candidates, max_stacks=1, retain_counts=None):
+        free["n"] = 3
+        return 1
+    monkeypatch.setattr("baritone_client.common.inventory.drop_items", fake_drop)
+    monkeypatch.setattr("baritone_client.common.inventory.free_inventory_slots",
+                        lambda _c: free["n"])
+    monkeypatch.setattr(res, "_store_surplus_in_chest", lambda _c, _r: False)
+
+    assert res.manage_inventory(SimpleNamespace(), minimum_free_slots=3) is True
+
+
+def test_surplus_storage_builds_a_double_chest_when_all_are_full(monkeypatch):
+    """The overflow rule from suite 1100: full chests mean build another."""
+    from baritone_client.common import resources as res
+    from baritone_client.common import harness_ops
+
+    built = []
+    monkeypatch.setattr(harness_ops, "available", lambda: True)
+    monkeypatch.setattr(harness_ops, "chest_is_full", lambda _c, _p: True)
+    monkeypatch.setattr(harness_ops, "create_double_chest",
+                        lambda _c: built.append(True) or ((0, 64, 0), (1, 64, 0)))
+    monkeypatch.setattr("baritone_client.common.storage_catalog.catalog_for",
+                        lambda _c: SimpleNamespace(
+                            list_containers=lambda: [{"x": 5, "y": 64, "z": 5}]))
+    monkeypatch.setattr("baritone_client.common.inventory.deposit_excess_to_chest",
+                        lambda *a, **k: 4)
+    monkeypatch.setattr("baritone_client.common.inventory.free_inventory_slots",
+                        lambda _c: 6)
+
+    assert res._store_surplus_in_chest(SimpleNamespace(), 3) is True
+    assert built, "a new double chest must be built when every chest is full"
+
+
+class _PickTransport:
+    def __init__(self, items):
+        self.items = items
+        self.selected = None
+        self.calls = []
+
+    def dispatch(self, route, payload=None):
+        self.calls.append((route, payload))
+        if route == "get_inventory":
+            return {"inventory": self.items}
+        if route == "select_slot":
+            self.selected = payload["slot"]
+        return {}
+
+
+def test_equip_best_pickaxe_prefers_durability_over_tier(monkeypatch):
+    """A nearly-spent diamond pick must lose to a fresh iron one.
+
+    equip_best_weapon walks a fixed tier list and returns on first match, so
+    it would pick the diamond regardless of how worn it is.
+    """
+    from baritone_client.common import resources as res
+
+    chosen = []
+    monkeypatch.setattr("baritone_client.common.inventory.select_item",
+                        lambda _c, item_id, allow_swap=False: chosen.append(item_id) or True)
+
+    transport = _PickTransport([
+        # diamond: 1561 max, 1555 damage -> 6 uses left
+        {"slot": 0, "id": "minecraft:diamond_pickaxe", "count": 1, "damage": 1555},
+        # iron: 250 max, 10 damage -> 240 uses left
+        {"slot": 1, "id": "minecraft:iron_pickaxe", "count": 1, "damage": 10},
+    ])
+    assert res.equip_best_pickaxe(SimpleNamespace(transport=transport)) is True
+    assert chosen == ["minecraft:iron_pickaxe"]
+
+
+def test_equip_best_pickaxe_ignores_fully_broken_tools(monkeypatch):
+    from baritone_client.common import resources as res
+
+    chosen = []
+    monkeypatch.setattr("baritone_client.common.inventory.select_item",
+                        lambda _c, item_id, allow_swap=False: chosen.append(item_id) or True)
+
+    transport = _PickTransport([
+        {"slot": 0, "id": "minecraft:iron_pickaxe", "count": 1, "damage": 250},   # spent
+        {"slot": 1, "id": "minecraft:stone_pickaxe", "count": 1, "damage": 0},    # fresh
+    ])
+    assert res.equip_best_pickaxe(SimpleNamespace(transport=transport)) is True
+    assert chosen == ["minecraft:stone_pickaxe"]
+
+
+def test_equip_best_pickaxe_reports_failure_with_no_usable_pick(monkeypatch):
+    from baritone_client.common import resources as res
+
+    monkeypatch.setattr("baritone_client.common.inventory.select_item",
+                        lambda *_a, **_k: True)
+    transport = _PickTransport([{"slot": 0, "id": "minecraft:dirt", "count": 5}])
+    assert res.equip_best_pickaxe(SimpleNamespace(transport=transport)) is False
+
+
+def test_equip_best_pickaxe_swaps_a_pick_out_of_main_inventory(monkeypatch):
+    """The best pick is useless in slot 30; it must go through the hotbar swap."""
+    from baritone_client.common import resources as res
+
+    swaps = []
+    monkeypatch.setattr("baritone_client.common.inventory.select_item",
+                        lambda _c, item_id, allow_swap=False: swaps.append(allow_swap) or True)
+    transport = _PickTransport([
+        {"slot": 30, "id": "minecraft:diamond_pickaxe", "count": 1, "damage": 0},
+    ])
+    assert res.equip_best_pickaxe(SimpleNamespace(transport=transport)) is True
+    assert swaps == [True], "must allow the hotbar swap"

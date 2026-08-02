@@ -187,14 +187,17 @@ def test_tool_craft_prepares_sticks_before_pickaxe(monkeypatch):
     monkeypatch.setattr(harness_ops, "available", lambda: True)
     monkeypatch.setattr(harness_ops, "ensure_crafting_table_open", lambda _client: True)
 
-    def manual_tool(_client, item_id):
+    # wooden_pickaxe now has an explicit _MANUAL_GRID_RECIPES entry, which
+    # takes precedence over the generic tool driver. The dependency ordering
+    # under test -- sticks prepared before the pickaxe -- is unchanged.
+    def manual_recipe(_client, item_id, _placements, crafts=1, output_per_recipe=1):
         assert item_id == "minecraft:wooden_pickaxe"
         transport.items["minecraft:oak_planks"] -= 3
         transport.items["minecraft:stick"] -= 2
         transport.items[item_id] = transport.items.get(item_id, 0) + 1
         return True
 
-    monkeypatch.setattr(harness_ops, "craft_tool_manual", manual_tool)
+    monkeypatch.setattr(harness_ops, "craft_recipe_manual", manual_recipe)
 
     assert inventory.craft(client, "minecraft:wooden_pickaxe", 1) is True
 
@@ -927,6 +930,20 @@ def test_manual_grid_recipe_shapes_match_vanilla():
         "minecraft:stone_shovel": {"minecraft:cobblestone": 1, "minecraft:stick": 2},
         "minecraft:stone_pickaxe": {"minecraft:cobblestone": 3, "minecraft:stick": 2},
         "minecraft:stone_axe": {"minecraft:cobblestone": 3, "minecraft:stick": 2},
+        # Diamond tier -- required before obsidian, and therefore before the
+        # nether portal, can be mined at all.
+        "minecraft:diamond_sword": {"minecraft:diamond": 2, "minecraft:stick": 1},
+        "minecraft:diamond_shovel": {"minecraft:diamond": 1, "minecraft:stick": 2},
+        "minecraft:diamond_pickaxe": {"minecraft:diamond": 3, "minecraft:stick": 2},
+        "minecraft:diamond_axe": {"minecraft:diamond": 3, "minecraft:stick": 2},
+        # Wooden tier -- the bootstrap loadout after a total-loss death.
+        "minecraft:wooden_sword": {"#planks": 2, "minecraft:stick": 1},
+        "minecraft:wooden_shovel": {"#planks": 1, "minecraft:stick": 2},
+        "minecraft:wooden_pickaxe": {"#planks": 3, "minecraft:stick": 2},
+        "minecraft:wooden_axe": {"#planks": 3, "minecraft:stick": 2},
+        # Remaining hoe tiers.
+        "minecraft:stone_hoe": {"minecraft:cobblestone": 2, "minecraft:stick": 2},
+        "minecraft:iron_hoe": {"minecraft:iron_ingot": 2, "minecraft:stick": 2},
         # Iron tools and armour.
         "minecraft:iron_sword": {"minecraft:iron_ingot": 2, "minecraft:stick": 1},
         "minecraft:iron_shovel": {"minecraft:iron_ingot": 1, "minecraft:stick": 2},
@@ -1517,3 +1534,54 @@ def test_plank_selector_is_left_for_the_harness(monkeypatch):
     )
     resolved = harness_ops._resolve_placement_selectors(object(), [("#planks", 1)])
     assert resolved == [("#planks", 1)]
+
+
+def test_select_item_uses_the_harness_hotbar_swap_and_selects_that_slot(monkeypatch):
+    """The harness picks an empty hotbar slot and reports where it landed.
+
+    The native path always targeted hotbar 0 and then selected slot 0
+    regardless, so a full hotbar left the main hand holding the wrong item.
+    Live 2026-07-31 this stranded Bot16's torches (slot 16), Bot18's furnace
+    and chest (33/34) and Bot05's crafting table (34).
+    """
+    transport = DummyTransport({"get_inventory": {
+        "inventory": [{"slot": 16, "id": "minecraft:torch", "count": 9}]
+    }})
+    client = DummyClient(transport)
+
+    monkeypatch.setattr(harness_ops, "available", lambda: True)
+    monkeypatch.setattr(harness_ops, "ensure_item_in_hotbar", lambda _c, _i: 5)
+
+    assert inventory.select_item(client, "minecraft:torch", allow_swap=True) is True
+    selected = [p for route, p in transport.calls if route == "select_slot"]
+    assert selected == [{"slot": 5}], "must select the slot the harness reported"
+
+
+def test_select_item_falls_back_to_native_swap_without_the_harness(monkeypatch):
+    transport = DummyTransport({"get_inventory": {
+        "inventory": [{"slot": 16, "id": "minecraft:torch", "count": 9}]
+    }})
+    client = DummyClient(transport)
+
+    monkeypatch.setattr(harness_ops, "available", lambda: False)
+    monkeypatch.setattr(inventory.time, "sleep", lambda _s: None)
+
+    assert inventory.select_item(client, "minecraft:torch", allow_swap=True) is True
+    assert any(route == "inventory_click" for route, _ in transport.calls)
+
+
+def test_harness_hotbar_failure_does_not_break_selection(monkeypatch):
+    """A harness error must degrade to the native swap, not abort placement."""
+    transport = DummyTransport({"get_inventory": {
+        "inventory": [{"slot": 16, "id": "minecraft:torch", "count": 9}]
+    }})
+    client = DummyClient(transport)
+
+    def boom(_c, _i):
+        raise RuntimeError("bridge hiccup")
+
+    monkeypatch.setattr(harness_ops, "available", lambda: True)
+    monkeypatch.setattr(harness_ops, "ensure_item_in_hotbar", boom)
+    monkeypatch.setattr(inventory.time, "sleep", lambda _s: None)
+
+    assert inventory.select_item(client, "minecraft:torch", allow_swap=True) is True

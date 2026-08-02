@@ -677,3 +677,51 @@ def test_adjacent_support_returns_none_when_floating():
         client = None
 
     assert block_ops.adjacent_support(Context(), 10, 70, 5) is None
+
+
+def test_build_hollow_box_delegates_to_survival_placement(monkeypatch):
+    """Must use block_ops (real placement), never the /fill world helpers."""
+    from baritone_client.common import harness_ops
+
+    calls = []
+    monkeypatch.setattr(harness_ops, "_load",
+                        lambda: {"bot_build_hollow_box": lambda *a, **k: calls.append(a) or True})
+    monkeypatch.setattr(harness_ops, "make_ctx", lambda _c: "CTX")
+
+    assert harness_ops.build_hollow_box(object(), 0, 64, 0, 6, 67, 6, "minecraft:oak_planks") is True
+    assert calls and calls[0][1:] == (0, 64, 0, 6, 67, 6, "minecraft:oak_planks")
+
+
+def test_deposit_across_chests_visits_every_chest(monkeypatch):
+    """Single-chest deposit strands a bot once that chest fills."""
+    from baritone_client.common import harness_ops
+
+    seen = {}
+    monkeypatch.setattr(harness_ops, "_load", lambda: {
+        "deposit_inventory_to_supply_chest":
+            lambda _ctx, positions, meta: seen.update(positions=positions) or True
+    })
+    monkeypatch.setattr(harness_ops, "make_ctx", lambda _c: "CTX")
+
+    assert harness_ops.deposit_across_chests(object(), [(1, 2, 3), (4, 5, 6)]) is True
+    assert seen["positions"] == [(1, 2, 3), (4, 5, 6)]
+
+
+def test_deposit_across_chests_rejects_an_empty_list(monkeypatch):
+    from baritone_client.common import harness_ops
+
+    monkeypatch.setattr(harness_ops, "_load", lambda: {
+        "deposit_inventory_to_supply_chest":
+            lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not be called"))
+    })
+    assert harness_ops.deposit_across_chests(object(), []) is False
+
+
+def test_no_cheat_helpers_are_exposed():
+    """world.py's fill/tp/give_item must never reach the survival controller."""
+    from baritone_client.common import harness_ops
+
+    for banned in ("fill", "clear_box", "tp", "teleport", "give_item",
+                   "set_block", "set_health_full", "kill_nearby_entities",
+                   "build_flat_pad", "set_gamerules_for_test"):
+        assert not hasattr(harness_ops, banned), f"cheat helper exposed: {banned}"
