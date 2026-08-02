@@ -204,10 +204,10 @@ The Python client connects to the bridge via TCP transport:
 
 ## Prerequisites
 
-1. **JDK 21**: Required for compilation and runtime
+1. **JDK 25**: Required for the configured Minecraft 26.2 compilation target
 2. **Fabric API**: Minecraft modding framework
 3. **Baritone API Jar**: Must be manually copied to `libs/`
-   - **Important**: File must be named `baritone-api-fabric-1.15.0.jar`
+   - **Important**: File must be named `baritone-api-fabric-1.15.0-9-gd93f1582.jar`
    - Copy from your Minecraft mods folder to `bridge/libs/`
    - **Note**: Build will fail without this file
 
@@ -225,11 +225,11 @@ Open a terminal in the `bridge/` directory:
 ./gradlew build
 ```
 
-The built JAR will be in `build/libs/baritone-api-bridge-1.0.0.jar`
+The built JAR will be in `build/libs/baritone-api-bridge-1.0.29.jar`
 
 ## Installation
 
-1. Copy `baritone-api-bridge-1.0.0.jar` to your Minecraft `mods` folder
+1. Copy `baritone-api-bridge-1.0.29.jar` to your Minecraft `mods` folder
 2. Start Minecraft with Fabric loader
 3. Bridge automatically starts TCP server on port 5555
 
@@ -250,7 +250,7 @@ Tests cover:
 
 ### Common Issues
 
-1. **Build fails with missing JAR**: Ensure `baritone-api-fabric-1.15.0.jar` is in `libs/`
+1. **Build fails with missing JAR**: Ensure `baritone-api-fabric-1.15.0-9-gd93f1582.jar` is in `libs/` and `gradle/wrapper/gradle-wrapper.jar` exists
 2. **Connection refused**: Check Minecraft is running with the mod installed
 3. **Commands not responding**: Verify Baritone is properly loaded in Minecraft
 4. **Upload timeouts**: Large schematics may need extended timeouts
