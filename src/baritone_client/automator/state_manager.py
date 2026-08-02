@@ -37,6 +37,8 @@ class Phase(Enum):
     TOOL_PERFECTION = auto()    # Phase 11: Mending economy
     WORLD_UNLOCK = auto()       # Phase 12: End access and shulker boxes
     MEGABASE_INIT = auto()      # Phase 13: Megabase initialization
+    TERRAFORM = auto()          # Phase 14: Terraform prepared area
+    CITY_BUILD = auto()         # Phase 15: Build city infrastructure
     COMPLETE = auto()           # Victory!
 
 

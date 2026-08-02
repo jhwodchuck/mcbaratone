@@ -4,6 +4,7 @@ Boot sequence specific actions for the initial gathering phase.
 
 import time
 from math import hypot
+import math
 from typing import List
 from .base import BaseAction
 from .resource_gathering import ResourceGatheringAction
@@ -13,9 +14,9 @@ from .crafting import CraftingAction
 from .inventory import InventoryAction
 from ..core.interfaces import ActionContext, ActionResult
 from ..common.inventory import count_item, craft
-from ..common.resources import gather_wood, gather_stone, ensure_supplies
 from ..common.base import (
     find_flat_ground,
+    open_furnace,
     setup_base,
     sleep_through_night,
     wait_for_safe_daylight,
@@ -29,6 +30,14 @@ from .boot_readiness import (
     has_durable_tool_set,
     nearby_infrastructure_record,
     require_survival_margin,
+)
+from ..common.harness_ops import smelt_in_furnace
+from ..common.resources import (
+    gather_wood,
+    gather_stone,
+    ensure_supplies,
+    _smelt_requirement_shortfall,
+    FURNACE_FUEL_SMELTS,
 )
 
 
@@ -629,20 +638,118 @@ class FoodCookingAction(BaseAction):
     """Cook raw food in furnace."""
 
     def execute(self, context: ActionContext) -> ActionResult:
-        """Cook available raw meat."""
-        # TODO: Implement cooking logic
-        print("Cooking food...")
-        return ActionResult.ok("Food cooking placeholder")
+        """Cook every reachable raw food item."""
+        raw_cooked_pairs = (
+            ("minecraft:raw_beef", "minecraft:cooked_beef"),
+            ("minecraft:raw_porkchop", "minecraft:cooked_porkchop"),
+            ("minecraft:raw_chicken", "minecraft:cooked_chicken"),
+            ("minecraft:raw_mutton", "minecraft:cooked_mutton"),
+            ("minecraft:raw_rabbit", "minecraft:cooked_rabbit"),
+            ("minecraft:raw_cod", "minecraft:cooked_cod"),
+            ("minecraft:raw_salmon", "minecraft:cooked_salmon"),
+        )
+
+        before_raw = {raw: count_item(context.client, raw) for raw, _ in raw_cooked_pairs}
+        before_cooked = {
+            cooked: count_item(context.client, cooked) for _, cooked in raw_cooked_pairs
+        }
+        total_raw = sum(before_raw.values())
+        if total_raw <= 0:
+            return ActionResult.fail("No raw foods available to cook")
+
+        furnace_pos = find_nearby_block(
+            context.client,
+            ["minecraft:furnace", "minecraft:blast_furnace"],
+            radius=12,
+        )
+        if furnace_pos is None:
+            result = ensure_supplies(context.client, {"minecraft:furnace": 1})
+            if not result.success:
+                return ActionResult.fail("No furnace available for cooking")
+            furnace_pos = find_nearby_block(
+                context.client,
+                ["minecraft:furnace", "minecraft:blast_furnace"],
+                radius=12,
+            )
+            if furnace_pos is None:
+                return ActionResult.fail("No furnace nearby after crafting")
+
+        fuel: str | None = None
+        required_fuel = max(1, math.ceil(total_raw / FURNACE_FUEL_SMELTS["minecraft:coal"]))
+        if count_item(context.client, "minecraft:coal") >= required_fuel:
+            fuel = "minecraft:coal"
+        elif count_item(context.client, "minecraft:charcoal") >= required_fuel:
+            fuel = "minecraft:charcoal"
+        if fuel is None:
+            return ActionResult.fail(
+                "Insufficient furnace fuel for cooking raw foods"
+            )
+
+        if not open_furnace(context.client):
+            return ActionResult.fail("Unable to open furnace for cooking")
+
+        for raw_id, cooked_id in raw_cooked_pairs:
+            pending = count_item(context.client, raw_id)
+            if pending <= 0:
+                continue
+            if not smelt_in_furnace(
+                context.client,
+                furnace_pos,
+                raw_id,
+                fuel,
+                cooked_id,
+                output_count=pending,
+                wait_per_item=9.5,
+            ):
+                return ActionResult.fail(f"Failed to smelt {raw_id}")
+
+        after_raw = {raw: count_item(context.client, raw) for raw, _ in raw_cooked_pairs}
+        after_cooked = {
+            cooked: count_item(context.client, cooked) for _, cooked in raw_cooked_pairs
+        }
+        raw_delta = sum(before_raw.values()) - sum(after_raw.values())
+        cooked_delta = sum(after_cooked.values()) - sum(before_cooked.values())
+        if raw_delta <= 0 or cooked_delta <= 0:
+            return ActionResult.fail(
+                "Food cooking made no inventory progress",
+                raw_delta=raw_delta,
+                cooked_delta=cooked_delta,
+            )
+        return ActionResult.ok(
+            f"Cooked {raw_delta} raw food units into {cooked_delta} cooked food",
+            raw_delta=raw_delta,
+            cooked_delta=cooked_delta,
+        )
 
 
 class IronSmeltingAction(BaseAction):
     """Smelt raw iron into ingots."""
 
     def execute(self, context: ActionContext) -> ActionResult:
-        """Smelt available raw iron."""
-        # TODO: Implement smelting logic
-        print("Smelting iron...")
-        return ActionResult.ok("Iron smelting placeholder")
+        """Smelt all available raw iron and verify output delta."""
+        before_raw = count_item(context.client, "minecraft:raw_iron")
+        before_ingots = count_item(context.client, "minecraft:iron_ingot")
+        if before_raw <= 0:
+            return ActionResult.fail("No raw_iron available for smelting")
+
+        if not _smelt_requirement_shortfall(context.client, "minecraft:iron_ingot", before_raw):
+            return ActionResult.fail("Iron smelting helper failed")
+
+        after_raw = count_item(context.client, "minecraft:raw_iron")
+        after_ingots = count_item(context.client, "minecraft:iron_ingot")
+        raw_delta = before_raw - after_raw
+        ingot_delta = after_ingots - before_ingots
+        if raw_delta <= 0 or ingot_delta <= 0:
+            return ActionResult.fail(
+                "Iron smelting produced no inventory progress",
+                raw_delta=raw_delta,
+                ingot_delta=ingot_delta,
+            )
+        return ActionResult.ok(
+            "Smelted raw iron into ingots",
+            raw_delta=raw_delta,
+            ingot_delta=ingot_delta,
+        )
 
 
 class StorageOrganizationAction(BaseAction):

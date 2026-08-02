@@ -93,7 +93,9 @@ def default_objectives() -> List[Objective]:
                   requires=[Phase.XP_ENGINE, Phase.NETHER_AND_BLAZE]),
         Objective(Phase.WORLD_UNLOCK, requires=[Phase.NETHER_AND_BLAZE]),
         Objective(Phase.MEGABASE_INIT,
-                  requires=[Phase.WORLD_UNLOCK, Phase.IRON_FARM], terminal=True),
+                  requires=[Phase.WORLD_UNLOCK, Phase.IRON_FARM]),
+        Objective(Phase.TERRAFORM, requires=[Phase.MEGABASE_INIT]),
+        Objective(Phase.CITY_BUILD, requires=[Phase.TERRAFORM], terminal=True),
     ]
 
 

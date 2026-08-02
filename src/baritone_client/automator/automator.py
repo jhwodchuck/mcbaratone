@@ -134,6 +134,8 @@ class EndGameAutomator:
             ToolPerfectionHandler,
             WorldUnlockHandler,
             MegabaseInitHandler,
+            TerraformingHandler,
+            CityBuildingHandler,
         )
         
         self.register_handler(Phase.BRIDGE_CHECK, BridgeCheckHandler())
@@ -150,6 +152,8 @@ class EndGameAutomator:
         self.register_handler(Phase.TOOL_PERFECTION, ToolPerfectionHandler())
         self.register_handler(Phase.WORLD_UNLOCK, WorldUnlockHandler())
         self.register_handler(Phase.MEGABASE_INIT, MegabaseInitHandler())
+        self.register_handler(Phase.TERRAFORM, TerraformingHandler())
+        self.register_handler(Phase.CITY_BUILD, CityBuildingHandler())
         
     def _get_current_world_identity(self) -> Optional[WorldIdentity]:
         """Fetch stable world identity from bridge state telemetry."""

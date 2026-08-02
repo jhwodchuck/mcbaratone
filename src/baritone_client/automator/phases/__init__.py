@@ -18,6 +18,9 @@ from .industrial_automation import (
     WorldUnlockHandler,
     MegabaseInitHandler,
 )
+from .terraforming import TerraformingHandler
+from .city_building import CityBuildingHandler
+
 
 __all__ = [
     "BridgeCheckHandler",
@@ -34,4 +37,6 @@ __all__ = [
     "ToolPerfectionHandler",
     "WorldUnlockHandler",
     "MegabaseInitHandler",
+    "TerraformingHandler",
+    "CityBuildingHandler",
 ]

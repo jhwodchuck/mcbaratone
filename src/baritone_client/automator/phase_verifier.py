@@ -753,6 +753,26 @@ def _specs() -> Dict[Phase, _Spec]:
                 or bool(e.custom("structures", "beacon", "verified")),
             ),
         )),
+        Phase.TERRAFORM: _Spec(("T1214",), (
+            _check(
+                "terraform progress persisted in payload",
+                lambda e: bool(e.payload(Phase.TERRAFORM)),
+            ),
+            _check(
+                "terraform ring configuration persisted",
+                lambda e: bool(e.custom("terraform") or e.payload(Phase.TERRAFORM).get("terraform_plan")),
+            ),
+        )),
+        Phase.CITY_BUILD: _Spec(("T1215",), (
+            _check(
+                "city build result recorded",
+                lambda e: bool(e.payload(Phase.CITY_BUILD).get("districts", 0)),
+            ),
+            _check(
+                "city build progress persisted",
+                lambda e: isinstance(e.custom("city_progress"), dict),
+            ),
+        )),
     }
 
 

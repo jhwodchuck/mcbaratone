@@ -19,6 +19,7 @@ from .travel import TravelAction
 from .combat import CombatAction
 from .crafting import CraftingAction
 from .base import BaseAction
+from ..core.interfaces import ActionResult
 
 # Placeholder for actions that might not directly exist in this form yet
 class PlaceholderAction(BaseAction):
@@ -27,8 +28,10 @@ class PlaceholderAction(BaseAction):
         self.name = name
     
     def execute(self, context):
-        print(f"Executing placeholder action: {self.name}")
-        return {"status": "success", "skipped": True}
+        return ActionResult.fail(
+            f"Placeholder action '{self.name}' is not implemented",
+            action_name=self.name,
+        )
 
 class SurvivalLoopAction(CompositeAction):
     """

@@ -282,6 +282,8 @@ class ResourceManager:
         Phase.MEGABASE_INIT: {
             "minecraft:beacon": 1,
         },
+        Phase.TERRAFORM: {},
+        Phase.CITY_BUILD: {},
         Phase.COMPLETE: {},
     }
     
