@@ -63,8 +63,10 @@ def _item_enchantments(item: Mapping[str, Any]) -> Set[str]:
 def _verified_inventory_enchantments(
     items: Iterable[Mapping[str, Any]],
     *,
-    item_ids: Set[str],
+    item_ids: Set[str] | None = None,
 ) -> Set[str]:
+    if item_ids is None:
+        item_ids = {"minecraft:enchanted_book"}
     verified: Set[str] = set()
     for item in items:
         if str(item.get("id", "")) in item_ids:
