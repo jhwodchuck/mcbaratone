@@ -15,43 +15,10 @@ from typing import Any, Callable, Dict, Iterable, Mapping, Sequence, Tuple
 
 from .state_manager import Phase, StateManager
 from .resource_manager import ResourceManager
+from .phase_verifier_support import FOOD_ITEMS, IRON_ARMOR, SHULKER_BOXES, STONE_TOOLS
+from .phase_verifier_support import position as _position
 from ..common.storage_catalog import catalog_for
 from ..common.tasks import TaskResult
-
-
-FOOD_ITEMS = {
-    "minecraft:bread",
-    "minecraft:baked_potato",
-    "minecraft:cooked_beef",
-    "minecraft:cooked_chicken",
-    "minecraft:cooked_cod",
-    "minecraft:cooked_mutton",
-    "minecraft:cooked_porkchop",
-    "minecraft:cooked_rabbit",
-    "minecraft:cooked_salmon",
-    "minecraft:golden_carrot",
-}
-STONE_TOOLS = {
-    "minecraft:stone_axe",
-    "minecraft:stone_hoe",
-    "minecraft:stone_pickaxe",
-    "minecraft:stone_shovel",
-    "minecraft:stone_sword",
-}
-IRON_ARMOR = {
-    "minecraft:iron_boots",
-    "minecraft:iron_chestplate",
-    "minecraft:iron_helmet",
-    "minecraft:iron_leggings",
-}
-SHULKER_BOXES = {"minecraft:shulker_box"} | {
-    f"minecraft:{color}_shulker_box"
-    for color in (
-        "white", "orange", "magenta", "light_blue", "yellow", "lime",
-        "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown",
-        "green", "red", "black",
-    )
-}
 
 
 @dataclass(frozen=True)
@@ -439,17 +406,6 @@ def _xp_engine_verified(evidence: _Evidence) -> bool:
         and xp_gained > 0
         and live_level >= 30
     )
-
-
-def _position(value: Any) -> Tuple[int, int, int] | None:
-    try:
-        if isinstance(value, Mapping):
-            return int(value["x"]), int(value["y"]), int(value["z"])
-        if isinstance(value, (list, tuple)) and len(value) >= 3:
-            return int(value[0]), int(value[1]), int(value[2])
-    except (KeyError, TypeError, ValueError):
-        return None
-    return None
 
 
 def _farm_entities(
