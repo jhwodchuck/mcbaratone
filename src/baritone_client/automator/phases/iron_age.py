@@ -15,6 +15,7 @@ from ...common.resources import (
     _read_state_with_retry,
     _safe_close_screen,
     ensure_supplies,
+    equip_best_pickaxe,
     gather_ores,
     gather_stone,
     gather_wood,
@@ -1287,6 +1288,11 @@ class FoodAndIronHandler(PhaseHandler):
         # completed kit reach an inaccessible table merely to prove it is done.
         ready, durability = kit_ready()
         if ready:
+            # Measuring total durability does not put the good pickaxe in the
+            # bot's hand. Equip the one with the most remaining uses before
+            # the descent, so a fresh pick sitting in the main inventory is
+            # actually used instead of whatever happens to be selected.
+            equip_best_pickaxe(client, mining_pickaxes)
             print(f"  Deep-mining tools ready ({durability} durability).")
             return True
 
