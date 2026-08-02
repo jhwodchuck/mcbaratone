@@ -422,9 +422,10 @@ def test_supported_industrial_handlers_report_exact_bridge_blockers(tmp_path):
     trading = ToolPerfectionHandler().execute(client, resources, state)
 
     assert not iron.success
-    assert "current bridge has no survival villager-transport primitive" in iron.reason
+    assert "adult villager transport source(s) unavailable" in iron.reason
+    assert "zombie transport source unavailable" in iron.reason
     assert not trading.success
-    assert "stored enchantment components and merchant offers" in trading.reason
+    assert "diamond or netherite pickaxe is required" in trading.reason.lower()
 
 
 def test_industrial_phase_verifiers_require_live_real_schema_evidence(tmp_path):
@@ -432,6 +433,8 @@ def test_industrial_phase_verifiers_require_live_real_schema_evidence(tmp_path):
         "beds": [[8, 64, 8], [9, 64, 8], [10, 64, 8]],
         "hopper": [10, 63, 10],
         "chest": [10, 62, 10],
+        "water_source": [9, 66, 8],
+        "lava_source": [10, 65, 11],
         "spawn_platform": [
             [x, 66, z]
             for x in range(9, 12)
@@ -441,6 +444,8 @@ def test_industrial_phase_verifiers_require_live_real_schema_evidence(tmp_path):
     blocks = {tuple(position): "minecraft:white_bed" for position in witnesses["beds"]}
     blocks[tuple(witnesses["hopper"])] = "minecraft:hopper"
     blocks[tuple(witnesses["chest"])] = "minecraft:chest"
+    blocks[tuple(witnesses["water_source"])] = "minecraft:water"
+    blocks[tuple(witnesses["lava_source"])] = "minecraft:lava"
     blocks.update({tuple(position): "minecraft:stone" for position in witnesses["spawn_platform"]})
     entities = [
         {
@@ -486,8 +491,9 @@ def test_industrial_phase_verifiers_require_live_real_schema_evidence(tmp_path):
     assert iron.gate_ids == ("IRON_FARM",)
 
     trading_payload = {
-        "verification_version": 1,
+        "verification_version": 2,
         "verified_enchantments": ["mending", "efficiency", "unbreaking", "fortune"],
+        "tool_perfected": True,
         "implementation_blocker": None,
     }
     trading = verifier.verify(

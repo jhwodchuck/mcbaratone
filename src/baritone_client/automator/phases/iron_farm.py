@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Tuple
+from typing import Any, Dict, List, Mapping, Tuple
 
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
@@ -12,11 +12,15 @@ from ...common.iron_farm import (
     add_zombie_to_farm,
     adult_villagers_near,
     build_iron_farm,
+    construct_iron_farm,
     detect_farm_entities,
     detect_farm_structure,
+    entities_near,
+    get_nearby_entities,
     get_player_farm_position,
     move_villagers_to_farm,
     start_iron_production,
+    transport_entity_to_farm,
 )
 
 
@@ -48,6 +52,64 @@ def _valid_payload(payload: Dict[str, Any]) -> bool:
     )
 
 
+def _transport_population(
+    client: Any,
+    anchor: Tuple[int, int, int],
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Physically deliver three villagers and one zombie to the farm."""
+    all_entities = get_nearby_entities(client, radius=64)
+    present_villagers = [
+        entity
+        for entity in entities_near(all_entities, anchor, "minecraft:villager", 8)
+        if not bool(entity.get("is_baby", False))
+    ]
+    present_zombies = entities_near(all_entities, anchor, "minecraft:zombie", 8)
+    villager_sources = [
+        entity
+        for entity in all_entities
+        if entity.get("type") == "minecraft:villager"
+        and not bool(entity.get("is_baby", False))
+        and entity not in present_villagers
+    ]
+    zombie_sources = [
+        entity
+        for entity in all_entities
+        if entity.get("type") == "minecraft:zombie" and entity not in present_zombies
+    ]
+    villager_jobs = [
+        entity
+        for entity in villager_sources[: max(0, 3 - len(present_villagers))]
+    ]
+    jobs: List[Tuple[Dict[str, Any], bool]] = [
+        (entity, True) for entity in villager_jobs
+    ]
+    if not present_zombies and zombie_sources:
+        jobs.append((zombie_sources[0], False))
+    missing_villagers = max(0, 3 - len(present_villagers) - len(villager_jobs))
+    blockers = []
+    if missing_villagers:
+        blockers.append(f"{missing_villagers} adult villager transport source(s) unavailable")
+    if not present_zombies and not zombie_sources:
+        blockers.append("zombie transport source unavailable")
+
+    evidence: List[Dict[str, Any]] = []
+    destination = (anchor[0], anchor[1] + 1, anchor[2])
+    for entity, release_at_destination in jobs:
+        success, details, reason = transport_entity_to_farm(
+            client,
+            entity,
+            destination,
+            vehicle_type="boat",
+            release_at_destination=release_at_destination,
+        )
+        details["success"] = success
+        details["reason"] = reason
+        evidence.append(details)
+        if not success:
+            blockers.append(reason)
+    return evidence, blockers
+
+
 class IronFarmHandler(PhaseHandler):
     """Verify live farm evidence without administrative entity/world mutations."""
 
@@ -75,9 +137,17 @@ class IronFarmHandler(PhaseHandler):
             witnesses = {}
 
         try:
+            structure_verified = detect_farm_structure(client, anchor, witnesses)
+            construction_reason = "existing farm structure verified"
+            if not structure_verified:
+                structure_verified, built_witnesses, construction_reason = construct_iron_farm(
+                    client,
+                    anchor,
+                )
+                witnesses = built_witnesses
+            transport_evidence, transport_blockers = _transport_population(client, anchor)
             villagers = adult_villagers_near(client, anchor)
             entities = detect_farm_entities(client, anchor, limit=16)
-            structure_verified = detect_farm_structure(client, anchor, witnesses)
         except Exception as exc:
             return TaskResult.fail(f"Could not capture iron-farm evidence: {exc}")
 
@@ -85,6 +155,8 @@ class IronFarmHandler(PhaseHandler):
             "verification_version": 1,
             "farm_location": list(anchor),
             "structure_witnesses": dict(witnesses),
+            "construction_reason": construction_reason,
+            "entity_transports": transport_evidence,
             "adult_villager_count": len(villagers),
             "entity_counts": entities,
             "villagers_verified": len(villagers) >= 3,
@@ -96,20 +168,18 @@ class IronFarmHandler(PhaseHandler):
             return TaskResult.fail("Iron-farm evidence payload validation failed")
 
         missing = []
+        missing.extend(transport_blockers)
         if not payload["villagers_verified"]:
             missing.append(
-                "three adult villagers are not already at the farm; the current bridge "
-                "has no survival villager-transport primitive"
+                "three transported adult villagers were not independently observed at the farm"
             )
         if not payload["zombie_verified"]:
             missing.append(
-                "a captured zombie is not visible at the farm; the current bridge has "
-                "no survival zombie-capture primitive"
+                "the transported zombie was not independently observed at the farm"
             )
         if not payload["structure_verified"]:
             missing.append(
-                "live beds, hopper, chest, and spawn-platform witnesses are absent; "
-                "the current bridge has no complete iron-farm builder"
+                construction_reason
             )
         if not payload["production_verified"]:
             missing.append("no farm-adjacent iron golem is visible as production evidence")

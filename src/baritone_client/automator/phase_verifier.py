@@ -17,6 +17,7 @@ from .state_manager import Phase, StateManager
 from .resource_manager import ResourceManager
 from .phase_verifier_support import FOOD_ITEMS, IRON_ARMOR, SHULKER_BOXES, STONE_TOOLS
 from .phase_verifier_support import position as _position
+from ..common.iron_farm import verify_farm_structure_witnesses
 from ..common.storage_catalog import catalog_for
 from ..common.tasks import TaskResult
 
@@ -428,46 +429,11 @@ def _farm_entities(
 
 def _iron_structure_verified(evidence: _Evidence) -> bool:
     payload = evidence.payload(Phase.IRON_FARM)
-    anchor = _position(payload.get("farm_location"))
-    witnesses = payload.get("structure_witnesses")
-    if anchor is None or not isinstance(witnesses, Mapping):
-        return False
-
-    def positions(name: str) -> Tuple[Tuple[int, int, int], ...]:
-        raw = witnesses.get(name)
-        if not isinstance(raw, list):
-            return ()
-        return tuple(position for value in raw if (position := _position(value)) is not None)
-
-    beds = positions("beds")
-    platform = positions("spawn_platform")
-    hopper = _position(witnesses.get("hopper"))
-    chest = _position(witnesses.get("chest"))
-    all_positions = beds + platform + ((hopper,) if hopper else ()) + ((chest,) if chest else ())
-    if (
-        len(set(beds)) < 3
-        or len(set(platform)) < 9
-        or hopper is None
-        or chest is None
-    ):
-        return False
-    if any(dist(anchor, position) > 16 for position in all_positions):
-        return False
-    if any(not evidence.block_id(position).endswith("_bed") for position in beds):
-        return False
-    if evidence.block_id(hopper) != "minecraft:hopper":
-        return False
-    if evidence.block_id(chest) not in {"minecraft:chest", "minecraft:trapped_chest"}:
-        return False
-    air = {
-        "",
-        "minecraft:air",
-        "minecraft:cave_air",
-        "minecraft:void_air",
-        "minecraft:water",
-        "minecraft:lava",
-    }
-    return all(evidence.block_id(position) not in air for position in platform)
+    return verify_farm_structure_witnesses(
+        evidence.block_id,
+        payload.get("farm_location", ()),
+        payload.get("structure_witnesses"),
+    )
 
 
 def _adult_farm_villagers(evidence: _Evidence) -> int:
@@ -514,11 +480,11 @@ def _industrial_specs() -> Dict[Phase, _Spec]:
         Phase.TOOL_PERFECTION: _Spec(("LIBRARIAN_BOOKS",), (
             _check(
                 "versioned trading evidence recorded",
-                lambda e: e.payload(Phase.TOOL_PERFECTION).get("verification_version") == 1,
+                lambda e: e.payload(Phase.TOOL_PERFECTION).get("verification_version") == 2,
             ),
             _check("adult librarian visible", lambda e: _live_librarians(e) >= 1),
             _check(
-                "all required book enchantments verified from item components",
+                "all required tool enchantments verified from item components",
                 lambda e: {
                     "mending", "efficiency", "unbreaking", "fortune"
                 }.issubset(set(e.payload(Phase.TOOL_PERFECTION).get("verified_enchantments", []))),
@@ -526,6 +492,10 @@ def _industrial_specs() -> Dict[Phase, _Spec]:
             _check(
                 "handler reported no implementation blocker",
                 lambda e: not e.payload(Phase.TOOL_PERFECTION).get("implementation_blocker"),
+            ),
+            _check(
+                "perfected tool metadata verified",
+                lambda e: bool(e.payload(Phase.TOOL_PERFECTION).get("tool_perfected")),
             ),
         )),
     }
