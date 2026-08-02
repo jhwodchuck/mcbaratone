@@ -33,6 +33,7 @@ public class CommandHandlerFactory {
         // Inventory commands
         registerHandler("get_inventory", GetInventoryCommandHandler.class);
         registerHandler("inventory_click", InventoryClickCommandHandler.class);
+        registerHandler("select_trade", SelectTradeCommandHandler.class);
 
         // State commands
         registerHandler("get_state", StateCommandHandler.class);
