@@ -194,6 +194,36 @@ def test_discover_herd_returns_verified_observed_centroid(monkeypatch):
     assert went == [(11, 65, 21)]
 
 
+def test_discover_herd_stops_pathing_without_displacement(monkeypatch):
+    calls = []
+
+    class Transport:
+        def dispatch(self, route, payload):
+            calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "block_position": {"x": 0, "y": 64, "z": 0},
+                    "is_pathing": True,
+                }
+            return {}
+
+    clock = iter([0.0, 0.0, 0.0, 0.0, 4.0, 4.0])
+    monkeypatch.setattr(husbandry.time, "monotonic", lambda: next(clock, 4.0))
+    monkeypatch.setattr(husbandry.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(husbandry, "_animals_of_type", lambda *_a, **_k: [])
+
+    client = SimpleNamespace(transport=Transport())
+    assert husbandry.discover_herd(
+        client,
+        "cow",
+        timeout=30.0,
+        stall_timeout=3.0,
+    ) is None
+    assert ("explore", {"x": 0, "z": 0}) in calls
+    assert ("cancel", {}) in calls
+    assert ("chat", {"message": "#stop"}) in calls
+
+
 def test_visit_known_herd_returns_true_immediately_if_already_satisfied(monkeypatch):
     """If required_loot is already banked, must not travel anywhere."""
     client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))

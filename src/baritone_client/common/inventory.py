@@ -1322,6 +1322,42 @@ PROGRESSION_RETAIN_COUNTS = {
 }
 
 
+# Every block the storage catalog is allowed to register. Testing for "chest"
+# alone rejected the barrels the catalog happily stores, so a bot would walk to
+# a verified barrel, decide the chest was missing, and walk to the next entry.
+_STORAGE_CONTAINER_TOKENS = ("chest", "barrel", "shulker_box")
+
+
+def _is_storage_container(block_id: object) -> bool:
+    """Return whether a live block id is a container the catalog tracks."""
+    value = str(block_id or "")
+    return any(token in value for token in _STORAGE_CONTAINER_TOKENS)
+
+
+def _forget_missing_container(client, position, state=None) -> None:
+    """Mark a catalogued coordinate that no longer holds a container.
+
+    Without this the entry is offered again on the very next pass, so a bot
+    walks 15-38m to a phantom chest, finds nothing, walks to the next one and
+    round again -- and because the catalog is shared, every bot in the fleet
+    repeats the same tour. Live 2026-08-01 all four bots were doing exactly
+    that: mostly stationary, a handful of log lines per minute, no work done.
+    """
+    try:
+        from .storage_catalog import catalog_for
+
+        dimension = client.transport.dispatch("get_state", {}).get(
+            "dimension", "minecraft:overworld"
+        )
+        catalog_for(client, state).mark_missing(
+            tuple(int(axis) for axis in position),
+            dimension=str(dimension),
+        )
+        print(f"STORAGE: forgetting missing container at {tuple(position)}")
+    except Exception as exc:
+        print(f"STORAGE: missing-container catalog update deferred ({exc})")
+
+
 def deposit_excess_to_chest(
     client,
     chest_pos: Tuple[int, int, int],
@@ -1415,8 +1451,9 @@ def deposit_excess_to_chest(
         block = client.transport.dispatch(
             "get_block", {"x": cx, "y": cy, "z": cz}
         ).get("id", "")
-    if "chest" not in block:
-        print(f"STORAGE: expected chest is missing at {(cx, cy, cz)}")
+    if not _is_storage_container(block):
+        print(f"STORAGE: expected container is missing at {(cx, cy, cz)}")
+        _forget_missing_container(client, (cx, cy, cz), state)
         return -1
 
     live_state = client.transport.dispatch("get_state", {})
@@ -1438,8 +1475,8 @@ def deposit_excess_to_chest(
     block = client.transport.dispatch(
         "get_block", {"x": cx, "y": cy, "z": cz}
     ).get("id", "")
-    if "chest" not in block:
-        print("STORAGE: chest disappeared during approach")
+    if not _is_storage_container(block):
+        print("STORAGE: container disappeared during approach")
         return -1
 
     # Stand at a real adjacent floor tile.  Merely being within four blocks is
@@ -1629,8 +1666,9 @@ def withdraw_required_from_chest(
     block = client.transport.dispatch(
         "get_block", {"x": cx, "y": cy, "z": cz}
     ).get("id", "")
-    if "chest" not in block:
-        print(f"STORAGE: expected chest is missing at {(cx, cy, cz)}")
+    if not _is_storage_container(block):
+        print(f"STORAGE: expected container is missing at {(cx, cy, cz)}")
+        _forget_missing_container(client, (cx, cy, cz), state)
         return -1
 
     try:

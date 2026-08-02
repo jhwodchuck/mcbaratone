@@ -2126,3 +2126,55 @@ def test_survivable_drop_refuses_when_the_fall_would_leave_too_little_health():
     assert surface_egress.try_survivable_drop(client, {
         "health": 20.0, "block_position": {"x": -9, "y": 85, "z": -7},
     }) is None
+
+
+def test_manage_inventory_can_shed_raw_copper(monkeypatch):
+    """Copper is mined incidentally toward iron but has no consumer.
+
+    It was absent from every discard tier, so manage_inventory could never
+    reclaim those slots. Live 2026-08-02: Bot07 carried 640 raw copper -- 10
+    permanently locked stacks -- and all four bots filled up, aborted the
+    descent, walked back to a chest and started over, roughly hourly.
+    """
+    offered = []
+    free = {"slots": 0}
+
+    def fake_drop(_client, candidates, max_stacks=1, retain_counts=None):
+        offered.append(list(candidates))
+        if "minecraft:raw_copper" in candidates:
+            free["slots"] = 3          # shedding copper reclaims the space
+            return 1
+        return 0
+
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.free_inventory_slots",
+        lambda _client: free["slots"],
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.drop_items", fake_drop
+    )
+
+    assert resources.manage_inventory(SimpleNamespace(), minimum_free_slots=3) is True
+    assert any("minecraft:raw_copper" in tier for tier in offered), (
+        "copper must be offered to the disposal path"
+    )
+
+
+def test_copper_is_shed_after_stone_not_before(monkeypatch):
+    """A bot mining for iron should shed unusable ore before usable material."""
+    from baritone_client.common import resources as res
+    import inspect
+
+    src = inspect.getsource(res.manage_inventory)
+    copper = src.index("minecraft:raw_copper")
+    cobble = src.index('"minecraft:cobblestone",\n            "minecraft:deepslate"')
+    assert copper < cobble, "copper should be listed ahead of building stone"
+
+
+def test_building_stone_is_still_retained_in_bulk(monkeypatch):
+    """Adding copper must not change the cobblestone reserve."""
+    from baritone_client.common import resources as res
+    import inspect
+
+    src = inspect.getsource(res.manage_inventory)
+    assert '"minecraft:cobblestone": 128' in src

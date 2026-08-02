@@ -443,6 +443,7 @@ class EndGameAutomator:
                         obj, progression_fingerprint(self.state)
                     )
                     self.planner.mark_done(obj)
+                    self._record_verified_objective_completion(phase)
                     if self.on_phase_complete:
                         self.on_phase_complete(phase)
 
@@ -593,6 +594,45 @@ class EndGameAutomator:
         )
         print(f"Checkpoint saved: {path}")
 
+    _COMPLETION_ATTESTATION_VERSION = 1
+
+    @staticmethod
+    def _attested_completed_phases(state: StateManager) -> set[Phase]:
+        """Return objectives that already passed the live phase verifier.
+
+        Re-querying a remote or unloaded homestead reports air/void. Treating
+        that as failed evidence reopened BOOT and BASE after every restart and
+        made bots build another house. Only unattested legacy completions need
+        startup live revalidation.
+        """
+        raw = state.custom_data.get("verified_objective_completions", {})
+        if not isinstance(raw, dict):
+            return set()
+        attested = set()
+        for name, evidence in raw.items():
+            if not isinstance(evidence, dict):
+                continue
+            try:
+                phase = Phase[name]
+                version = int(evidence.get("version", 0) or 0)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if version >= EndGameAutomator._COMPLETION_ATTESTATION_VERSION:
+                attested.add(phase)
+        return attested
+
+    def _record_verified_objective_completion(self, phase: Phase) -> None:
+        """Persist proof that the executor's postcondition gate passed."""
+        records = self.state.custom_data.setdefault(
+            "verified_objective_completions", {}
+        )
+        if not isinstance(records, dict):
+            records = {}
+            self.state.custom_data["verified_objective_completions"] = records
+        records[phase.name] = {
+            "version": self._COMPLETION_ATTESTATION_VERSION,
+        }
+
     def _restore_planner(self) -> None:
         """Rebuild objective statuses from the resumed checkpoint.
 
@@ -624,6 +664,7 @@ class EndGameAutomator:
             )
             return
         completed = self.planner.completed_phases()
+        attested = EndGameAutomator._attested_completed_phases(self.state)
         valid = {
             phase
             for phase in (Phase.BRIDGE_CHECK, Phase.SPAWN_BOOTSTRAP)
@@ -636,6 +677,9 @@ class EndGameAutomator:
                 continue
             if not set(objective.requires).issubset(valid):
                 removed.append((phase, "prerequisite evidence is missing"))
+                continue
+            if phase in attested:
+                valid.add(phase)
                 continue
             verification = self.phase_verifier.verify(
                 phase,

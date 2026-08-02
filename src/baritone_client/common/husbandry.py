@@ -80,14 +80,24 @@ def discover_herd(
     timeout: float = 300.0,
     minimum_size: int = 2,
     max_distance: float = 384.0,
+    stall_timeout: float = 30.0,
 ) -> Optional[tuple[int, int, int]]:
-    """Explore until a renewable-size herd is observed, then verify it nearby."""
+    """Explore until a renewable-size herd is observed, then verify it nearby.
+
+    ``is_pathing`` is not a progress signal: Baritone can report it forever
+    while repeatedly recalculating an unreachable route. Bound that state by
+    observed displacement so callers can use a known waypoint instead of
+    leaving a worker apparently paused for the full discovery timeout.
+    """
     state = client.transport.dispatch("get_state", {})
     position = state.get("block_position", state.get("position", {}))
     origin_x = float(position.get("x", state.get("x", 0)) or 0)
     origin_z = float(position.get("z", state.get("z", 0)) or 0)
     deadline = time.monotonic() + max(1.0, float(timeout))
     exploring = False
+    last_progress_at = time.monotonic()
+    last_progress_x = origin_x
+    last_progress_z = origin_z
 
     def stop() -> None:
         nonlocal exploring
@@ -104,6 +114,23 @@ def discover_herd(
             current_z = float(live_pos.get("z", live.get("z", origin_z)) or origin_z)
             distance = ((current_x - origin_x) ** 2 + (current_z - origin_z) ** 2) ** 0.5
             if distance > float(max_distance):
+                return None
+
+            progress = (
+                (current_x - last_progress_x) ** 2
+                + (current_z - last_progress_z) ** 2
+            ) ** 0.5
+            if progress >= 2.0:
+                last_progress_x = current_x
+                last_progress_z = current_z
+                last_progress_at = time.monotonic()
+            elif exploring and time.monotonic() - last_progress_at >= max(
+                3.0, float(stall_timeout)
+            ):
+                print(
+                    "  Herd discovery made no displacement progress; "
+                    "switching to the known renewable-source waypoint."
+                )
                 return None
 
             animals = _animals_of_type(client, animal_type, radius, adults_only=True)
@@ -132,6 +159,7 @@ def discover_herd(
                     {"x": int(origin_x), "z": int(origin_z)},
                 )
                 exploring = True
+                last_progress_at = time.monotonic()
             time.sleep(3.0)
     finally:
         stop()

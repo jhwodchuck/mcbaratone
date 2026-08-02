@@ -93,6 +93,34 @@ def test_iron_phase_resume_counts_existing_ingots_before_mining(monkeypatch):
     assert not gathered
 
 
+def test_initial_mining_pickaxe_accepts_carried_iron_pickaxe(monkeypatch):
+    client = SimpleNamespace()
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = SimpleNamespace(custom_data={})
+    monkeypatch.setattr(iron_age, "count_item", lambda *_a, **_k: 0)
+    monkeypatch.setattr(
+        iron_age,
+        "remaining_pickaxe_durability",
+        lambda _client, items: 200
+        if "minecraft:iron_pickaxe" in items
+        else 0,
+    )
+    monkeypatch.setattr(
+        handler,
+        "_withdraw_initial_iron_supplies",
+        lambda _client: None,
+    )
+    monkeypatch.setattr(
+        iron_age,
+        "ensure_supplies",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("must not craft a stone pickaxe when an iron pick is usable")
+        ),
+    )
+
+    assert handler._ensure_initial_mining_pickaxe(client) is True
+
+
 def test_iron_phase_recovers_critical_health_before_mining(monkeypatch):
     class Transport:
         def __init__(self):
@@ -839,6 +867,75 @@ def test_completed_deep_haul_skips_another_descent(monkeypatch):
     )
 
     assert iron_age.FoodAndIronHandler()._dig_staircase(SimpleNamespace())
+
+
+def test_configured_shared_staircase_routes_surface_worker_to_common_bottom(
+    monkeypatch,
+):
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = SimpleNamespace(
+        custom_data={
+            "shared_mining_staircase": {
+                "entrance": [-159, 104, -375],
+                "bottom": [-159, -58, -537],
+            }
+        }
+    )
+    monkeypatch.setattr(handler, "_deep_mining_objectives_complete", lambda _c: False)
+    monkeypatch.setattr(
+        handler,
+        "_read_state",
+        lambda *_a, **_k: {"block_position": {"x": -161, "y": 104, "z": -384}},
+    )
+    routes = []
+    monkeypatch.setattr(
+        iron_age,
+        "goto",
+        lambda _c, x, y, z, **_k: routes.append((x, y, z)) or True,
+    )
+    monkeypatch.setattr(
+        iron_age,
+        "go_to_y_level",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("configured fleet must not excavate a private staircase")
+        ),
+    )
+
+    assert handler._dig_staircase(SimpleNamespace())
+    assert routes[0] == (-159, 104, -375)
+    assert routes[1] == (-159, 96, -383)
+    assert routes[-1] == (-159, -58, -537)
+    assert len(routes) == 22
+
+
+def test_configured_shared_staircase_joins_worker_at_current_depth(monkeypatch):
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = SimpleNamespace(
+        custom_data={
+            "shared_mining_staircase": {
+                "entrance": [-159, 104, -375],
+                "bottom": [-159, -58, -537],
+            }
+        }
+    )
+    monkeypatch.setattr(handler, "_deep_mining_objectives_complete", lambda _c: False)
+    monkeypatch.setattr(
+        handler,
+        "_read_state",
+        lambda *_a, **_k: {"block_position": {"x": -163, "y": 88, "z": -381}},
+    )
+    routes = []
+    monkeypatch.setattr(
+        iron_age,
+        "goto",
+        lambda _c, x, y, z, **_k: routes.append((x, y, z)) or True,
+    )
+
+    assert handler._dig_staircase(SimpleNamespace())
+    assert routes[0] == (-159, 88, -391)
+    assert routes[1] == (-159, 80, -399)
+    assert routes[-1] == (-159, -58, -537)
+    assert len(routes) == 20
 
 
 def test_completed_diamond_and_iron_gear_skip_all_deep_mining(monkeypatch):
@@ -1910,6 +2007,47 @@ def test_durable_food_persists_only_verified_renewable_source(monkeypatch):
     ]
     assert state.custom_data["structures"]["food_source"]["verified"] is True
     assert state.locations[0][0] == "farm"
+
+
+def test_durable_food_uses_known_herd_after_local_discovery_stalls(monkeypatch):
+    class FakeState:
+        def __init__(self):
+            self.custom_data = {}
+            self.locations = []
+
+        def add_location(self, category, x, y, z, **kwargs):
+            self.locations.append((category, x, y, z, kwargs))
+
+    client = SimpleNamespace()
+    state = FakeState()
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = state
+    monkeypatch.setattr(iron_age, "discover_herd", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        iron_age,
+        "KNOWN_HERD_WAYPOINTS",
+        {"cow": (-320, 72, -202)},
+    )
+    visits = []
+
+    def verify_source(_client, required_loot, animal_type, **kwargs):
+        visits.append((required_loot, animal_type, kwargs))
+        return True
+
+    monkeypatch.setattr(iron_age, "visit_known_herd_for_loot", verify_source)
+
+    assert handler._ensure_durable_food(client) is True
+    assert visits == [
+        (
+            {},
+            "cow",
+            {
+                "preserve_breeding_pair": True,
+                "location": (-320, 72, -202),
+            },
+        )
+    ]
+    assert state.custom_data["structures"]["food_source"]["verified"] is True
 
 
 def test_observed_food_group_persists_generalized_renewable_source():

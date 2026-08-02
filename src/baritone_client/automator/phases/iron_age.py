@@ -42,11 +42,16 @@ from ...common import harness_ops
 from ...common import base as house_utils
 from ...common.combat import acquire_emergency_food, eat_until_hunger, recover_health
 from ...common.farming import harvest_wheat_farm
-from ...common.husbandry import discover_herd, visit_known_herd_for_loot
+from ...common.husbandry import (
+    KNOWN_HERD_WAYPOINTS,
+    discover_herd,
+    visit_known_herd_for_loot,
+)
 from .iron_age_food import persisted_food_source, remember_food_source
 
 class FoodAndIronHandler(PhaseHandler):
     """Phase 2: Iron & Diamond mining - Hour 1-2."""
+    _SHARED_STAIRCASE_KEY = "shared_mining_staircase"
     _INITIAL_IRON_TARGET = 15
     _IRON_BANK_TARGET = 30
     _IRON_BANK_BATCH = 8
@@ -298,7 +303,18 @@ class FoodAndIronHandler(PhaseHandler):
         if persisted_food_source(self.state):
             return True
 
-        location = discover_herd(client, "cow")
+        # This world's starter biome is known to be animal-sparse. Give local
+        # discovery one short chance to observe a closer herd, then use the
+        # operator-verified renewable waypoint instead of spending five
+        # minutes in an explore process that may be pathing without moving.
+        location = discover_herd(
+            client,
+            "cow",
+            timeout=45.0,
+            stall_timeout=18.0,
+        )
+        if location is None:
+            location = KNOWN_HERD_WAYPOINTS.get("cow")
         if location is None:
             return False
         verified = visit_known_herd_for_loot(
@@ -336,6 +352,16 @@ class FoodAndIronHandler(PhaseHandler):
         self._withdraw_initial_iron_supplies(client)
         if self._initial_iron_target_satisfied(client):
             print("  Initial iron target restored from storage; no mining pickaxe needed.")
+            return True
+
+        mining_pickaxes = (
+            "minecraft:stone_pickaxe",
+            "minecraft:iron_pickaxe",
+            "minecraft:diamond_pickaxe",
+            "minecraft:netherite_pickaxe",
+        )
+        if remaining_pickaxe_durability(client, mining_pickaxes) > 0:
+            print("  Usable stone-or-better pickaxe already carried; continuing.")
             return True
 
         result = ensure_supplies(
@@ -385,8 +411,83 @@ class FoodAndIronHandler(PhaseHandler):
         if self._deep_mining_objectives_complete(client):
             print("  Deep-mining objectives already complete; skipping descent.")
             return True
+
+        shared = self._shared_staircase()
+        if shared is not None:
+            entrance, bottom = shared
+            live = self._read_state(client, "Shared staircase join")
+            if live is None:
+                return False
+            position = live.get("block_position", live.get("position", {}))
+            current_y = int(position.get("y", entrance[1]))
+            vertical_span = max(1, entrance[1] - bottom[1])
+            descended = max(0, min(vertical_span, entrance[1] - current_y))
+
+            def staircase_point(step: int):
+                ratio = step / vertical_span
+                return tuple(
+                    round(start + (finish - start) * ratio)
+                    for start, finish in zip(entrance, bottom)
+                )
+
+            join = staircase_point(descended)
+            print(
+                f"  Joining shared mining staircase at {join}; "
+                f"bottom is {bottom}."
+            )
+            if not goto(
+                client,
+                join[0],
+                join[1],
+                join[2],
+                timeout=300,
+                check_interval=0.5,
+                tolerance=2.0,
+            ):
+                return False
+
+            # A single bottom goal lets Baritone choose any route and can put
+            # the worker directly above the chamber instead of in the stairs.
+            # Pin traversal to short points on the configured centerline.
+            next_step = descended + 8
+            while next_step < vertical_span:
+                waypoint = staircase_point(next_step)
+                if not goto(
+                    client,
+                    waypoint[0],
+                    waypoint[1],
+                    waypoint[2],
+                    timeout=120,
+                    check_interval=0.5,
+                    tolerance=2.0,
+                ):
+                    return False
+                next_step += 8
+            return goto(
+                client,
+                bottom[0],
+                bottom[1],
+                bottom[2],
+                timeout=180,
+                check_interval=0.5,
+                tolerance=2.0,
+            )
+
         print("Digging staircase to Y-58...")
         return go_to_y_level(client, -58)
+
+    def _shared_staircase(self):
+        """Return one fleet-configured staircase, or preserve legacy descent."""
+        if self.state is None:
+            return None
+        raw = self.state.custom_data.get(self._SHARED_STAIRCASE_KEY)
+        if not isinstance(raw, dict):
+            return None
+        entrance = self._normalize_position(raw.get("entrance"))
+        bottom = self._normalize_position(raw.get("bottom"))
+        if entrance is None or bottom is None or bottom[1] >= entrance[1]:
+            return None
+        return entrance, bottom
 
     def _deep_mining_objectives_complete(self, client) -> bool:
         """Recognize either an unspent haul or gear made from that haul.

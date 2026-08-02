@@ -2388,6 +2388,18 @@ def manage_inventory(client, minimum_free_slots: int = 1) -> bool:
             "minecraft:tuff",
         ],
         [
+            # Copper is mined incidentally on the way to iron and diamond and
+            # has no consumer in any phase, but it was absent from every tier,
+            # so manage_inventory could never reclaim those slots. Live
+            # 2026-08-02: Bot07 carried 640 raw copper (10 permanently locked
+            # stacks) and Bot16 256; all four filled up, aborted the descent,
+            # walked back to a chest and started over -- a roughly hourly cycle
+            # that no amount of clearing by hand survived. Dropped after the
+            # stone tier so a bot mining for iron sheds ore it cannot use
+            # before it sheds building material it can.
+            "minecraft:raw_copper",
+            "minecraft:copper_ore",
+            "minecraft:deepslate_copper_ore",
             "minecraft:cobblestone",
             "minecraft:deepslate",
             "minecraft:cobbled_deepslate",

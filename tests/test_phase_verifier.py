@@ -378,6 +378,40 @@ def test_resume_audit_rewinds_pre_verifier_completion(tmp_path):
     assert state.get_progress(Phase.INITIAL_GATHERING) == 0.0
 
 
+def test_resume_audit_preserves_attested_completion_when_base_is_unloaded(tmp_path):
+    _client, _resources, state, _verifier = make_verifier(tmp_path)
+    state.has_durable_inventory_observations = True
+    completed = {
+        Phase.BRIDGE_CHECK,
+        Phase.SPAWN_BOOTSTRAP,
+        Phase.INITIAL_GATHERING,
+        Phase.BOOT_SEQUENCE,
+        Phase.BASE_CONSTRUCTION,
+    }
+    state.phase_progress.update({phase: 1.0 for phase in completed})
+    state.custom_data["verified_objective_completions"] = {
+        phase.name: {"version": 1} for phase in completed
+    }
+    planner = ObjectivePlanner(default_objectives())
+    planner.restore(completed)
+
+    class NoLiveRevalidation:
+        def verify(self, *_args, **_kwargs):
+            raise AssertionError("attested completion queried an unloaded base")
+
+    automator = SimpleNamespace(
+        planner=planner,
+        state=state,
+        phase_verifier=NoLiveRevalidation(),
+    )
+
+    EndGameAutomator._revalidate_completed_objectives(automator)
+
+    assert planner.completed_phases() == completed
+    assert state.get_progress(Phase.BOOT_SEQUENCE) == 1.0
+    assert state.get_progress(Phase.BASE_CONSTRUCTION) == 1.0
+
+
 def test_resume_audit_preserves_legacy_checkpoint_completion(tmp_path):
     _client, _resources, state, verifier = make_verifier(tmp_path)
     completed = {

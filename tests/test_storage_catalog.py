@@ -196,3 +196,93 @@ def test_missing_container_is_hidden_and_not_revived_by_checkpoint_seed(tmp_path
     # that must not override stronger live evidence that the chest is gone.
     seed_from_state(_Client(), state)
     assert catalog.list_containers() == []
+
+
+def test_barrels_and_shulkers_count_as_storage_containers():
+    """The catalog stores barrels, so testing for "chest" alone rejects them.
+
+    Live 2026-08-01: (-182,106,-392) was a *verified barrel*, and every bot
+    walked ~19m to it and logged "expected chest is missing", then moved on to
+    the next entry -- forever.
+    """
+    from baritone_client.common.inventory import _is_storage_container
+
+    assert _is_storage_container("minecraft:chest")
+    assert _is_storage_container("minecraft:trapped_chest")
+    assert _is_storage_container("minecraft:barrel")
+    assert _is_storage_container("minecraft:shulker_box")
+    assert _is_storage_container("minecraft:red_shulker_box")
+
+
+def test_non_containers_are_rejected():
+    from baritone_client.common.inventory import _is_storage_container
+
+    assert not _is_storage_container("minecraft:air")
+    assert not _is_storage_container("minecraft:stone")
+    assert not _is_storage_container("")
+    assert not _is_storage_container(None)
+
+
+def test_missing_container_is_forgotten_so_it_is_not_re_walked(monkeypatch):
+    """A confirmed-absent coordinate must leave the catalog.
+
+    Otherwise it is offered again next pass, and with a shared fleet catalog
+    every bot repeats the same fruitless tour.
+    """
+    from baritone_client.common import inventory
+
+    marked = []
+
+    class FakeCatalog:
+        def mark_missing(self, position, *, dimension):
+            marked.append((position, dimension))
+
+    class Transport:
+        def dispatch(self, route, _payload=None):
+            if route == "get_state":
+                return {"dimension": "minecraft:overworld"}
+            return {}
+
+    monkeypatch.setattr(
+        "baritone_client.common.storage_catalog.catalog_for",
+        lambda _client, _state: FakeCatalog(),
+    )
+
+    client = type("C", (), {"transport": Transport()})()
+    inventory._forget_missing_container(client, (-165, 106, -415), None)
+
+    assert marked == [((-165, 106, -415), "minecraft:overworld")]
+
+
+def test_forgetting_never_raises_into_the_caller(monkeypatch):
+    """Catalog trouble must not abort the storage operation itself."""
+    from baritone_client.common import inventory
+
+    def boom(_client, _state):
+        raise RuntimeError("catalog locked")
+
+    monkeypatch.setattr(
+        "baritone_client.common.storage_catalog.catalog_for", boom
+    )
+
+    class Transport:
+        def dispatch(self, _route, _payload=None):
+            return {"dimension": "minecraft:overworld"}
+
+    client = type("C", (), {"transport": Transport()})()
+    inventory._forget_missing_container(client, (1, 2, 3), None)  # must not raise
+
+
+def test_old_chest_only_test_rejected_a_real_barrel():
+    """Pins the defect itself rather than the new helper's existence.
+
+    The previous check was literally `if "chest" not in block`. Against the
+    barrel the catalog had stored as *verified*, that is False, so the bot
+    declared a missing chest and walked away from a container that was really
+    there. If these two ever agree again, the regression is back.
+    """
+    from baritone_client.common.inventory import _is_storage_container
+
+    barrel = "minecraft:barrel"
+    assert ("chest" in barrel) is False  # the old predicate said "missing"
+    assert _is_storage_container(barrel) is True  # the new one finds it
