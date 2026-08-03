@@ -32,6 +32,25 @@ def entity(entity_id, entity_type, position, **extra):
     }
 
 
+def swap_inventory_slots(inventory, source_slot, target_slot):
+    """Model the verified player's logical-slot SWAP contract."""
+    source = next(
+        (item for item in inventory if int(item.get("slot", -1)) == source_slot),
+        None,
+    )
+    target = next(
+        (item for item in inventory if int(item.get("slot", -1)) == target_slot),
+        None,
+    )
+    if source is None:
+        return
+    inventory.remove(source)
+    if target is not None:
+        inventory.remove(target)
+        inventory.append({**target, "slot": source_slot})
+    inventory.append({**source, "slot": target_slot})
+
+
 class IronTransport:
     def __init__(self, *, fail_transport=False):
         self.fail_transport = fail_transport
@@ -85,7 +104,12 @@ class IronTransport:
         if route == "get_entities":
             return {"entities": deepcopy(self.entities), "count": len(self.entities)}
         if route == "get_inventory":
-            return {"inventory": deepcopy(self.inventory), "armor": [], "offhand": []}
+            return {
+                "inventory": deepcopy(self.inventory),
+                "armor": [],
+                "offhand": [],
+                "selected_slot": self.selected,
+            }
         if route == "get_block":
             position = (payload["x"], payload["y"], payload["z"])
             return {"id": self.blocks.get(position, "minecraft:air")}
@@ -129,6 +153,7 @@ class TradingTransport:
         self.screen = ""
         self.current_villager = None
         self.selected_trade = None
+        self.selected = None
         self.blocks = {(3, 64, 0): "minecraft:anvil"}
         self.cursor = None
         self.anvil_inputs = {0: None, 1: None}
@@ -228,7 +253,12 @@ class TradingTransport:
         if route == "get_entities":
             return {"entities": deepcopy(self.entities), "count": len(self.entities)}
         if route == "get_inventory":
-            return {"inventory": deepcopy(self.inventory), "armor": [], "offhand": []}
+            return {
+                "inventory": deepcopy(self.inventory),
+                "armor": [],
+                "offhand": [],
+                "selected_slot": self.selected,
+            }
         if route == "get_block":
             position = (payload["x"], payload["y"], payload["z"])
             return {"id": self.blocks.get(position, "minecraft:air")}
@@ -237,7 +267,8 @@ class TradingTransport:
             self.blocks[position] = str(payload["block"])
             return {"placed": True}
         if route == "select_slot":
-            return {"selected": payload["slot"]}
+            self.selected = int(payload["slot"])
+            return {"selected": self.selected}
         if route == "break_block":
             position = (payload["x"], payload["y"], payload["z"])
             self.blocks[position] = "minecraft:air"
@@ -274,6 +305,9 @@ class TradingTransport:
         if route == "inventory_click":
             slot = int(payload["slot"])
             mode = payload["type"]
+            if mode == "SWAP":
+                swap_inventory_slots(self.inventory, slot, int(payload["button"]))
+                return {"clicked": True}
             if self.screen == "merchant":
                 raise AssertionError("select_trade already executes the merchant purchase")
             if self.screen == "anvil" and mode == "PICKUP":
