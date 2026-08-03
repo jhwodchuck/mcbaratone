@@ -900,3 +900,61 @@ def test_pacing_hold_unrelated_to_food_does_not_hunt(monkeypatch):
     executor.execute_phase(Phase.BOOT_SEQUENCE)
 
     assert not acquired
+
+
+def test_a_newer_death_replaces_a_stale_pending_grave(monkeypatch):
+    """A pending grave is only worth resuming while it is still this death's.
+
+    pending_location survives across deaths, and it used to override the
+    bridge's own report of where the player just died. Live 2026-08-03: Bot07
+    died in lava at (708, 27, 600) in the Nether carrying a diamond pickaxe
+    and full iron, and recovery set off for (-12, 84, -40) -- an earlier death
+    it had never finished walking to. The gear it actually dropped despawned.
+    """
+    context = _context(
+        {"x": 708, "y": 27, "z": 600, "dimension": "minecraft:overworld"}
+    )
+    context.state.custom_data["death_recovery"] = {
+        "pending_location": [-12, 84, -40],
+        "pending_dimension": "minecraft:overworld",
+        "expected_critical": {},
+        "unsafe_failures": 0,
+    }
+    monkeypatch.setattr(death_recovery_action, "goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        death_recovery_action, "secure_recovery_area", lambda _client: True
+    )
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _seconds: None)
+
+    DeathRecoveryAction().execute(context)
+
+    assert context.state.custom_data["last_death_location"]["x"] == 708, (
+        "recovery must head for the grave the player actually just made"
+    )
+    # The stale target must not survive as something to walk to later.
+    pending = (context.state.custom_data.get("death_recovery") or {}).get(
+        "pending_location"
+    )
+    assert pending in (None, [708, 27, 600]), pending
+
+
+def test_an_interrupted_recovery_still_resumes_the_same_grave(monkeypatch):
+    """Resuming matters when a restart interrupts a walk to an unchanged grave."""
+    context = _context(
+        {"x": -12, "y": 84, "z": -40, "dimension": "minecraft:overworld"}
+    )
+    context.state.custom_data["death_recovery"] = {
+        "pending_location": [-12, 84, -40],
+        "pending_dimension": "minecraft:overworld",
+        "expected_critical": {},
+        "unsafe_failures": 0,
+    }
+    monkeypatch.setattr(death_recovery_action, "goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        death_recovery_action, "secure_recovery_area", lambda _client: True
+    )
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _seconds: None)
+
+    DeathRecoveryAction().execute(context)
+
+    assert context.state.custom_data["last_death_location"]["x"] == -12

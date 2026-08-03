@@ -576,10 +576,39 @@ class DeathRecoveryAction(BaseAction):
             death_x, death_y, death_z = data.get("x"), data.get("y"), data.get("z")
             death_dim = data.get("dimension", death_dimension).lower()
             if resuming_pending:
-                death_x, death_y, death_z = pending_location
-                death_dim = str(
-                    recovery_state.get("pending_dimension", death_dim)
-                ).lower()
+                fresh_coords = None
+                if death_x is not None:
+                    try:
+                        fresh_coords = (int(death_x), int(death_y), int(death_z))
+                    except (TypeError, ValueError):
+                        fresh_coords = None
+                pending_coords = tuple(int(value) for value in pending_location)
+                if fresh_coords is not None and fresh_coords != pending_coords:
+                    # A pending grave is only worth resuming while it is still
+                    # *this* death's grave. The bridge reports the most recent
+                    # death, so a location that disagrees with the pending one
+                    # means the bot died again somewhere else and the old grave
+                    # is already gone. Preferring the stale coordinate sent the
+                    # bot to an empty spot while the gear it actually dropped
+                    # despawned. Live 2026-08-03: Bot07 died in lava at
+                    # (708, 27, 600) carrying a diamond pickaxe and full iron,
+                    # and recovery set off for (-12, 84, -40) -- an earlier
+                    # death it had never finished walking to.
+                    print(
+                        f"RECOVERY: newer death at {fresh_coords} replaces the "
+                        f"pending grave at {pending_coords}"
+                    )
+                    pending_location = list(fresh_coords)
+                    recovery_state["pending_location"] = pending_location
+                    recovery_state["pending_dimension"] = death_dim
+                    # The failure count belongs to the grave we just gave up
+                    # on, not to this one.
+                    recovery_state["unsafe_failures"] = 0
+                else:
+                    death_x, death_y, death_z = pending_location
+                    death_dim = str(
+                        recovery_state.get("pending_dimension", death_dim)
+                    ).lower()
             if death_x is None and death_position:
                 death_x = death_position.get("x")
                 death_y = death_position.get("y")
