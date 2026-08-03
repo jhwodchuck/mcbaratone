@@ -1126,6 +1126,46 @@ def test_unreachable_frontier_cell_is_retired_not_retried_forever(monkeypatch):
     assert len(set(targets)) > 1, "the search must move on to another cell"
 
 
+def test_nether_travel_escapes_a_marooned_pillar_before_failing(monkeypatch):
+    """A stationary, idle bot gets one bounded lower-surface recovery."""
+
+    class MaroonedTransport(_BlazeSearchTransport):
+        def __init__(self):
+            super().__init__([])
+            self.recovered = False
+
+        def dispatch(self, route, payload, **kwargs):
+            if route == "get_state" and not self.recovered:
+                return {
+                    "dimension": self.dimension,
+                    "block_position": dict(self.position),
+                    "is_pathing": False,
+                }
+            return super().dispatch(route, payload, **kwargs)
+
+    transport = MaroonedTransport()
+    client = SimpleNamespace(transport=transport)
+    recoveries = []
+    monkeypatch.setattr(nether.time, "sleep", lambda _seconds: None)
+
+    def recover(_client, state, **kwargs):
+        recoveries.append((state, kwargs))
+        transport.recovered = True
+        return (0, 60, 0)
+
+    monkeypatch.setattr(nether, "try_lower_surface_egress", recover)
+
+    assert nether._travel_to(
+        client,
+        (12, 64, 0),
+        radius=2,
+        timeout=45,
+    ) is True
+    assert len(recoveries) == 1
+    assert recoveries[0][1]["minimum_altitude"] == 0
+    assert len(transport.gotos) == 2, "the original goal must be re-issued"
+
+
 def test_portal_approach_leaves_water_before_a_long_overland_route(monkeypatch):
     """Baritone will not route hundreds of blocks starting from deep water.
 

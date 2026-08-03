@@ -362,29 +362,15 @@ def _approach_and_relocate(client, portal: PortalPosition, radius: int = 3) -> b
     """
     x, y, z = portal
     _leave_water_before_travelling(client)
-    try:
-        client.transport.dispatch(
-            "goto", {"x": int(x), "y": int(y), "z": int(z), "radius": int(radius)}
-        )
-    except Exception as exc:
-        logger.warning("Portal approach failed: %s", exc)
-        return False
-    deadline = time.time() + 90
-    while time.time() < deadline:
-        state = _unwrap(client.transport.dispatch("get_state", {}))
-        position = state.get("block_position") or state.get("position") or {}
-        try:
-            here = (
-                int(position["x"]),
-                int(position["y"]),
-                int(position["z"]),
-            )
-        except (KeyError, TypeError, ValueError):
-            return False
-        if max(abs(here[0] - x), abs(here[2] - z)) <= radius + 2:
-            return True
-        time.sleep(2)
-    return False
+    # Use the same progress-aware primitive as fortress travel. Besides
+    # avoiding a blind 90-second wait, this gives an idle bot one bounded
+    # shelf/pillar escape before the portal candidate is rejected.
+    return _travel_to(
+        client,
+        (int(x), int(y), int(z)),
+        radius=int(radius),
+        timeout=90.0,
+    )
 
 
 def enter_portal(
@@ -764,6 +750,7 @@ def _travel_to(
     deadline = time.time() + timeout
     previous_remaining = None
     stalled = 0
+    egress_attempted = False
     while time.time() < deadline:
         time.sleep(2)
         state = _unwrap(client.transport.dispatch("get_state", {}))
@@ -778,6 +765,34 @@ def _travel_to(
         if previous_remaining is not None and remaining >= previous_remaining:
             stalled += 1
             if stalled >= 3:
+                # A valid goal can be unreachable because the bot is standing
+                # on a tiny generated shelf or its own one-block pillar. In
+                # that case every new goal fails in exactly the same place.
+                # Give the bounded shelf escape one chance before declaring
+                # the destination unreachable. Live 2026-08-03: Bot16 and
+                # Bot17 were idle/not pathing for an hour while even 24-block
+                # Nether goals stopped closing from (-104,86,-126) and
+                # (4,92,62), respectively.
+                if not egress_attempted and not bool(state.get("is_pathing")):
+                    egress_attempted = True
+                    landing = try_lower_surface_egress(
+                        client,
+                        state,
+                        minimum_altitude=0,
+                        allow_upward_excavation=False,
+                    )
+                    if landing is not None:
+                        logger.info(
+                            "Recovered marooned travel via lower surface %s",
+                            landing,
+                        )
+                        client.transport.dispatch(
+                            "goto",
+                            {"x": x, "y": y, "z": z, "radius": int(radius)},
+                        )
+                        previous_remaining = None
+                        stalled = 0
+                        continue
                 logger.info("Travel to (%d, %d, %d) stopped closing", x, y, z)
                 return False
         else:
