@@ -20,6 +20,21 @@ import net.minecraft.world.phys.Vec3;
  */
 public class PlaceBlockCommandHandler implements CommandHandler {
 
+    /**
+     * Prefer ordinary top/side placement faces and use an overhead support
+     * only as a last resort. Direction.values() puts UP before the horizontal
+     * faces, which made floor holes beneath a wall click the inaccessible
+     * underside of that wall even when four reachable side faces existed.
+     */
+    static final Direction[] PLACEMENT_SUPPORT_ORDER = {
+        Direction.DOWN,
+        Direction.NORTH,
+        Direction.SOUTH,
+        Direction.WEST,
+        Direction.EAST,
+        Direction.UP
+    };
+
     @Override
     public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         if (client.player == null || client.level == null || client.gameMode == null) {
@@ -51,7 +66,7 @@ public class PlaceBlockCommandHandler implements CommandHandler {
                 BlockPos placeAgainst = targetPos.below();
                 boolean foundNeighbor = false;
                 
-                for (Direction dir : Direction.values()) {
+                for (Direction dir : PLACEMENT_SUPPORT_ORDER) {
                     BlockPos adjacent = targetPos.relative(dir);
                     BlockState adjacentState = client.level.getBlockState(adjacent);
                     if (adjacentState.canBeReplaced()) continue;
