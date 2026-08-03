@@ -582,6 +582,22 @@ class DeathRecoveryAction(BaseAction):
                         fresh_coords = (int(death_x), int(death_y), int(death_z))
                     except (TypeError, ValueError):
                         fresh_coords = None
+                if fresh_coords is None and death_position:
+                    # The bridge frequently answers has_death_location: False,
+                    # and then the stale pending target was the only candidate
+                    # left. But death_position is the corpse's own coordinate,
+                    # read before respawning, which is exactly where the items
+                    # dropped. Live 2026-08-03: Bot17 died at (-315, 44, 187),
+                    # the bridge reported no death location, and recovery
+                    # announced (-12, 84, -47) from a previous death.
+                    try:
+                        fresh_coords = (
+                            int(death_position["x"]),
+                            int(death_position["y"]),
+                            int(death_position["z"]),
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        fresh_coords = None
                 pending_coords = tuple(int(value) for value in pending_location)
                 if fresh_coords is not None and fresh_coords != pending_coords:
                     # A pending grave is only worth resuming while it is still
@@ -599,6 +615,7 @@ class DeathRecoveryAction(BaseAction):
                         f"pending grave at {pending_coords}"
                     )
                     pending_location = list(fresh_coords)
+                    death_x, death_y, death_z = fresh_coords
                     recovery_state["pending_location"] = pending_location
                     recovery_state["pending_dimension"] = death_dim
                     # The failure count belongs to the grave we just gave up

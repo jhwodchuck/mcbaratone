@@ -958,3 +958,48 @@ def test_an_interrupted_recovery_still_resumes_the_same_grave(monkeypatch):
     DeathRecoveryAction().execute(context)
 
     assert context.state.custom_data["last_death_location"]["x"] == -12
+
+
+def test_corpse_position_wins_when_the_bridge_has_no_death_location(monkeypatch):
+    """has_death_location: False left the stale pending target as the only clue.
+
+    The bridge frequently reports no death location at all. The corpse's own
+    coordinate, read before respawning, is exactly where the items dropped.
+    Live 2026-08-03: Bot17 died at (-315, 44, 187) in the Nether, the bridge
+    answered has_death_location: False, and recovery announced
+    (-12, 84, -47) -- a grave from a previous death.
+    """
+    context = _context({"has_death_location": False})
+    context.client.transport.death_position = {"x": -315, "y": 44, "z": 187}
+    context.state.custom_data["death_recovery"] = {
+        "pending_location": [-12, 84, -47],
+        "pending_dimension": "minecraft:overworld",
+        "expected_critical": {},
+        "unsafe_failures": 0,
+    }
+
+    # The corpse lies where it died until it respawns.
+    original = context.client.transport.dispatch
+
+    def dispatch(route, payload):
+        if route == "get_state" and context.client.transport.dead:
+            return {
+                "is_dead": True,
+                "health": 0,
+                "block_position": {"x": -315, "y": 44, "z": 187},
+                "dimension": "minecraft:overworld",
+            }
+        return original(route, payload)
+
+    context.client.transport.dispatch = dispatch
+    monkeypatch.setattr(death_recovery_action, "goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        death_recovery_action, "secure_recovery_area", lambda _client: True
+    )
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _seconds: None)
+
+    DeathRecoveryAction().execute(context)
+
+    assert context.state.custom_data["last_death_location"]["x"] == -315, (
+        "must walk to the corpse, not to a grave from a previous death"
+    )
