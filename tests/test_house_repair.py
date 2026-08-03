@@ -27,6 +27,7 @@ def test_door_placement_clears_recovered_wall_from_both_doorway_cells(monkeypatc
     door = (origin[0] + 3, origin[1] + 1, origin[2])
     transport = _WorldTransport(
         {
+            (door[0], door[1] - 1, door[2]): "minecraft:cobblestone",
             door: "minecraft:oak_planks",
             (door[0], door[1] + 1, door[2]): "minecraft:oak_planks",
         }

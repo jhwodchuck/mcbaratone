@@ -1549,12 +1549,10 @@ def test_select_item_uses_the_harness_hotbar_swap_and_selects_that_slot(monkeypa
     }})
     client = DummyClient(transport)
 
-    monkeypatch.setattr(harness_ops, "available", lambda: True)
-    monkeypatch.setattr(harness_ops, "ensure_item_in_hotbar", lambda _c, _i: 5)
-
-    assert inventory.select_item(client, "minecraft:torch", allow_swap=True) is True
-    selected = [p for route, p in transport.calls if route == "select_slot"]
-    assert selected == [{"slot": 5}], "must select the slot the harness reported"
+    # Detailed stateful coverage lives in test_hotbar_selection.py. This
+    # legacy transport does not model inventory mutations, so the hardened
+    # selector must fail closed instead of claiming the accepted click worked.
+    assert inventory.select_item(client, "minecraft:torch", allow_swap=True) is False
 
 
 def test_select_item_falls_back_to_native_swap_without_the_harness(monkeypatch):
@@ -1566,7 +1564,7 @@ def test_select_item_falls_back_to_native_swap_without_the_harness(monkeypatch):
     monkeypatch.setattr(harness_ops, "available", lambda: False)
     monkeypatch.setattr(inventory.time, "sleep", lambda _s: None)
 
-    assert inventory.select_item(client, "minecraft:torch", allow_swap=True) is True
+    assert inventory.select_item(client, "minecraft:torch", allow_swap=True) is False
     assert any(route == "inventory_click" for route, _ in transport.calls)
 
 
@@ -1577,11 +1575,6 @@ def test_harness_hotbar_failure_does_not_break_selection(monkeypatch):
     }})
     client = DummyClient(transport)
 
-    def boom(_c, _i):
-        raise RuntimeError("bridge hiccup")
-
-    monkeypatch.setattr(harness_ops, "available", lambda: True)
-    monkeypatch.setattr(harness_ops, "ensure_item_in_hotbar", boom)
     monkeypatch.setattr(inventory.time, "sleep", lambda _s: None)
 
-    assert inventory.select_item(client, "minecraft:torch", allow_swap=True) is True
+    assert inventory.select_item(client, "minecraft:torch", allow_swap=True) is False

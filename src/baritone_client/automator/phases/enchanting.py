@@ -18,6 +18,7 @@ from ...common.inventory import (
 from ...common.combat import eat_until_hunger, hunt_mobs, scan_for_threats
 from ...common.husbandry import visit_known_herd_for_loot
 from ...common.navigation import find_nearby_block, goto
+from ...common.nether import enter_portal, find_nearest_portal
 from ...common.base import (
     _good_house_plan,
     _house_door_aligned,
@@ -52,6 +53,10 @@ class EnchantingPipelineHandler(PhaseHandler):
     
     def execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
         tasks = [
+            ActionTask(
+                "Return to the Overworld",
+                lambda c: self._ensure_overworld(c, state),
+            ),
             ActionTask(
                 "Verify house and restore base storage",
                 lambda c: self._ensure_starter_base(c, state),
@@ -89,6 +94,68 @@ class EnchantingPipelineHandler(PhaseHandler):
         
         executor = SequentialTask("Enchanting Core", tasks)
         return executor.run(client)
+
+    @staticmethod
+    def _current_dimension(client) -> str:
+        snapshot = client.transport.dispatch("get_state", {})
+        if isinstance(snapshot, dict):
+            snapshot = snapshot.get("data", snapshot)
+        return str(snapshot.get("dimension", "")).lower()
+
+    def _ensure_overworld(self, client, state: StateManager) -> bool:
+        """Never run Overworld resource objectives from another dimension.
+
+        Phase retries are free to choose another remaining objective after a
+        Nether failure.  Previously that allowed ENCHANTING_PIPELINE to start
+        while the player was still in the Nether, where it repeatedly tried
+        to walk hundreds of blocks to an Overworld house and harvest
+        sugarcane.  Return through a verified portal first, or fail closed so
+        the retry cannot corrupt navigation or checkpoint evidence.
+        """
+        dimension = self._current_dimension(client)
+        if "overworld" in dimension:
+            return True
+        if "nether" not in dimension:
+            print(f"  Enchanting requires the Overworld; current dimension is {dimension!r}")
+            return False
+
+        candidates = []
+        # A fresh find_blocks observation is stronger than a checkpointed
+        # coordinate, which may refer to a portal that has since been broken.
+        nearby = find_nearest_portal(client, "the_nether")
+        if nearby is not None:
+            candidates.append(tuple(int(value) for value in nearby))
+        try:
+            locations = state.get_locations("nether_portal").get(
+                "nether_portal", []
+            )
+            for location in locations:
+                if "nether" in str(location.get("dimension", "")).lower():
+                    candidate = (
+                        int(location["x"]),
+                        int(location["y"]),
+                        int(location["z"]),
+                    )
+                    if candidate not in candidates:
+                        candidates.append(candidate)
+        except Exception:
+            pass
+        if not candidates:
+            print("  Enchanting paused: no verified Nether return portal was found.")
+            return False
+        for portal in candidates:
+            print(f"  Returning to the Overworld before enchanting via {portal}")
+            if not enter_portal(
+                client,
+                portal,
+                target_dimension="minecraft:overworld",
+                timeout=60,
+            ):
+                continue
+            if "overworld" in self._current_dimension(client):
+                return True
+            print("  Portal traversal did not produce an Overworld state transition.")
+        return False
 
     def _ensure_starter_base(self, client, state: StateManager) -> bool:
         """Repair the survival boundary and restore exact owned workstations."""
@@ -767,7 +834,7 @@ class EnchantingPipelineHandler(PhaseHandler):
     def _harvest_sugarcane(self, client, state: StateManager) -> bool:
         """Accumulate and craft the paper needed by all 46 books."""
         paper_target = 138
-        self._withdraw_at_home(
+        withdrawn = self._withdraw_at_home(
             client,
             state,
             {
@@ -775,6 +842,9 @@ class EnchantingPipelineHandler(PhaseHandler):
                 "minecraft:sugar_cane": paper_target,
             },
         )
+        if withdrawn < 0:
+            print("  Sugarcane expedition paused: could not return to home storage.")
+            return False
         if self._craft_available_paper(client, paper_target):
             return True
 

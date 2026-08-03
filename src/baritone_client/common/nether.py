@@ -227,10 +227,17 @@ def enter_portal(
     current_block = _block_id(
         client.transport.dispatch("get_block", {"x": x, "y": y, "z": z})
     )
-    if current_block != "minecraft:nether_portal" and verify_portal(
-        client, portal, require_active=True
-    ):
-        target = (x + 1, y + 1, z)
+    if current_block != "minecraft:nether_portal":
+        if verify_portal(client, portal, require_active=True):
+            target = (x + 1, y + 1, z)
+        else:
+            # Persisted and shared portal coordinates can outlive the actual
+            # blocks. Walking to an unverified coordinate wastes the entire
+            # timeout and can strand the next objective in the wrong
+            # dimension. Only enter a live portal block or a verified active
+            # frame.
+            logger.warning("Refusing to enter inactive portal at %s", portal)
+            return False
     try:
         client.transport.dispatch(
             "goto",

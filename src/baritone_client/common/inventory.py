@@ -137,47 +137,86 @@ def select_item(client, item_id: str, allow_swap: bool = False) -> bool:
     Returns:
         True if item found and selected
     """
-    slot = find_item_slot(client, item_id)
-    if slot is None:
+    response = client.transport.dispatch("get_inventory", {})
+    data = response.get("data", response) if isinstance(response, dict) else {}
+    inventory = data.get("inventory", []) if isinstance(data, dict) else []
+    carried = [
+        entry
+        for entry in inventory
+        if entry.get("id") == item_id and int(entry.get("count", 0)) > 0
+    ]
+    if not carried:
         return False
-    
+    hotbar_entry = next(
+        (entry for entry in carried if 0 <= int(entry.get("slot", -1)) <= 8),
+        None,
+    )
+    slot = int((hotbar_entry or carried[0]).get("slot", -1))
+
+    def select_and_verify(target_slot: int) -> bool:
+        client.transport.dispatch("select_slot", {"slot": target_slot})
+        verified_response = client.transport.dispatch("get_inventory", {})
+        verified = (
+            verified_response.get("data", verified_response)
+            if isinstance(verified_response, dict)
+            else {}
+        )
+        target = next(
+            (
+                entry
+                for entry in verified.get("inventory", [])
+                if int(entry.get("slot", -1)) == target_slot
+            ),
+            {},
+        )
+        return (
+            verified.get("selected_slot") == target_slot
+            and target.get("id") == item_id
+            and int(target.get("count", 0)) > 0
+        )
+
     # Hotbar is slots 0-8
     if 0 <= slot <= 8:
-        client.transport.dispatch("select_slot", {"slot": slot})
-        return True
+        return select_and_verify(slot)
     
     if allow_swap:
-        # Prefer the harness implementation: it picks an *empty* hotbar slot
-        # when one exists, only displaces an occupied slot when it has to, and
-        # returns the slot the item actually landed in so the right one gets
-        # selected. The native path below always targets hotbar 0 and then
-        # selects slot 0 regardless of where the stack ended up, so a full
-        # hotbar left the main hand holding the wrong item -- or nothing.
-        # Live 2026-07-31 that stranded Bot16's torches in slot 16, Bot18's
-        # furnace and chest in 33/34, and Bot05's crafting table in 34, and
-        # every place_block then failed with "Main hand is empty!".
-        from . import harness_ops
-
-        if harness_ops.available():
-            try:
-                moved = harness_ops.ensure_item_in_hotbar(client, item_id)
-                if moved is not None:
-                    client.transport.dispatch("select_slot", {"slot": int(moved)})
-                    return True
-            except Exception as exc:
-                print(f"  harness hotbar swap unavailable ({exc}); using native swap")
-
-        # Move to Hotbar 0 (Protocol 36)
-        # Use PICKUP sequence
-        client.transport.dispatch('inventory_click', {'slot': slot, 'type': 'PICKUP', 'button': 0})
-        time.sleep(0.2)
-        client.transport.dispatch('inventory_click', {'slot': 36, 'type': 'PICKUP', 'button': 0})
-        time.sleep(0.2)
-        client.transport.dispatch('inventory_click', {'slot': slot, 'type': 'PICKUP', 'button': 0})
-        time.sleep(0.2)
-        client.transport.dispatch('select_slot', {'slot': 0})
-        time.sleep(0.2)
-        return True
+        occupied = {
+            int(entry.get("slot", -1))
+            for entry in inventory
+            if entry.get("id") not in (None, "minecraft:air")
+            and int(entry.get("count", 0)) > 0
+        }
+        target_slot = next(
+            (candidate for candidate in range(9) if candidate not in occupied),
+            0,
+        )
+        # get_inventory uses logical player slots, while inventory_click uses
+        # the current container menu. Close other screens, then use vanilla's
+        # atomic SWAP action: the clicked main-inventory slot is 9-35 and the
+        # button is the logical hotbar index. This cannot leave an item on the
+        # cursor after a partial three-click PICKUP sequence.
+        client.transport.dispatch("close_screen", {})
+        client.transport.dispatch(
+            "inventory_click",
+            {"slot": slot, "type": "SWAP", "button": target_slot},
+        )
+        swapped_response = client.transport.dispatch("get_inventory", {})
+        swapped = (
+            swapped_response.get("data", swapped_response)
+            if isinstance(swapped_response, dict)
+            else {}
+        )
+        target = next(
+            (
+                entry
+                for entry in swapped.get("inventory", [])
+                if int(entry.get("slot", -1)) == target_slot
+            ),
+            {},
+        )
+        if target.get("id") != item_id or int(target.get("count", 0)) <= 0:
+            return False
+        return select_and_verify(target_slot)
 
     return False
 

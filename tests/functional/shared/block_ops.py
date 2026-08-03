@@ -355,12 +355,22 @@ def move_near(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, flo
         True if movement successful.
     """
     from tests.utils.mc_harness.actions import do_goto
+    from tests.functional.shared.world_ops import is_dead
+
+    if is_dead(ctx):
+        if hasattr(ctx, "log_event"):
+            ctx.log_event(f"Move aborted near {x},{y},{z}: player is dead")
+        return False
+    # Interaction callers only need to be within reach of the original
+    # target. Do this before generating stand candidates or issuing a goto;
+    # live Bot16 was already 3.5m from a usable staging point but burned every
+    # movement timeout because Baritone quite correctly did not start moving.
+    if in_range(ctx, x, y, z, max_dist=4.5):
+        return True
 
     stand_candidates = find_stand_positions(ctx, x, y, z, radius=3)
     if not stand_candidates:
         stand_candidates = [find_stand_pos(ctx, x, y, z, radius=5)]
-
-    from tests.functional.shared.world_ops import is_dead
 
     for idx, (stand_x, stand_y, stand_z) in enumerate(stand_candidates, start=1):
         # A corpse cannot move, but every candidate still burns its full goto

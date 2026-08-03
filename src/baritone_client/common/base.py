@@ -151,7 +151,13 @@ def safe_place_block(client, x, y, z, max_depth=2, block_id: str | None = None) 
                     # rather than giving up on the whole placement.
                     continue
         elif "Target position is already occupied" in msg:
-             return True
+            # Occupied is success only when the requested block is already
+            # there. Treating any obstruction as success masked live acacia
+            # logs in a cobblestone floor until final verification, causing
+            # the same repair to replay forever.
+            if block_id is None:
+                return False
+            return _house_block_id(client, x, y, z) == block_id
         
         # Only print non-routine errors to avoid spam
         if "No solid block" not in msg:
@@ -1265,6 +1271,39 @@ def _house_block_id(client, x: int, y: int, z: int) -> str:
         return ""
 
 
+def _clear_wrong_house_target(
+    client, x: int, y: int, z: int, requested_block: str
+) -> bool:
+    """Clear exactly one wrong occupied structure target under a build guard."""
+    current = _house_block_id(client, x, y, z)
+    air_blocks = {
+        "",
+        "minecraft:air",
+        "minecraft:cave_air",
+        "minecraft:void_air",
+    }
+    if current in air_blocks or current == requested_block:
+        return True
+    client.transport.dispatch("chat", {"message": "#set allowBreak true"})
+    try:
+        client.transport.dispatch(
+            "break_block", {"x": int(x), "y": int(y), "z": int(z)}
+        )
+        deadline = time.monotonic() + 12.0
+        while time.monotonic() < deadline:
+            if _house_block_id(client, x, y, z) in air_blocks:
+                return True
+            time.sleep(0.2)
+        print(
+            "Good house repair blocked: exact wrong target "
+            f"{(x, y, z)} remained {current}"
+        )
+        return False
+    finally:
+        client.transport.dispatch("cancel", {})
+        client.transport.dispatch("chat", {"message": "#set allowBreak false"})
+
+
 def _house_door_aligned(client, x: int, y: int, z: int) -> bool:
     """Verify that a north-wall door blocks the north/south passage."""
     try:
@@ -1502,8 +1541,9 @@ def build_good_house(client, x: int, y: int, z: int) -> bool:
         # its roof.  If gathering starts from there while Baritone may break
         # blocks, it can tunnel through the structure we are trying to repair.
         # Walk out through the north doorway first with breaking disabled.
-        existing_structure_blocks = len(plan) - len(missing_floor) - len(missing_shell)
-        repair_in_progress = existing_structure_blocks and (
+        shell_target_count = sum(1 for *_coords, role in plan if role != "floor")
+        existing_shell_blocks = shell_target_count - len(missing_shell)
+        repair_in_progress = existing_shell_blocks and (
             missing_floor or missing_shell or not door_present
         )
         if repair_in_progress:
@@ -1611,7 +1651,16 @@ def build_good_house(client, x: int, y: int, z: int) -> bool:
                 client.transport.dispatch("chat", {"message": "#set allowBreak true"})
 
         def guarded_structure_place(px, py, pz, material):
-            """Place one block; the caller owns the allowBreak guard."""
+            """Replace one exact wrong target without opening broad mining.
+
+            The surrounding batch owns an ``allowBreak false`` guard. A
+            wrong occupied target therefore has to be cleared explicitly;
+            otherwise robust placement can never replace it. Temporarily
+            enable breaking for only that coordinate, prove it became air,
+            and immediately restore the guard before placement.
+            """
+            if not _clear_wrong_house_target(client, px, py, pz, material):
+                return False
             return robust_place(client, px, py, pz, material)
 
         def put(px, py, pz, role, material):
@@ -1638,7 +1687,10 @@ def build_good_house(client, x: int, y: int, z: int) -> bool:
                 if available_cobblestone > 0
                 else "minecraft:cobbled_deepslate"
             )
-            floor_budget = min(len(missing_floor), available_floor_blocks)
+            # One failed target can consume several bridge calls. Keep each
+            # retry below the command/circuit-breaker budget and checkpoint
+            # incremental progress before attempting the next batch.
+            floor_budget = min(len(missing_floor), available_floor_blocks, 12)
             with structure_guard():
                 for tx, ty, tz, role in missing_floor[:floor_budget]:
                     if count_item(client, floor_material) <= 0:
