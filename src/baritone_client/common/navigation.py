@@ -114,9 +114,15 @@ def staged_goto(
     stages = max(1, int(horizontal // maximum_leg))
     for index in range(1, stages + 1):
         ratio = min(1.0, (index * maximum_leg) / horizontal)
+        nominal_y = round(current_y + (target_y - current_y) * ratio)
         waypoint = (
             round(current_x + (target_x - current_x) * ratio),
-            current_y,
+            _loaded_stage_y(
+                client,
+                round(current_x + (target_x - current_x) * ratio),
+                nominal_y,
+                round(current_z + (target_z - current_z) * ratio),
+            ),
             round(current_z + (target_z - current_z) * ratio),
         )
         print(f"  Staging home approach via {waypoint}...")
@@ -139,6 +145,23 @@ def staged_goto(
         check_interval=1.0,
         tolerance=2.0,
     )
+
+
+def _loaded_stage_y(client, x: int, nominal_y: int, z: int) -> int:
+    """Use the top of a loaded column instead of an arbitrary exact Y."""
+    for y in range(nominal_y + 16, nominal_y - 33, -1):
+        try:
+            block = client.transport.dispatch(
+                "get_block", {"x": x, "y": y, "z": z}
+            ).get("id", "")
+        except Exception:
+            return nominal_y
+        if block in ("", "minecraft:air", "minecraft:void_air"):
+            continue
+        if block == "minecraft:lava":
+            return nominal_y
+        return y + 1
+    return nominal_y
 
 
 def explore_until(

@@ -1130,9 +1130,9 @@ def test_return_to_base_stages_toward_rejected_distant_doorway(monkeypatch):
 
     assert destinations[0] == outside
     assert destinations[1:4] == [
-        (-150, 66, -318),
-        (-154, 66, -349),
-        (-159, 66, -381),
+        (-150, 78, -318),
+        (-154, 90, -349),
+        (-159, 101, -381),
     ]
     assert destinations[4] == outside
     assert destinations[5] == interior
