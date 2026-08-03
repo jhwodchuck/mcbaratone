@@ -314,6 +314,40 @@ def _locate_portal_interior(client, portal: PortalPosition):
     )
 
 
+def _leave_water_before_travelling(client) -> None:
+    """Get onto dry land before asking Baritone for a long overland route.
+
+    Baritone will not produce a several-hundred-block route from inside deep
+    water, so the approach simply never starts and every candidate burns its
+    full timeout. The existing surface helpers only run in drowning contexts,
+    so a bot floating at full health never reaches them. Live 2026-08-03:
+    Bot16 sat submerged at (406, 62, -22), water on all four sides and full
+    health, 617 blocks from its portal, at exactly zero movement.
+    """
+    try:
+        from .surface_recovery import position_is_aquatic, reach_dry_surface
+        from .navigation import goto as _goto
+    except Exception:
+        return
+    try:
+        state = _unwrap(client.transport.dispatch("get_state", {}))
+        here = _position(state)
+        if not position_is_aquatic(client, here):
+            return
+        logger.info("In water at %s; reaching dry land before travelling", here)
+        reach_dry_surface(
+            client,
+            origin=here,
+            expected_y=here[1] + 2,
+            goto=_goto,
+            search_radius=48,
+            attempt_limit=6,
+            command_timeout=60.0,
+        )
+    except Exception as exc:
+        logger.warning("Could not leave water before travelling: %s", exc)
+
+
 def _approach_and_relocate(client, portal: PortalPosition, radius: int = 3) -> bool:
     """Walk within ``radius`` of ``portal`` so its chunk loads and we can see it.
 
@@ -322,6 +356,7 @@ def _approach_and_relocate(client, portal: PortalPosition, radius: int = 3) -> b
     GoalBlock immediately instead of getting closer.
     """
     x, y, z = portal
+    _leave_water_before_travelling(client)
     try:
         client.transport.dispatch(
             "goto", {"x": int(x), "y": int(y), "z": int(z), "radius": int(radius)}

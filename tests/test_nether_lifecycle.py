@@ -1039,3 +1039,61 @@ def test_unreachable_frontier_cell_is_retired_not_retried_forever(monkeypatch):
         f"an unreachable cell must be retired after one attempt: {targets}"
     )
     assert len(set(targets)) > 1, "the search must move on to another cell"
+
+
+def test_portal_approach_leaves_water_before_a_long_overland_route(monkeypatch):
+    """Baritone will not route hundreds of blocks starting from deep water.
+
+    The existing surface helpers only run in drowning contexts, so a bot
+    floating at full health never reaches them and every portal candidate
+    burns its whole timeout without a step. Live 2026-08-03: Bot16 sat
+    submerged at (406, 62, -22), water on all four sides, full health, 617
+    blocks from its portal, at exactly zero movement.
+    """
+    from baritone_client.common import surface_recovery
+
+    transport = PortalTransport()
+    transport.position = {"x": 406, "y": 62, "z": -22}
+    client = SimpleNamespace(transport=transport, mission=MissionStub())
+    monkeypatch.setattr(nether.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        surface_recovery, "position_is_aquatic", lambda _c, _p: True
+    )
+
+    rescued = []
+
+    def fake_reach_dry_surface(_client, **kwargs):
+        rescued.append(kwargs["origin"])
+        return (410, 64, -20)
+
+    monkeypatch.setattr(
+        surface_recovery, "reach_dry_surface", fake_reach_dry_surface
+    )
+
+    nether._approach_and_relocate(client, (-156, 64, -278))
+
+    assert rescued, "must get onto land before asking for a 617-block route"
+    assert rescued[0] == (406, 62, -22)
+
+
+def test_portal_approach_does_not_detour_when_already_on_land(monkeypatch):
+    """The dry-land step must not add a detour to every ordinary approach."""
+    from baritone_client.common import surface_recovery
+
+    transport = PortalTransport()
+    client = SimpleNamespace(transport=transport, mission=MissionStub())
+    monkeypatch.setattr(nether.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        surface_recovery, "position_is_aquatic", lambda _c, _p: False
+    )
+
+    called = []
+    monkeypatch.setattr(
+        surface_recovery,
+        "reach_dry_surface",
+        lambda *_a, **_k: called.append(1),
+    )
+
+    nether._approach_and_relocate(client, (-156, 64, -278))
+
+    assert not called, "a bot on dry land must head straight for the portal"
