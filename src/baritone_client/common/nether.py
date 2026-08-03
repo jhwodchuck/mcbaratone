@@ -899,6 +899,21 @@ def hunt_blazes(client, target_count: int = 8, timeout: int = 600) -> int:
                     )
                     if advanced:
                         continue
+                else:
+                    # The fortress detector can see a structure outside this
+                    # smaller hunt scan (most often on another Y level).  An
+                    # empty local result still needs to move the search; the
+                    # old loop simply slept and rescanned the same empty area
+                    # until the full hunt timeout expired.
+                    frontier_index, _ = _advance_blaze_frontier(
+                        client,
+                        [],
+                        explored_positions,
+                        exploration_stack,
+                        current=(current_x, current_y, current_z),
+                        center=(center_x, center_y, center_z),
+                        frontier_index=frontier_index,
+                    )
 
             time.sleep(1)  # Small delay between iterations
 

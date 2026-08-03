@@ -853,3 +853,41 @@ def test_blaze_hunt_widens_when_local_fortress_cells_are_exhausted(monkeypatch):
     ]
     assert len(widened) > 1
     assert len({(item["x"], item["z"]) for item in widened}) > 1
+
+
+def test_blaze_hunt_widens_when_local_fortress_scan_is_empty(monkeypatch):
+    class EmptyFortressTransport(PortalTransport):
+        def __init__(self):
+            super().__init__()
+            self.dimension = "minecraft:the_nether"
+            self.position = {"x": -205, "y": 87, "z": 82}
+
+        def dispatch(self, route, payload, **kwargs):
+            if route == "find_blocks":
+                return {"found": []}
+            if route in ("goto", "explore"):
+                self.calls.append((route, dict(payload)))
+                return {"started": True}
+            return super().dispatch(route, payload, **kwargs)
+
+    transport = EmptyFortressTransport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(nether, "count_item", lambda *_args: 0)
+    monkeypatch.setattr(nether.time, "sleep", lambda _seconds: None)
+    clock = {"now": 0.0}
+
+    def fake_time():
+        clock["now"] += 1.0
+        return clock["now"]
+
+    monkeypatch.setattr(nether.time, "time", fake_time)
+
+    assert nether.hunt_blazes(client, target_count=6, timeout=20) == 0
+
+    widened = [
+        payload
+        for route, payload in transport.calls
+        if route == "goto" and payload.get("radius") == 12
+    ]
+    assert widened
+    assert all(payload["y"] == 87 for payload in widened)
