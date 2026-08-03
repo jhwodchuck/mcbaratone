@@ -699,6 +699,53 @@ def find_nether_fortress(
         return None
 
 
+def _travel_to(
+    client,
+    target: PortalPosition,
+    *,
+    radius: int,
+    timeout: float = 45.0,
+) -> bool:
+    """Issue a goto and wait for arrival instead of immediately retargeting.
+
+    Dispatching a goto and sleeping a fixed few seconds does not move a bot
+    anywhere: the next dispatch replaces the path before Baritone has walked
+    more than a few blocks. Wait for arrival, and give up early only when the
+    bot has genuinely stopped closing the distance.
+    """
+    x, y, z = int(target[0]), int(target[1]), int(target[2])
+    try:
+        client.transport.dispatch(
+            "goto", {"x": x, "y": y, "z": z, "radius": int(radius)}
+        )
+    except Exception as exc:
+        logger.warning("Travel dispatch failed: %s", exc)
+        return False
+    deadline = time.time() + timeout
+    previous_remaining = None
+    stalled = 0
+    while time.time() < deadline:
+        time.sleep(2)
+        state = _unwrap(client.transport.dispatch("get_state", {}))
+        here = _position(state)
+        remaining = max(abs(here[0] - x), abs(here[2] - z))
+        if remaining <= radius + 2:
+            return True
+        # Give up on closing progress, not on raw displacement: a bot
+        # threading a corridor moves constantly without getting nearer, and
+        # one that is walking a long straight leg covers little ground per
+        # poll yet is doing exactly the right thing.
+        if previous_remaining is not None and remaining >= previous_remaining:
+            stalled += 1
+            if stalled >= 3:
+                logger.info("Travel to (%d, %d, %d) stopped closing", x, y, z)
+                return False
+        else:
+            stalled = 0
+        previous_remaining = remaining
+    return False
+
+
 def _advance_blaze_frontier(
     client,
     fortress_blocks,
@@ -722,7 +769,13 @@ def _advance_blaze_frontier(
         ) not in explored_positions
     ]
     if frontier:
-        target_x, target_y, target_z = max(
+        # Nearest unvisited cell, not the farthest. Picking the most distant
+        # frontier block guaranteed the bot could not reach it inside one scan
+        # interval, so the cell was never marked explored and the very same
+        # coordinate was chosen again on the next pass. Live 2026-08-03: Bot17
+        # re-issued a goto to (-260, 47, 131) every 10 seconds and covered 10
+        # blocks in three minutes. Frontier search expands from where you are.
+        target_x, target_y, target_z = min(
             frontier,
             key=lambda block: (
                 (block[0] - current_x) ** 2
@@ -737,11 +790,7 @@ def _advance_blaze_frontier(
             target_y,
             target_z,
         )
-        client.transport.dispatch(
-            "goto",
-            {"x": target_x, "y": target_y, "z": target_z, "radius": 4},
-        )
-        time.sleep(3)
+        _travel_to(client, (target_x, target_y, target_z), radius=4)
         return frontier_index, True
 
     heading = _SEARCH_HEADINGS[frontier_index % len(_SEARCH_HEADINGS)]
@@ -756,12 +805,12 @@ def _advance_blaze_frontier(
         target_z,
         ring,
     )
-    client.transport.dispatch(
-        "goto",
-        {"x": target_x, "y": center_y, "z": target_z, "radius": 12},
-    )
     client.transport.dispatch("explore", {"x": target_x, "z": target_z})
-    time.sleep(3)
+    # A widening ring is a long walk; wait it out rather than incrementing the
+    # ring every few seconds. Live 2026-08-03: Bot18 raced from ring 14 to 15
+    # through six different coordinates inside 30 seconds without arriving at
+    # any of them, so the "search" only ever explored its starting area.
+    _travel_to(client, (target_x, center_y, target_z), radius=12, timeout=90.0)
     return frontier_index + 1, False
 
 
@@ -820,8 +869,7 @@ def hunt_blazes(client, target_count: int = 8, timeout: int = 600) -> int:
                     if exploration_stack:
                         prev_pos = exploration_stack.pop()
                         logger.debug("Backtracking to previous position %s", prev_pos)
-                        client.transport.dispatch("goto", {"x": prev_pos[0], "y": prev_pos[1], "z": prev_pos[2]})
-                        time.sleep(3)
+                        _travel_to(client, prev_pos, radius=4)
                         continue
                     else:
                         # No more backtrack points, pick a new direction from center
@@ -868,9 +916,14 @@ def hunt_blazes(client, target_count: int = 8, timeout: int = 600) -> int:
                         for spawner_x, spawner_y, spawner_z in new_spawners:
                             logger.info("Navigating to spawner at (%d, %d, %d)", spawner_x, spawner_y, spawner_z)
 
-                            # Navigate to spawner
-                            client.transport.dispatch("goto", {"x": spawner_x, "y": spawner_y, "z": spawner_z})
-                            time.sleep(3)
+                            # Navigate to spawner. Arriving is the whole point
+                            # -- hunt_mobs only has a 15-block search radius,
+                            # so starting it 40 blocks short finds nothing.
+                            _travel_to(
+                                client,
+                                (spawner_x, spawner_y, spawner_z),
+                                radius=3,
+                            )
 
                             # Hunt blazes in the area
                             result = hunt_mobs(

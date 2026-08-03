@@ -891,3 +891,101 @@ def test_blaze_hunt_widens_when_local_fortress_scan_is_empty(monkeypatch):
     ]
     assert widened
     assert all(payload["y"] == 87 for payload in widened)
+
+
+class _BlazeSearchTransport(PortalTransport):
+    """A Nether bot that walks toward its goal at a realistic pace."""
+
+    def __init__(self, fortress_blocks):
+        super().__init__()
+        self.dimension = "minecraft:the_nether"
+        self.position = {"x": 0, "y": 64, "z": 0}
+        self.fortress_blocks = fortress_blocks
+        self.gotos = []
+        self.goal = None
+
+    def dispatch(self, route, payload, **kwargs):
+        if route == "goto":
+            self.gotos.append(dict(payload))
+            self.goal = (payload["x"], payload["y"], payload["z"])
+            return {"started": True}
+        if route == "explore":
+            return {"started": True}
+        if route == "get_state":
+            # Creep one block per poll toward the active goal.
+            if self.goal:
+                for axis, index in (("x", 0), ("z", 2)):
+                    delta = self.goal[index] - self.position[axis]
+                    if delta:
+                        self.position[axis] += 1 if delta > 0 else -1
+            return {
+                "dimension": self.dimension,
+                "block_position": dict(self.position),
+            }
+        if route == "get_inventory":
+            return {"inventory": []}
+        if route == "find_blocks":
+            return {
+                "found": [
+                    {"x": x, "y": y, "z": z, "block": "minecraft:nether_bricks"}
+                    for x, y, z in self.fortress_blocks
+                ]
+            }
+        return super().dispatch(route, payload, **kwargs)
+
+
+def test_blaze_frontier_targets_the_nearest_unvisited_cell(monkeypatch):
+    """Targeting the farthest frontier block guarantees it is never reached.
+
+    The cell is only marked explored once the bot stands in it, so a target
+    it cannot reach inside one scan interval is re-chosen forever. Live
+    2026-08-03: Bot17 re-issued a goto to (-260, 47, 131) every 10 seconds
+    and covered 10 blocks in three minutes.
+    """
+    transport = _BlazeSearchTransport([(8, 64, 0), (400, 64, 0)])
+    client = SimpleNamespace(transport=transport, mission=MissionStub())
+    monkeypatch.setattr(nether.time, "sleep", lambda _seconds: None)
+
+    nether._advance_blaze_frontier(
+        client,
+        transport.fortress_blocks,
+        set(),
+        [],
+        current=(0, 64, 0),
+        center=(0, 64, 0),
+        frontier_index=0,
+    )
+
+    assert transport.gotos, "must issue a goto"
+    assert (transport.gotos[0]["x"], transport.gotos[0]["z"]) == (8, 0), (
+        f"must head for the nearest unvisited cell, got {transport.gotos[0]}"
+    )
+
+
+def test_blaze_frontier_waits_for_arrival_before_retargeting(monkeypatch):
+    """A goto followed by sleep(3) is replaced before the bot has walked.
+
+    Live 2026-08-03: Bot07 issued a new frontier goto every five seconds and
+    covered 30 blocks in three minutes; Bot18 raced from ring 14 to 15 through
+    six coordinates in 30 seconds without arriving at any of them.
+    """
+    transport = _BlazeSearchTransport([(20, 64, 0)])
+    client = SimpleNamespace(transport=transport, mission=MissionStub())
+    monkeypatch.setattr(nether.time, "sleep", lambda _seconds: None)
+
+    nether._advance_blaze_frontier(
+        client,
+        transport.fortress_blocks,
+        set(),
+        [],
+        current=(0, 64, 0),
+        center=(0, 64, 0),
+        frontier_index=0,
+    )
+
+    assert len(transport.gotos) == 1, "one destination per advance, not a stream"
+    # It must actually be there when it hands control back, otherwise the next
+    # scan re-reads the same starting area.
+    assert abs(transport.position["x"] - 20) <= 6, (
+        f"must arrive before advancing, stopped at {transport.position}"
+    )
