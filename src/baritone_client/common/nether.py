@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from .automation_utils import place_block
 from .combat import hunt_mobs, find_entity_by_type
 from .inventory import count_item, find_item_slot
+from .navigation import clear_natural_collision
 from .surface_egress import try_lower_surface_egress
 
 logger = logging.getLogger(__name__)
@@ -358,6 +359,9 @@ def enter_portal(
     state = _unwrap(client.transport.dispatch("get_state", {}))
     if _dimension_matches(_dimension(state), target_dimension):
         return True
+    if clear_natural_collision(client, state):
+        logger.info("Cleared a natural collision block before portal entry")
+        state = _unwrap(client.transport.dispatch("get_state", {}))
     x, y, z = portal
     target = _locate_portal_interior(client, portal)
     current_block = _block_id(

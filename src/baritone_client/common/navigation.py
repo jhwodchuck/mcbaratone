@@ -9,6 +9,22 @@ from typing import Callable, Iterable, Optional, Tuple
 from .tasks import TaskResult
 
 
+_NATURAL_COLLISION_BLOCKS = {
+    "minecraft:clay",
+    "minecraft:coarse_dirt",
+    "minecraft:cobbled_deepslate",
+    "minecraft:cobblestone",
+    "minecraft:deepslate",
+    "minecraft:dirt",
+    "minecraft:grass_block",
+    "minecraft:gravel",
+    "minecraft:mud",
+    "minecraft:netherrack",
+    "minecraft:sand",
+    "minecraft:stone",
+}
+
+
 def goto(
     client,
     x: int,
@@ -40,6 +56,7 @@ def goto(
         start = time.time()
         last_position = None
         idle_unpathing_checks = 0
+        collision_recovery_attempted = False
         while time.time() - start < timeout:
             if on_tick:
                 on_tick()
@@ -83,6 +100,15 @@ def goto(
             # all. Three unchanged observations tolerate a brief transition
             # while returning control soon enough for staged recovery.
             if idle_unpathing_checks >= 3:
+                if not collision_recovery_attempted:
+                    collision_recovery_attempted = True
+                    if clear_natural_collision(client, state):
+                        client.transport.dispatch(
+                            "goto", {"x": x, "y": y, "z": z}
+                        )
+                        idle_unpathing_checks = 0
+                        last_position = None
+                        continue
                 client.transport.dispatch("cancel", {})
                 return False
 
@@ -94,6 +120,45 @@ def goto(
     except Exception as e:
         print(f"Navigation error: {e}")
         return False
+
+
+def clear_natural_collision(client, state) -> bool:
+    """Free feet embedded in an allowlisted natural full block."""
+    position = state.get("block_position", state.get("position", {}))
+    try:
+        x, y, z = (
+            int(position["x"]),
+            int(position["y"]),
+            int(position["z"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    try:
+        block = client.transport.dispatch(
+            "get_block", {"x": x, "y": y, "z": z}
+        ).get("id", "")
+    except Exception:
+        return False
+    if block not in _NATURAL_COLLISION_BLOCKS:
+        return False
+    print(f"  Clearing natural collision block {block} at ({x}, {y}, {z})...")
+    try:
+        client.transport.dispatch("cancel", {})
+        client.transport.dispatch("break_block", {"x": x, "y": y, "z": z})
+    except Exception:
+        return False
+    deadline = time.time() + 8.0
+    while time.time() < deadline:
+        try:
+            current = client.transport.dispatch(
+                "get_block", {"x": x, "y": y, "z": z}
+            ).get("id", "")
+        except Exception:
+            return False
+        if current in ("", "minecraft:air"):
+            return True
+        time.sleep(0.25)
+    return False
 
 
 def staged_goto(

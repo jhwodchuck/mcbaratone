@@ -58,3 +58,52 @@ def test_staged_goto_targets_loaded_column_surface(monkeypatch):
 
     assert destinations[0] == (-150, 63, -318)
     assert destinations[-1] == (-160, 104, -388)
+
+
+def test_goto_clears_natural_block_embedding_before_retry(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.cleared = False
+            self.state_reads = 0
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, dict(payload)))
+            if route == "get_state":
+                self.state_reads += 1
+                if self.cleared:
+                    return {
+                        "health": 20,
+                        "food_level": 20,
+                        "is_pathing": False,
+                        "block_position": {"x": -150, "y": 66, "z": -318},
+                    }
+                return {
+                    "health": 20,
+                    "food_level": 20,
+                    "is_pathing": False,
+                    "block_position": {"x": -145, "y": 66, "z": -286},
+                }
+            if route == "get_block":
+                return {
+                    "id": "minecraft:air" if self.cleared else "minecraft:mud"
+                }
+            if route == "break_block":
+                self.cleared = True
+            return {}
+
+    transport = Transport()
+    monkeypatch.setattr(navigation.time, "sleep", lambda _seconds: None)
+
+    assert navigation.goto(
+        SimpleNamespace(transport=transport),
+        -150,
+        66,
+        -318,
+        timeout=30,
+    )
+
+    assert (
+        "break_block",
+        {"x": -145, "y": 66, "z": -286},
+    ) in transport.calls
