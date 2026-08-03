@@ -4,6 +4,7 @@ Usage: python spawn_to_dragon.py [--host HOST] [--port PORT]
 """
 
 import argparse
+import logging
 import sys
 import os
 import time
@@ -42,6 +43,33 @@ def _resolve_world_seed(explicit_seed, host):
     return None
 
 
+def _configure_logging(verbose: bool = False) -> None:
+    """Route baritone_client's own logs to stdout so operators can see them.
+
+    Nothing configured logging, so Python fell back to its last-resort
+    handler, which drops anything below WARNING. Every logger.info in the
+    common/ gameplay layer was therefore discarded -- including the messages
+    that say what a bot is currently doing. A bot could sit motionless for
+    hours inside a helper whose progress logs simply never reached the run
+    log, leaving only print() output to diagnose from. Live 2026-08-03: three
+    bots stalled in find_nether_fortress and not one of its INFO lines,
+    including "Starting Nether fortress scan", appeared anywhere.
+
+    Scoped to the package: the root logger stays at WARNING so third-party
+    libraries do not flood the run log.
+    """
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", "%H:%M:%S")
+    )
+    root = logging.getLogger()
+    if not root.handlers:
+        root.addHandler(handler)
+        root.setLevel(logging.WARNING)
+    package = logging.getLogger("baritone_client")
+    package.setLevel(logging.DEBUG if verbose else logging.INFO)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Minecraft Industrialization Agent - Survival Automation (Hour 0-10)",
@@ -68,14 +96,23 @@ def main():
     parser.add_argument(
         "--no-background-systems",
         action="store_true",
-        help="Disable bridge-polling monitor threads for low-contention bootstrap runs.",
+        help=(
+            "Disable safety/hunger monitor threads for low-contention runs; "
+            "the low-frequency passive landmark mapper remains enabled."
+        ),
     )
     parser.add_argument(
         "--no-screenshots",
         action="store_true",
         help="Disable phase-transition screenshots (recommended for headless CI workers).",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Include DEBUG-level client logs in the run log.",
+    )
     args = parser.parse_args()
+    _configure_logging(verbose=args.verbose)
 
     # Keep legacy WorldState checkpoint files in the same isolated directory
     # as the production StateManager checkpoint.  Without this, parallel bots
@@ -123,7 +160,11 @@ def main():
         )
         automator.register_default_handlers()
         if args.no_background_systems:
-            automator.systems = []
+            automator.systems = [
+                system
+                for system in automator.systems
+                if system.__class__.__name__ == "MappingSystem"
+            ]
         
         # Define callbacks for logging
         def on_phase_start(phase):
