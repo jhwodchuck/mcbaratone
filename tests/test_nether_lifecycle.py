@@ -806,3 +806,50 @@ def test_column_descent_helps_a_marooned_bot_below_the_overworld_shelf_height(
     assert result is not None, "a marooned bot over a void must be able to descend"
     assert transport.broke, "descent must actually remove the floor it stands on"
     assert placed, "each step must place a support block before removing the floor"
+
+
+def test_blaze_hunt_widens_when_local_fortress_cells_are_exhausted(monkeypatch):
+    class ExhaustedFortressTransport(PortalTransport):
+        def __init__(self):
+            super().__init__()
+            self.dimension = "minecraft:the_nether"
+            self.position = {"x": 0, "y": 70, "z": 0}
+
+        def dispatch(self, route, payload, **kwargs):
+            if route == "find_blocks":
+                return {
+                    "found": [
+                        {
+                            "x": 1,
+                            "y": 70,
+                            "z": 1,
+                            "block": "minecraft:nether_bricks",
+                        }
+                    ]
+                }
+            if route in ("goto", "explore"):
+                self.calls.append((route, dict(payload)))
+                return {"started": True}
+            return super().dispatch(route, payload, **kwargs)
+
+    transport = ExhaustedFortressTransport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(nether, "count_item", lambda *_args: 0)
+    monkeypatch.setattr(nether.time, "sleep", lambda _seconds: None)
+    clock = {"now": 0.0}
+
+    def fake_time():
+        clock["now"] += 1.0
+        return clock["now"]
+
+    monkeypatch.setattr(nether.time, "time", fake_time)
+
+    assert nether.hunt_blazes(client, target_count=6, timeout=20) == 0
+
+    widened = [
+        payload
+        for route, payload in transport.calls
+        if route == "goto" and payload.get("radius") == 12
+    ]
+    assert len(widened) > 1
+    assert len({(item["x"], item["z"]) for item in widened}) > 1

@@ -699,6 +699,72 @@ def find_nether_fortress(
         return None
 
 
+def _advance_blaze_frontier(
+    client,
+    fortress_blocks,
+    explored_positions,
+    exploration_stack,
+    *,
+    current: tuple[int, int, int],
+    center: tuple[int, int, int],
+    frontier_index: int,
+) -> tuple[int, bool]:
+    """Advance to an unvisited fortress cell or widen the search ring."""
+    current_x, current_y, current_z = current
+    center_x, center_y, center_z = center
+    frontier = [
+        block
+        for block in fortress_blocks
+        if (
+            int(block[0]) // 10,
+            int(block[1]) // 5,
+            int(block[2]) // 10,
+        ) not in explored_positions
+    ]
+    if frontier:
+        target_x, target_y, target_z = max(
+            frontier,
+            key=lambda block: (
+                (block[0] - current_x) ** 2
+                + (block[1] - current_y) ** 2
+                + (block[2] - current_z) ** 2
+            ),
+        )
+        exploration_stack.append(current)
+        logger.info(
+            "Advancing blaze search to fortress frontier (%d, %d, %d)",
+            target_x,
+            target_y,
+            target_z,
+        )
+        client.transport.dispatch(
+            "goto",
+            {"x": target_x, "y": target_y, "z": target_z, "radius": 4},
+        )
+        time.sleep(3)
+        return frontier_index, True
+
+    heading = _SEARCH_HEADINGS[frontier_index % len(_SEARCH_HEADINGS)]
+    ring = 1 + frontier_index // len(_SEARCH_HEADINGS)
+    distance = min(160, 24 * ring)
+    target_x = center_x + heading[0] * distance
+    target_z = center_z + heading[1] * distance
+    logger.info(
+        "Widening blaze search to (%d, %d, %d) [ring=%d]",
+        target_x,
+        center_y,
+        target_z,
+        ring,
+    )
+    client.transport.dispatch(
+        "goto",
+        {"x": target_x, "y": center_y, "z": target_z, "radius": 12},
+    )
+    client.transport.dispatch("explore", {"x": target_x, "z": target_z})
+    time.sleep(3)
+    return frontier_index + 1, False
+
+
 def hunt_blazes(client, target_count: int = 8, timeout: int = 600) -> int:
     """
     Hunt blazes using systematic fortress exploration with backtracking.
@@ -721,12 +787,7 @@ def hunt_blazes(client, target_count: int = 8, timeout: int = 600) -> int:
         explored_positions = set()
         exploration_stack = []  # For backtracking
         spawners_found = []
-
-        # Systematic exploration from center
-        directions = [
-            (10, 0, 0), (-10, 0, 0), (0, 0, 10), (0, 0, -10),  # Cardinal directions
-            (0, 5, 0), (0, -5, 0)  # Vertical for multi-level
-        ]
+        frontier_index = 0
 
         current_target = None
         scan_interval = 5  # Scan every 5 seconds
@@ -827,44 +888,17 @@ def hunt_blazes(client, target_count: int = 8, timeout: int = 600) -> int:
                             if current_rods >= target_count:
                                 break
 
-                    # If no spawners found, explore fortress structure
-                    elif fortress_blocks:
-                        # Find the direction with most fortress blocks
-                        direction_scores = {}
-                        for dx, dy, dz in directions:
-                            score = 0
-                            for bx, by, bz in fortress_blocks:
-                                dist = (
-                                    abs(bx - (current_x + dx))
-                                    + abs(by - (current_y + dy))
-                                    + abs(bz - (current_z + dz))
-                                )
-                                if dist < 15:  # Within exploration range
-                                    score += 1
-                            direction_scores[(dx, dy, dz)] = score
-
-                        # Pick the best direction (most fortress blocks)
-                        best_direction = max(direction_scores.items(), key=lambda x: x[1])
-                        if best_direction[1] > 0:  # Only move if we found fortress blocks in that direction
-                            dx, dy, dz = best_direction[0]
-                            target_x, target_y, target_z = current_x + dx, current_y + dy, current_z + dz
-
-                            logger.debug("Exploring fortress in direction (%d, %d, %d) to (%d, %d, %d)",
-                                       dx, dy, dz, target_x, target_y, target_z)
-
-                            # Save current position for backtracking
-                            exploration_stack.append((current_x, current_y, current_z))
-
-                            # Navigate to new exploration point
-                            client.transport.dispatch("goto", {"x": target_x, "y": target_y, "z": target_z})
-                            time.sleep(3)
-                    else:
-                        # No fortress blocks found, try a different direction or backtrack
-                        if exploration_stack:
-                            prev_pos = exploration_stack.pop()
-                            logger.debug("No fortress found, backtracking to %s", prev_pos)
-                            client.transport.dispatch("goto", {"x": prev_pos[0], "y": prev_pos[1], "z": prev_pos[2]})
-                            time.sleep(3)
+                    frontier_index, advanced = _advance_blaze_frontier(
+                        client,
+                        fortress_blocks,
+                        explored_positions,
+                        exploration_stack,
+                        current=(current_x, current_y, current_z),
+                        center=(center_x, center_y, center_z),
+                        frontier_index=frontier_index,
+                    )
+                    if advanced:
+                        continue
 
             time.sleep(1)  # Small delay between iterations
 

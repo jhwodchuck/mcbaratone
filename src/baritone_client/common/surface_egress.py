@@ -188,7 +188,14 @@ def try_lower_surface_egress(
         ).get("id", "")
     except Exception:
         below_floor = ""
-    if not below_floor or "air" in str(below_floor):
+    # A low-altitude caller has already proven the bot is marooned. Keep
+    # pressing the supported descent even after its first pass has placed a
+    # block two levels below the player. Previously that new support made this
+    # condition false, and execution later reached the default y>=96 descent
+    # guard instead of carrying the caller's minimum_altitude=0 override.
+    # Live 2026-08-03: Bot18 descended once to y=77, then remained there even
+    # though its dirt floor and cobblestone support were both intact.
+    if minimum_altitude < 96 or not below_floor or "air" in str(below_floor):
         # Forward the caller's altitude intent. A caller that passed 0 has
         # already proven the bot is marooned, and the descent's own y<96 gate
         # would otherwise refuse before looking at the void underfoot.

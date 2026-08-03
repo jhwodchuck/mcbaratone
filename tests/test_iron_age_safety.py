@@ -1086,6 +1086,58 @@ def test_return_to_base_uses_checkpointed_house_not_mutable_waypoint(monkeypatch
     assert destinations == [(-6, 79, -124), (-6, 79, -121)]
 
 
+def test_return_to_base_stages_toward_rejected_distant_doorway(monkeypatch):
+    origin = (-163, 103, -386)
+    outside = (-160, 104, -388)
+    interior = (-160, 104, -385)
+    destinations = []
+
+    def fake_goto(_client, x, y, z, **_kwargs):
+        destinations.append((x, y, z))
+        return len(destinations) > 1
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                position = interior if len(destinations) >= 6 else (-145, 66, -286)
+                return {
+                    "block_position": dict(zip(("x", "y", "z"), position))
+                }
+            if route == "get_block":
+                return {"id": "minecraft:air", "state": {}}
+            return {}
+
+    state = SimpleNamespace(
+        custom_data={
+            "structures": {
+                "starter_house": {
+                    "origin": list(origin),
+                    "door": [-160, 104, -386],
+                }
+            }
+        }
+    )
+    handler = iron_age.FoodAndIronHandler()
+    monkeypatch.setattr(
+        handler, "_resolve_initial_iron_supply_chest", lambda *_args: None
+    )
+    monkeypatch.setattr(iron_age, "goto", fake_goto)
+    monkeypatch.setattr(iron_age.time, "sleep", lambda _seconds: None)
+
+    assert handler._return_to_base(
+        SimpleNamespace(transport=Transport()), state
+    )
+
+    assert destinations[0] == outside
+    assert destinations[1:4] == [
+        (-150, 66, -318),
+        (-154, 66, -349),
+        (-159, 66, -381),
+    ]
+    assert destinations[4] == outside
+    assert destinations[5] == interior
+
+
 def test_y_descent_falls_back_to_vertical_when_all_diagonals_blocked(monkeypatch):
     # Cliff edge / cave mouth: every diagonal neighbour has an air floor, so the
     # staircase stalled and stranded the bot mid-descent. A straight-down step is

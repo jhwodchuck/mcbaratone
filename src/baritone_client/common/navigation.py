@@ -38,6 +38,8 @@ def goto(
         client.transport.dispatch("goto", {"x": x, "y": y, "z": z})
         
         start = time.time()
+        last_position = None
+        idle_unpathing_checks = 0
         while time.time() - start < timeout:
             if on_tick:
                 on_tick()
@@ -65,6 +67,25 @@ def goto(
                 client.transport.dispatch("cancel", {})
                 return True
 
+            current_position = (float(px), float(py), float(pz))
+            is_pathing = state.get("is_pathing")
+            if is_pathing is False and current_position == last_position:
+                idle_unpathing_checks += 1
+            elif is_pathing is False:
+                idle_unpathing_checks = 1
+            else:
+                idle_unpathing_checks = 0
+            last_position = current_position
+
+            # A rejected Baritone goal reports is_pathing=False immediately.
+            # Waiting the full caller timeout cannot make that route start and
+            # hides the distinction between an expensive path and no path at
+            # all. Three unchanged observations tolerate a brief transition
+            # while returning control soon enough for staged recovery.
+            if idle_unpathing_checks >= 3:
+                client.transport.dispatch("cancel", {})
+                return False
+
             time.sleep(check_interval)
         
         client.transport.dispatch("cancel", {})
@@ -73,6 +94,51 @@ def goto(
     except Exception as e:
         print(f"Navigation error: {e}")
         return False
+
+
+def staged_goto(
+    client,
+    target: tuple[int, int, int],
+    origin: tuple[int, int, int],
+    *,
+    maximum_leg: float = 32.0,
+    navigate=None,
+) -> bool:
+    """Approach a distant exact goal through bounded horizontal legs."""
+    navigate = navigate or goto
+    current_x, current_y, current_z = origin
+    target_x, target_y, target_z = target
+    horizontal = math.hypot(target_x - current_x, target_z - current_z)
+    if horizontal <= 48:
+        return False
+    stages = max(1, int(horizontal // maximum_leg))
+    for index in range(1, stages + 1):
+        ratio = min(1.0, (index * maximum_leg) / horizontal)
+        waypoint = (
+            round(current_x + (target_x - current_x) * ratio),
+            current_y,
+            round(current_z + (target_z - current_z) * ratio),
+        )
+        print(f"  Staging home approach via {waypoint}...")
+        if not navigate(
+            client,
+            waypoint[0],
+            waypoint[1],
+            waypoint[2],
+            timeout=90,
+            check_interval=1.0,
+            tolerance=6.0,
+        ):
+            return False
+    return navigate(
+        client,
+        target_x,
+        target_y,
+        target_z,
+        timeout=180,
+        check_interval=1.0,
+        tolerance=2.0,
+    )
 
 
 def explore_until(

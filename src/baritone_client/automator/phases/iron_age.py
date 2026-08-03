@@ -38,7 +38,7 @@ from ...common.inventory import (
     withdraw_required_from_chest,
     _ensure_raw_planks,
 )
-from ...common.navigation import find_nearby_block, goto
+from ...common.navigation import find_nearby_block, goto, staged_goto
 from ...common import harness_ops
 from ...common import base as house_utils
 from ...common.combat import acquire_emergency_food, eat_until_hunger, recover_health
@@ -704,7 +704,23 @@ class FoodAndIronHandler(PhaseHandler):
             check_interval=1.0,
             tolerance=2.0,
         ):
-            return False
+            # Exact distant GoalBlocks can be rejected while their chunk and
+            # terrain are still unknown. Approach in short horizontal legs at
+            # the bot's current standing height, then retry the exact doorway
+            # once its chunk is loaded. Live 2026-08-03: Bot17 spent an hour at
+            # (-145,66,-286) retrying the same unloaded y=104 doorway goal.
+            origin_position = (
+                int(position.get("x", 0)),
+                int(position.get("y", 64)),
+                int(position.get("z", 0)),
+            )
+            if not staged_goto(
+                client,
+                outside,
+                origin_position,
+                navigate=goto,
+            ):
+                return False
 
         client.transport.dispatch("cancel", {})
         client.transport.dispatch("chat", {"message": "#set allowBreak false"})

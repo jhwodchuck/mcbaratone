@@ -201,6 +201,38 @@ def test_proven_marooned_egress_descends_by_hand_after_tunnels_fail(
     ]
 
 
+def test_low_altitude_egress_keeps_descent_override_after_support_exists(
+    monkeypatch,
+):
+    """A newly placed support must not switch the next pass back to y>=96."""
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_block":
+                return {"id": "minecraft:cobblestone"}
+            if route == "get_state":
+                return {"block_position": {"x": -132, "y": 77, "z": -7}}
+            if route == "find_blocks":
+                return {"found": []}
+            return {}
+
+    calls = []
+    monkeypatch.setattr(
+        surface_egress,
+        "supported_column_descent",
+        lambda *_args, **kwargs: calls.append(kwargs) or (-132, 76, -7),
+    )
+
+    reached = surface_egress.try_lower_surface_egress(
+        SimpleNamespace(transport=Transport()),
+        {"block_position": {"x": -132, "y": 77, "z": -7}},
+        minimum_altitude=0,
+    )
+
+    assert reached == (-132, 76, -7)
+    assert calls == [{"minimum_altitude": 0, "target_y": 53}]
+
+
 def test_shelf_escape_harvests_vacated_blocks_not_current_floor(monkeypatch):
     class Transport:
         def __init__(self):
