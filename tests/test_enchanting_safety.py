@@ -777,3 +777,81 @@ def test_bed_retry_attempts_are_checkpointed(monkeypatch):
     assert not handler._ensure_sleeping_bed(client, state)
     assert state.custom_data["enchanting"]["bed_retry_attempts"] == 1
     assert saved == [{"minecraft:sticks": 3}]
+
+
+def test_existing_enchanting_table_is_reused_without_rebuilding(monkeypatch):
+    """A table standing in the world is as usable as one in the bag.
+
+    This only asked whether the bot *carried* a table, so a placed one --
+    built on an earlier run, or by an operator -- was invisible and the phase
+    spent 2 diamonds and 4 obsidian rebuilding it. Mirrors the existing
+    bed-reuse behaviour.
+    """
+    client = SimpleNamespace()
+    house = {"origin": [-9, 78, -122]}
+    state = SimpleNamespace(custom_data={"structures": {"starter_house": house}})
+    handler = enchanting.EnchantingPipelineHandler()
+
+    monkeypatch.setattr(
+        enchanting, "find_nearby_block", lambda *_a, **_k: (-107, 80, -383)
+    )
+    # Carries a diamond pickaxe already, so the method's only remaining job is
+    # deciding whether a table must be built.
+    monkeypatch.setattr(
+        enchanting, "count_item",
+        lambda _c, item_id: 1 if item_id == "minecraft:diamond_pickaxe" else 0,
+    )
+    monkeypatch.setattr(
+        handler, "_withdraw_at_home",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("must not gather table inputs when one already exists")
+        ),
+    )
+
+    assert handler._craft_enchanting_table(client, state) is True
+    assert house["enchanting_table"] == [-107, 80, -383]
+
+
+def test_missing_enchanting_table_still_gathers_its_inputs(monkeypatch):
+    """With nothing nearby the phase must still pay for a real table."""
+    client = SimpleNamespace()
+    state = SimpleNamespace(custom_data={"structures": {"starter_house": {}}})
+    handler = enchanting.EnchantingPipelineHandler()
+    withdrawals = []
+
+    monkeypatch.setattr(enchanting, "find_nearby_block", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        enchanting, "count_item",
+        lambda _c, item_id: 1 if item_id == "minecraft:diamond_pickaxe" else 0,
+    )
+    monkeypatch.setattr(
+        handler, "_withdraw_at_home",
+        lambda _c, _s, req: withdrawals.append(req),
+    )
+    monkeypatch.setattr(handler, "_wait_for_daylight", lambda *_a: False)
+
+    assert handler._craft_enchanting_table(client, state) is False
+    assert withdrawals, "a missing table must trigger input gathering"
+
+
+def test_reused_table_does_not_inflate_the_diamond_requirement(monkeypatch):
+    """diamond_target is 3 + 2-for-a-table; reuse must drop it back to 3."""
+    client = SimpleNamespace()
+    state = SimpleNamespace(custom_data={"structures": {"starter_house": {}}})
+    handler = enchanting.EnchantingPipelineHandler()
+    requested = []
+
+    monkeypatch.setattr(
+        enchanting, "find_nearby_block", lambda *_a, **_k: (-107, 80, -383)
+    )
+    # No diamond pickaxe carried, so the pickaxe branch runs and reveals the target.
+    monkeypatch.setattr(enchanting, "count_item", lambda _c, _item: 0)
+    monkeypatch.setattr(
+        handler, "_withdraw_at_home",
+        lambda _c, _s, req: requested.append(req),
+    )
+
+    handler._craft_enchanting_table(client, state)
+
+    assert requested, "expected a diamond withdrawal request"
+    assert requested[0] == {"minecraft:diamond": 3}, requested[0]

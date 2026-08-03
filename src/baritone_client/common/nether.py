@@ -18,6 +18,11 @@ logger = logging.getLogger(__name__)
 
 PortalPosition = Tuple[int, int, int]
 
+# The bridge reports these when a coordinate's chunk is not loaded for this
+# client. They mean "unknown", never "empty" -- treating them as absence makes
+# any distant landmark permanently unreachable.
+_UNLOADED_BLOCKS = {"minecraft:void_air", "", None}
+
 
 def _unwrap(payload: Any) -> Dict[str, Any]:
     """Accept both legacy envelopes and the current unwrapped transport ABI."""
@@ -211,6 +216,28 @@ def build_nether_portal(client, x: int, y: int, z: int, obsidian: int = 14) -> b
         return False
 
 
+def _portal_standing_level(client, portal: PortalPosition) -> int:
+    """Return the lowest contiguous portal block Y -- where a player stands.
+
+    A portal interior is three blocks tall, and find_nearest_portal returns
+    whichever block the bridge scan happened to hit first, which is often the
+    middle or top one. The caller then asks Baritone for a GoalBlock at that
+    height, i.e. to stand in mid-air inside the portal, which is unreachable:
+    the bot paths toward it, never arrives, and the whole objective times out.
+    Feet belong at the bottom block.
+    """
+    x, y, z = portal
+    lowest = int(y)
+    for candidate in range(int(y) - 1, int(y) - 4, -1):
+        block = _block_id(
+            client.transport.dispatch("get_block", {"x": x, "y": candidate, "z": z})
+        )
+        if block != "minecraft:nether_portal":
+            break
+        lowest = candidate
+    return lowest
+
+
 def enter_portal(
     client,
     portal: PortalPosition,
@@ -230,6 +257,17 @@ def enter_portal(
     if current_block != "minecraft:nether_portal":
         if verify_portal(client, portal, require_active=True):
             target = (x + 1, y + 1, z)
+        elif current_block in _UNLOADED_BLOCKS:
+            # void_air means the chunk is not loaded, which is not evidence
+            # that the portal is gone. Refusing here was self-defeating: the
+            # bot cannot load the chunk without walking there, so a portal it
+            # had never stood near could never be entered. Live 2026-08-03:
+            # Bot07 sat 98 blocks from a verified-live portal, read all three
+            # of its blocks as void_air, and refused entry 96 times.
+            logger.info(
+                "Portal at %s is in an unloaded chunk; approaching to verify",
+                portal,
+            )
         else:
             # Persisted and shared portal coordinates can outlive the actual
             # blocks. Walking to an unverified coordinate wastes the entire
@@ -238,6 +276,18 @@ def enter_portal(
             # frame.
             logger.warning("Refusing to enter inactive portal at %s", portal)
             return False
+    else:
+        # Stand at the portal's base. radius 0 becomes a Baritone GoalBlock,
+        # which demands the player occupy exactly this position, and a portal
+        # interior is three blocks tall -- targeting the middle or top asks
+        # the bot to stand in mid-air and can never be satisfied. Live
+        # 2026-08-02: Bot07 aimed at y=65 and Bot17 at y=66 of a y=64..66
+        # portal; both burned all three retries 8-14 blocks short, while a
+        # teleport into the same portal transitioned instantly.
+        base_y = _portal_standing_level(client, target)
+        if base_y != target[1]:
+            logger.info("Entering portal at its base y=%s (was %s)", base_y, target[1])
+        target = (target[0], base_y, target[2])
     try:
         client.transport.dispatch(
             "goto",

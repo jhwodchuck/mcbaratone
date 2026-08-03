@@ -10,8 +10,10 @@ from baritone_client.actions.boot_sequence import (
     BedAcquisitionAction,
     ConditionalWoodGatheringAction,
     FinalSleepAction,
+    FoodCookingAction,
     HuntingAndScoutingAction,
     InfrastructurePlacementAction,
+    IronSmeltingAction,
     PlankCraftingAction,
     SafetyCheckAction,
     StorageOrganizationAction,
@@ -1149,3 +1151,148 @@ def test_night_safety_uses_shelter_instead_of_bulk_mining(monkeypatch):
 
     assert result.success
     assert waited == [True]
+
+
+def _infrastructure_context(furnace_pos, inventory_counts, transport_extra=None):
+    """Minimal context matching nearby_infrastructure_record's expectations."""
+
+    class Transport:
+        def dispatch(self, route, payload=None):
+            if route == "get_state":
+                return {"block_position": {"x": furnace_pos[0], "y": furnace_pos[1], "z": furnace_pos[2]}}
+            if route == "get_block":
+                pos = [payload["x"], payload["y"], payload["z"]]
+                if pos == list(furnace_pos):
+                    return {"id": "minecraft:furnace"}
+                return {"id": "minecraft:air"}
+            if route == "get_inventory":
+                return {
+                    "inventory": [
+                        {"slot": i, "id": item_id, "count": count}
+                        for i, (item_id, count) in enumerate(inventory_counts.items())
+                    ]
+                }
+            if transport_extra:
+                return transport_extra(route, payload)
+            return {}
+
+    state = SimpleNamespace(
+        custom_data={
+            "structures": {
+                "bootstrap_base": {
+                    "origin": list(furnace_pos),
+                    "furnace": list(furnace_pos),
+                },
+            }
+        }
+    )
+    return SimpleNamespace(client=SimpleNamespace(transport=Transport()), state=state)
+
+
+def test_iron_smelting_reports_failure_when_smelting_does_not_produce_ingots(monkeypatch):
+    """The old placeholder claimed success no matter what actually happened.
+
+    _smelt_with_furnace owns furnace search/placement internally (it accepts
+    a missing position and falls back to locating one), so exercising a real
+    "nothing nearby" scenario means driving that whole production path --
+    heavyweight and not what this action's own contract should be tested
+    against. What IronSmeltingAction must guarantee is narrower: it must not
+    report success unless ingots actually increased.
+    """
+    from baritone_client.common import resources
+
+    monkeypatch.setattr(resources, "_smelt_with_furnace", lambda *_a, **_k: False)
+    context = _infrastructure_context(
+        furnace_pos=(5, 64, 5), inventory_counts={"minecraft:raw_iron": 5}
+    )
+    result = IronSmeltingAction().execute(context)
+    assert not result.success
+
+
+def test_iron_smelting_no_op_is_success_when_nothing_carried():
+    context = _infrastructure_context(furnace_pos=(5, 64, 5), inventory_counts={})
+    result = IronSmeltingAction().execute(context)
+    assert result.success
+    assert "no raw iron" in result.message.lower() or "nothing to smelt" in result.message.lower()
+
+
+def test_iron_smelting_delegates_to_the_proven_furnace_helper(monkeypatch):
+    """Must route through _smelt_with_furnace rather than reimplement it."""
+    from baritone_client.actions import boot_sequence as actions_boot_sequence
+    from baritone_client.common import resources
+
+    calls = []
+
+    def fake_smelt(client, item_id, qty, furnace_pos=None):
+        calls.append((item_id, qty, furnace_pos))
+        return True
+
+    monkeypatch.setattr(resources, "_smelt_with_furnace", fake_smelt)
+    monkeypatch.setattr(
+        actions_boot_sequence, "count_item",
+        lambda _client, item_id: {"minecraft:raw_iron": 5, "minecraft:iron_ingot": 3}.get(item_id, 0)
+    )
+
+    context = _infrastructure_context(furnace_pos=(5, 64, 5), inventory_counts={"minecraft:raw_iron": 5})
+    IronSmeltingAction().execute(context)
+
+    assert calls == [("minecraft:iron_ingot", 8, (5, 64, 5))]
+
+
+def test_food_cooking_reports_failure_without_a_persisted_furnace():
+    """Unlike iron smelting, cooking has no fallback furnace search -- a
+    missing persisted furnace must fail immediately rather than claim
+    success or wander off looking for one."""
+    context = _infrastructure_context(
+        furnace_pos=(1000, 64, 1000), inventory_counts={"minecraft:beef": 4}
+    )
+    orig_dispatch = context.client.transport.dispatch
+    context.client.transport.dispatch = lambda route, payload=None: (
+        {"block_position": {"x": 0, "y": 0, "z": 0}} if route == "get_state" else orig_dispatch(route, payload)
+    )
+    result = FoodCookingAction().execute(context)
+    assert not result.success
+
+
+def test_food_cooking_no_op_is_success_with_no_raw_meat():
+    context = _infrastructure_context(furnace_pos=(5, 64, 5), inventory_counts={})
+    result = FoodCookingAction().execute(context)
+    assert result.success
+    assert "no raw food" in result.message.lower() or "nothing to cook" in result.message.lower()
+
+
+def test_food_cooking_picks_the_largest_raw_stack_and_delegates_to_the_harness(monkeypatch):
+    """Must route through the harness's generic smelt, not reimplement it.
+
+    The old placeholder printed a message and returned success without ever
+    reading inventory or touching a furnace; this asserts both that the right
+    primitive is called with the larger of the two raw stacks, and that a
+    real production increase (not just a truthy return) is required to pass.
+    """
+    from baritone_client.actions import boot_sequence as actions_boot_sequence
+    from baritone_client.common import harness_ops, resources
+
+    calls = []
+    cooked_count = {"n": 0}
+
+    def fake_smelt(client, pos, raw_id, fuel_id, cooked_id, count):
+        calls.append((pos, raw_id, fuel_id, cooked_id, count))
+        cooked_count["n"] = count  # the furnace actually produced output
+        return True
+
+    monkeypatch.setattr(harness_ops, "smelt_in_furnace", fake_smelt)
+    monkeypatch.setattr(resources, "_prepare_safe_furnace_fuel", lambda _client, _count: "minecraft:coal")
+
+    raw_counts = {"minecraft:beef": 3, "minecraft:porkchop": 9}
+    monkeypatch.setattr(
+        actions_boot_sequence, "count_item",
+        lambda _client, item_id: raw_counts.get(item_id, cooked_count["n"])
+    )
+
+    context = _infrastructure_context(
+        furnace_pos=(5, 64, 5), inventory_counts={"minecraft:beef": 3, "minecraft:porkchop": 9}
+    )
+    result = FoodCookingAction().execute(context)
+
+    assert calls == [((5, 64, 5), "minecraft:porkchop", "minecraft:coal", "minecraft:cooked_porkchop", 9)]
+    assert result.success, result.message

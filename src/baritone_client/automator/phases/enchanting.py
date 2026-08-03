@@ -957,6 +957,23 @@ class EnchantingPipelineHandler(PhaseHandler):
     def _craft_enchanting_table(self, client, state: StateManager) -> bool:
         """Craft the table only when its survival-obtained inputs are verified."""
         table_needed = count_item(client, "minecraft:enchanting_table") < 1
+        if table_needed:
+            # A table already standing in the world is just as usable as one
+            # in the bag. This only asked whether the bot *carried* a table,
+            # so a placed one -- built on an earlier run, or by an operator --
+            # was invisible, and the phase spent 2 diamonds and 4 obsidian
+            # rebuilding it. _ensure_sleeping_bed already scans this way for
+            # beds a few methods below; this mirrors it.
+            existing = find_nearby_block(
+                client, ["minecraft:enchanting_table"], radius=64
+            )
+            if existing is not None:
+                house = state.custom_data.setdefault("structures", {}).setdefault(
+                    "starter_house", {}
+                )
+                house["enchanting_table"] = list(existing)
+                print(f"  Reusing existing enchanting table at {tuple(existing)}")
+                table_needed = False
         if count_item(client, "minecraft:diamond_pickaxe") < 1:
             diamond_target = 3 + (2 if table_needed else 0)
             self._withdraw_at_home(
