@@ -219,12 +219,23 @@ def supported_column_descent(
     *,
     target_y: int = 94,
     max_steps: int = 24,
+    minimum_altitude: int = 96,
 ) -> Optional[tuple[int, int, int]]:
     """Descend a void column one supported block at a time.
 
     Each step places a carried block beneath the floor before removing the
     floor. The removed block lands on the new support and becomes the support
     material for a later step, avoiding both an unsafe fall and item loss.
+
+    ``minimum_altitude`` guards the original Overworld high-shelf use so
+    routine low-altitude work never starts digging downwards. A caller that
+    has *already proven* the bot cannot move should pass 0: whether a column
+    descent is the right escape depends on there being a void underfoot, not
+    on the absolute height of the block being stood on. Live 2026-08-03:
+    Bot16 stood on a single glowstone block at y=78 in the Nether with 28
+    blocks of pure air beneath it and 82 cobblestone in its inventory -- the
+    exact situation this function exists for -- and the y<96 gate returned
+    None before it looked at anything.
     """
     from .automation_utils import place_block
 
@@ -233,7 +244,7 @@ def supported_column_descent(
     current_state = client.transport.dispatch("get_state", {})
     px, py, pz = block_position(current_state)
     start_y = py
-    if py < 96:
+    if py < minimum_altitude:
         return None
     for _ in range(max_steps):
         client.transport.dispatch("cancel", {})

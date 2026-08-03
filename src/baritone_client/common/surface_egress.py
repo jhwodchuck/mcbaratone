@@ -189,7 +189,20 @@ def try_lower_surface_egress(
     except Exception:
         below_floor = ""
     if not below_floor or "air" in str(below_floor):
-        descended = supported_column_descent(client, initial_state)
+        # Forward the caller's altitude intent. A caller that passed 0 has
+        # already proven the bot is marooned, and the descent's own y<96 gate
+        # would otherwise refuse before looking at the void underfoot.
+        descent_kwargs = {}
+        if minimum_altitude < 96:
+            descent_kwargs = {
+                "minimum_altitude": minimum_altitude,
+                # Descend as far as one pass can carry us rather than aiming
+                # at an Overworld shelf height that means nothing here.
+                "target_y": max(minimum_altitude, origin[1] - 24),
+            }
+        descended = supported_column_descent(
+            client, initial_state, **descent_kwargs
+        )
         if descended is not None:
             print(f"DEBUG: Supported shelf descent reached {descended}")
             return descended

@@ -682,3 +682,73 @@ def test_nether_egress_looks_for_blocks_that_exist_in_the_nether():
 
     overworld = surface_egress._surface_blocks_for({"dimension": "minecraft:overworld"})
     assert "minecraft:grass_block" in overworld
+
+
+def test_column_descent_helps_a_marooned_bot_below_the_overworld_shelf_height(
+    monkeypatch,
+):
+    """The y<96 gate refused the one escape that fits the situation.
+
+    supported_column_descent exists precisely for "void underfoot, blocks in
+    inventory": it places a block beneath the floor, then removes the floor,
+    stepping down safely. Live 2026-08-03: Bot16 stood on a single glowstone
+    block at y=78 in the Nether over 28 blocks of pure air, carrying 82
+    cobblestone, and the altitude gate returned None before looking at
+    anything. Whether this is the right escape depends on the void, not on
+    the absolute height.
+    """
+    from baritone_client.common import shelf_escape
+
+    class VoidLedgeTransport(PortalTransport):
+        def __init__(self):
+            super().__init__()
+            self.dimension = "minecraft:the_nether"
+            self.position = {"x": -132, "y": 78, "z": -7}
+            self.broke = []
+
+        def dispatch(self, route, payload, **kwargs):
+            if route == "get_block":
+                key = (payload["x"], payload["y"], payload["z"])
+                if key == (-132, 77, -7):
+                    return {"id": "minecraft:glowstone"}   # the one floor block
+                return {"id": "minecraft:air"}             # void everywhere else
+            if route == "break_block":
+                self.broke.append(dict(payload))
+                self.position = {**self.position, "y": self.position["y"] - 1}
+                return {"broken": True}
+            if route == "cancel":
+                return {}
+            if route == "get_inventory":
+                return {"inventory": [{"slot": 0, "id": "minecraft:cobblestone", "count": 82}]}
+            return super().dispatch(route, payload, **kwargs)
+
+    transport = VoidLedgeTransport()
+    client = SimpleNamespace(transport=transport, mission=MissionStub())
+    from baritone_client.common import automation_utils
+
+    placed = []
+    monkeypatch.setattr(
+        automation_utils,
+        "place_block",
+        lambda _c, x, y, z, item: (placed.append((x, y, z, item)), True)[1],
+    )
+
+    # The default gate refuses outright at y=78 ...
+    assert (
+        shelf_escape.supported_column_descent(
+            client, {"block_position": dict(transport.position)}
+        )
+        is None
+    )
+    # ... but a caller that has proven the bot is marooned gets a descent.
+    transport.position = {"x": -132, "y": 78, "z": -7}
+    result = shelf_escape.supported_column_descent(
+        client,
+        {"block_position": dict(transport.position)},
+        minimum_altitude=0,
+        target_y=70,
+        max_steps=12,
+    )
+    assert result is not None, "a marooned bot over a void must be able to descend"
+    assert transport.broke, "descent must actually remove the floor it stands on"
+    assert placed, "each step must place a support block before removing the floor"
