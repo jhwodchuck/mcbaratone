@@ -551,3 +551,62 @@ def test_enter_portal_still_refuses_a_genuinely_absent_portal():
     ) is False
     assert not [p for route, p in transport.calls if route == "goto"], \
         "must not walk to a coordinate proven not to hold a portal"
+
+
+def test_fortress_search_pushes_outward_when_the_bot_stops_moving(monkeypatch):
+    """Scanning is not searching.
+
+    find_nether_fortress dispatched explore once and then rescanned on a
+    timer. Baritone ends explore on its own, and nothing noticed, so the bot
+    stood still re-reading the same 32-block sphere for the rest of the
+    600s timeout. Live 2026-08-03: Bot07, Bot16 and Bot18 each held exactly
+    one coordinate for 210s inside this loop.
+    """
+
+    class StuckTransport(PortalTransport):
+        """A bot whose explore has quietly ended: it never moves itself."""
+
+        def __init__(self):
+            super().__init__()
+            self.dimension = "minecraft:the_nether"
+            self.position = {"x": 0, "y": 70, "z": 0}
+            self.explores = []
+            self.gotos = []
+
+        def dispatch(self, route, payload, **kwargs):
+            if route == "explore":
+                self.explores.append(dict(payload))
+                return {"started": True}
+            if route == "goto":
+                self.gotos.append(dict(payload))
+                return {"started": True}   # deliberately does NOT move
+            if route == "find_blocks":
+                return {"found": []}
+            return super().dispatch(route, payload, **kwargs)
+
+    transport = StuckTransport()
+    client = SimpleNamespace(transport=transport, mission=MissionStub())
+    monkeypatch.setattr(nether.time, "sleep", lambda _seconds: None)
+    # Drive the scan clock rather than waiting out a real 60s timeout.
+    clock = {"now": 0.0}
+
+    def fake_time():
+        clock["now"] += 3.0
+        return clock["now"]
+
+    monkeypatch.setattr(nether.time, "time", fake_time)
+
+    assert nether.find_nether_fortress(client, timeout=60) is None
+
+    assert len(transport.explores) > 1, (
+        "a stalled search must re-issue explore, not rescan one spot forever"
+    )
+    assert transport.gotos, "must commit to a waypoint to leave the dead area"
+    headings = {
+        (
+            (g["x"] > 0) - (g["x"] < 0),
+            (g["z"] > 0) - (g["z"] < 0),
+        )
+        for g in transport.gotos
+    }
+    assert len(headings) > 1, f"must try more than one direction: {transport.gotos}"

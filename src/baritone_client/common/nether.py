@@ -23,6 +23,19 @@ PortalPosition = Tuple[int, int, int]
 # any distant landmark permanently unreachable.
 _UNLOADED_BLOCKS = {"minecraft:void_air", "", None}
 
+# Compass headings used to push a stalled search outward, in a rotation that
+# alternates axes so consecutive legs do not retread the same corridor.
+_SEARCH_HEADINGS = (
+    (1, 0),
+    (0, 1),
+    (-1, 0),
+    (0, -1),
+    (1, 1),
+    (-1, -1),
+    (1, -1),
+    (-1, 1),
+)
+
 
 def _unwrap(payload: Any) -> Dict[str, Any]:
     """Accept both legacy envelopes and the current unwrapped transport ABI."""
@@ -458,6 +471,9 @@ def find_nether_fortress(
         start_time = time.time()
         scan_interval = 10  # Scan every 10 seconds
         last_scan = 0
+        last_position = None
+        stationary_scans = 0
+        heading_index = 0
 
         while time.time() - start_time < timeout:
             current_time = time.time()
@@ -477,6 +493,58 @@ def find_nether_fortress(
                     break
 
                 logger.debug("Scanning for fortress at (%d, %d, %d)", current_x, current_y, current_z)
+
+                # explore is dispatched once, before this loop. Baritone ends
+                # it on its own -- goal reached, path failure, or nothing left
+                # it wants to explore -- and nothing here noticed, so the bot
+                # stood still rescanning one spot for the rest of the timeout.
+                # Live 2026-08-03: Bot07, Bot16 and Bot18 all sat at exactly
+                # zero movement for 210s inside this loop after a productive
+                # first few minutes. Scanning is not searching; if we have not
+                # moved, push outward in a new direction.
+                if (
+                    last_position is not None
+                    and abs(current_x - last_position[0]) <= 3
+                    and abs(current_z - last_position[1]) <= 3
+                ):
+                    stationary_scans += 1
+                else:
+                    stationary_scans = 0
+                last_position = (current_x, current_z)
+
+                if stationary_scans >= 2:
+                    stationary_scans = 0
+                    heading = _SEARCH_HEADINGS[
+                        heading_index % len(_SEARCH_HEADINGS)
+                    ]
+                    heading_index += 1
+                    leg = min(192, max(64, int(max_distance) // 4))
+                    waypoint = (
+                        start_x + int(heading[0] * leg),
+                        current_y,
+                        start_z + int(heading[1] * leg),
+                    )
+                    logger.info(
+                        "Fortress search stalled at (%d, %d); pushing to %s",
+                        current_x,
+                        current_z,
+                        waypoint,
+                    )
+                    try:
+                        client.transport.dispatch(
+                            "goto",
+                            {
+                                "x": waypoint[0],
+                                "y": waypoint[1],
+                                "z": waypoint[2],
+                                "radius": 12,
+                            },
+                        )
+                        client.transport.dispatch(
+                            "explore", {"x": waypoint[0], "z": waypoint[2]}
+                        )
+                    except Exception as exc:
+                        logger.warning("Could not restart fortress search: %s", exc)
 
                 # FindBlocksCommandHandler scans around the current player; the
                 # transport returns its data dictionary directly.
