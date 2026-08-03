@@ -420,6 +420,27 @@ def test_sugar_cane_sector_rotation_persists():
     assert state.custom_data["expeditions"]["sugar_cane_sector_index"] == 2
 
 
+def test_sugar_cane_sectors_cover_all_directions_and_shard_fleet_bots(tmp_path):
+    handler = enchanting.EnchantingPipelineHandler()
+    origin = (0, 64, 0)
+    state = SimpleNamespace(
+        custom_data={}, checkpoint_dir=tmp_path / "Bot07" / "controller"
+    )
+    centers = [handler._next_cane_exploration_center(origin, state) for _ in range(20)]
+    offsets = {(x - 3, z) for x, z in centers}
+
+    assert len(offsets) == 20
+    assert any(x > 0 for x, _z in offsets)
+    assert any(x < 0 for x, _z in offsets)
+    assert any(z > 0 for _x, z in offsets)
+    assert any(z < 0 for _x, z in offsets)
+
+    bot17 = SimpleNamespace(
+        custom_data={}, checkpoint_dir=tmp_path / "Bot17" / "controller"
+    )
+    assert handler._next_cane_exploration_center(origin, bot17) != centers[0]
+
+
 def test_storage_withdrawal_routes_interrupted_expedition_home(monkeypatch):
     class Transport:
         def dispatch(self, route, _payload):

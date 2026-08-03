@@ -3,6 +3,7 @@ Phase 3: Enchanting Phase
 """
 
 import time
+from pathlib import Path
 
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
@@ -882,15 +883,29 @@ class EnchantingPipelineHandler(PhaseHandler):
         return bool(gathered and returned and complete)
 
     def _next_cane_exploration_center(self, origin, state):
-        """Persist water-edge search sectors independently from animal hunts."""
+        """Persist fleet-sharded, all-direction water-edge search sectors."""
         offsets = (
-            (0, -128), (96, -96), (-96, -96), (128, -48), (-128, -48),
-            (64, -120), (-64, -120), (96, -32), (-96, -32),
+            (0, -128), (96, -96), (128, 0), (96, 96),
+            (0, 128), (-96, 96), (-128, 0), (-96, -96),
+            (0, -64), (64, 0), (0, 64), (-64, 0),
+            (48, -112), (112, -48), (112, 48), (48, 112),
+            (-48, 112), (-112, 48), (-112, -48), (-48, -112),
         )
         expedition_state = state.custom_data.setdefault("expeditions", {})
         index = int(expedition_state.get("sugar_cane_sector_index", 0))
         expedition_state["sugar_cane_sector_index"] = index + 1
-        dx, dz = offsets[index % len(offsets)]
+        # Nearby fleet houses otherwise start at the same sector and retrace
+        # one another's exhausted ground. Use the BotNN run directory as a
+        # stable shard while keeping the persisted counter restart-safe.
+        checkpoint_dir = getattr(state, "checkpoint_dir", None)
+        bot_name = ""
+        if checkpoint_dir is not None:
+            path = Path(checkpoint_dir)
+            bot_dir = path.parent if path.name == "controller" else path
+            bot_name = bot_dir.name
+        digits = "".join(character for character in bot_name if character.isdigit())
+        shard = int(digits) if digits else 0
+        dx, dz = offsets[(index + shard) % len(offsets)]
         return int(origin[0]) + 3 + dx, int(origin[2]) + dz
 
     def _craft_available_paper(self, client, target: int) -> bool:

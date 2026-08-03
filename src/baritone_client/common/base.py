@@ -111,8 +111,22 @@ def safe_place_block(client, x, y, z, max_depth=2, block_id: str | None = None) 
         payload = {"x": x, "y": y, "z": z}
         if block_id is not None:
             payload["block"] = block_id
-        client.transport.dispatch("place_block", payload)
-        return True
+        # The bridge can acknowledge the interaction before the server's
+        # block update arrives.  Live, that produced an endless 48/49 floor:
+        # every command returned success while the target remained air. Poll
+        # the world postcondition and retry transient acknowledgements rather
+        # than reporting a placement that never happened.
+        for attempt in range(3):
+            client.transport.dispatch("place_block", payload)
+            if block_id is None:
+                return True
+            for _ in range(3):
+                if _house_block_id(client, x, y, z) == block_id:
+                    return True
+                time.sleep(0.1)
+            if attempt < 2:
+                select_item(client, block_id, allow_swap=True)
+        return False
     except Exception as e:
         msg = str(e)
         if "No solid block found to place against" in msg and max_depth > 0:

@@ -177,6 +177,10 @@ def test_good_house_rejects_even_one_unrepaired_survival_shell_hole(monkeypatch)
 
     monkeypatch.setattr(base, "count_item", lambda *_args: 64)
     monkeypatch.setattr(base, "wait_for_safe_daylight", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        "baritone_client.common.harness_ops.move_near",
+        lambda *_args, **_kwargs: True,
+    )
     # Simulate an acknowledged placement whose world block never appeared.
     monkeypatch.setattr(base, "robust_place", lambda *_args, **_kwargs: True)
 
