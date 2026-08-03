@@ -38,7 +38,10 @@ class NetherAndBlazeHandler(PhaseHandler):
                 "Locate and persist fortress",
                 lambda c: self._locate_fortress(c, state),
             ),
-            ActionTask("Kill blazes -> 6+ rods", self._hunt_blazes),
+            ActionTask(
+                "Kill blazes -> 6+ rods",
+                lambda c: self._hunt_blazes(c, state),
+            ),
             ActionTask(
                 "Return to Overworld",
                 lambda c: self._return_to_overworld(c, state),
@@ -305,8 +308,8 @@ class NetherAndBlazeHandler(PhaseHandler):
         return True
 
     @staticmethod
-    def _hunt_blazes(client) -> bool:
-        return hunt_blazes(client, target_count=6) >= 6
+    def _hunt_blazes(client, state: StateManager) -> bool:
+        return hunt_blazes(client, target_count=6, state=state) >= 6
 
     def _return_to_overworld(self, client, state: StateManager) -> bool:
         """Return through portal to Overworld."""

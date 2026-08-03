@@ -234,6 +234,15 @@ class EndGameAutomator:
                 print(f"Storage catalog loaded {seeded} checkpointed container landmark(s)")
         except Exception as exc:
             print(f"Storage catalog seed deferred: {exc}")
+
+        try:
+            from ..common.landmark_scanner import import_shared_landmarks
+
+            imported = import_shared_landmarks(self.client, self.state)
+            if imported:
+                print(f"Imported {imported} shared fleet landmark(s) into locations")
+        except Exception as exc:
+            print(f"Shared landmark import deferred: {exc}")
         
         return self.state.get_current_phase()
 

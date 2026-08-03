@@ -153,6 +153,22 @@ class StorageCatalog:
                     event_time REAL NOT NULL,
                     details_json TEXT NOT NULL DEFAULT '{}'
                 );
+                CREATE TABLE IF NOT EXISTS landmarks (
+                    world_id TEXT NOT NULL,
+                    dimension TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    x INTEGER NOT NULL,
+                    y INTEGER NOT NULL,
+                    z INTEGER NOT NULL,
+                    block_id TEXT NOT NULL,
+                    first_seen REAL NOT NULL,
+                    last_seen REAL NOT NULL,
+                    discovered_by TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    PRIMARY KEY (world_id, dimension, category, x, y, z)
+                );
+                CREATE INDEX IF NOT EXISTS idx_landmarks_lookup
+                    ON landmarks(world_id, dimension, category, last_seen);
                 """
             )
             db.execute(
@@ -402,6 +418,69 @@ class StorageCatalog:
                 (self.world_id,),
             ).fetchall()
         return {str(row["item_id"]): int(row["count"]) for row in rows}
+
+    def register_landmark(
+        self,
+        category: str,
+        position: Tuple[int, int, int],
+        *,
+        dimension: str,
+        block_id: str,
+        discovered_by: Optional[str] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
+        seen_at: Optional[float] = None,
+    ) -> None:
+        """Upsert one observed landmark for all bots in this world."""
+        x, y, z = (int(value) for value in position)
+        observed = float(seen_at or time.time())
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO landmarks(
+                    world_id, dimension, category, x, y, z, block_id,
+                    first_seen, last_seen, discovered_by, metadata_json
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(world_id, dimension, category, x, y, z) DO UPDATE SET
+                    block_id=excluded.block_id,
+                    last_seen=excluded.last_seen,
+                    discovered_by=COALESCE(excluded.discovered_by, landmarks.discovered_by),
+                    metadata_json=excluded.metadata_json
+                """,
+                (
+                    self.world_id,
+                    str(dimension),
+                    str(category),
+                    x,
+                    y,
+                    z,
+                    str(block_id),
+                    observed,
+                    observed,
+                    discovered_by,
+                    json.dumps(dict(metadata or {}), sort_keys=True),
+                ),
+            )
+
+    def list_landmarks(
+        self,
+        category: Optional[str] = None,
+        *,
+        dimension: Optional[str] = None,
+    ) -> list[Dict[str, Any]]:
+        """Return shared landmarks for this world, newest observations first."""
+        clauses = ["world_id=?"]
+        params: list[Any] = [self.world_id]
+        if category is not None:
+            clauses.append("category=?")
+            params.append(str(category))
+        if dimension is not None:
+            clauses.append("dimension=?")
+            params.append(str(dimension))
+        query = "SELECT * FROM landmarks WHERE " + " AND ".join(clauses)
+        query += " ORDER BY last_seen DESC"
+        with self._connect() as db:
+            rows = db.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
 
 
 def catalog_for(client, state=None) -> StorageCatalog:

@@ -11,6 +11,11 @@ import time
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .automation_utils import place_block
+from .blaze_spawners import (
+    camp_blaze_spawner,
+    publish_blaze_spawner as _publish_blaze_spawner,
+    shared_blaze_spawners as _shared_blaze_spawners,
+)
 from .combat import hunt_mobs, find_entity_by_type
 from .inventory import count_item, find_item_slot
 from .surface_egress import try_lower_surface_egress
@@ -866,7 +871,29 @@ def _advance_blaze_frontier(
     return frontier_index + 1, False
 
 
-def hunt_blazes(client, target_count: int = 8, timeout: int = 600) -> int:
+def _camp_blaze_spawner(
+    client,
+    position: PortalPosition,
+    *,
+    target_count: int,
+    deadline: float,
+) -> bool:
+    return camp_blaze_spawner(
+        client,
+        position,
+        target_count=target_count,
+        deadline=deadline,
+        travel_to=_travel_to,
+    )
+
+
+def hunt_blazes(
+    client,
+    target_count: int = 8,
+    timeout: int = 600,
+    *,
+    state=None,
+) -> int:
     """
     Hunt blazes using systematic fortress exploration with backtracking.
     ``target_count`` is the desired total rod count, not additional rods.
@@ -875,11 +902,27 @@ def hunt_blazes(client, target_count: int = 8, timeout: int = 600) -> int:
     try:
         logger.info("Starting systematic fortress blaze hunt for %d rods", target_count)
         start_time = time.time()
+        deadline = start_time + timeout
         rods_start = count_item(client, "minecraft:blaze_rod")
 
+        # Shared sightings are normal world knowledge. Reuse them before
+        # making every controller independently rediscover the same fortress.
+        state_manager = state
+        for known_spawner in _shared_blaze_spawners(client, state_manager):
+            logger.info("Trying shared blaze spawner at %s", known_spawner)
+            if _camp_blaze_spawner(
+                client,
+                known_spawner,
+                target_count=target_count,
+                deadline=deadline,
+            ):
+                return count_item(client, "minecraft:blaze_rod")
+
         # Get current position as fortress center reference
-        state = client.transport.dispatch("get_state", {})
-        fortress_center = state.get("block_position", state.get("position", {}))
+        snapshot = client.transport.dispatch("get_state", {})
+        fortress_center = snapshot.get(
+            "block_position", snapshot.get("position", {})
+        )
         center_x = int(fortress_center.get("x", 0))
         center_y = int(fortress_center.get("y", 64))
         center_z = int(fortress_center.get("z", 0))
@@ -960,6 +1003,9 @@ def hunt_blazes(client, target_count: int = 8, timeout: int = 600) -> int:
                                 new_spawners.append(spawner_pos)
                                 spawners_found.append(spawner_pos)
                                 logger.info("Found blaze spawner at %s", spawner_pos)
+                                _publish_blaze_spawner(
+                                    client, state_manager, spawner_pos
+                                )
                         elif block_type in ["minecraft:nether_bricks", "minecraft:nether_brick_stairs"]:
                             fortress_blocks.append((block.get("x"), block.get("y"), block.get("z")))
 
@@ -968,30 +1014,13 @@ def hunt_blazes(client, target_count: int = 8, timeout: int = 600) -> int:
                         for spawner_x, spawner_y, spawner_z in new_spawners:
                             logger.info("Navigating to spawner at (%d, %d, %d)", spawner_x, spawner_y, spawner_z)
 
-                            # Navigate to spawner. Arriving is the whole point
-                            # -- hunt_mobs only has a 15-block search radius,
-                            # so starting it 40 blocks short finds nothing.
-                            _travel_to(
+                            if _camp_blaze_spawner(
                                 client,
                                 (spawner_x, spawner_y, spawner_z),
-                                radius=3,
-                            )
-
-                            # Hunt blazes in the area
-                            result = hunt_mobs(
-                                client,
-                                mob_types=["blaze"],
-                                required_loot={
-                                    "minecraft:blaze_rod": target_count - current_rods
-                                },
-                                search_radius=15,
-                                timeout=min(60, timeout - (time.time() - start_time)),  # Short timeout per spawner
-                                heal_threshold=10.0,
-                            )
-
-                            current_rods = count_item(client, "minecraft:blaze_rod")
-                            if current_rods >= target_count:
-                                break
+                                target_count=target_count,
+                                deadline=deadline,
+                            ):
+                                return count_item(client, "minecraft:blaze_rod")
 
                     frontier_index, advanced = _advance_blaze_frontier(
                         client,

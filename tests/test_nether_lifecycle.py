@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from baritone_client.automator.phases import nether_prep
 from baritone_client.automator.resource_manager import ResourceManager
 from baritone_client.automator.state_manager import Phase, StateManager
-from baritone_client.common import nether
+from baritone_client.common import blaze_spawners, nether
 from baritone_client.common.tasks import TaskResult
 
 
@@ -186,8 +186,9 @@ def test_nether_handler_persists_portal_pair_and_fortress(monkeypatch, tmp_path)
         lambda *_args: (240, 70, -80),
     )
 
-    def hunt(_client, target_count):
+    def hunt(_client, target_count, *, state):
         assert target_count == 6
+        assert state is not None
         rods["count"] = 6
         return 6
 
@@ -891,6 +892,90 @@ def test_blaze_hunt_widens_when_local_fortress_scan_is_empty(monkeypatch):
     ]
     assert widened
     assert all(payload["y"] == 87 for payload in widened)
+
+
+def test_blaze_spawner_camp_holds_position_and_reanchors(monkeypatch):
+    """An empty first scan must not walk out of spawner activation range."""
+    client = SimpleNamespace(transport=PortalTransport())
+    client.transport.blocks[(-332, 70, 104)] = "minecraft:spawner"
+    rods = {"count": 0}
+    travels = []
+    hunts = []
+
+    monkeypatch.setattr(
+        nether,
+        "_travel_to",
+        lambda _client, position, **kwargs: (
+            travels.append((position, kwargs)), True
+        )[1],
+    )
+    monkeypatch.setattr(
+        blaze_spawners,
+        "count_item",
+        lambda *_args: rods["count"],
+    )
+
+    def fake_hunt(_client, **kwargs):
+        hunts.append(kwargs)
+        rods["count"] = 2 if rods["count"] == 0 else 6
+        return TaskResult.ok("bounded spawner hunt")
+
+    monkeypatch.setattr(blaze_spawners, "hunt_mobs", fake_hunt)
+
+    assert nether._camp_blaze_spawner(
+        client,
+        (-332, 70, 104),
+        target_count=6,
+        deadline=nether.time.time() + 120,
+    ) is True
+    assert len(hunts) == 2
+    assert all(call["explore_when_empty"] is False for call in hunts)
+    assert all(call["search_radius"] == 20 for call in hunts)
+    assert len(travels) == 2, "combat must re-anchor at the spawner"
+    assert all(call[1]["radius"] == 8 for call in travels)
+
+
+def test_unreachable_shared_spawner_never_starts_hunt(monkeypatch):
+    client = SimpleNamespace(transport=PortalTransport())
+    hunts = []
+    monkeypatch.setattr(nether, "_travel_to", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        blaze_spawners,
+        "hunt_mobs",
+        lambda *_args, **_kwargs: hunts.append(True),
+    )
+
+    assert nether._camp_blaze_spawner(
+        client,
+        (-332, 70, 104),
+        target_count=6,
+        deadline=nether.time.time() + 120,
+    ) is False
+    assert hunts == []
+
+
+def test_shared_nether_spawners_are_nearest_first(monkeypatch):
+    client = SimpleNamespace(transport=PortalTransport())
+    client.transport.dimension = "minecraft:the_nether"
+    client.transport.position = {"x": -300, "y": 70, "z": 100}
+
+    class Catalog:
+        def list_landmarks(self, category, *, dimension):
+            assert dimension == "minecraft:the_nether"
+            if category == "blaze_spawner":
+                return []
+            assert category == "spawner"
+            return [
+                {"x": 138, "y": 39, "z": -226},
+                {"x": -332, "y": 70, "z": 104},
+                {"x": -287, "y": 76, "z": 78},
+            ]
+
+    from baritone_client.common import storage_catalog
+
+    monkeypatch.setattr(storage_catalog, "catalog_for", lambda *_args: Catalog())
+    candidates = nether._shared_blaze_spawners(client, object())
+    assert candidates[:2] == [(-287, 76, 78), (-332, 70, 104)]
 
 
 class _BlazeSearchTransport(PortalTransport):

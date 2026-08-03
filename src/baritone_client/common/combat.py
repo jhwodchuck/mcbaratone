@@ -985,7 +985,7 @@ def hunt_mobs(
     latest_world_time: Optional[int] = None,
     max_distance_from_origin: Optional[float] = None,
     exploration_center: Optional[tuple[int, int]] = None,
-    max_kills: Optional[int] = None,
+    max_kills: Optional[int] = None, explore_when_empty: bool = True,
 ) -> TaskResult:
     """
     Hunt a set of mobs until loot requirements are satisfied.
@@ -1146,7 +1146,7 @@ def hunt_mobs(
             continue
 
         if entity is None:
-            if not exploring:
+            if explore_when_empty and not exploring:
                 print("  No targets found, starting exploration...")
                 if exploration_center is not None:
                     client.transport.dispatch(

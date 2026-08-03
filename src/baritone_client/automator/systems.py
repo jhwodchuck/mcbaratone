@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
+from ..common.landmark_scanner import scan_visible_landmarks
 from ..common.runtime_artifacts import runtime_artifact_path
 
 logger = logging.getLogger(__name__)
@@ -281,7 +282,14 @@ class MappingSystem(BackgroundSystem):
     """
     Passively scans environment for POIs and generates a world map report.
     """
-    def __init__(self, client, coordination_hub: CoordinationHub, resources=None, state_manager=None):
+    def __init__(
+        self,
+        client,
+        coordination_hub: CoordinationHub,
+        resources=None,
+        state_manager=None,
+        landmark_scan_interval: float = 60.0,
+    ):
         super().__init__(client, coordination_hub, "MappingSystem", interval=5.0, resources=resources)
         self.state_manager = state_manager
         if self.state_manager:
@@ -293,6 +301,8 @@ class MappingSystem(BackgroundSystem):
             
         self.path_history = []  # List of (x, z)
         self.last_update = 0
+        self.landmark_scan_interval = max(5.0, float(landmark_scan_interval))
+        self.last_landmark_scan = 0.0
         self.map_file = runtime_artifact_path("world_map.md", state_manager)
 
     def tick(self):
@@ -327,6 +337,14 @@ class MappingSystem(BackgroundSystem):
             if time.time() - self.last_update > 10.0:
                  self._write_map_file(px, py, pz, state.get("dimension", "Overworld"))
                  self.last_update = time.time()
+
+            if time.time() - self.last_landmark_scan >= self.landmark_scan_interval:
+                # Throttle failures too; a transient bridge/catalog error must
+                # not turn this low-frequency scan into a five-second hot loop.
+                self.last_landmark_scan = time.time()
+                found = scan_visible_landmarks(self.client, self.state_manager)
+                if found:
+                    logger.info("MappingSystem recorded %d visible landmark blocks", found)
                  
         except Exception as e:
             logger.error(f"Mapping Failed: {e}")
