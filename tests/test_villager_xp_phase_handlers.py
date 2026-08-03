@@ -30,6 +30,7 @@ class RouteTransport:
         self.calls = []
         self.bread = 6
         self.weapon = 1
+        self.selected_slot = 0
         self.entity_queries = 0
         self.levels = [29, 29, 30]
         self.experience_totals = [100, 100, 105]
@@ -49,6 +50,7 @@ class RouteTransport:
                 ],
                 "armor": [],
                 "offhand": [],
+                "selected_slot": self.selected_slot,
             }
         if route == "get_entities":
             self.entity_queries += 1
@@ -65,6 +67,9 @@ class RouteTransport:
         if route == "throw_item":
             self.bread -= 1
             return {"thrown": True, "all": False}
+        if route == "select_slot":
+            self.selected_slot = int(payload["slot"])
+            return {"selected": True, "slot": self.selected_slot}
         if route == "find_blocks":
             if payload["blocks"] == ["minecraft:spawner"]:
                 return {"found": [{"x": 20, "y": 40, "z": 20, "distance": 8.0}]}
