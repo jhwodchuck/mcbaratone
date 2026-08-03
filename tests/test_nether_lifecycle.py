@@ -650,7 +650,7 @@ def test_marooned_bot_escapes_instead_of_cycling_headings_forever(monkeypatch):
 
     def fake_egress(_client, state, **kwargs):
         escapes.append(kwargs)
-        return None
+        return None      # no progress -> must not spin on it forever
 
     monkeypatch.setattr(nether, "try_lower_surface_egress", fake_egress)
 
@@ -662,6 +662,60 @@ def test_marooned_bot_escapes_instead_of_cycling_headings_forever(monkeypatch):
     )
     assert escapes[0].get("minimum_altitude") == 0, (
         "the Overworld high-shelf altitude guard would refuse to help at y=78"
+    )
+
+
+def test_marooned_descent_is_pressed_until_it_stops_making_progress(monkeypatch):
+    """One escape call per eight-heading circuit is one block per few minutes.
+
+    Live 2026-08-03: Bot16's descent bought a single block, then control
+    returned to the heading rotation and the counter reset, so it inched one
+    block in five minutes while still marooned.
+    """
+
+    class LedgeTransport(PortalTransport):
+        def __init__(self):
+            super().__init__()
+            self.dimension = "minecraft:the_nether"
+            self.position = {"x": -132, "y": 78, "z": -7}
+
+        def dispatch(self, route, payload, **kwargs):
+            if route in ("goto", "explore"):
+                return {"started": True}
+            if route == "find_blocks":
+                return {"found": []}
+            return super().dispatch(route, payload, **kwargs)
+
+    transport = LedgeTransport()
+    client = SimpleNamespace(transport=transport, mission=MissionStub())
+    monkeypatch.setattr(nether.time, "sleep", lambda _seconds: None)
+    clock = {"now": 0.0}
+
+    def fake_time():
+        clock["now"] += 3.0
+        return clock["now"]
+
+    monkeypatch.setattr(nether.time, "time", fake_time)
+
+    calls = {"n": 0}
+
+    def descending_egress(_client, _state, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] > 4:
+            return None                    # ran out of room to descend
+        transport.position = {
+            **transport.position,
+            "y": transport.position["y"] - 1,
+        }
+        return (-132, transport.position["y"], -7)
+
+    monkeypatch.setattr(nether, "try_lower_surface_egress", descending_egress)
+
+    nether.find_nether_fortress(client, timeout=600)
+
+    assert calls["n"] > 1, (
+        "a descent that is still making progress must be pressed again "
+        "immediately, not after another full heading circuit"
     )
 
 

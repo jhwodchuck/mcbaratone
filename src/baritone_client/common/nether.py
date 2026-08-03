@@ -536,9 +536,26 @@ def find_nether_fortress(
                         # minimum_altitude=0: the default guard exists for
                         # Overworld high-shelf work and would refuse to help
                         # here purely because y=78 is not high enough.
-                        if try_lower_surface_egress(
-                            client, state, minimum_altitude=0
-                        ):
+                        #
+                        # Press the descent until it stops making progress.
+                        # One call only buys a step or two, and returning to
+                        # the heading rotation resets the counter, so a single
+                        # attempt per circuit means one block of progress
+                        # every few minutes. Live 2026-08-03: Bot16 moved
+                        # exactly one block in five minutes that way.
+                        escaped = False
+                        for _ in range(8):
+                            landing = try_lower_surface_egress(
+                                client, state, minimum_altitude=0
+                            )
+                            if not landing:
+                                break
+                            escaped = True
+                            state = _unwrap(
+                                client.transport.dispatch("get_state", {})
+                            )
+                            logger.info("Marooned descent reached %s", landing)
+                        if escaped:
                             last_position = None
                             continue
                     heading = _SEARCH_HEADINGS[
