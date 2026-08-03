@@ -238,6 +238,101 @@ def _portal_standing_level(client, portal: PortalPosition) -> int:
     return lowest
 
 
+def _locate_portal_interior(client, portal: PortalPosition):
+    """Find the lowest real portal block near ``portal``, or None.
+
+    A persisted coordinate names *a* block of the portal -- often a frame
+    corner rather than the purple interior, and callers cannot know the
+    portal's axis from the coordinate alone. Guessing an interior offset
+    picks a block outside the portal half the time, and asking Baritone to
+    stand on a coordinate inside the obsidian frame is an unsatisfiable
+    GoalBlock: it gives up without taking a step. Probe for the real thing
+    instead. Returns the lowest portal block found, which is where feet go.
+    """
+    x, y, z = portal
+    candidates = []
+
+    # One find_blocks sweep beats probing a 5x7x5 box a block at a time: the
+    # bridge scans around the player, which is exactly the region we care
+    # about, and 175 round-trips per portal per attempt is not affordable.
+    try:
+        found = _found_blocks(
+            client.transport.dispatch(
+                "find_blocks",
+                {"blocks": ["minecraft:nether_portal"], "radius": 32, "limit": 64},
+            )
+        )
+    except Exception:
+        found = []
+    for block in found:
+        try:
+            candidate = (int(block["x"]), int(block["y"]), int(block["z"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if max(abs(candidate[0] - x), abs(candidate[2] - z)) <= 4 and abs(
+            candidate[1] - y
+        ) <= 4:
+            candidates.append(candidate)
+
+    # find_blocks only reports loaded chunks, so fall back to the named
+    # column: it is the one coordinate we were explicitly told about.
+    if not candidates:
+        for dy in range(-3, 4):
+            candidate = (x, y + dy, z)
+            if (
+                _block_id(
+                    client.transport.dispatch(
+                        "get_block",
+                        {"x": candidate[0], "y": candidate[1], "z": candidate[2]},
+                    )
+                )
+                == "minecraft:nether_portal"
+            ):
+                candidates.append(candidate)
+
+    if not candidates:
+        return None
+    # Lowest block first -- that is where feet go -- then nearest the named
+    # column, so a bot beside a wide portal does not walk across it.
+    return min(
+        candidates,
+        key=lambda c: (c[1], abs(c[0] - x) + abs(c[2] - z)),
+    )
+
+
+def _approach_and_relocate(client, portal: PortalPosition, radius: int = 3) -> bool:
+    """Walk within ``radius`` of ``portal`` so its chunk loads and we can see it.
+
+    Uses a GoalNear rather than a GoalBlock: the named coordinate is often
+    obsidian or an unloaded guess, and Baritone abandons an unsatisfiable
+    GoalBlock immediately instead of getting closer.
+    """
+    x, y, z = portal
+    try:
+        client.transport.dispatch(
+            "goto", {"x": int(x), "y": int(y), "z": int(z), "radius": int(radius)}
+        )
+    except Exception as exc:
+        logger.warning("Portal approach failed: %s", exc)
+        return False
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        state = _unwrap(client.transport.dispatch("get_state", {}))
+        position = state.get("block_position") or state.get("position") or {}
+        try:
+            here = (
+                int(position["x"]),
+                int(position["y"]),
+                int(position["z"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+        if max(abs(here[0] - x), abs(here[2] - z)) <= radius + 2:
+            return True
+        time.sleep(2)
+    return False
+
+
 def enter_portal(
     client,
     portal: PortalPosition,
@@ -250,13 +345,26 @@ def enter_portal(
     if _dimension_matches(_dimension(state), target_dimension):
         return True
     x, y, z = portal
-    target = (x, y, z)
+    target = _locate_portal_interior(client, portal)
     current_block = _block_id(
         client.transport.dispatch("get_block", {"x": x, "y": y, "z": z})
     )
-    if current_block != "minecraft:nether_portal":
+    if target is None and current_block != "minecraft:nether_portal":
         if verify_portal(client, portal, require_active=True):
-            target = (x + 1, y + 1, z)
+            # An active frame whose interior we cannot see from here. Walk
+            # into range with a GoalNear -- a radius-0 GoalBlock on a frame
+            # coordinate is inside obsidian and unsatisfiable -- then look
+            # again now that the chunk is loaded and we are close enough.
+            # Live 2026-08-03: Bot17 stood 13 blocks from a live portal for
+            # 150s without moving because the old (x+1, y+1, z) guess landed
+            # outside it.
+            if not _approach_and_relocate(client, portal):
+                logger.warning("Could not reach the portal interior at %s", portal)
+                return False
+            target = _locate_portal_interior(client, portal)
+            if target is None:
+                logger.warning("No portal interior found near %s after approach", portal)
+                return False
         elif current_block in _UNLOADED_BLOCKS:
             # void_air means the chunk is not loaded, which is not evidence
             # that the portal is gone. Refusing here was self-defeating: the
@@ -268,6 +376,16 @@ def enter_portal(
                 "Portal at %s is in an unloaded chunk; approaching to verify",
                 portal,
             )
+            if not _approach_and_relocate(client, portal):
+                logger.warning("Could not approach the portal at %s", portal)
+                return False
+            target = _locate_portal_interior(client, portal)
+            if target is None:
+                logger.warning(
+                    "No portal at %s once the chunk loaded; treating it as gone",
+                    portal,
+                )
+                return False
         else:
             # Persisted and shared portal coordinates can outlive the actual
             # blocks. Walking to an unverified coordinate wastes the entire
@@ -276,18 +394,17 @@ def enter_portal(
             # frame.
             logger.warning("Refusing to enter inactive portal at %s", portal)
             return False
-    else:
-        # Stand at the portal's base. radius 0 becomes a Baritone GoalBlock,
-        # which demands the player occupy exactly this position, and a portal
-        # interior is three blocks tall -- targeting the middle or top asks
-        # the bot to stand in mid-air and can never be satisfied. Live
-        # 2026-08-02: Bot07 aimed at y=65 and Bot17 at y=66 of a y=64..66
-        # portal; both burned all three retries 8-14 blocks short, while a
-        # teleport into the same portal transitioned instantly.
-        base_y = _portal_standing_level(client, target)
-        if base_y != target[1]:
-            logger.info("Entering portal at its base y=%s (was %s)", base_y, target[1])
-        target = (target[0], base_y, target[2])
+    # Stand at the portal's base. radius 0 becomes a Baritone GoalBlock, which
+    # demands the player occupy exactly this position, and a portal interior is
+    # three blocks tall -- targeting the middle or top asks the bot to stand in
+    # mid-air and can never be satisfied. Live 2026-08-02: Bot07 aimed at y=65
+    # and Bot17 at y=66 of a y=64..66 portal; both burned all three retries
+    # 8-14 blocks short, while a teleport into the same portal transitioned
+    # instantly.
+    base_y = _portal_standing_level(client, target)
+    if base_y != target[1]:
+        logger.info("Entering portal at its base y=%s (was %s)", base_y, target[1])
+    target = (target[0], base_y, target[2])
     try:
         client.transport.dispatch(
             "goto",

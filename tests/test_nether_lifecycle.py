@@ -24,13 +24,15 @@ class PortalTransport:
         self.dimension = "minecraft:overworld"
         self.blocks = {}
         self.calls = []
+        self.position = {"x": 0, "y": 64, "z": 0}
+        self.found_blocks = []
 
     def dispatch(self, route, payload, **_kwargs):
         self.calls.append((route, dict(payload)))
         if route == "get_state":
             return {
                 "dimension": self.dimension,
-                "block_position": {"x": 0, "y": 64, "z": 0},
+                "block_position": dict(self.position),
             }
         if route == "get_block":
             key = (payload["x"], payload["y"], payload["z"])
@@ -40,16 +42,29 @@ class PortalTransport:
             for dx in (0, 1):
                 for dy in (0, 1, 2):
                     self.blocks[(x + dx, y + dy, z)] = "minecraft:nether_portal"
+                    # A lit portal is visible to a find_blocks sweep, which is
+                    # how the client locates the interior it should stand in.
+                    self.found_blocks.append({"x": x + dx, "y": y + dy, "z": z})
             return {"ignited": True}
         if route == "goto":
-            self.dimension = (
-                "minecraft:the_nether"
-                if "nether" not in self.dimension
-                else "minecraft:overworld"
-            )
+            self.position = {
+                "x": payload["x"],
+                "y": payload["y"],
+                "z": payload["z"],
+            }
+            # You only change dimension by standing in a portal block. The
+            # stub used to flip on every goto, which hid the difference
+            # between an approach and an actual entry.
+            destination = (payload["x"], payload["y"], payload["z"])
+            if self.blocks.get(destination) == "minecraft:nether_portal":
+                self.dimension = (
+                    "minecraft:the_nether"
+                    if "nether" not in self.dimension
+                    else "minecraft:overworld"
+                )
             return {"started": True}
         if route == "find_blocks":
-            return {"found": []}
+            return {"found": list(self.found_blocks)}
         return {}
 
 
@@ -75,6 +90,9 @@ def test_build_ignite_verify_and_enter_portal(monkeypatch):
         client, portal, target_dimension="minecraft:the_nether", timeout=1
     )
     goto = [payload for route, payload in transport.calls if route == "goto"][-1]
+    # The lowest lit interior block, found by scanning rather than guessed.
+    # The old (x+1, y+1, z) offset happened to match this geometry, which is
+    # why it survived; see the frame-block test below for one it does not.
     assert goto == {"x": 4, "y": 65, "z": 0, "radius": 0}
 
 
@@ -442,6 +460,35 @@ def test_all_fleet_observed_portals_are_recorded_not_just_the_first(monkeypatch,
     assert len(persisted) == 2, persisted
 
 
+class _LazyChunkTransport(PortalTransport):
+    """A portal the bot cannot see until it walks into render distance.
+
+    Models the live failure exactly: get_block over an unloaded chunk answers
+    void_air, and find_blocks -- which only scans loaded chunks -- returns
+    nothing, so nothing about the portal is knowable from a distance.
+    """
+
+    def __init__(self, portal_base):
+        super().__init__()
+        self.portal_base = portal_base
+        self.position = {"x": portal_base[0] + 98, "y": 70, "z": portal_base[2]}
+
+    @property
+    def _loaded(self):
+        return abs(self.position["x"] - self.portal_base[0]) <= 16
+
+    def dispatch(self, route, payload, **_kwargs):
+        if route in ("get_block", "find_blocks") and self._loaded:
+            x, y, z = self.portal_base
+            for dy in (0, 1, 2):
+                self.blocks[(x, y + dy, z)] = "minecraft:nether_portal"
+            self.found_blocks = [{"x": x, "y": y + dy, "z": z} for dy in (0, 1, 2)]
+        elif route == "get_block" and not self._loaded:
+            self.calls.append((route, dict(payload)))
+            return {"id": "minecraft:void_air"}
+        return super().dispatch(route, payload, **_kwargs)
+
+
 def test_enter_portal_approaches_a_portal_in_an_unloaded_chunk():
     """void_air means 'chunk not loaded', not 'portal is gone'.
 
@@ -450,8 +497,7 @@ def test_enter_portal_approaches_a_portal_in_an_unloaded_chunk():
     be entered. Live 2026-08-03: Bot07 sat 98 blocks from a verified-live
     portal, read all three blocks as void_air, and refused 96 times.
     """
-    transport = PortalTransport()   # every unknown block reads as air...
-    transport.blocks[(-156, 64, -278)] = "minecraft:void_air"
+    transport = _LazyChunkTransport(portal_base=(-156, 64, -278))
     client = SimpleNamespace(transport=transport, mission=MissionStub())
 
     assert nether.enter_portal(
@@ -459,7 +505,39 @@ def test_enter_portal_approaches_a_portal_in_an_unloaded_chunk():
     )
     goto = [p for route, p in transport.calls if route == "goto"]
     assert goto, "must path toward an unloaded portal instead of refusing"
-    assert (goto[-1]["x"], goto[-1]["z"]) == (-156, -278)
+    # First move is an approach (GoalNear); only once the chunk is loaded and
+    # the interior is visible does it commit to a radius-0 GoalBlock.
+    assert goto[0]["radius"] > 0, f"first move must be an approach: {goto[0]}"
+    assert (goto[-1]["x"], goto[-1]["y"], goto[-1]["z"]) == (-156, 64, -278)
+    assert goto[-1]["radius"] == 0
+
+
+def test_enter_portal_targets_the_interior_not_the_named_frame_block():
+    """The persisted coordinate can name a frame corner, not the purple middle.
+
+    The old code guessed the interior as (x+1, y+1, z), which assumes an axis
+    and a corner convention. On a Z-axis portal that lands in obsidian, and a
+    radius-0 GoalBlock there is unsatisfiable -- Baritone drops it without
+    moving. Live 2026-08-03: Bot17 sat 13 blocks from a live portal for 150s
+    at zero velocity, burning every retry.
+    """
+    transport = PortalTransport()
+    named = (-156, 66, -278)          # a frame block the catalog knows about
+    transport.blocks[named] = "minecraft:obsidian"
+    for y in (64, 65, 66):            # the real interior, one column over
+        transport.blocks[(-156, y, -277)] = "minecraft:nether_portal"
+    transport.found_blocks = [
+        {"x": -156, "y": y, "z": -277} for y in (64, 65, 66)
+    ]
+    client = SimpleNamespace(transport=transport, mission=MissionStub())
+
+    assert nether.enter_portal(
+        client, named, target_dimension="minecraft:the_nether", timeout=1
+    )
+    goto = [p for route, p in transport.calls if route == "goto"]
+    assert (goto[-1]["x"], goto[-1]["y"], goto[-1]["z"]) == (-156, 64, -277), (
+        f"must stand in the portal's lowest interior block, got {goto[-1]}"
+    )
 
 
 def test_enter_portal_still_refuses_a_genuinely_absent_portal():
