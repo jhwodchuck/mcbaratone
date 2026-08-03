@@ -33,7 +33,6 @@ from ..common.resources import (
     gather_wood,
     gather_stone,
     ensure_supplies,
-    _smelt_requirement_shortfall,
 )
 
 
@@ -630,41 +629,110 @@ class InfrastructurePlacementAction(BaseAction):
             return ActionResult.fail(f"Infrastructure setup failed: {e}")
 
 
+# Vanilla furnace recipe: every raw meat smelts 1:1 into its cooked form.
+# No production equivalent existed to delegate to -- the FOOD_AND_IRON phase
+# only ever consumes food that arrives already cooked (loot, farm, hunting) --
+# so this stays local rather than growing a new shared "cook food" primitive
+# nothing else needs yet.
+_RAW_TO_COOKED_FOOD = {
+    "minecraft:beef": "minecraft:cooked_beef",
+    "minecraft:porkchop": "minecraft:cooked_porkchop",
+    "minecraft:chicken": "minecraft:cooked_chicken",
+    "minecraft:mutton": "minecraft:cooked_mutton",
+    "minecraft:rabbit": "minecraft:cooked_rabbit",
+}
+
+
 class FoodCookingAction(BaseAction):
-    """Cook raw food in furnace."""
+    """Cook raw food in a furnace.
+
+    Only reachable via ``spawn_to_dragon.py --suite T901``; the live fleet
+    always runs the phase-based FOOD_AND_IRON path instead (see
+    automator/phases/iron_age.py). This used to print a message and
+    unconditionally return success without touching the furnace or the
+    bot's food -- if the suite path is ever exercised for debugging, that
+    silently claims cooking happened when it did not.
+    """
 
     def execute(self, context: ActionContext) -> ActionResult:
-        """Fail closed until a multi-stack furnace contract is available."""
-        return ActionResult.fail(
-            "Food cooking action is not implemented; use FoodAndIronHandler"
+        """Cook the largest carried stack of raw meat."""
+        from ..common import harness_ops
+        from ..common.resources import _prepare_safe_furnace_fuel
+
+        client = context.client
+        raw_id, cooked_id, raw_count = None, None, 0
+        for candidate_raw, candidate_cooked in _RAW_TO_COOKED_FOOD.items():
+            carried = count_item(client, candidate_raw)
+            if carried > raw_count:
+                raw_id, cooked_id, raw_count = candidate_raw, candidate_cooked, carried
+        if raw_id is None:
+            return ActionResult.ok("No raw food carried; nothing to cook")
+
+        record = nearby_infrastructure_record(context)
+        furnace_pos = record.get("furnace") if isinstance(record, dict) else None
+        if not isinstance(furnace_pos, (list, tuple)) or len(furnace_pos) != 3:
+            return ActionResult.fail("No persisted furnace nearby to cook with")
+
+        fuel_id = _prepare_safe_furnace_fuel(client, raw_count)
+        if fuel_id is None:
+            return ActionResult.fail("Could not prepare furnace fuel for cooking")
+
+        before = count_item(client, cooked_id)
+        cooked = harness_ops.smelt_in_furnace(
+            client, tuple(int(v) for v in furnace_pos), raw_id, fuel_id, cooked_id, raw_count
         )
+        after = count_item(client, cooked_id)
+        if not cooked or after <= before:
+            return ActionResult.fail(f"Cooking {raw_id} produced no {cooked_id}")
+        return ActionResult.ok(f"Cooked {after - before}x {cooked_id}")
 
 
 class IronSmeltingAction(BaseAction):
-    """Smelt raw iron into ingots."""
+    """Smelt raw iron into ingots.
+
+    Only reachable via ``spawn_to_dragon.py --suite T901``; see the
+    FoodCookingAction docstring above for why this used to be a no-op that
+    claimed success. Delegates to _smelt_with_furnace, the implementation
+    already proven by the live FOOD_AND_IRON phase, rather than a second
+    reimplementation of furnace/fuel handling.
+    """
 
     def execute(self, context: ActionContext) -> ActionResult:
-        """Smelt all available raw iron and verify output delta."""
-        before_raw = count_item(context.client, "minecraft:raw_iron")
-        before_ingots = count_item(context.client, "minecraft:iron_ingot")
-        if before_raw <= 0:
-            return ActionResult.fail("No raw_iron available for smelting")
+        """Smelt every carried raw iron into ingots."""
+        from ..common.resources import _smelt_with_furnace
 
-        if not _smelt_requirement_shortfall(context.client, "minecraft:iron_ingot", before_raw):
+        client = context.client
+        raw_count = count_item(client, "minecraft:raw_iron")
+        if raw_count <= 0:
+            return ActionResult.ok("No raw iron carried; nothing to smelt")
+
+        record = nearby_infrastructure_record(context)
+        furnace_pos = record.get("furnace") if isinstance(record, dict) else None
+        position = (
+            tuple(int(value) for value in furnace_pos)
+            if isinstance(furnace_pos, (list, tuple)) and len(furnace_pos) == 3
+            else None
+        )
+
+        before = count_item(client, "minecraft:iron_ingot")
+        target = before + raw_count
+        smelted = _smelt_with_furnace(
+            client, "minecraft:iron_ingot", target, position
+        )
+        after = count_item(client, "minecraft:iron_ingot")
+        after_raw = count_item(client, "minecraft:raw_iron")
+        raw_delta = raw_count - after_raw
+        ingot_delta = after - before
+        if not smelted:
             return ActionResult.fail("Iron smelting helper failed")
-
-        after_raw = count_item(context.client, "minecraft:raw_iron")
-        after_ingots = count_item(context.client, "minecraft:iron_ingot")
-        raw_delta = before_raw - after_raw
-        ingot_delta = after_ingots - before_ingots
         if raw_delta <= 0 or ingot_delta <= 0:
             return ActionResult.fail(
-                "Iron smelting produced no inventory progress",
+                "Smelting raw iron produced no ingots",
                 raw_delta=raw_delta,
                 ingot_delta=ingot_delta,
             )
         return ActionResult.ok(
-            "Smelted raw iron into ingots",
+            f"Smelted {ingot_delta}x minecraft:iron_ingot",
             raw_delta=raw_delta,
             ingot_delta=ingot_delta,
         )

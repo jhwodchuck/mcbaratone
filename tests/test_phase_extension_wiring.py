@@ -51,10 +51,10 @@ def test_placeholder_actions_fail_explicitly():
     assert "not implemented" in result.message
 
 
-def test_food_cooking_action_fails_closed_until_supported():
+def test_food_cooking_action_is_concrete_and_no_raw_food_is_a_no_op():
     result = FoodCookingAction().execute(make_context())
-    assert result.success is False
-    assert "FoodAndIronHandler" in result.message
+    assert result.success is True
+    assert "nothing to cook" in result.message.lower()
 
 
 def test_production_backed_suites_are_concrete_and_t904_is_explicit():
@@ -168,14 +168,17 @@ def test_city_handler_persists_only_completed_ring_counts(monkeypatch, tmp_path)
 
 
 def test_iron_smelt_action_verifies_delta(monkeypatch):
+    from baritone_client.common import resources
+
     counts = {"minecraft:raw_iron": 6, "minecraft:iron_ingot": 0}
 
     def fake_count_item(_client, item_id):
         return int(counts.get(item_id, 0))
 
-    def fake_smelt_requirement(_client, item_id, shortfall):
+    def fake_smelt(_client, item_id, target, _furnace_pos=None):
         if item_id != "minecraft:iron_ingot":
             return False
+        shortfall = max(0, target - counts["minecraft:iron_ingot"])
         smelted = min(shortfall, counts["minecraft:raw_iron"])
         counts["minecraft:raw_iron"] -= smelted
         counts["minecraft:iron_ingot"] += smelted
@@ -183,9 +186,9 @@ def test_iron_smelt_action_verifies_delta(monkeypatch):
 
     monkeypatch.setattr(boot_sequence, "count_item", fake_count_item)
     monkeypatch.setattr(
-        boot_sequence,
-        "_smelt_requirement_shortfall",
-        fake_smelt_requirement,
+        resources,
+        "_smelt_with_furnace",
+        fake_smelt,
     )
 
     result = IronSmeltingAction().execute(make_context())
@@ -195,9 +198,11 @@ def test_iron_smelt_action_verifies_delta(monkeypatch):
 
 
 def test_iron_smelting_action_fails_when_smelt_helper_fails(monkeypatch):
+    from baritone_client.common import resources
+
     counts = {"minecraft:raw_iron": 3, "minecraft:iron_ingot": 0}
     monkeypatch.setattr(boot_sequence, "count_item", lambda *_args, **_kwargs: counts.get(_args[1], 0))
-    monkeypatch.setattr(boot_sequence, "_smelt_requirement_shortfall", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(resources, "_smelt_with_furnace", lambda *_args, **_kwargs: False)
     result = IronSmeltingAction().execute(make_context())
     assert result.success is False
     assert result.message == "Iron smelting helper failed"
