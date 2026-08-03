@@ -989,3 +989,53 @@ def test_blaze_frontier_waits_for_arrival_before_retargeting(monkeypatch):
     assert abs(transport.position["x"] - 20) <= 6, (
         f"must arrive before advancing, stopped at {transport.position}"
     )
+
+
+def test_unreachable_frontier_cell_is_retired_not_retried_forever(monkeypatch):
+    """An unreachable goal must be abandoned, not re-chosen every pass.
+
+    A cell is normally marked explored by standing in it, so a frontier target
+    the bot cannot reach never leaves the candidate list. Live 2026-08-03:
+    Bot07 logged "Advancing blaze search to fortress frontier (709, 74, 550)"
+    every ten seconds at precisely zero movement.
+    """
+
+    class UnreachableTransport(_BlazeSearchTransport):
+        def dispatch(self, route, payload, **kwargs):
+            if route == "get_state":
+                return {                      # never moves, whatever we ask
+                    "dimension": self.dimension,
+                    "block_position": dict(self.position),
+                }
+            return super().dispatch(route, payload, **kwargs)
+
+    blocks = [(709, 74, 550), (400, 64, 0)]
+    transport = UnreachableTransport(blocks)
+    client = SimpleNamespace(transport=transport, mission=MissionStub())
+    monkeypatch.setattr(nether.time, "sleep", lambda _seconds: None)
+
+    explored = set()
+    first_target = None
+    for _ in range(3):
+        nether._advance_blaze_frontier(
+            client,
+            blocks,
+            explored,
+            [],
+            current=(700, 74, 545),
+            center=(700, 74, 545),
+            frontier_index=0,
+        )
+        if first_target is None:
+            first_target = (
+                transport.gotos[0]["x"],
+                transport.gotos[0]["y"],
+                transport.gotos[0]["z"],
+            )
+
+    targets = [(g["x"], g["y"], g["z"]) for g in transport.gotos]
+    assert targets[0] == first_target
+    assert targets.count(first_target) == 1, (
+        f"an unreachable cell must be retired after one attempt: {targets}"
+    )
+    assert len(set(targets)) > 1, "the search must move on to another cell"

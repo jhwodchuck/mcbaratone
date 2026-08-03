@@ -790,7 +790,24 @@ def _advance_blaze_frontier(
             target_y,
             target_z,
         )
-        _travel_to(client, (target_x, target_y, target_z), radius=4)
+        reached = _travel_to(client, (target_x, target_y, target_z), radius=4)
+        # A cell is normally marked explored by standing in it, so a frontier
+        # target the bot cannot reach stays on the list and is chosen again on
+        # every pass -- an endless retry against an impossible goal. Retire the
+        # cell either way: arriving is what the main loop records anyway, and
+        # failing to arrive is exactly what must not be repeated. Live
+        # 2026-08-03: Bot07 logged "Advancing blaze search to fortress frontier
+        # (709, 74, 550)" every ten seconds at precisely zero movement.
+        explored_positions.add(
+            (int(target_x) // 10, int(target_y) // 5, int(target_z) // 10)
+        )
+        if not reached:
+            logger.info(
+                "Frontier cell (%d, %d, %d) is unreachable; retiring it",
+                target_x,
+                target_y,
+                target_z,
+            )
         return frontier_index, True
 
     heading = _SEARCH_HEADINGS[frontier_index % len(_SEARCH_HEADINGS)]
