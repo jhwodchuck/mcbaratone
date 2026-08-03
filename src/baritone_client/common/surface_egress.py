@@ -21,6 +21,30 @@ _SURFACE_BLOCKS = [
     "minecraft:stone",
 ]
 
+# None of the Overworld ground blocks exist in the Nether, so the candidate
+# search found nothing and the escape silently no-op'd for a bot that was
+# genuinely marooned. Live 2026-08-03: Bot16 and Bot18 both sat on the same
+# glowstone blob at (-132, 78, -7) in a basalt delta, air underneath, and
+# refused all eight search headings for over an hour.
+_NETHER_SURFACE_BLOCKS = [
+    "minecraft:netherrack",
+    "minecraft:basalt",
+    "minecraft:smooth_basalt",
+    "minecraft:blackstone",
+    "minecraft:soul_sand",
+    "minecraft:soul_soil",
+    "minecraft:nether_bricks",
+    "minecraft:warped_nylium",
+    "minecraft:crimson_nylium",
+]
+
+
+def _surface_blocks_for(state: Dict[str, Any]) -> list:
+    """Pick landing blocks that actually occur in the bot's dimension."""
+    if "nether" in str(state.get("dimension", "")).lower():
+        return list(_NETHER_SURFACE_BLOCKS)
+    return list(_SURFACE_BLOCKS)
+
 # Never drop onto these, whatever the arithmetic says.
 _FATAL_LANDINGS = ("lava", "magma", "fire", "campfire", "cactus", "void")
 # Vanilla: no damage for the first three blocks, then half a heart per block.
@@ -176,7 +200,7 @@ def try_lower_surface_egress(
             response = client.transport.dispatch(
                 "find_blocks",
                 {
-                    "blocks": _SURFACE_BLOCKS,
+                    "blocks": _surface_blocks_for(initial_state),
                     "radius": int(radius),
                     "limit": 4096,
                 },

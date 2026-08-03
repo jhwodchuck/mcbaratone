@@ -610,3 +610,75 @@ def test_fortress_search_pushes_outward_when_the_bot_stops_moving(monkeypatch):
         for g in transport.gotos
     }
     assert len(headings) > 1, f"must try more than one direction: {transport.gotos}"
+
+
+def test_marooned_bot_escapes_instead_of_cycling_headings_forever(monkeypatch):
+    """No bearing is walkable off a ledge; rotating them is not a search.
+
+    Being stuck is a property of the terrain, not the heading. Live
+    2026-08-03: Bot16 and Bot18 sat on the same glowstone blob at
+    (-132, 78, -7) in a basalt delta -- air underneath, air on every side --
+    and cycled all eight compass headings every 20 seconds for over an hour
+    without moving a block.
+    """
+
+    class LedgeTransport(PortalTransport):
+        def __init__(self):
+            super().__init__()
+            self.dimension = "minecraft:the_nether"
+            self.position = {"x": -132, "y": 78, "z": -7}
+
+        def dispatch(self, route, payload, **kwargs):
+            if route in ("goto", "explore"):
+                return {"started": True}      # nothing is walkable
+            if route == "find_blocks":
+                return {"found": []}
+            return super().dispatch(route, payload, **kwargs)
+
+    transport = LedgeTransport()
+    client = SimpleNamespace(transport=transport, mission=MissionStub())
+    monkeypatch.setattr(nether.time, "sleep", lambda _seconds: None)
+    clock = {"now": 0.0}
+
+    def fake_time():
+        clock["now"] += 3.0
+        return clock["now"]
+
+    monkeypatch.setattr(nether.time, "time", fake_time)
+
+    escapes = []
+
+    def fake_egress(_client, state, **kwargs):
+        escapes.append(kwargs)
+        return None
+
+    monkeypatch.setattr(nether, "try_lower_surface_egress", fake_egress)
+
+    nether.find_nether_fortress(client, timeout=600)
+
+    assert escapes, (
+        "a bot that refuses every heading must be treated as marooned, "
+        "not handed a ninth heading"
+    )
+    assert escapes[0].get("minimum_altitude") == 0, (
+        "the Overworld high-shelf altitude guard would refuse to help at y=78"
+    )
+
+
+def test_nether_egress_looks_for_blocks_that_exist_in_the_nether():
+    """Overworld ground blocks do not occur in the Nether.
+
+    try_lower_surface_egress searched for grass/dirt/stone, found nothing,
+    and silently no-op'd for a genuinely marooned bot.
+    """
+    from baritone_client.common import surface_egress
+
+    nether_blocks = surface_egress._surface_blocks_for(
+        {"dimension": "minecraft:the_nether"}
+    )
+    assert "minecraft:netherrack" in nether_blocks
+    assert "minecraft:basalt" in nether_blocks
+    assert not any("grass" in block for block in nether_blocks)
+
+    overworld = surface_egress._surface_blocks_for({"dimension": "minecraft:overworld"})
+    assert "minecraft:grass_block" in overworld

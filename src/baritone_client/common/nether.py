@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from .automation_utils import place_block
 from .combat import hunt_mobs, find_entity_by_type
 from .inventory import count_item, find_item_slot
+from .surface_egress import try_lower_surface_egress
 
 logger = logging.getLogger(__name__)
 
@@ -474,6 +475,7 @@ def find_nether_fortress(
         last_position = None
         stationary_scans = 0
         heading_index = 0
+        failed_pushes = 0
 
         while time.time() - start_time < timeout:
             current_time = time.time()
@@ -514,6 +516,31 @@ def find_nether_fortress(
 
                 if stationary_scans >= 2:
                     stationary_scans = 0
+                    failed_pushes += 1
+                    # Rotating the heading only helps if *some* direction is
+                    # walkable. A bot marooned on a ledge with air on every
+                    # side refuses all eight, because each one is a fatal
+                    # fall -- being stuck is a property of the terrain, not
+                    # of the bearing. Live 2026-08-03: Bot16 and Bot18 sat on
+                    # the same glowstone blob at (-132, 78, -7) in a basalt
+                    # delta, cycling headings every 20s for over an hour.
+                    if failed_pushes >= len(_SEARCH_HEADINGS):
+                        failed_pushes = 0
+                        logger.warning(
+                            "No heading is walkable from (%d, %d, %d); "
+                            "treating the bot as marooned",
+                            current_x,
+                            current_y,
+                            current_z,
+                        )
+                        # minimum_altitude=0: the default guard exists for
+                        # Overworld high-shelf work and would refuse to help
+                        # here purely because y=78 is not high enough.
+                        if try_lower_surface_egress(
+                            client, state, minimum_altitude=0
+                        ):
+                            last_position = None
+                            continue
                     heading = _SEARCH_HEADINGS[
                         heading_index % len(_SEARCH_HEADINGS)
                     ]
