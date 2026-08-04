@@ -5,6 +5,7 @@ import pytest
 from baritone_client.actions import death_recovery_action
 from baritone_client.actions.death_recovery_action import DeathRecoveryAction
 from baritone_client.automator import automator as automator_module
+from baritone_client.automator import objective_survival
 from baritone_client.automator.automator import EndGameAutomator
 from baritone_client.automator.state_manager import Phase
 from baritone_client.automator.phase_executor import PhaseExecutor, PhaseHandler
@@ -249,6 +250,75 @@ def test_automator_stops_instead_of_resuming_after_failed_recovery(monkeypatch):
 
     assert automator._handle_death_recovery()
     assert not automator._running
+
+
+def test_automator_blocks_next_objective_until_survival_recovers(monkeypatch):
+    class SurvivalTransport:
+        def __init__(self):
+            self.health = 5.0
+            self.food = 6
+
+        def dispatch(self, route, _payload):
+            assert route == "get_state"
+            return {
+                "health": self.health,
+                "food_level": self.food,
+                "is_dead": False,
+            }
+
+    transport = SurvivalTransport()
+    automator = object.__new__(EndGameAutomator)
+    automator.client = SimpleNamespace(transport=transport)
+    automator.state = SimpleNamespace()
+    attempts = []
+
+    monkeypatch.setattr(
+        objective_survival,
+        "_attempt_survival_recovery_food",
+        lambda *_args: attempts.append("known") or False,
+    )
+
+    def recover(*_args):
+        attempts.append("explore")
+        transport.health = 12.0
+        transport.food = 14
+        return True
+
+    monkeypatch.setattr(
+        objective_survival,
+        "_acquire_checkpointed_emergency_food",
+        recover,
+    )
+
+    assert objective_survival.recover_survival_before_objective(
+        automator.client, automator.state
+    )
+    assert attempts == ["known", "explore"]
+
+
+def test_automator_survival_gate_skips_recovery_at_safe_margin(monkeypatch):
+    automator = object.__new__(EndGameAutomator)
+    automator.client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: {
+                "health": 12.0,
+                "food_level": 10,
+                "is_dead": False,
+            }
+        )
+    )
+    automator.state = SimpleNamespace()
+    monkeypatch.setattr(
+        objective_survival,
+        "_attempt_survival_recovery_food",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("safe players must proceed directly to objective selection")
+        ),
+    )
+
+    assert objective_survival.recover_survival_before_objective(
+        automator.client, automator.state
+    )
 
 
 def test_sequential_task_yields_dead_player_without_respawning():

@@ -9,6 +9,7 @@ from .resource_manager import ResourceManager
 from .phase_executor import PhaseExecutor, PhaseHandler
 from .phase_verifier import PhaseVerifier
 from .objective import ObjectivePlanner, default_objectives
+from .objective_survival import recover_survival_before_objective
 from .pacing import wait_with_bridge_keepalive
 from .progress_control import progression_fingerprint
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
@@ -382,6 +383,16 @@ class EndGameAutomator:
                 if self._handle_death_recovery():
                     continue
 
+                # A failed objective may leave the player alive but critically
+                # wounded or starving. The DAG is allowed to try another
+                # runnable objective after an ordinary failure, but no phase is
+                # safe at this margin. Recover first instead of converting a
+                # survival failure into unrelated progression work.
+                if not recover_survival_before_objective(self.client, self.state):
+                    self._save_checkpoint()
+                    wait_with_bridge_keepalive(self.client, duration=5.0)
+                    continue
+
                 # Choose the highest-value runnable objective.  Runnability is
                 # decided by graph prerequisites only: in this codebase
                 # PHASE_REQUIREMENTS are a phase's *outputs* (completion criteria the
@@ -734,7 +745,7 @@ class EndGameAutomator:
         self.state.set_phase(objective.phase)
         self._persist_objective_progress()
         self._save_checkpoint()
-    
+
     def _handle_death_recovery(self) -> bool:
         """Handle death and stop the run if recovery cannot be proven safe."""
         # Use modular death recovery action
