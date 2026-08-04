@@ -18,6 +18,20 @@ def objective_survival_safe(snapshot: Mapping[str, Any]) -> bool:
     )
 
 
+def _has_carried_emergency_bread_materials(client) -> bool:
+    """Return whether carried wheat can replace a dangerous food trip."""
+    try:
+        from ..common.emergency_food import emergency_food_count
+        from ..common.inventory import count_item
+
+        return (
+            emergency_food_count(client) == 0
+            and count_item(client, "minecraft:wheat") >= 3
+        )
+    except Exception:
+        return False
+
+
 def recover_survival_before_objective(client, state) -> bool:
     """Recover a critical player and fail closed until its margin is safe."""
     try:
@@ -35,6 +49,12 @@ def recover_survival_before_objective(client, state) -> bool:
         f"health={health:.1f}, food={food}"
     )
     try:
+        if _has_carried_emergency_bread_materials(client):
+            print("RECOVERY: using carried wheat before any storage navigation")
+            _acquire_checkpointed_emergency_food(client, state)
+            snapshot = client.transport.dispatch("get_state", {})
+            if objective_survival_safe(snapshot):
+                return True
         _attempt_survival_recovery_food(client, state)
         snapshot = client.transport.dispatch("get_state", {})
         if objective_survival_safe(snapshot):

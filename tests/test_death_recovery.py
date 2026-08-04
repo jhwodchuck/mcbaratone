@@ -296,6 +296,54 @@ def test_automator_blocks_next_objective_until_survival_recovers(monkeypatch):
     assert attempts == ["known", "explore"]
 
 
+def test_survival_gate_uses_carried_wheat_before_storage_navigation(monkeypatch):
+    class SurvivalTransport:
+        def __init__(self):
+            self.health = 5.0
+            self.food = 4
+
+        def dispatch(self, route, _payload):
+            assert route == "get_state"
+            return {
+                "health": self.health,
+                "food_level": self.food,
+                "is_dead": False,
+            }
+
+    transport = SurvivalTransport()
+    client = SimpleNamespace(transport=transport)
+    attempts = []
+    monkeypatch.setattr(
+        objective_survival,
+        "_has_carried_emergency_bread_materials",
+        lambda _client: True,
+    )
+    monkeypatch.setattr(
+        objective_survival,
+        "_attempt_survival_recovery_food",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("storage recovery must not precede carried wheat")
+        ),
+    )
+
+    def recover(*_args):
+        attempts.append("carried_wheat")
+        transport.health = 12.0
+        transport.food = 14
+        return True
+
+    monkeypatch.setattr(
+        objective_survival,
+        "_acquire_checkpointed_emergency_food",
+        recover,
+    )
+
+    assert objective_survival.recover_survival_before_objective(
+        client, SimpleNamespace()
+    )
+    assert attempts == ["carried_wheat"]
+
+
 def test_automator_survival_gate_skips_recovery_at_safe_margin(monkeypatch):
     automator = object.__new__(EndGameAutomator)
     automator.client = SimpleNamespace(
