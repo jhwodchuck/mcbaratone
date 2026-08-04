@@ -21,6 +21,8 @@ from .death_recovery_state import (
     abandon_repeated_unsafe_pending_recovery,
     abandon_unrecoverable_grave,
     handle_alive_pending_recovery,
+    mark_newer_death_unsafe,
+    persist_pending_recovery,
 )
 
 # How many times a single grave may come up short on critical items before it
@@ -377,17 +379,6 @@ def _clear_unsafe_recovery(state) -> None:
     custom_data.pop("death_recovery", None)
 
 
-def _persist_pending_recovery(state, expected: Dict[str, int]) -> None:
-    """Best-effort checkpoint of a grave target before the controller can exit."""
-    save = getattr(state, "save_checkpoint", None)
-    if not callable(save):
-        return
-    try:
-        save(expected)
-    except Exception as exc:
-        print(f"RECOVERY: pending grave checkpoint deferred ({exc})")
-
-
 def _remember_death(
     context: ActionContext,
     recovery_state: Dict,
@@ -409,7 +400,7 @@ def _remember_death(
             "expected_critical": expected_critical,
         }
     )
-    _persist_pending_recovery(context.state, expected_critical)
+    persist_pending_recovery(context.state, expected_critical)
 
 
 def _recover_nether_death(
@@ -557,7 +548,7 @@ class DeathRecoveryAction(BaseAction):
                         "expected_critical": expected_critical,
                     }
                 )
-                _persist_pending_recovery(context.state, expected_critical)
+                persist_pending_recovery(context.state, expected_critical)
             print("\n!!! PLAYER DIED !!!")
             print("Starting recovery sequence...")
             respawn_failure = _respawn_after_death_area_clears(context.client)
@@ -616,11 +607,19 @@ class DeathRecoveryAction(BaseAction):
                     )
                     pending_location = list(fresh_coords)
                     death_x, death_y, death_z = fresh_coords
-                    recovery_state["pending_location"] = pending_location
-                    recovery_state["pending_dimension"] = death_dim
-                    # The failure count belongs to the grave we just gave up
-                    # on, not to this one.
-                    recovery_state["unsafe_failures"] = 0
+                    # A new corpse proves the pending recovery route was lethal.
+                    mark_newer_death_unsafe(
+                        context.state,
+                        recovery_state,
+                        pending_location,
+                        death_dim,
+                        expected_critical,
+                    )
+                    repeated_result = _abandon_or_defer_repeated_grave(
+                        context, recovery_state
+                    )
+                    if repeated_result is not None:
+                        return repeated_result
                 else:
                     death_x, death_y, death_z = pending_location
                     death_dim = str(
@@ -772,7 +771,7 @@ class DeathRecoveryAction(BaseAction):
                     failures = _record_unsafe_recovery(
                         context.state, death_coords
                     )
-                    _persist_pending_recovery(
+                    persist_pending_recovery(
                         context.state, expected_critical
                     )
                     print(

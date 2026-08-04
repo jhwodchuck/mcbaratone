@@ -7,8 +7,18 @@ from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
 from ...common import TaskResult, SequentialTask, ActionTask
 from ...common.resources import ensure_supplies, _read_state_with_retry
-from ...common.inventory import _ensure_raw_planks
-from ...common.inventory import count_item
+from ...common.inventory import (
+    _ensure_raw_planks,
+    count_item,
+    equip_best_armor,
+    equip_best_weapon,
+    has_full_armor,
+)
+from ...common.combat import (
+    _emergency_food_count,
+    acquire_emergency_food,
+    eat_until_hunger,
+)
 from ...common.landmark_scanner import import_shared_landmarks
 from ...common.storage_catalog import catalog_for
 from ...common.nether import (
@@ -29,6 +39,10 @@ class NetherAndBlazeHandler(PhaseHandler):
     
     def execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
         tasks = [
+            ActionTask(
+                "Verify Nether expedition loadout",
+                lambda c: self._ensure_nether_readiness(c, state),
+            ),
             ActionTask(
                 "Build, ignite, and verify Nether portal",
                 lambda c: self._prepare_portal(c, state),
@@ -244,6 +258,75 @@ class NetherAndBlazeHandler(PhaseHandler):
                 return True
         print("  All portal placement attempts failed; will retry later.")
         return False
+
+    @staticmethod
+    def _nether_loadout_ready(client, snapshot=None) -> bool:
+        """Require a durable combat kit, health, hunger, and reserve food."""
+        snapshot = snapshot or client.transport.dispatch("get_state", {})
+        health = float(snapshot.get("health", 0) or 0)
+        food = int(snapshot.get("food_level", snapshot.get("food", 0)) or 0)
+        return (
+            not bool(snapshot.get("is_dead", False))
+            and health >= 18.0
+            and food >= 18
+            and has_full_armor(client, minimum_material="iron")
+            and count_item(client, "minecraft:shield") >= 1
+            and _emergency_food_count(client) >= 6
+            and equip_best_weapon(client)
+        )
+
+    def _ensure_nether_readiness(self, client, state: StateManager) -> bool:
+        """Build and verify the loadout before allowing Nether progression.
+
+        A completed FOOD_AND_IRON checkpoint proves historical progress, not
+        the bot's equipment after a death. Re-check live inventory every time
+        this phase resumes so a naked respawn cannot walk back into a fortress.
+        """
+        snapshot = client.transport.dispatch("get_state", {})
+        if self._nether_loadout_ready(client, snapshot):
+            return True
+
+        if "nether" in str(snapshot.get("dimension", "")).lower():
+            print("  Nether loadout is unsafe; returning to the Overworld to rearm.")
+            self._return_to_overworld(client, state)
+            # Restart this task after the dimension transition; never combine
+            # portal travel and a potentially long rearm operation in one run.
+            return False
+
+        gear = ensure_supplies(
+            client,
+            {
+                "minecraft:iron_helmet": 1,
+                "minecraft:iron_chestplate": 1,
+                "minecraft:iron_leggings": 1,
+                "minecraft:iron_boots": 1,
+                "minecraft:iron_sword": 1,
+                "minecraft:shield": 1,
+            },
+            timeout=300,
+        )
+        if not gear.success:
+            print("  Nether expedition rearm is incomplete; entry remains blocked.")
+            return False
+        equip_best_armor(client)
+        equip_best_weapon(client)
+
+        if _emergency_food_count(client) < 6:
+            acquire_emergency_food(
+                client,
+                minimum_health=18.0,
+                minimum_food=18,
+                timeout=180.0,
+                max_exploration_distance=64.0,
+            )
+        eat_until_hunger(client, minimum_food=18)
+        verified = self._nether_loadout_ready(client)
+        if not verified:
+            print(
+                "  Nether loadout verification failed (full iron, shield, "
+                "6 food, 18 health/hunger required)."
+            )
+        return verified
 
     def _enter_nether(self, client, state: StateManager) -> bool:
         if "nether" in self._current_dimension(client):

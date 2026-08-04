@@ -149,6 +149,7 @@ def test_nether_handler_persists_portal_pair_and_fortress(monkeypatch, tmp_path)
     rods = {"count": 0}
 
     monkeypatch.setattr(nether_prep, "_ensure_raw_planks", lambda *_args: True)
+    monkeypatch.setattr(handler, "_ensure_nether_readiness", lambda *_args: True)
     monkeypatch.setattr(
         nether_prep,
         "ensure_supplies",
@@ -214,6 +215,25 @@ def test_nether_handler_persists_portal_pair_and_fortress(monkeypatch, tmp_path)
         -80,
     )
     assert state.get_phase_payload(Phase.NETHER_AND_BLAZE)["blaze_rods"] == 6
+
+
+def test_nether_readiness_blocks_a_naked_checkpoint_resume(monkeypatch, tmp_path):
+    handler, client, state = _portal_reuse_handler(tmp_path)
+    client.transport.dimension = "minecraft:the_nether"
+    returned = []
+
+    monkeypatch.setattr(nether_prep, "has_full_armor", lambda *_a, **_k: False)
+    monkeypatch.setattr(nether_prep, "count_item", lambda *_a, **_k: 0)
+    monkeypatch.setattr(nether_prep, "_emergency_food_count", lambda *_a: 0)
+    monkeypatch.setattr(nether_prep, "equip_best_weapon", lambda *_a: False)
+    monkeypatch.setattr(
+        handler,
+        "_return_to_overworld",
+        lambda *_a: returned.append(True) or True,
+    )
+
+    assert handler._ensure_nether_readiness(client, state) is False
+    assert returned == [True], "an under-equipped Nether bot must retreat to rearm"
 
 
 def _portal_reuse_handler(tmp_path):
@@ -914,6 +934,7 @@ def test_blaze_spawner_camp_holds_position_and_reanchors(monkeypatch):
         "count_item",
         lambda *_args: rods["count"],
     )
+    monkeypatch.setattr(blaze_spawners, "has_full_armor", lambda *_a, **_k: True)
 
     def fake_hunt(_client, **kwargs):
         hunts.append(kwargs)
@@ -931,8 +952,28 @@ def test_blaze_spawner_camp_holds_position_and_reanchors(monkeypatch):
     assert len(hunts) == 2
     assert all(call["explore_when_empty"] is False for call in hunts)
     assert all(call["search_radius"] == 20 for call in hunts)
+    assert all(call["heal_threshold"] == 16.0 for call in hunts)
     assert len(travels) == 2, "combat must re-anchor at the spawner"
     assert all(call[1]["radius"] == 8 for call in travels)
+
+
+def test_blaze_spawner_camp_rejects_an_under_armored_bot(monkeypatch):
+    client = SimpleNamespace(transport=PortalTransport())
+    hunts = []
+    monkeypatch.setattr(blaze_spawners, "has_full_armor", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        blaze_spawners,
+        "hunt_mobs",
+        lambda *_a, **_k: hunts.append(True),
+    )
+
+    assert nether._camp_blaze_spawner(
+        client,
+        (-332, 70, 104),
+        target_count=6,
+        deadline=nether.time.time() + 120,
+    ) is False
+    assert hunts == []
 
 
 def test_unreachable_shared_spawner_never_starts_hunt(monkeypatch):

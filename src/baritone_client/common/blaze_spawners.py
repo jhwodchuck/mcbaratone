@@ -7,7 +7,7 @@ import time
 from typing import Any, Callable, List, Mapping, Tuple
 
 from .combat import hunt_mobs
-from .inventory import count_item
+from .inventory import count_item, has_full_armor
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,12 @@ def camp_blaze_spawner(
     travel_to: Travel,
 ) -> bool:
     """Stay inside activation range and hunt until the total rod target is met."""
+    if not has_full_armor(client, minimum_material="iron"):
+        logger.warning(
+            "Refusing to camp blaze spawner at %s without full iron-or-better armor",
+            position,
+        )
+        return False
     remaining = deadline - time.time()
     if remaining <= 0 or not travel_to(
         client, position, radius=8, timeout=min(120.0, remaining)
@@ -125,7 +131,10 @@ def camp_blaze_spawner(
             required_loot={"minecraft:blaze_rod": target_count - current_rods},
             search_radius=20,
             timeout=max(1, min(60, int(deadline - time.time()))),
-            heal_threshold=10.0,
+            # Blazes can chain ranged and fire damage. Ten health left too
+            # little margin to disengage; begin healing while regeneration can
+            # still outpace a follow-up volley.
+            heal_threshold=16.0,
             explore_when_empty=False,
         )
         if count_item(client, "minecraft:blaze_rod") < target_count:

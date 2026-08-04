@@ -914,6 +914,12 @@ def test_a_newer_death_replaces_a_stale_pending_grave(monkeypatch):
     context = _context(
         {"x": 708, "y": 27, "z": 600, "dimension": "minecraft:overworld"}
     )
+    monkeypatch.setattr(
+        death_recovery_action, "_wait_for_clear_death_area", lambda *_a: True
+    )
+    monkeypatch.setattr(
+        death_recovery_action, "_bootstrap_starter_pickaxe", lambda *_a: True
+    )
     context.state.custom_data["death_recovery"] = {
         "pending_location": [-12, 84, -40],
         "pending_dimension": "minecraft:overworld",
@@ -928,14 +934,45 @@ def test_a_newer_death_replaces_a_stale_pending_grave(monkeypatch):
 
     DeathRecoveryAction().execute(context)
 
-    assert context.state.custom_data["last_death_location"]["x"] == 708, (
-        "recovery must head for the grave the player actually just made"
-    )
+    assert context.state.custom_data["last_abandoned_death_recovery"][
+        "location"
+    ] == [708, 27, 600], "the circuit must record the grave actually just made"
     # The stale target must not survive as something to walk to later.
     pending = (context.state.custom_data.get("death_recovery") or {}).get(
         "pending_location"
     )
     assert pending in (None, [708, 27, 600]), pending
+
+
+def test_new_death_during_pending_recovery_opens_safety_circuit(monkeypatch):
+    context = _context(
+        {"x": -103, "y": 82, "z": 52, "dimension": "minecraft:the_nether"}
+    )
+    context.state.custom_data["death_recovery"] = {
+        "pending_location": [-285, 76, 80],
+        "pending_dimension": "minecraft:the_nether",
+        "expected_critical": {"minecraft:iron_sword": 1},
+        "unsafe_failures": 0,
+    }
+    monkeypatch.setattr(
+        death_recovery_action,
+        "_wait_for_clear_death_area",
+        lambda *_a, **_k: True,
+    )
+    monkeypatch.setattr(
+        death_recovery_action,
+        "_bootstrap_starter_pickaxe",
+        lambda *_a, **_k: True,
+    )
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _seconds: None)
+
+    result = DeathRecoveryAction().execute(context)
+
+    assert result.success
+    assert result.data["grave_abandoned"] is True
+    abandoned = context.state.custom_data["last_abandoned_death_recovery"]
+    assert abandoned["location"] == [-103, 82, 52]
+    assert abandoned["unsafe_failures"] == 1
 
 
 def test_an_interrupted_recovery_still_resumes_the_same_grave(monkeypatch):
@@ -996,10 +1033,16 @@ def test_corpse_position_wins_when_the_bridge_has_no_death_location(monkeypatch)
     monkeypatch.setattr(
         death_recovery_action, "secure_recovery_area", lambda _client: True
     )
+    monkeypatch.setattr(
+        death_recovery_action, "_wait_for_clear_death_area", lambda *_a: True
+    )
+    monkeypatch.setattr(
+        death_recovery_action, "_bootstrap_starter_pickaxe", lambda *_a: True
+    )
     monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _seconds: None)
 
     DeathRecoveryAction().execute(context)
 
-    assert context.state.custom_data["last_death_location"]["x"] == -315, (
-        "must walk to the corpse, not to a grave from a previous death"
-    )
+    assert context.state.custom_data["last_abandoned_death_recovery"][
+        "location"
+    ] == [-315, 44, 187], "must circuit-break on the current corpse location"

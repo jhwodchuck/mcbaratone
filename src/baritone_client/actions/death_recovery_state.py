@@ -7,6 +7,33 @@ from typing import Any, Callable, Dict, Optional
 from ..core.interfaces import ActionResult
 
 
+def persist_pending_recovery(state: Any, expected: Dict[str, int]) -> None:
+    """Best-effort checkpoint of a grave target before controller exit."""
+    save = getattr(state, "save_checkpoint", None)
+    if not callable(save):
+        return
+    try:
+        save(expected)
+    except Exception as exc:
+        print(f"RECOVERY: pending grave checkpoint deferred ({exc})")
+
+
+def mark_newer_death_unsafe(
+    state: Any,
+    recovery: Dict[str, Any],
+    location: Any,
+    dimension: str,
+    expected: Dict[str, int],
+) -> None:
+    """Persist proof that a pending grave approach caused another death."""
+    recovery["pending_location"] = [int(value) for value in location]
+    recovery["pending_dimension"] = dimension
+    recovery["unsafe_failures"] = max(
+        1, int(recovery.get("unsafe_failures", 0)) + 1
+    )
+    persist_pending_recovery(state, expected)
+
+
 def abandon_repeated_unsafe_pending_recovery(
     state: Any,
     inventory: Dict[str, int],
