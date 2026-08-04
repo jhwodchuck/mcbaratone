@@ -1027,6 +1027,7 @@ def hunt_mobs(
 
     exploring = False
     exploration_idle_checks = 0
+    exploration_route_failures = 0
     last_time_check = 0
     while (missing or (target_kills and kills < target_kills)) and time.time() - start < timeout:
         if max_kills is not None and kills >= max(0, int(max_kills)):
@@ -1179,13 +1180,23 @@ def hunt_mobs(
                         "  Exploration goal was idle; staging toward sector "
                         f"{exploration_center}..."
                     )
-                    goto_xz(
+                    staged = goto_xz(
                         client,
                         int(exploration_center[0]),
                         int(exploration_center[1]),
                         timeout=45,
                         tolerance=24.0,
                     )
+                    if staged:
+                        exploration_route_failures = 0
+                    else:
+                        exploration_route_failures += 1
+                        if exploration_route_failures >= 3:
+                            return TaskResult.fail(
+                                "Passive-hunt exploration routes were rejected",
+                                missing=missing,
+                                kills=kills,
+                            )
             time.sleep(3)
             continue
 
