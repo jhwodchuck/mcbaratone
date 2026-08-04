@@ -236,17 +236,29 @@ def test_nether_readiness_blocks_a_naked_checkpoint_resume(monkeypatch, tmp_path
     assert returned == [True], "an under-equipped Nether bot must retreat to rearm"
 
 
-def test_nether_rearm_provisions_iron_before_crafting_gear(monkeypatch, tmp_path):
+def test_nether_rearm_provisions_and_equips_armor_incrementally(monkeypatch, tmp_path):
     handler, client, state = _portal_reuse_handler(tmp_path)
     calls = []
     events = []
+    counts = {}
     readiness = iter((False, True))
     monkeypatch.setattr(handler, "_nether_loadout_ready", lambda *_a: next(readiness))
-    monkeypatch.setattr(nether_prep, "get_equipped_armor", lambda *_a: {})
-    monkeypatch.setattr(nether_prep, "count_item", lambda *_a: 0)
+    monkeypatch.setattr(
+        nether_prep,
+        "count_item",
+        lambda _client, item_id: counts.get(item_id, 0),
+    )
     monkeypatch.setattr(nether_prep, "_emergency_food_count", lambda *_a: 6)
-    monkeypatch.setattr(nether_prep, "equip_best_armor", lambda *_a: 4)
-    monkeypatch.setattr(nether_prep, "equip_best_weapon", lambda *_a: True)
+    monkeypatch.setattr(
+        nether_prep,
+        "equip_best_armor",
+        lambda *_a: events.append("equip_armor") or 4,
+    )
+    monkeypatch.setattr(
+        nether_prep,
+        "equip_best_weapon",
+        lambda *_a: events.append("equip_weapon") or True,
+    )
     monkeypatch.setattr(
         nether_prep,
         "eat_until_hunger",
@@ -261,14 +273,90 @@ def test_nether_rearm_provisions_iron_before_crafting_gear(monkeypatch, tmp_path
     def supplies(_client, required, **_kwargs):
         events.append("supplies")
         calls.append(required)
+        item_id, quantity = next(iter(required.items()))
+        counts[item_id] = quantity
+        if item_id != "minecraft:iron_ingot":
+            costs = {
+                "minecraft:iron_boots": 4,
+                "minecraft:iron_helmet": 5,
+                "minecraft:iron_leggings": 7,
+                "minecraft:iron_sword": 2,
+                "minecraft:iron_chestplate": 8,
+                "minecraft:shield": 1,
+            }
+            counts["minecraft:iron_ingot"] = max(
+                0, counts.get("minecraft:iron_ingot", 0) - costs[item_id]
+            )
         return TaskResult.ok()
 
     monkeypatch.setattr(nether_prep, "ensure_supplies", supplies)
 
     assert handler._ensure_nether_readiness(client, state) is True
-    assert events[:3] == ["eat", "recover", "supplies"]
-    assert calls[0] == {"minecraft:iron_ingot": 27}
-    assert "minecraft:iron_helmet" in calls[1]
+    assert events[:4] == ["eat", "recover", "equip_armor", "equip_weapon"]
+    assert calls[:6] == [
+        {"minecraft:iron_ingot": 4},
+        {"minecraft:iron_boots": 1},
+        {"minecraft:iron_ingot": 5},
+        {"minecraft:iron_helmet": 1},
+        {"minecraft:iron_ingot": 7},
+        {"minecraft:iron_leggings": 1},
+    ]
+    assert calls[6:] == [
+        {"minecraft:iron_ingot": 2},
+        {"minecraft:iron_sword": 1},
+        {"minecraft:iron_ingot": 8},
+        {"minecraft:iron_chestplate": 1},
+        {"minecraft:iron_ingot": 1},
+        {"minecraft:shield": 1},
+    ]
+
+
+def test_nether_rearm_equips_recovered_armor_before_any_mining(monkeypatch, tmp_path):
+    handler, client, state = _portal_reuse_handler(tmp_path)
+    events = []
+    counts = {
+        "minecraft:iron_boots": 1,
+        "minecraft:iron_helmet": 1,
+        "minecraft:iron_leggings": 1,
+        "minecraft:iron_sword": 1,
+    }
+    readiness = iter((False, True))
+    monkeypatch.setattr(handler, "_nether_loadout_ready", lambda *_a: next(readiness))
+    monkeypatch.setattr(
+        nether_prep,
+        "count_item",
+        lambda _client, item_id: counts.get(item_id, 0),
+    )
+    monkeypatch.setattr(nether_prep, "_emergency_food_count", lambda *_a: 6)
+    monkeypatch.setattr(
+        nether_prep,
+        "equip_best_armor",
+        lambda *_a: events.append("equip_armor") or 3,
+    )
+    monkeypatch.setattr(
+        nether_prep,
+        "equip_best_weapon",
+        lambda *_a: events.append("equip_weapon") or True,
+    )
+    monkeypatch.setattr(nether_prep, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(nether_prep, "recover_health", lambda *_a, **_k: True)
+
+    def supplies(_client, required, **_kwargs):
+        events.append(("supplies", required))
+        item_id, quantity = next(iter(required.items()))
+        counts[item_id] = quantity
+        if item_id == "minecraft:iron_chestplate":
+            counts["minecraft:iron_ingot"] = 0
+        return TaskResult.ok()
+
+    monkeypatch.setattr(nether_prep, "ensure_supplies", supplies)
+
+    assert handler._ensure_nether_readiness(client, state) is True
+    first_supply = next(
+        index for index, event in enumerate(events) if isinstance(event, tuple)
+    )
+    assert events.index("equip_armor") < first_supply
+    assert events[first_supply] == ("supplies", {"minecraft:iron_ingot": 8})
 
 
 def _portal_reuse_handler(tmp_path):

@@ -12,7 +12,6 @@ from ...common.inventory import (
     count_item,
     equip_best_armor,
     equip_best_weapon,
-    get_equipped_armor,
     has_full_armor,
 )
 from ...common.combat import (
@@ -309,47 +308,43 @@ class NetherAndBlazeHandler(PhaseHandler):
             print("  Nether rearm paused until health can be stabilized.")
             return False
 
-        armor_costs = {
-            "helmet": ("minecraft:iron_helmet", 5),
-            "chestplate": ("minecraft:iron_chestplate", 8),
-            "leggings": ("minecraft:iron_leggings", 7),
-            "boots": ("minecraft:iron_boots", 4),
-        }
-        equipped = get_equipped_armor(client)
-        iron_required = sum(
-            cost
-            for piece, (item_id, cost) in armor_costs.items()
-            if piece not in equipped and count_item(client, item_id) < 1
-        )
-        if count_item(client, "minecraft:iron_sword") < 1:
-            iron_required += 2
-        if count_item(client, "minecraft:shield") < 1:
-            iron_required += 1
-        if iron_required and not ensure_supplies(
-            client,
-            {"minecraft:iron_ingot": iron_required},
-            timeout=600,
-        ).success:
-            print("  Could not provision iron for the Nether rearm.")
-            return False
-
-        gear = ensure_supplies(
-            client,
-            {
-                "minecraft:iron_helmet": 1,
-                "minecraft:iron_chestplate": 1,
-                "minecraft:iron_leggings": 1,
-                "minecraft:iron_boots": 1,
-                "minecraft:iron_sword": 1,
-                "minecraft:shield": 1,
-            },
-            timeout=300,
-        )
-        if not gear.success:
-            print("  Nether expedition rearm is incomplete; entry remains blocked.")
-            return False
+        # Grave recovery returns equipment to ordinary inventory slots. Equip
+        # it before calculating any shortfall so a bot carrying three pieces
+        # does not mine while the defense supervisor still sees it as naked.
         equip_best_armor(client)
         equip_best_weapon(client)
+
+        # Provision armor in small, immediately useful increments. The old
+        # path gathered one 24-27 ingot batch before crafting anything. Live
+        # on Easy, Bot07 and Bot18 repeatedly died to zombies deep underground
+        # during that batch with only 0-1 equipped pieces. Crafting and
+        # equipping the three cheapest pieces first gives the defense runtime
+        # enough armor to engage a single ordinary hostile while the remaining
+        # loadout is gathered.
+        armor_plan = (
+            ("minecraft:iron_boots", 4),
+            ("minecraft:iron_helmet", 5),
+            ("minecraft:iron_leggings", 7),
+        )
+        for item_id, iron_cost in armor_plan:
+            if not self._provision_iron_gear(client, item_id, iron_cost):
+                return False
+            equip_best_armor(client)
+
+        if not self._provision_iron_gear(
+            client, "minecraft:iron_sword", 2
+        ):
+            return False
+        equip_best_weapon(client)
+
+        if not self._provision_iron_gear(
+            client, "minecraft:iron_chestplate", 8
+        ):
+            return False
+        equip_best_armor(client)
+
+        if not self._provision_iron_gear(client, "minecraft:shield", 1):
+            return False
 
         if _emergency_food_count(client) < 6:
             acquire_emergency_food(
@@ -367,6 +362,26 @@ class NetherAndBlazeHandler(PhaseHandler):
                 "6 food, 18 health/hunger required)."
             )
         return verified
+
+    @staticmethod
+    def _provision_iron_gear(client, item_id: str, iron_cost: int) -> bool:
+        """Gather and consume only the iron needed for one gear upgrade."""
+        if count_item(client, item_id) >= 1:
+            return True
+        if count_item(client, "minecraft:iron_ingot") < iron_cost:
+            ingots = ensure_supplies(
+                client,
+                {"minecraft:iron_ingot": iron_cost},
+                timeout=600,
+            )
+            if not ingots.success:
+                print(f"  Could not provision iron for {item_id}.")
+                return False
+        gear = ensure_supplies(client, {item_id: 1}, timeout=300)
+        if not gear.success:
+            print(f"  Could not craft {item_id}; Nether rearm remains blocked.")
+            return False
+        return True
 
     def _enter_nether(self, client, state: StateManager) -> bool:
         if "nether" in self._current_dimension(client):
