@@ -21,6 +21,7 @@ from ...common.combat import (
     eat_until_hunger,
 )
 from ...common.landmark_scanner import import_shared_landmarks
+from ...common.health_recovery import recover_health
 from ...common.storage_catalog import catalog_for
 from ...common.nether import (
     build_nether_portal,
@@ -292,6 +293,20 @@ class NetherAndBlazeHandler(PhaseHandler):
             self._return_to_overworld(client, state)
             # Restart this task after the dimension transition; never combine
             # portal travel and a potentially long rearm operation in one run.
+            return False
+
+        if not eat_until_hunger(client, minimum_food=18):
+            if not acquire_emergency_food(
+                client,
+                minimum_health=12.0,
+                minimum_food=18,
+                timeout=180.0,
+                max_exploration_distance=64.0,
+            ) or not eat_until_hunger(client, minimum_food=18):
+                print("  Nether rearm paused until hunger can be stabilized.")
+                return False
+        if not recover_health(client, minimum_health=18.0, timeout=60.0):
+            print("  Nether rearm paused until health can be stabilized.")
             return False
 
         armor_costs = {
