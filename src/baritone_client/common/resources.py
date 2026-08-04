@@ -1157,6 +1157,7 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
         last_total = current_total
         stalled_checks = 0
         direct_failures = 0
+        descent_attempted = False
         failed_targets: set[tuple[int, int, int]] = set()
         
         while time.time() - start < timeout:
@@ -1285,6 +1286,21 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
                 if target:
                     failed_targets.add(target)
                 if direct_failures >= _ORE_FALLBACK_LIMIT:
+                    # A surface bot can exhaust the bounded nearby scan even
+                    # though the same column contains ore below the loaded
+                    # surface terrain. Reuse the guarded, lit stone descent
+                    # once before declaring the area exhausted. Keeping this
+                    # attempt bounded avoids turning an unreachable ore goal
+                    # into an endless descent loop.
+                    if not descent_attempted:
+                        descent_attempted = True
+                        if _descend_to_stone_layer(client):
+                            direct_failures = 0
+                            failed_targets = set()
+                            idle_checks = 0
+                            stalled_checks = 0
+                            _start_mine_process(client, ORES[ore_type], count + 2)
+                            continue
                     print(
                         f"DEBUG: No reachable nearby {ore_type} ore after "
                         f"{_ORE_FALLBACK_LIMIT} exact attempts"

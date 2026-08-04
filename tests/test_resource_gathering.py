@@ -425,6 +425,12 @@ def test_ore_gather_retry_bounded_to_three_safe_exact_targets(monkeypatch):
         "_approach_and_break_stone",
         lambda _client, _target: False,
     )
+    descent_attempts = []
+    monkeypatch.setattr(
+        resources,
+        "_descend_to_stone_layer",
+        lambda _client: descent_attempts.append(True) or False,
+    )
     monkeypatch.setattr(resources.time, "sleep", sleeps.append)
     monkeypatch.setattr(
         "baritone_client.common.combat.defend_or_flee",
@@ -453,6 +459,48 @@ def test_ore_gather_retry_bounded_to_three_safe_exact_targets(monkeypatch):
     ]
     assert 0.75 in sleeps
     assert 0.25 in sleeps
+    assert descent_attempts == [True]
+
+
+def test_ore_gather_restarts_after_one_safe_descent(monkeypatch):
+    class OreTransport(RecordingTransport):
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {"is_pathing": False, "food_level": 20}
+            return {}
+
+    transport = OreTransport()
+    client = SimpleNamespace(transport=transport)
+    descent_attempts = []
+
+    def count(_client, item_id):
+        if item_id == "minecraft:stone_pickaxe":
+            return 1
+        if item_id == "minecraft:raw_iron" and descent_attempts:
+            return 1
+        return 0
+
+    monkeypatch.setattr(resources, "count_item", count)
+    monkeypatch.setattr(
+        resources, "remaining_pickaxe_durability", lambda *_args, **_kwargs: 100
+    )
+    monkeypatch.setattr(
+        resources, "_find_safe_nearby_ore", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        resources,
+        "_descend_to_stone_layer",
+        lambda _client: descent_attempts.append(True) or True,
+    )
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        "baritone_client.common.combat.defend_or_flee", lambda _client: False
+    )
+
+    assert resources.gather_ores(client, "iron", count=1, timeout=30)
+    assert descent_attempts == [True]
+    assert [route for route, _payload in transport.calls].count("mine") == 4
 
 
 def test_smelting_strategy_translates_shortfall_to_absolute_target(monkeypatch):
