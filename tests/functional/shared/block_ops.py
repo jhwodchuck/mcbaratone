@@ -372,6 +372,7 @@ def move_near(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, flo
     if not stand_candidates:
         stand_candidates = [find_stand_pos(ctx, x, y, z, radius=5)]
 
+    stationary_failures = 0
     for idx, (stand_x, stand_y, stand_z) in enumerate(stand_candidates, start=1):
         # A corpse cannot move, but every candidate still burns its full goto
         # timeout before "failing". Live blocker: Bot07/Bot08 died mid-loop and
@@ -385,6 +386,10 @@ def move_near(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, flo
                     f"(candidate {idx}/{len(stand_candidates)})"
                 )
             return False
+        try:
+            before = tuple(float(axis) for axis in ctx.get_position())
+        except Exception:
+            before = None
         target = {"x": stand_x, "y": stand_y, "z": stand_z}
         ok = do_goto(
             ctx,
@@ -398,11 +403,28 @@ def move_near(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, flo
             return True
         if in_range(ctx, stand_x, stand_y, stand_z):
             return True
+        try:
+            after = tuple(float(axis) for axis in ctx.get_position())
+        except Exception:
+            after = None
+        if before is not None and after is not None:
+            displacement = sum(
+                (current - initial) ** 2
+                for initial, current in zip(before, after)
+            ) ** 0.5
+            stationary_failures = stationary_failures + 1 if displacement < 0.5 else 0
         if hasattr(ctx, "log_event"):
             ctx.log_event(
                 f"Move candidate {idx}/{len(stand_candidates)} failed near {x},{y},{z}"
             )
         cancel_pathing(ctx)
+        if stationary_failures >= 3:
+            if hasattr(ctx, "log_event"):
+                ctx.log_event(
+                    f"Move failed near {x},{y},{z}: three candidates produced "
+                    "no player displacement"
+                )
+            break
     if hasattr(ctx, "log_event"):
         ctx.log_event(f"Move failed near {x},{y},{z}")
     return False

@@ -79,6 +79,36 @@ def test_move_near_still_attempts_candidates_when_alive(monkeypatch):
     assert block_ops.move_near(ctx, 5, 64, 5) is True
 
 
+def test_move_near_stops_after_three_stationary_candidate_failures(monkeypatch):
+    from tests.functional.shared import block_ops
+
+    attempts = []
+    events = []
+    ctx = SimpleNamespace(
+        client=SimpleNamespace(
+            transport=SimpleNamespace(dispatch=lambda *_a, **_k: {})
+        ),
+        get_state=lambda: {"health": 20.0},
+        get_position=lambda: (0.0, 64.0, 0.0),
+        log_event=events.append,
+    )
+    monkeypatch.setattr(
+        block_ops,
+        "find_stand_positions",
+        lambda *_a, **_k: [(n, 64, n) for n in range(1, 8)],
+    )
+    monkeypatch.setattr(block_ops, "in_range", lambda *_a, **_k: False)
+    monkeypatch.setattr(block_ops, "cancel_pathing", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "tests.utils.mc_harness.actions.do_goto",
+        lambda *_a, **_k: attempts.append(True) or False,
+    )
+
+    assert block_ops.move_near(ctx, 40, 64, 40) is False
+    assert len(attempts) == 3
+    assert any("three candidates" in event for event in events)
+
+
 def test_harness_ops_move_near_raises_player_death_for_the_controller(monkeypatch):
     """The harness returns False (right for the read-only suites); the
     adapter must escalate it so the automator enters death recovery instead
