@@ -236,6 +236,29 @@ def test_nether_readiness_blocks_a_naked_checkpoint_resume(monkeypatch, tmp_path
     assert returned == [True], "an under-equipped Nether bot must retreat to rearm"
 
 
+def test_nether_rearm_provisions_iron_before_crafting_gear(monkeypatch, tmp_path):
+    handler, client, state = _portal_reuse_handler(tmp_path)
+    calls = []
+    readiness = iter((False, True))
+    monkeypatch.setattr(handler, "_nether_loadout_ready", lambda *_a: next(readiness))
+    monkeypatch.setattr(nether_prep, "get_equipped_armor", lambda *_a: {})
+    monkeypatch.setattr(nether_prep, "count_item", lambda *_a: 0)
+    monkeypatch.setattr(nether_prep, "_emergency_food_count", lambda *_a: 6)
+    monkeypatch.setattr(nether_prep, "equip_best_armor", lambda *_a: 4)
+    monkeypatch.setattr(nether_prep, "equip_best_weapon", lambda *_a: True)
+    monkeypatch.setattr(nether_prep, "eat_until_hunger", lambda *_a, **_k: True)
+
+    def supplies(_client, required, **_kwargs):
+        calls.append(required)
+        return TaskResult.ok()
+
+    monkeypatch.setattr(nether_prep, "ensure_supplies", supplies)
+
+    assert handler._ensure_nether_readiness(client, state) is True
+    assert calls[0] == {"minecraft:iron_ingot": 27}
+    assert "minecraft:iron_helmet" in calls[1]
+
+
 def _portal_reuse_handler(tmp_path):
     transport = PortalTransport()
     client = SimpleNamespace(transport=transport, mission=MissionStub())

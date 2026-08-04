@@ -12,6 +12,7 @@ from ...common.inventory import (
     count_item,
     equip_best_armor,
     equip_best_weapon,
+    get_equipped_armor,
     has_full_armor,
 )
 from ...common.combat import (
@@ -291,6 +292,30 @@ class NetherAndBlazeHandler(PhaseHandler):
             self._return_to_overworld(client, state)
             # Restart this task after the dimension transition; never combine
             # portal travel and a potentially long rearm operation in one run.
+            return False
+
+        armor_costs = {
+            "helmet": ("minecraft:iron_helmet", 5),
+            "chestplate": ("minecraft:iron_chestplate", 8),
+            "leggings": ("minecraft:iron_leggings", 7),
+            "boots": ("minecraft:iron_boots", 4),
+        }
+        equipped = get_equipped_armor(client)
+        iron_required = sum(
+            cost
+            for piece, (item_id, cost) in armor_costs.items()
+            if piece not in equipped and count_item(client, item_id) < 1
+        )
+        if count_item(client, "minecraft:iron_sword") < 1:
+            iron_required += 2
+        if count_item(client, "minecraft:shield") < 1:
+            iron_required += 1
+        if iron_required and not ensure_supplies(
+            client,
+            {"minecraft:iron_ingot": iron_required},
+            timeout=600,
+        ).success:
+            print("  Could not provision iron for the Nether rearm.")
             return False
 
         gear = ensure_supplies(
