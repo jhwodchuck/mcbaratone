@@ -294,7 +294,13 @@ def descend_to_stone_layer(
     if state is None:
         return False
     px, py, pz = block_position(state)
-    egress = try_lower_surface_egress(client, state)
+    # Reaching this helper means broad mining and exact nearby targets have
+    # already proven the bot is stranded. Do not retain the generic y>=96
+    # shelf gate for low terrain: mangrove mud shelves can have the same
+    # unsupported underfoot geometry as a mountain ledge. High-altitude
+    # callers retain the normal shelf behavior.
+    egress_kwargs = {"minimum_altitude": 0} if py < 96 else {}
+    egress = try_lower_surface_egress(client, state, **egress_kwargs)
     if egress is not None:
         px, py, pz = egress
 

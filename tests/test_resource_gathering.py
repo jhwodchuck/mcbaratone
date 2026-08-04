@@ -1383,6 +1383,28 @@ def test_descend_to_stone_layer_is_noop_when_already_deep(monkeypatch):
     assert [r for r, _ in transport.calls if r == "tunnel"] == []
 
 
+def test_descend_to_stone_layer_lowers_egress_altitude_after_proven_stall(
+    monkeypatch,
+):
+    client = SimpleNamespace(transport=RecordingTransport())
+    monkeypatch.setattr(
+        resources,
+        "_read_state_optional",
+        lambda *_args, **_kwargs: {
+            "block_position": {"x": 8, "y": 52, "z": -192}
+        },
+    )
+    egress_calls = []
+    monkeypatch.setattr(
+        stone_descent,
+        "try_lower_surface_egress",
+        lambda _client, _state, **kwargs: egress_calls.append(kwargs) or None,
+    )
+
+    assert not resources._descend_to_stone_layer(client)
+    assert egress_calls == [{"minimum_altitude": 0}]
+
+
 def test_descend_to_stone_layer_fails_when_no_downward_progress(monkeypatch):
     transport = RecordingTransport()
     client = SimpleNamespace(transport=transport)
