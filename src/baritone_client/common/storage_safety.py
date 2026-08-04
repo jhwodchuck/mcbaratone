@@ -151,15 +151,28 @@ def load_storage_chunk(client, target: Tuple[int, int, int], goto) -> bool:
 
 def create_overflow_storage(client, harness_ops):
     """Build double storage when possible, or one emergency carried chest."""
-    created = harness_ops.create_double_chest(client)
-    if created:
-        return tuple(created)
-
     from .inventory import count_item
 
-    if count_item(client, "minecraft:chest") < 1:
+    chest_count = count_item(client, "minecraft:chest")
+    if chest_count < 1:
         return None
     first = harness_ops.find_single_chest_spot(client)
+    try:
+        live = client.transport.dispatch("get_state", {})
+        adjacent = first is not None and storage_distance(live, first) <= 4.5
+    except Exception:
+        adjacent = False
+    if adjacent and harness_ops.place_block_exact(
+        client, first[0], first[1], first[2], "minecraft:chest"
+    ):
+        print(f"  STORAGE: built adjacent overflow chest at {tuple(first)}")
+        return (tuple(first),)
+
+    if chest_count >= 2:
+        created = harness_ops.create_double_chest(client)
+        if created:
+            return tuple(created)
+
     if not first:
         print("  STORAGE: no room for a single overflow chest nearby")
         return None

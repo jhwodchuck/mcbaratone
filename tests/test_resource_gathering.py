@@ -2337,6 +2337,9 @@ def test_surplus_storage_builds_a_double_chest_when_all_are_full(monkeypatch):
     )
     monkeypatch.setattr(harness_ops, "available", lambda: True)
     monkeypatch.setattr(harness_ops, "chest_is_full", lambda _c, _p: True)
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.count_item", lambda *_args: 2
+    )
     monkeypatch.setattr(harness_ops, "create_double_chest",
                         lambda _c: built.append(True) or ((0, 64, 0), (1, 64, 0)))
     monkeypatch.setattr("baritone_client.common.storage_catalog.catalog_for",
@@ -2369,7 +2372,13 @@ def test_surplus_storage_ignores_remote_fleet_containers(monkeypatch):
         )
     )
     monkeypatch.setattr(harness_ops, "available", lambda: True)
-    monkeypatch.setattr(harness_ops, "create_double_chest", lambda _c: None)
+    monkeypatch.setattr(
+        harness_ops,
+        "create_double_chest",
+        lambda _c: (_ for _ in ()).throw(
+            AssertionError("adjacent single storage should precede a remote double")
+        ),
+    )
     monkeypatch.setattr(
         "baritone_client.common.inventory.count_item", lambda *_args: 0
     )
@@ -2422,7 +2431,13 @@ def test_surplus_storage_builds_one_carried_chest_when_double_is_unavailable(
     )
     placed = []
     monkeypatch.setattr(harness_ops, "available", lambda: True)
-    monkeypatch.setattr(harness_ops, "create_double_chest", lambda _c: None)
+    monkeypatch.setattr(
+        harness_ops,
+        "create_double_chest",
+        lambda _c: (_ for _ in ()).throw(
+            AssertionError("adjacent single storage should precede a remote double")
+        ),
+    )
     monkeypatch.setattr(
         harness_ops,
         "find_single_chest_spot",
