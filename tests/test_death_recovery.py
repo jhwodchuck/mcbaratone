@@ -482,6 +482,40 @@ def test_survival_recovery_actively_seeks_food_before_retrying(monkeypatch):
     ]
 
 
+def test_critical_remote_survival_recovery_uses_local_bounded_anchor(monkeypatch):
+    from baritone_client.automator import phase_executor as phase_executor_module
+
+    state = SimpleNamespace(
+        custom_data={
+            "phase_payloads": {
+                "SPAWN_BOOTSTRAP": {
+                    "return_home": {"origin": [-168, 107, -396]}
+                }
+            }
+        }
+    )
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda *_args: {
+                "health": 2.4,
+                "food_level": 4,
+                "block_position": {"x": -10, "y": 69, "z": -259},
+            }
+        )
+    )
+    attempts = []
+    monkeypatch.setattr(
+        "baritone_client.common.combat.acquire_emergency_food",
+        lambda _client, **kwargs: attempts.append(kwargs) or True,
+    )
+
+    assert phase_executor_module._acquire_checkpointed_emergency_food(
+        client, state
+    )
+    assert attempts[0]["exploration_center"] == (-10.0, 69.0, -259.0)
+    assert attempts[0]["return_to_exploration_center"] is True
+
+
 def test_survival_recovery_food_attempt_failure_does_not_crash_the_executor(
     monkeypatch,
 ):

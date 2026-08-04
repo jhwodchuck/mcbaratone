@@ -47,6 +47,30 @@ def _acquire_checkpointed_emergency_food(client, state) -> bool:
         return active_client.transport.dispatch("get_state", {})
 
     food_anchor = get_food_search_anchor(client, state, read_live_state)
+    live = read_live_state(client, "Critical food recovery anchor")
+    position = live.get("block_position", live.get("position", {}))
+    if (
+        float(live.get("health", 20) or 0) < 10.0
+        and all(axis in position for axis in ("x", "z"))
+        and (
+            (float(position["x"]) - food_anchor[0]) ** 2
+            + (float(position["z"]) - food_anchor[2]) ** 2
+        )
+        ** 0.5
+        > 96.0
+    ):
+        # At critical health an unreachable distant home is not a useful
+        # search center. Keep the durable checkpoint intact, but use the
+        # current dry area as this attempt's bounded emergency anchor.
+        food_anchor = (
+            float(position["x"]),
+            float(position.get("y", 64) or 64),
+            float(position["z"]),
+        )
+        print(
+            "RECOVERY: critical player is remote from home; "
+            f"searching locally around {food_anchor}"
+        )
     return acquire_emergency_food(
         client,
         minimum_food=14,
