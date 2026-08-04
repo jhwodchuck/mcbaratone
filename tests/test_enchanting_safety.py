@@ -379,6 +379,24 @@ def test_surface_staging_adjusts_to_lower_ground():
     )
 
 
+def test_exterior_staging_uses_lateral_clear_ground(monkeypatch):
+    handler = enchanting.EnchantingPipelineHandler()
+    probes = []
+
+    def standing_y(_client, x, _nominal_y, z):
+        probes.append((x, z))
+        return 79 if (x, z) == (-8, -128) else None
+
+    monkeypatch.setattr(handler, "_surface_staging_y", standing_y)
+
+    assert handler._exterior_staging_tile(SimpleNamespace(), (-6, 79, -122)) == (
+        -8,
+        79,
+        -128,
+    )
+    assert probes == [(-6, -128), (-8, -128)]
+
+
 def test_paper_objective_crafts_banked_cane_without_leaving_home(monkeypatch):
     client = SimpleNamespace(
         transport=SimpleNamespace(dispatch=lambda *_args, **_kwargs: {})

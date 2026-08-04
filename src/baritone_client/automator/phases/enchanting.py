@@ -767,12 +767,10 @@ class EnchantingPipelineHandler(PhaseHandler):
         door = house.get("door") or [x + 3, y + 1, z]
         door = tuple(int(value) for value in door)
         outside = (door[0], door[1], door[2] - 2)
-        clear_z = door[2] - 6
-        clear_y = self._surface_staging_y(client, door[0], door[1], clear_z)
-        if clear_y is None:
+        clear_of_house = self._exterior_staging_tile(client, door)
+        if clear_of_house is None:
             print("  No clear exterior staging tile found beyond the doorway.")
             return False
-        clear_of_house = (door[0], clear_y, clear_z)
 
         client.transport.dispatch("cancel", {})
         client.transport.dispatch("chat", {"message": "#set allowBreak false"})
@@ -827,6 +825,23 @@ class EnchantingPipelineHandler(PhaseHandler):
             client.transport.dispatch("cancel", {})
             client.transport.dispatch("chat", {"message": "#set allowBreak true"})
         return exited
+
+    def _exterior_staging_tile(self, client, door):
+        """Find clear terrain beyond or beside a checkpointed front door."""
+        door_x, door_y, door_z = (int(value) for value in door)
+        # Savanna ridges and mangrove roots can obstruct the single column
+        # directly in front of an otherwise usable door. Probe a small,
+        # deterministic fan that remains clear of the house footprint.
+        for forward in (6, 4):
+            candidate_z = door_z - forward
+            for lateral in (0, -2, 2, -4, 4):
+                candidate_x = door_x + lateral
+                standing_y = self._surface_staging_y(
+                    client, candidate_x, door_y, candidate_z
+                )
+                if standing_y is not None:
+                    return candidate_x, standing_y, candidate_z
+        return None
 
     def _surface_staging_y(self, client, x: int, nominal_y: int, z: int):
         """Find the standing Y for nearby terrain that rises or falls a block."""
