@@ -433,11 +433,23 @@ def relocate_to_dry_stone_terrain(
                 (candidate[0] - origin[0]) ** 2
                 + (candidate[2] - origin[2]) ** 2
             )
-            if distance_sq >= 12**2 and destination_safe(client, *candidate):
+            if distance_sq >= 12**2:
                 candidates.append((distance_sq, candidate))
-        for _distance, candidate in sorted(candidates)[:attempt_limit]:
+        # ``find_blocks`` can return thousands of dirt/grass positions. A
+        # destination safety query for every result blocked the controller
+        # for minutes in a mangrove swamp. Sort cheaply first, then bound the
+        # expensive world probes while still allowing several unsafe nearby
+        # candidates to be skipped.
+        safe_attempts = 0
+        probe_limit = max(int(attempt_limit), int(attempt_limit) * 4)
+        for _distance, candidate in sorted(candidates)[:probe_limit]:
+            if not destination_safe(client, *candidate):
+                continue
+            safe_attempts += 1
             print(f"DEBUG: Relocating stone gatherer to dry terrain at {candidate}")
             if not api.goto(client, *candidate, timeout=90.0, tolerance=2.0):
+                if safe_attempts >= attempt_limit:
+                    break
                 continue
             current = block_position(client.transport.dispatch("get_state", {}))
             moved_sq = (
@@ -446,6 +458,8 @@ def relocate_to_dry_stone_terrain(
             )
             if moved_sq >= 8**2 and destination_safe(client, *current):
                 return True
+            if safe_attempts >= attempt_limit:
+                break
         return False
     except api.PlayerDeathDetected:
         raise

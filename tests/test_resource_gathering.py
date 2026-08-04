@@ -1474,6 +1474,32 @@ def test_dry_stone_relocation_requires_verified_displacement(monkeypatch):
     assert destinations == [(16, 64, 0)]
 
 
+def test_dry_stone_relocation_bounds_expensive_safety_probes(monkeypatch):
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                return {"block_position": {"x": 0, "y": 64, "z": 0}}
+            if route == "find_blocks":
+                return {
+                    "found": [
+                        {"x": x, "y": 63, "z": 0}
+                        for x in range(12, 200)
+                    ]
+                }
+            return {}
+
+    safety_probes = []
+    monkeypatch.setattr(
+        "baritone_client.common.escape_recovery.destination_safe",
+        lambda _client, *position: safety_probes.append(position) or False,
+    )
+
+    assert not stone_descent.relocate_to_dry_stone_terrain(
+        SimpleNamespace(transport=Transport()), attempt_limit=3
+    )
+    assert len(safety_probes) == 12
+
+
 def test_high_altitude_stone_fallback_returns_to_checkpointed_storage(monkeypatch):
     class Transport:
         def __init__(self):
