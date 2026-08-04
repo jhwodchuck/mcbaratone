@@ -2265,6 +2265,26 @@ def test_single_chest_spot_accepts_one_isolated_mud_support():
     assert harness_ops.find_single_chest_spot(client) == (1, 64, 0)
 
 
+def test_single_chest_spot_checks_air_above_reported_surface_y():
+    from baritone_client.common import harness_ops
+
+    def dispatch(route, payload):
+        if route == "get_state":
+            return {"block_position": {"x": 0, "y": 64, "z": 0}}
+        position = (payload["x"], payload["y"], payload["z"])
+        if position[1] == 65:
+            return {"id": "minecraft:air"}
+        if position[1] == 64:
+            return {"id": "minecraft:mud"}
+        return {"id": "minecraft:water"}
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=dispatch)
+    )
+
+    assert harness_ops.find_single_chest_spot(client) == (-1, 65, 0)
+
+
 def test_manage_inventory_banks_surplus_before_discarding(monkeypatch):
     """Storing beats destroying: the discard tiers must not run when a chest
     with room can take the load."""
