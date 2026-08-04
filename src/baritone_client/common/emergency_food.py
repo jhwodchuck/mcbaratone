@@ -38,6 +38,13 @@ EMERGENCY_FOOD_ITEMS = (
     "minecraft:cod",
     "minecraft:rotten_flesh",
 )
+
+
+def emergency_food_count(client: Any) -> int:
+    """Count all carried items usable by emergency recovery."""
+    from .inventory import count_item
+
+    return sum(count_item(client, item_id) for item_id in EMERGENCY_FOOD_ITEMS)
 # Tropical fish has no food value. Pufferfish is deliberately excluded
 # because it poisons the player.
 

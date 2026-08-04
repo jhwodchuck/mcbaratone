@@ -14,6 +14,7 @@ from .combat_targeting import matches_requested_mob
 from .emergency_food import (
     EMERGENCY_FOOD_ITEMS,
     EmergencyExploration,
+    emergency_food_count as _emergency_food_count,
     enforce_dry_food_search_state,
 )
 from .emergency_food import (
@@ -24,6 +25,10 @@ from .emergency_food import (
 )
 from .health_recovery import recover_health
 from .movement_recovery import block_position
+from .passive_hunt_navigation import (
+    PassiveHuntNavigation,
+    find_unrequested_hostile,
+)
 
 from ..core.exceptions import TransportError
 
@@ -51,14 +56,7 @@ MULTI_THREAT_ABORT_RADIUS = 12.0
 
 
 class EntityQueryError(RuntimeError):
-    """The bridge entity query failed (timeout/transport/error response).
-
-    Distinct from a successful query that returns zero entities. Silently
-    collapsing the two hid a route-timeout flood as "no animals nearby":
-    Bot07 spent an entire hunt reporting "No targets found" and exploring
-    for leather while a cow stood three blocks away, because every
-    get_entities call was timing out and being swallowed into an empty list.
-    """
+    """Distinguish a bridge failure from a successful empty entity query."""
 
 
 def get_nearby_entities(
@@ -561,10 +559,6 @@ _FOOD_YIELDING_MOBS = ("cow", "mooshroom", "sheep", "pig", "chicken", "rabbit")
 _CRITICAL_HUNT_HEALTH = 10.0
 
 
-def _emergency_food_count(client) -> int:
-    return sum(count_item(client, item_id) for item_id in EMERGENCY_FOOD_ITEMS)
-
-
 def eat_until_hunger(client, minimum_food: int = 14) -> bool:
     """Consume carried food until the hunger bar is safe for progression."""
     minimum_food = max(1, min(int(minimum_food), 20))
@@ -1025,9 +1019,7 @@ def hunt_mobs(
     if not missing and not target_kills:
         return TaskResult.ok("Already satisfied", kills=kills, missing={})
 
-    exploring = False
-    exploration_idle_checks = 0
-    exploration_route_failures = 0
+    exploration = PassiveHuntNavigation()
     last_time_check = 0
     while (missing or (target_kills and kills < target_kills)) and time.time() - start < timeout:
         if max_kills is not None and kills >= max(0, int(max_kills)):
@@ -1035,8 +1027,7 @@ def hunt_mobs(
         live_state = client.transport.dispatch("get_state", {})
         day_time = int(live_state.get("world_time", 0)) % 24000
         if latest_world_time is not None and day_time >= int(latest_world_time):
-            if exploring:
-                client.transport.dispatch("chat", {"message": "#stop"})
+            exploration.stop(client)
             client.transport.dispatch("cancel", {})
             return TaskResult.fail(
                 "Daylight return boundary reached",
@@ -1052,8 +1043,7 @@ def hunt_mobs(
                 + (float(live_pos.get("z", 0)) - origin[1]) ** 2
             ) ** 0.5
             if distance_from_origin > float(max_distance_from_origin):
-                if exploring:
-                    client.transport.dispatch("chat", {"message": "#stop"})
+                exploration.stop(client)
                 client.transport.dispatch("cancel", {})
                 return TaskResult.fail(
                     "Passive-hunt expedition radius reached",
@@ -1064,8 +1054,7 @@ def hunt_mobs(
         food_level = int(live_state.get("food_level", live_state.get("food", 20)))
         if food_level <= 10:
             client.transport.dispatch("cancel", {})
-            if exploring:
-                exploring = False
+            exploration.reset()
             if eat_until_hunger(client, minimum_food=14):
                 continue
             # No carried food and none of the hunted mobs can supply it
@@ -1098,29 +1087,13 @@ def hunt_mobs(
             state = live_state
             if day_time >= 13000:
                  print("  Night detected! Aborting hunt.")
-                 if exploring:
-                      client.transport.dispatch("chat", {"message": "#stop"})
+                 exploration.stop(client)
                  return TaskResult.fail("Night detected")
 
         heal_if_needed(client, threshold=heal_threshold)
         if abort_on_other_hostiles:
             nearby = get_nearby_entities(client, radius=12)
-            hostile_names = (
-                "zombie", "skeleton", "creeper", "spider",
-                "witch", "pillager", "slime",
-            )
-            threat = next(
-                (
-                    entity
-                    for entity in nearby
-                    if any(
-                        hostile in str(entity.get("type", "")).lower()
-                        for hostile in hostile_names
-                    )
-                    and not matches_requested_mob(str(entity.get("type", "")), mob_types)
-                ),
-                None,
-            )
+            threat = find_unrequested_hostile(nearby, mob_types)
             if threat is not None:
                 client.transport.dispatch("chat", {"message": "#stop"})
                 client.transport.dispatch("cancel", {})
@@ -1141,69 +1114,26 @@ def hunt_mobs(
             # Swallowing this into "no targets found" is what made Bot07 hunt
             # leather for many minutes with a cow three blocks away.
             print(f"  Entity query failed (bridge issue: {exc}); pausing hunt scan.")
-            if exploring:
-                client.transport.dispatch("chat", {"message": "#stop"})
-                exploring = False
+            exploration.stop(client)
             time.sleep(3)
             continue
 
         if entity is None:
-            if explore_when_empty and not exploring:
-                print("  No targets found, starting exploration...")
-                if exploration_center is not None:
-                    client.transport.dispatch(
-                        "explore",
-                        {
-                            "x": int(exploration_center[0]),
-                            "z": int(exploration_center[1]),
-                        },
-                    )
-                else:
-                    client.transport.dispatch("chat", {"message": "#explore"})
-                exploring = True
-                exploration_idle_checks = 0
-            elif explore_when_empty and exploring:
-                if live_state.get("is_pathing") is False:
-                    exploration_idle_checks += 1
-                else:
-                    exploration_idle_checks = 0
-                if exploration_idle_checks >= 3 and exploration_center is not None:
-                    # The bridge can accept a centered explore request while
-                    # Baritone immediately rejects its goal in already loaded
-                    # terrain. Walk horizontally toward the bounded sector so
-                    # the hunt keeps scanning genuinely new chunks.
-                    client.transport.dispatch("chat", {"message": "#stop"})
-                    client.transport.dispatch("cancel", {})
-                    exploring = False
-                    exploration_idle_checks = 0
-                    print(
-                        "  Exploration goal was idle; staging toward sector "
-                        f"{exploration_center}..."
-                    )
-                    staged = goto_xz(
-                        client,
-                        int(exploration_center[0]),
-                        int(exploration_center[1]),
-                        timeout=45,
-                        tolerance=24.0,
-                    )
-                    if staged:
-                        exploration_route_failures = 0
-                    else:
-                        exploration_route_failures += 1
-                        if exploration_route_failures >= 3:
-                            return TaskResult.fail(
-                                "Passive-hunt exploration routes were rejected",
-                                missing=missing,
-                                kills=kills,
-                            )
+            failure = exploration.advance(
+                client,
+                live_state,
+                exploration_center,
+                enabled=explore_when_empty,
+                navigate=goto_xz,
+            )
+            if failure:
+                return TaskResult.fail(failure, missing=missing, kills=kills)
             time.sleep(3)
             continue
 
-        if exploring:
+        if exploration.active:
              print("  Target found! Stopping exploration.")
-             client.transport.dispatch("chat", {"message": "#stop"})
-             exploring = False
+             exploration.stop(client)
              time.sleep(0.5)
 
         target_id = entity.get("id")
@@ -1536,11 +1466,8 @@ def defend_or_flee(client) -> bool:
     if decision.mode == DefenseMode.RECOVER:
         print(f"DEFENSE: Recovery mode ({decision.reason})")
         _stop_for_defense(client)
-        # ``heal_if_needed`` starts an asynchronous use action and returns.
-        # Re-entering this supervised tick can reset that action before the
-        # bite completes, leaving a critically wounded bot holding food for
-        # minutes without restoring hunger. Use the completion-aware flow so
-        # natural regeneration can actually begin.
+        # Wait for the bite; restarting asynchronous use each tick prevents
+        # hunger recovery and therefore natural regeneration.
         if not eat_until_hunger(client, minimum_food=18):
             heal_if_needed(client, threshold=12.0)
         return True

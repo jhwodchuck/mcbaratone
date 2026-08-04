@@ -24,6 +24,7 @@ from .movement_recovery import (
     recover_stalled_gathering,
 )
 from .mining_safety import run_mining_defense
+from .ore_gather_recovery import OreStallRecovery
 from .surface_egress import try_lower_surface_egress
 from .storage_safety import (
     MAX_STORAGE_TRAVEL_DISTANCE,
@@ -1182,11 +1183,7 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
         last_tool_check = time.time()
         last_total = current_total
         stalled_checks = 0
-        direct_failures = 0
-        descent_attempted = False
-        dry_relocation_attempted = False
-        mine_relocation_attempted = False
-        failed_targets: set[tuple[int, int, int]] = set()
+        recovery = OreStallRecovery()
         
         while time.time() - start < timeout:
             state, _state_attempts = _read_state_with_retry(
@@ -1283,86 +1280,10 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
                 stalled_checks = 0
 
             if idle_checks >= 3 or stalled_checks >= 5:
-                print(
-                    f"DEBUG: {ore_type} gathering stalled; "
-                    "trying exact nearby ore..."
-                )
-                _serialized_dispatch(
-                    client,
-                    "cancel",
-                    {},
-                    post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
-                )
-                fallback_radius = _ORE_FALLBACK_RADII[
-                    min(direct_failures, len(_ORE_FALLBACK_RADII) - 1)
-                ]
-                target = _find_safe_nearby_ore(
-                    client,
-                    ORES[ore_type],
-                    radius=fallback_radius,
-                    excluded_positions=failed_targets,
-                )
-                if target and _approach_and_break_stone(client, target):
-                    print(f"DEBUG: Broke nearby {ore_type} ore at {target}")
-                    direct_failures = 0
-                    failed_targets = set()
-                    idle_checks = 0
-                    stalled_checks = 0
-                    continue
-
-                direct_failures += 1
-                if target:
-                    failed_targets.add(target)
-                if direct_failures >= _ORE_FALLBACK_LIMIT:
-                    # A surface bot can exhaust the bounded nearby scan even
-                    # though the same column contains ore below the loaded
-                    # surface terrain. Reuse the guarded, lit stone descent
-                    # once before declaring the area exhausted. Keeping this
-                    # attempt bounded avoids turning an unreachable ore goal
-                    # into an endless descent loop.
-                    if not descent_attempted:
-                        descent_attempted = True
-                        if _descend_to_stone_layer(client):
-                            direct_failures = 0
-                            failed_targets = set()
-                            idle_checks = 0
-                            stalled_checks = 0
-                            _start_mine_process(client, ORES[ore_type], count + 2)
-                            continue
-                    if not dry_relocation_attempted:
-                        dry_relocation_attempted = True
-                        if _relocate_to_dry_stone_terrain(client):
-                            # The first descent was tied to the rejected wet
-                            # column. Allow one fresh guarded descent after a
-                            # verified move onto dry natural terrain.
-                            descent_attempted = False
-                            direct_failures = 0
-                            failed_targets = set()
-                            idle_checks = 0
-                            stalled_checks = 0
-                            _start_mine_process(client, ORES[ore_type], count + 2)
-                            continue
-                    if not mine_relocation_attempted:
-                        mine_relocation_attempted = True
-                        if _relocate_to_checkpointed_mine(client):
-                            descent_attempted = False
-                            direct_failures = 0
-                            failed_targets = set()
-                            idle_checks = 0
-                            stalled_checks = 0
-                            _start_mine_process(client, ORES[ore_type], count + 2)
-                            continue
-                    print(
-                        f"DEBUG: No reachable nearby {ore_type} ore after "
-                        f"{_ORE_FALLBACK_LIMIT} exact attempts"
-                    )
+                if not recovery.recover(
+                    client, ore_type, ORES[ore_type], count
+                ):
                     return False
-                _serialized_dispatch(
-                    client,
-                    "mine",
-                    {"blocks": ORES[ore_type], "quantity": count + 2},
-                    post_delay_seconds=_BARITONE_MINE_SETUP_SECONDS,
-                )
                 idle_checks = 0
                 stalled_checks = 0
             time.sleep(3) # Reduced sleep to scan more often
