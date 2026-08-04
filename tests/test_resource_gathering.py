@@ -2283,6 +2283,18 @@ def test_surplus_storage_builds_a_double_chest_when_all_are_full(monkeypatch):
     from baritone_client.common import harness_ops
 
     built = []
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: {
+                "health": 20,
+                "food_level": 20,
+                "dimension": "minecraft:overworld",
+                "block_position": {"x": 0, "y": 64, "z": 0},
+            }
+            if route == "get_state"
+            else {}
+        )
+    )
     monkeypatch.setattr(harness_ops, "available", lambda: True)
     monkeypatch.setattr(harness_ops, "chest_is_full", lambda _c, _p: True)
     monkeypatch.setattr(harness_ops, "create_double_chest",
@@ -2295,7 +2307,7 @@ def test_surplus_storage_builds_a_double_chest_when_all_are_full(monkeypatch):
     monkeypatch.setattr("baritone_client.common.inventory.free_inventory_slots",
                         lambda _c: 6)
 
-    assert res._store_surplus_in_chest(SimpleNamespace(), 3) is True
+    assert res._store_surplus_in_chest(client, 3) is True
     assert built, "a new double chest must be built when every chest is full"
 
 
@@ -2318,6 +2330,9 @@ def test_surplus_storage_ignores_remote_fleet_containers(monkeypatch):
     )
     monkeypatch.setattr(harness_ops, "available", lambda: True)
     monkeypatch.setattr(harness_ops, "create_double_chest", lambda _c: None)
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.count_item", lambda *_args: 0
+    )
     monkeypatch.setattr(
         "baritone_client.common.storage_catalog.catalog_for",
         lambda _c: SimpleNamespace(
@@ -2345,6 +2360,111 @@ def test_surplus_storage_ignores_remote_fleet_containers(monkeypatch):
     )
 
     assert res._store_surplus_in_chest(client, 3) is False
+
+
+def test_surplus_storage_builds_one_carried_chest_when_double_is_unavailable(
+    monkeypatch,
+):
+    from baritone_client.common import harness_ops
+    from baritone_client.common import resources as res
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: {
+                "health": 20,
+                "food_level": 20,
+                "dimension": "minecraft:overworld",
+                "block_position": {"x": 0, "y": 64, "z": 0},
+            }
+            if route == "get_state"
+            else {}
+        )
+    )
+    placed = []
+    monkeypatch.setattr(harness_ops, "available", lambda: True)
+    monkeypatch.setattr(harness_ops, "create_double_chest", lambda _c: None)
+    monkeypatch.setattr(
+        harness_ops,
+        "find_double_chest_spot",
+        lambda _c: ((1, 64, 0), (2, 64, 0)),
+    )
+    monkeypatch.setattr(harness_ops, "move_near", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        harness_ops,
+        "place_block_exact",
+        lambda _c, x, y, z, block: placed.append((x, y, z, block)) or True,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.count_item", lambda *_args: 1
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.storage_catalog.catalog_for",
+        lambda _c: SimpleNamespace(list_containers=lambda: []),
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.deposit_excess_to_chest",
+        lambda *_args, **_kwargs: 2,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.free_inventory_slots", lambda _c: 4
+    )
+
+    assert res._store_surplus_in_chest(client, 3)
+    assert placed == [(1, 64, 0, "minecraft:chest")]
+
+
+def test_unreachable_storage_is_cooled_down_before_next_cleanup(monkeypatch):
+    from baritone_client.common import storage_safety
+
+    client = SimpleNamespace()
+    snapshot = {
+        "dimension": "minecraft:overworld",
+        "block_position": {"x": 0, "y": 64, "z": 0},
+    }
+    monkeypatch.setattr(
+        "baritone_client.common.storage_catalog.catalog_for",
+        lambda _c: SimpleNamespace(
+            list_containers=lambda: [
+                {
+                    "dimension": "minecraft:overworld",
+                    "x": 40,
+                    "y": 64,
+                    "z": 0,
+                }
+            ]
+        ),
+    )
+
+    assert list(storage_safety.nearby_storage_positions(client, snapshot)) == [
+        (40, 64, 0)
+    ]
+    storage_safety.remember_unreachable_storage(client, (40, 64, 0))
+    assert list(storage_safety.nearby_storage_positions(client, snapshot)) == []
+
+
+def test_storage_margin_restoration_eats_and_regenerates(monkeypatch):
+    from baritone_client.common import storage_safety
+
+    state = {"health": 15.5, "food_level": 17, "is_dead": False}
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda *_args: dict(state))
+    )
+
+    def eat(_client, minimum_food):
+        assert minimum_food == 18
+        state["food_level"] = 20
+        return True
+
+    def heal(_client, minimum_health, timeout):
+        assert minimum_health == 18.0
+        assert timeout == 45.0
+        state["health"] = 18.0
+        return True
+
+    monkeypatch.setattr("baritone_client.common.combat.eat_until_hunger", eat)
+    monkeypatch.setattr("baritone_client.common.health_recovery.recover_health", heal)
+
+    assert storage_safety.restore_storage_travel_margin(client)
 
 
 class _PickTransport:

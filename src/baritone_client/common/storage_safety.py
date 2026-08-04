@@ -2,6 +2,7 @@
 
 from functools import partial
 from math import dist
+import time
 from typing import Any, Dict, Iterable, Tuple
 
 
@@ -9,6 +10,7 @@ MIN_STORAGE_TRAVEL_HEALTH = 18.0
 MIN_STORAGE_TRAVEL_FOOD = 18
 MAX_STORAGE_TRAVEL_DISTANCE = 96.0
 MAX_STORAGE_TOUR_STOPS = 4
+UNREACHABLE_STORAGE_COOLDOWN = 300.0
 
 
 def storage_travel_safe(snapshot: Dict[str, Any]) -> bool:
@@ -43,6 +45,36 @@ def cancel_unsafe_storage_travel(client) -> None:
     print("STORAGE: cancelling travel outside health/hunger safety margin")
 
 
+def restore_storage_travel_margin(client) -> bool:
+    """Eat and regenerate before retrying storage work at a reduced margin."""
+    from .combat import eat_until_hunger
+    from .health_recovery import recover_health
+
+    try:
+        snapshot = client.transport.dispatch("get_state", {})
+    except Exception:
+        return False
+    if storage_travel_safe(snapshot):
+        return True
+    eat_until_hunger(client, minimum_food=MIN_STORAGE_TRAVEL_FOOD)
+    recover_health(
+        client,
+        minimum_health=MIN_STORAGE_TRAVEL_HEALTH,
+        timeout=45.0,
+    )
+    try:
+        return storage_travel_safe(client.transport.dispatch("get_state", {}))
+    except Exception:
+        return False
+
+
+def remember_unreachable_storage(client, position: Tuple[int, int, int]) -> None:
+    """Suppress a failed catalog destination for a bounded retry interval."""
+    cooldowns = getattr(client, "_unreachable_storage_until", {})
+    cooldowns[tuple(position)] = time.monotonic() + UNREACHABLE_STORAGE_COOLDOWN
+    client._unreachable_storage_until = cooldowns
+
+
 def nearby_storage_positions(
     client,
     snapshot: Dict[str, Any],
@@ -54,6 +86,8 @@ def nearby_storage_positions(
     from .storage_catalog import catalog_for
 
     dimension = str(snapshot.get("dimension", "minecraft:overworld"))
+    now = time.monotonic()
+    cooldowns = getattr(client, "_unreachable_storage_until", {})
     candidates = []
     for row in catalog_for(client).list_containers():
         try:
@@ -61,6 +95,8 @@ def nearby_storage_positions(
         except (KeyError, TypeError, ValueError):
             continue
         if str(row.get("dimension", dimension)) != dimension:
+            continue
+        if float(cooldowns.get(position, 0)) > now:
             continue
         distance = storage_distance(snapshot, position)
         if distance <= maximum_distance:
@@ -108,7 +144,35 @@ def load_storage_chunk(client, target: Tuple[int, int, int], goto) -> bool:
         if progress < 4.0:
             break
         remaining = next_remaining
+    if not reached:
+        remember_unreachable_storage(client, target)
     return reached
+
+
+def create_overflow_storage(client, harness_ops):
+    """Build double storage when possible, or one emergency carried chest."""
+    created = harness_ops.create_double_chest(client)
+    if created:
+        return tuple(created)
+
+    from .inventory import count_item
+
+    if count_item(client, "minecraft:chest") < 1:
+        return None
+    spot = harness_ops.find_double_chest_spot(client)
+    if not spot:
+        print("  STORAGE: no room for a single overflow chest nearby")
+        return None
+    first = tuple(spot[0])
+    if not harness_ops.move_near(client, *first, timeout=20.0):
+        return None
+    if not harness_ops.place_block_exact(
+        client, first[0], first[1], first[2], "minecraft:chest"
+    ):
+        print(f"  STORAGE: failed to place single chest at {first}")
+        return None
+    print(f"  STORAGE: built single overflow chest at {first}")
+    return (first,)
 
 
 def store_surplus_in_chest(client, required: int) -> bool:
@@ -121,8 +185,9 @@ def store_surplus_in_chest(client, required: int) -> bool:
     try:
         snapshot = client.transport.dispatch("get_state", {})
     except Exception:
-        snapshot = {}
-    if not storage_travel_safe(snapshot):
+        print("  STORAGE: cleanup state unavailable; deferring travel")
+        return False
+    if not storage_travel_safe(snapshot) and not restore_storage_travel_margin(client):
         print("  STORAGE: cleanup travel deferred for survival recovery")
         return False
 
@@ -151,11 +216,14 @@ def store_surplus_in_chest(client, required: int) -> bool:
             print(f"  STORAGE: deposit to {tuple(position)} failed ({exc})")
 
     try:
-        created = harness_ops.create_double_chest(client)
+        created = create_overflow_storage(client, harness_ops)
     except Exception as exc:
         print(f"  STORAGE: could not build overflow storage ({exc})")
         return False
     if not created:
+        return False
+    if not restore_storage_travel_margin(client):
+        print("  STORAGE: new chest deposit deferred for survival recovery")
         return False
     try:
         deposit_excess_to_chest(client, tuple(created[0]))
