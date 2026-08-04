@@ -316,6 +316,59 @@ def test_leather_hunt_shards_from_live_position_when_home_route_is_unavailable(
     assert state.custom_data["expeditions"]["leather_sector_index"] == 1
 
 
+def test_local_leather_hunt_leaves_boxed_swamp_before_selecting_sector(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.state_reads = 0
+
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                self.state_reads += 1
+                position = (
+                    {"x": 10, "y": 64, "z": 20}
+                    if self.state_reads == 1
+                    else {"x": 34, "y": 66, "z": 20}
+                )
+                return {
+                    "world_time": 1000,
+                    "biome": "minecraft:mangrove_swamp",
+                    "block_position": position,
+                }
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    state = SimpleNamespace(custom_data={})
+    handler = enchanting.EnchantingPipelineHandler()
+    leather = {"count": 0}
+    relocations = []
+    hunts = []
+    monkeypatch.setattr(
+        enchanting,
+        "count_item",
+        lambda _client, item_id: (
+            leather["count"] if item_id == "minecraft:leather" else 0
+        ),
+    )
+    monkeypatch.setattr(handler, "_withdraw_at_home", lambda *_args: -1)
+    monkeypatch.setattr(handler, "_wait_for_daylight", lambda *_args: True)
+    monkeypatch.setattr(
+        enchanting,
+        "_relocate_to_dry_stone_terrain",
+        lambda _client: relocations.append(True) or True,
+    )
+
+    def hunt(_client, **kwargs):
+        hunts.append(kwargs)
+        leather["count"] = 46
+        return TaskResult.ok("dry herd found")
+
+    monkeypatch.setattr(enchanting, "hunt_mobs", hunt)
+
+    assert handler._gather_leather(client, state)
+    assert relocations == [True]
+    assert hunts[0]["exploration_center"] == (37, -108)
+
+
 def test_leave_house_stages_clear_of_closed_door_before_exploring(monkeypatch):
     calls = []
 

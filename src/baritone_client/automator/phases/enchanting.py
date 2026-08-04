@@ -33,6 +33,7 @@ from ...common.resources import (
     LOG_TO_PLANKS,
     PLANK_ITEMS,
     _craft_with_table,
+    _relocate_to_dry_stone_terrain,
     gather_wood,
 )
 
@@ -526,6 +527,10 @@ class EnchantingPipelineHandler(PhaseHandler):
         exploration_center = None
         if local_expedition:
             live = client.transport.dispatch("get_state", {})
+            if "swamp" in str(live.get("biome", "")):
+                print("  Swamp route is boxed in; seeking nearby dry hunt terrain...")
+                if _relocate_to_dry_stone_terrain(client):
+                    live = client.transport.dispatch("get_state", {})
             position = live.get("block_position", live.get("position", {}))
             live_origin = (
                 int(position.get("x", 0)),
