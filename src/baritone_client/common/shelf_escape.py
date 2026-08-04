@@ -280,8 +280,11 @@ def supported_column_descent(
                 return None
             if not placed:
                 return None
+        # Baritone's builder process refuses an underfoot ``break_block``
+        # goal. The bridge's tick-driven dig route is the live-proven exact
+        # primitive for removing the verified floor beneath the player.
         client.transport.dispatch(
-            "break_block", {"x": px, "y": floor_y, "z": pz}
+            "dig_block", {"x": px, "y": floor_y, "z": pz}
         )
         deadline = time.monotonic() + 8.0
         descended = False

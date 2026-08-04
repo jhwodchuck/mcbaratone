@@ -910,7 +910,7 @@ def test_column_descent_helps_a_marooned_bot_below_the_overworld_shelf_height(
                 if key == (-132, 77, -7):
                     return {"id": "minecraft:glowstone"}   # the one floor block
                 return {"id": "minecraft:air"}             # void everywhere else
-            if route == "break_block":
+            if route == "dig_block":
                 self.broke.append(dict(payload))
                 self.position = {**self.position, "y": self.position["y"] - 1}
                 return {"broken": True}

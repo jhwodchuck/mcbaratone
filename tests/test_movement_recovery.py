@@ -310,7 +310,7 @@ def test_supported_column_descent_places_support_before_break(monkeypatch):
                         {"id": "minecraft:spruce_planks", "count": 1}
                     ]
                 }
-            if route == "break_block":
+            if route == "dig_block":
                 self.position["y"] -= 1
                 return {"started": True}
             if route == "get_state":
@@ -334,4 +334,4 @@ def test_supported_column_descent_places_support_before_break(monkeypatch):
 
     assert result == (2, 112, 3)
     assert placed == [(2, 111, 3, "minecraft:spruce_planks")]
-    assert ("break_block", {"x": 2, "y": 112, "z": 3}) in client.transport.calls
+    assert ("dig_block", {"x": 2, "y": 112, "z": 3}) in client.transport.calls

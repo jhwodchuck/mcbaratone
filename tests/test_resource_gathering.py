@@ -1765,7 +1765,7 @@ def test_supported_descent_breaks_inset_mud_at_player_y(monkeypatch):
                 if payload["y"] in {62, 64}:
                     return {"id": "minecraft:mud"}
                 return {"id": "minecraft:air"}
-            if route == "break_block":
+            if route == "dig_block":
                 key = (payload["x"], payload["y"], payload["z"])
                 self.dug.add(key)
                 self.player_y = 63
@@ -1783,7 +1783,7 @@ def test_supported_descent_breaks_inset_mud_at_player_y(monkeypatch):
         minimum_altitude=0,
     ) == (8, 63, -192)
     broken = [
-        payload for route, payload in transport.calls if route == "break_block"
+        payload for route, payload in transport.calls if route == "dig_block"
     ]
     assert broken == [{"x": 8, "y": 64, "z": -192}]
 
