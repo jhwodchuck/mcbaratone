@@ -19,9 +19,7 @@ def collect_finished_furnace_output(
         return True
 
     from . import harness_ops
-    from .navigation import find_nearby_block
-
-    candidate = None
+    candidates = []
     if furnace_pos is not None:
         try:
             provided = tuple(int(value) for value in furnace_pos)
@@ -33,32 +31,41 @@ def collect_finished_furnace_output(
                 {"x": provided[0], "y": provided[1], "z": provided[2]},
             ).get("id", "")
             if "furnace" in block:
-                candidate = provided
-    if candidate is None:
-        candidate = find_nearby_block(
-            client,
-            ["minecraft:furnace", "minecraft:blast_furnace"],
-            radius=32,
-        )
-    if candidate is None or not harness_ops.available():
+                candidates.append(provided)
+    if not candidates:
+        try:
+            response = client.transport.dispatch(
+                "find_blocks",
+                {
+                    "blocks": ["minecraft:furnace", "minecraft:blast_furnace"],
+                    "radius": 32,
+                    "limit": 4096,
+                },
+            )
+            for found in response.get("found", []):
+                candidate = (
+                    int(found["x"]),
+                    int(found["y"]),
+                    int(found["z"]),
+                )
+                if candidate not in candidates:
+                    candidates.append(candidate)
+        except (KeyError, TypeError, ValueError):
+            return False
+    if not candidates or not harness_ops.available():
         return False
 
     state = client.transport.dispatch("get_state", {})
     position = state.get("block_position", state.get("position", {}))
-    try:
-        distance = sum(
+    def distance_to(candidate):
+        return sum(
             (float(position[axis]) - float(coordinate)) ** 2
             for axis, coordinate in zip(("x", "y", "z"), candidate)
         ) ** 0.5
+
+    try:
+        candidates.sort(key=distance_to)
     except (KeyError, TypeError, ValueError):
-        return False
-    if distance > 4.5 and not harness_ops.move_near(
-        client,
-        int(candidate[0]),
-        int(candidate[1]),
-        int(candidate[2]),
-        timeout=45.0,
-    ):
         return False
 
     input_item = (
@@ -66,14 +73,25 @@ def collect_finished_furnace_output(
         if output_item == "minecraft:gold_ingot"
         else "minecraft:raw_iron"
     )
-    return resume_active_furnace(
-        client,
-        candidate,
-        input_item,
-        output_item,
-        timeout=60.0,
-        minimum_output=minimum_output,
-    )
+    for candidate in candidates:
+        if distance_to(candidate) > 4.5 and not harness_ops.move_near(
+            client,
+            int(candidate[0]),
+            int(candidate[1]),
+            int(candidate[2]),
+            timeout=45.0,
+        ):
+            continue
+        if resume_active_furnace(
+            client,
+            candidate,
+            input_item,
+            output_item,
+            timeout=60.0,
+            minimum_output=minimum_output,
+        ):
+            return True
+    return False
 
 
 def resume_active_furnace(

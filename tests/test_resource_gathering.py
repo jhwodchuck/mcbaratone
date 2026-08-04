@@ -886,6 +886,40 @@ def test_smelter_collects_finished_output_before_new_gathering_or_fuel(monkeypat
     assert counts["minecraft:iron_ingot"] == 8
 
 
+def test_finished_furnace_recovery_skips_empty_nearest_candidate(monkeypatch):
+    from baritone_client.common import furnace_recovery, harness_ops
+
+    class RecoveryTransport:
+        def dispatch(self, route, _payload):
+            if route == "find_blocks":
+                return {
+                    "found": [
+                        {"x": 1, "y": 64, "z": 0, "distance": 1.0},
+                        {"x": 2, "y": 64, "z": 0, "distance": 2.0},
+                    ]
+                }
+            if route == "get_state":
+                return {"block_position": {"x": 0, "y": 64, "z": 0}}
+            return {}
+
+    attempted = []
+    monkeypatch.setattr(furnace_recovery, "count_item", lambda *_a: 0)
+    monkeypatch.setattr(harness_ops, "available", lambda: True)
+    monkeypatch.setattr(
+        furnace_recovery,
+        "resume_active_furnace",
+        lambda _client, pos, *_a, **_k: attempted.append(tuple(pos))
+        or tuple(pos) == (2, 64, 0),
+    )
+
+    assert furnace_recovery.collect_finished_furnace_output(
+        SimpleNamespace(transport=RecoveryTransport()),
+        "minecraft:iron_ingot",
+        4,
+    )
+    assert attempted == [(1, 64, 0), (2, 64, 0)]
+
+
 def test_outdoor_gatherer_waits_at_night_boundary(monkeypatch):
     transport = RecordingTransport()
     client = SimpleNamespace(transport=transport)
