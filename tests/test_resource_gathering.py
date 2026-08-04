@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from baritone_client.common import inventory, resources, stone_descent
+from baritone_client.common import inventory, resources, shelf_escape, stone_descent
 
 
 class RecordingTransport:
@@ -1733,6 +1733,59 @@ def test_manual_escape_descent_can_break_safe_floor_without_pickaxe(monkeypatch)
         require_pickaxe=False,
     )
     assert any(route == "dig_block" for route, _payload in transport.calls)
+
+
+def test_supported_descent_breaks_inset_mud_at_player_y(monkeypatch):
+    class MudTransport(RecordingTransport):
+        def __init__(self):
+            super().__init__()
+            self.player_y = 64
+            self.dug = set()
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "position": {
+                        "x": 8.5,
+                        "y": float(self.player_y),
+                        "z": -191.5,
+                    },
+                    "block_position": {
+                        "x": 8,
+                        "y": self.player_y,
+                        "z": -192,
+                    },
+                    "health": 20,
+                }
+            if route == "get_block":
+                key = (payload["x"], payload["y"], payload["z"])
+                if key in self.dug:
+                    return {"id": "minecraft:air"}
+                if payload["y"] in {62, 64}:
+                    return {"id": "minecraft:mud"}
+                return {"id": "minecraft:air"}
+            if route == "break_block":
+                key = (payload["x"], payload["y"], payload["z"])
+                self.dug.add(key)
+                self.player_y = 63
+            return {}
+
+    transport = MudTransport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(shelf_escape.time, "sleep", lambda _seconds: None)
+
+    assert shelf_escape.supported_column_descent(
+        client,
+        transport.dispatch("get_state", {}),
+        target_y=63,
+        max_steps=1,
+        minimum_altitude=0,
+    ) == (8, 63, -192)
+    broken = [
+        payload for route, payload in transport.calls if route == "break_block"
+    ]
+    assert broken == [{"x": 8, "y": 64, "z": -192}]
 
 
 def test_manual_escape_descent_navigates_to_landing_when_water_prevents_drop(

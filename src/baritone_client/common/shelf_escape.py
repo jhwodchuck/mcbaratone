@@ -253,7 +253,18 @@ def supported_column_descent(
         if py <= target_y:
             return (px, py, pz)
         floor_y = py - 1
-        px, pz = _supporting_column(client, current_state, floor_y)
+        current_block = client.transport.dispatch(
+            "get_block", {"x": px, "y": py, "z": pz}
+        ).get("id", "")
+        # Mud's lowered collision surface leaves the player's integer block
+        # position inside the mud itself. Looking only at py-1 can select a
+        # neighboring footprint block that the player is not standing on;
+        # breaking it cannot cause a descent. Treat the inset block as the
+        # floor so the verified support two levels down receives the player.
+        if "mud" not in str(current_block):
+            px, pz = _supporting_column(client, current_state, floor_y)
+        else:
+            floor_y = py
         support_y = py - 2
         support = client.transport.dispatch(
             "get_block", {"x": px, "y": support_y, "z": pz}
