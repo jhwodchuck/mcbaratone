@@ -17,7 +17,7 @@ _DEFAULT_INVENTORY_ENSURE_RAW_PLANKS = inventory._ensure_raw_planks
 from .tasks import PlayerDeathDetected, SurvivalRecoveryRequired, TaskResult
 from .furnace_recovery import resume_active_furnace
 from .combat import hunt_mobs
-from .navigation import find_nearby_block, goto
+from .navigation import find_nearby_block, goto, goto_xz
 from .movement_recovery import (
     ExplorationWaypoints,
     MovementWatchdog,
@@ -882,6 +882,32 @@ def _relocate_to_dry_stone_terrain(client) -> bool:
     return relocate_to_dry_stone_terrain(client)
 
 
+def _relocate_to_checkpointed_mine(client) -> bool:
+    """Reach this bot's verified mining staircase before scanning again."""
+    automation_state = getattr(client, "_automation_state", None)
+    if automation_state is None:
+        return False
+    staircase = automation_state.custom_data.get("shared_mining_staircase", {})
+    entrance = staircase.get("entrance")
+    if not isinstance(entrance, (list, tuple)) or len(entrance) != 3:
+        return False
+    target = tuple(int(value) for value in entrance)
+    live = client.transport.dispatch("get_state", {})
+    if live.get("dimension", "minecraft:overworld") != "minecraft:overworld":
+        return False
+    print(f"DEBUG: Returning ore gatherer to verified mine entrance at {target}")
+    client.transport.dispatch("cancel", {})
+    if not goto_xz(client, target[0], target[2], timeout=240, tolerance=6.0):
+        return False
+    return goto(
+        client,
+        *target,
+        timeout=90,
+        check_interval=1.0,
+        tolerance=3.0,
+    )
+
+
 def _read_block_optional(client, x: int, y: int, z: int) -> Optional[str]:
     from .stone_descent import read_block_optional
 
@@ -1159,6 +1185,7 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
         direct_failures = 0
         descent_attempted = False
         dry_relocation_attempted = False
+        mine_relocation_attempted = False
         failed_targets: set[tuple[int, int, int]] = set()
         
         while time.time() - start < timeout:
@@ -1308,6 +1335,16 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
                             # The first descent was tied to the rejected wet
                             # column. Allow one fresh guarded descent after a
                             # verified move onto dry natural terrain.
+                            descent_attempted = False
+                            direct_failures = 0
+                            failed_targets = set()
+                            idle_checks = 0
+                            stalled_checks = 0
+                            _start_mine_process(client, ORES[ore_type], count + 2)
+                            continue
+                    if not mine_relocation_attempted:
+                        mine_relocation_attempted = True
+                        if _relocate_to_checkpointed_mine(client):
                             descent_attempted = False
                             direct_failures = 0
                             failed_targets = set()

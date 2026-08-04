@@ -437,6 +437,12 @@ def test_ore_gather_retry_bounded_to_three_safe_exact_targets(monkeypatch):
         "_relocate_to_dry_stone_terrain",
         lambda _client: relocation_attempts.append(True) or False,
     )
+    mine_attempts = []
+    monkeypatch.setattr(
+        resources,
+        "_relocate_to_checkpointed_mine",
+        lambda _client: mine_attempts.append(True) or False,
+    )
     monkeypatch.setattr(resources.time, "sleep", sleeps.append)
     monkeypatch.setattr(
         "baritone_client.common.combat.defend_or_flee",
@@ -467,6 +473,7 @@ def test_ore_gather_retry_bounded_to_three_safe_exact_targets(monkeypatch):
     assert 0.25 in sleeps
     assert descent_attempts == [True]
     assert relocation_attempts == [True]
+    assert mine_attempts == [True]
 
 
 def test_ore_gather_restarts_after_one_safe_descent(monkeypatch):
@@ -550,6 +557,38 @@ def test_ore_gather_relocates_from_wet_column_before_final_descent(monkeypatch):
     assert resources.gather_ores(client, "iron", count=1, timeout=30)
     assert relocation_attempts == [True]
     assert [route for route, _payload in transport.calls].count("mine") == 4
+
+
+def test_checkpointed_mine_relocation_uses_horizontal_then_exact_goal(monkeypatch):
+    client = SimpleNamespace(
+        transport=RecordingTransport(),
+        _automation_state=SimpleNamespace(
+            custom_data={
+                "shared_mining_staircase": {"entrance": [-159, 104, -375]}
+            }
+        ),
+    )
+    horizontal = []
+    exact = []
+    monkeypatch.setattr(
+        resources,
+        "goto_xz",
+        lambda _client, x, z, **kwargs: horizontal.append((x, z, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        resources,
+        "goto",
+        lambda _client, *target, **kwargs: exact.append((target, kwargs)) or True,
+    )
+
+    assert resources._relocate_to_checkpointed_mine(client)
+    assert horizontal == [(-159, -375, {"timeout": 240, "tolerance": 6.0})]
+    assert exact == [
+        (
+            (-159, 104, -375),
+            {"timeout": 90, "check_interval": 1.0, "tolerance": 3.0},
+        )
+    ]
 
 
 def test_smelting_strategy_translates_shortfall_to_absolute_target(monkeypatch):
