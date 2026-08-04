@@ -262,7 +262,9 @@ def test_leather_hunt_falls_back_to_known_herd_when_local_search_fails(monkeypat
     assert returns == ["return", "return"]
 
 
-def test_leather_hunt_uses_live_position_when_home_route_is_unavailable(monkeypatch):
+def test_leather_hunt_shards_from_live_position_when_home_route_is_unavailable(
+    monkeypatch,
+):
     class Transport:
         def dispatch(self, route, _payload):
             if route == "get_state":
@@ -309,8 +311,9 @@ def test_leather_hunt_uses_live_position_when_home_route_is_unavailable(monkeypa
     monkeypatch.setattr(enchanting, "hunt_mobs", hunt)
 
     assert handler._gather_leather(client, state)
-    assert hunts[0]["exploration_center"] == (10, 20)
+    assert hunts[0]["exploration_center"] == (13, -108)
     assert hunts[0]["max_distance_from_origin"] == 160.0
+    assert state.custom_data["expeditions"]["leather_sector_index"] == 1
 
 
 def test_leave_house_stages_clear_of_closed_door_before_exploring(monkeypatch):

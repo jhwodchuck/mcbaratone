@@ -527,9 +527,14 @@ class EnchantingPipelineHandler(PhaseHandler):
         if local_expedition:
             live = client.transport.dispatch("get_state", {})
             position = live.get("block_position", live.get("position", {}))
-            exploration_center = (
+            live_origin = (
                 int(position.get("x", 0)),
+                int(position.get("y", 0)),
                 int(position.get("z", 0)),
+            )
+            exploration_center = self._next_leather_exploration_center(
+                live_origin,
+                state,
             )
         elif isinstance(origin, (list, tuple)) and len(origin) == 3:
             exploration_center = self._next_leather_exploration_center(
