@@ -2245,6 +2245,26 @@ def test_chest_support_and_placement_predicates():
     assert not harness_ops._is_placeable_target("minecraft:chest")
 
 
+def test_single_chest_spot_accepts_one_isolated_mud_support():
+    from baritone_client.common import harness_ops
+
+    def dispatch(route, payload):
+        if route == "get_state":
+            return {"block_position": {"x": 0, "y": 64, "z": 0}}
+        position = (payload["x"], payload["y"], payload["z"])
+        if position == (1, 64, 0):
+            return {"id": "minecraft:air"}
+        if position == (1, 63, 0):
+            return {"id": "minecraft:mud"}
+        return {"id": "minecraft:water"}
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=dispatch)
+    )
+
+    assert harness_ops.find_single_chest_spot(client) == (1, 64, 0)
+
+
 def test_manage_inventory_banks_surplus_before_discarding(monkeypatch):
     """Storing beats destroying: the discard tiers must not run when a chest
     with room can take the load."""
@@ -2385,8 +2405,8 @@ def test_surplus_storage_builds_one_carried_chest_when_double_is_unavailable(
     monkeypatch.setattr(harness_ops, "create_double_chest", lambda _c: None)
     monkeypatch.setattr(
         harness_ops,
-        "find_double_chest_spot",
-        lambda _c: ((1, 64, 0), (2, 64, 0)),
+        "find_single_chest_spot",
+        lambda _c: (1, 64, 0),
     )
     monkeypatch.setattr(harness_ops, "move_near", lambda *_a, **_k: True)
     monkeypatch.setattr(

@@ -159,11 +159,11 @@ def create_overflow_storage(client, harness_ops):
 
     if count_item(client, "minecraft:chest") < 1:
         return None
-    spot = harness_ops.find_double_chest_spot(client)
-    if not spot:
+    first = harness_ops.find_single_chest_spot(client)
+    if not first:
         print("  STORAGE: no room for a single overflow chest nearby")
         return None
-    first = tuple(spot[0])
+    first = tuple(first)
     if not harness_ops.move_near(client, *first, timeout=20.0):
         return None
     if not harness_ops.place_block_exact(

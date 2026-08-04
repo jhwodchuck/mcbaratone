@@ -584,6 +584,34 @@ def find_double_chest_spot(client, radius: int = 8):
     return None
 
 
+def find_single_chest_spot(client, radius: int = 8):
+    """Find the nearest supported tile for emergency single-chest overflow."""
+    try:
+        state = client.transport.dispatch("get_state", {})
+        pos = state.get("block_position") or state.get("position") or {}
+        px, py, pz = (int(pos.get(axis, 0)) for axis in ("x", "y", "z"))
+    except Exception:
+        return None
+
+    offsets = sorted(
+        (
+            (dx, dz)
+            for dx in range(-radius, radius + 1)
+            for dz in range(-radius, radius + 1)
+            if dx or dz
+        ),
+        key=lambda offset: offset[0] ** 2 + offset[1] ** 2,
+    )
+    for dx, dz in offsets:
+        target = (px + dx, py, pz + dz)
+        if not _is_placeable_target(_block_at(client, *target)):
+            continue
+        support = _block_at(client, target[0], target[1] - 1, target[2])
+        if _is_solid_support_block(support):
+            return target
+    return None
+
+
 def create_double_chest(client):
     """Place a merged double chest and return ``(first, second)``.
 
