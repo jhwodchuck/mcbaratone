@@ -156,6 +156,53 @@ def test_emergency_food_list_uses_current_raw_meat_item_ids():
     assert "minecraft:raw_porkchop" not in combat.EMERGENCY_FOOD_ITEMS
 
 
+def test_emergency_food_crafts_carried_wheat_before_hunting(monkeypatch):
+    from baritone_client.common import emergency_food, resources
+
+    counts = {"minecraft:wheat": 18, "minecraft:bread": 0}
+    crafted = []
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.count_item",
+        lambda _client, item_id: counts.get(item_id, 0),
+    )
+    monkeypatch.setattr(
+        emergency_food,
+        "emergency_food_count",
+        lambda _client: counts["minecraft:bread"],
+    )
+
+    def craft(_client, item_id, target):
+        crafted.append((item_id, target))
+        counts[item_id] = target
+        return True
+
+    monkeypatch.setattr(resources, "_craft_with_table", craft)
+
+    assert emergency_food.craft_emergency_bread_from_carried_wheat(object())
+    assert crafted == [("minecraft:bread", 6)]
+
+
+def test_acquire_emergency_food_uses_carried_wheat_recovery(monkeypatch):
+    state = {"health": 20.0, "food_level": 10, "world_time": 1000}
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda route, _payload: dict(state))
+    )
+    crafted = []
+    monkeypatch.setattr(combat, "recover_health", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        combat,
+        "prepare_carried_wheat_recovery",
+        lambda _client, _state, minimum_food, *_args: (
+            crafted.append(True),
+            state.__setitem__("food_level", minimum_food),
+            True,
+        )[-1],
+    )
+
+    assert combat.acquire_emergency_food(client, minimum_food=14)
+    assert crafted == [True]
+
+
 def test_emergency_recovery_ignores_hostile_sealed_far_below_player():
     state = {"block_position": {"x": -7, "y": 72, "z": 33}}
     cave_creeper = {

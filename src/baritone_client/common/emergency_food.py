@@ -45,6 +45,89 @@ def emergency_food_count(client: Any) -> int:
     from .inventory import count_item
 
     return sum(count_item(client, item_id) for item_id in EMERGENCY_FOOD_ITEMS)
+
+
+def craft_emergency_bread_from_carried_wheat(
+    client: Any,
+    *,
+    maximum_bread: int = 6,
+) -> bool:
+    """Turn an existing wheat reserve into food before risking a hunt."""
+    from .inventory import count_item
+
+    if emergency_food_count(client) > 0:
+        return True
+    wheat = count_item(client, "minecraft:wheat")
+    bread_target = min(max(1, int(maximum_bread)), wheat // 3)
+    if bread_target <= 0:
+        return False
+    try:
+        # Lazy import avoids emergency_food <-> resources initialization cycles.
+        from .resources import _craft_with_table
+
+        if not _craft_with_table(client, "minecraft:bread", bread_target):
+            return False
+    except Exception as exc:
+        print(f"RECOVERY: carried-wheat bread craft failed ({exc})")
+        return False
+    if emergency_food_count(client) <= 0:
+        return False
+    print(
+        f"RECOVERY: crafted carried wheat into up to {bread_target} emergency bread"
+    )
+    return True
+
+
+def prepare_carried_wheat_recovery(
+    client: Any,
+    state: Dict,
+    minimum_food: int,
+    scan_threats: Callable,
+    threat_can_reach: Callable,
+    eat_until_hunger: Callable,
+    recovery_complete: Callable,
+) -> bool:
+    """Craft and eat carried wheat when the immediate area is safe."""
+    from .inventory import count_item
+
+    if emergency_food_count(client) > 0 or count_item(client, "minecraft:wheat") < 3:
+        return False
+    threats = scan_threats(client, radius=16, player_state=state)
+    if any(
+        threat.get("distance", 999) <= 12 and threat_can_reach(threat, state)
+        for threat in threats
+    ):
+        return False
+    if not craft_emergency_bread_from_carried_wheat(client):
+        return False
+    eat_until_hunger(client, minimum_food=minimum_food)
+    return bool(recovery_complete())
+
+
+def wait_for_safe_regeneration(
+    client: Any,
+    state: Dict,
+    minimum_health: float,
+    scan_threats: Callable,
+    threat_can_reach: Callable,
+    stop_exploring: Callable,
+) -> bool:
+    """Hold a fed, wounded player still when no reachable threat is nearby."""
+    health = float(state.get("health", 20) or 0)
+    if "food_level" not in state and "food" not in state:
+        return False
+    food = int(state.get("food_level", state.get("food", 20)) or 0)
+    if health >= minimum_health or food < 18:
+        return False
+    threats = scan_threats(client, radius=16, player_state=state)
+    if any(
+        threat.get("distance", 999) <= 12 and threat_can_reach(threat, state)
+        for threat in threats
+    ):
+        return False
+    stop_exploring()
+    print("RECOVERY: food secured; holding for natural regeneration")
+    return True
 # Tropical fish has no food value. Pufferfish is deliberately excluded
 # because it poisons the player.
 

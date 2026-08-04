@@ -16,12 +16,12 @@ from .emergency_food import (
     EmergencyExploration,
     emergency_food_count as _emergency_food_count,
     enforce_dry_food_search_state,
-)
-from .emergency_food import (
     hunt_target,
+    prepare_carried_wheat_recovery,
     prepare_food_search_state,
     return_to_food_search_anchor,
     select_target,
+    wait_for_safe_regeneration,
 )
 from .health_recovery import recover_health
 from .movement_recovery import block_position
@@ -704,6 +704,17 @@ def acquire_emergency_food(
         if not wait_for_safe_daylight(client, max_wait=720, poll_interval=5):
             return False
 
+    if prepare_carried_wheat_recovery(
+        client,
+        state,
+        minimum_food,
+        scan_for_threats,
+        _threat_can_reach_player,
+        eat_until_hunger,
+        recovery_complete,
+    ):
+        return True
+
     start = time.time()
     state = client.transport.dispatch("get_state", {})
     state = prepare_food_search_state(client, state)
@@ -735,10 +746,8 @@ def acquire_emergency_food(
     def stop_exploring() -> None:
         exploration.stop(client)
 
-    # Emergency exploration values remaining hunger more than travel speed.
-    # Live Bot10 burned food 9 -> 6 in roughly 35 seconds while sprinting and
-    # died before a source loaded. Restore the normal setting on every bounded
-    # exit through ``stop_exploring``.
+    # Suppress sprinting: live Bot10 burned its remaining hunger before a food
+    # source loaded. ``stop_exploring`` restores the normal setting.
     exploration.suppress_sprint(client)
     if stable_anchor is not None:
         current = block_position(state)
@@ -759,15 +768,7 @@ def acquire_emergency_food(
                 return False
             cached_state = state
             exploration.movement.reset(state)
-    # A bot already near death cannot regenerate without eating, and cannot
-    # eat without exploring: holding indefinitely guarantees it never
-    # recovers. Give the hold a short, bounded grace period (a genuinely new
-    # threat can still abort immediately via the check above) and then fall
-    # through to the same bounded, threat-checked exploration a merely-hurt
-    # bot already uses -- it strictly dominates permanent inaction once no
-    # threat is present.
-    # Entity ids whose approach provably made no progress this recovery, so
-    # the next loop does not re-select the same unreachable target forever.
+    # Bound both the critical-health hold and retries of unreachable food.
     unreachable_food: set = set()
     hold_cycles = 0
     max_hold_cycles = 3
@@ -791,15 +792,21 @@ def acquire_emergency_food(
         if recovery_complete(state):
             stop_exploring()
             return True
-        # A prior combat/pickup cycle may have added raw food while health
-        # remained above the healing threshold. Re-attempt eating every loop;
-        # otherwise the bot can carry several meals at hunger 10 and continue
-        # hunting until timeout without ever consuming them.
         if eat_until_hunger(client, minimum_food=minimum_food):
             refreshed = client.transport.dispatch("get_state", {})
             if recovery_complete(refreshed):
                 stop_exploring()
                 return True
+            if wait_for_safe_regeneration(
+                client,
+                refreshed,
+                minimum_health,
+                scan_for_threats,
+                _threat_can_reach_player,
+                stop_exploring,
+            ):
+                time.sleep(2.0)
+                continue
         from .navigation import goto as recovery_goto
 
         if collect_edible_drop(
@@ -866,21 +873,8 @@ def acquire_emergency_food(
 
         current_food = int(state.get("food_level", state.get("food", 20)))
         current_health = float(state.get("health", 20) or 0)
-        # must_hold_for_critical_food only holds below health 6.0 (deliberately
-        # low -- see its docstring for the soft-lock bug that floor fixes), so
-        # a bot at e.g. 7.3hp is treated as "safe enough" to proceed here and
-        # will otherwise commit to a full 64-block, sprint-suppressed hike
-        # toward the nearest singleton target with no further health check
-        # until it arrives. Confirmed live: Bot08 repeatedly walked 48-64m
-        # toward a chicken/salmon while sitting at ~7hp and died to combat or
-        # drowning partway there, since a single stray hit or a few seconds
-        # submerged is fatal at that health and the outer threat/hostile
-        # checks only run once per loop iteration (~every 15s of travel).
-        # Below _CRITICAL_HUNT_HEALTH, shrink the search radius to match the
-        # same perimeter already trusted for the immediate-threat scan above
-        # (16 blocks) so a wounded bot only ever commits to food it can reach
-        # quickly; anything farther falls through to the existing bounded
-        # hold-then-explore path instead of a long unprotected trek.
+        # Live Bot08 died on 48-64m food approaches while wounded. At critical
+        # health, accept only targets inside the 16-block threat perimeter.
         hunt_radius = 16.0 if current_health < _CRITICAL_HUNT_HEALTH else 64.0
         nearby = get_nearby_entities(client, radius=hunt_radius)
 
