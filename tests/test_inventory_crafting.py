@@ -181,6 +181,28 @@ def test_plank_craft_uses_manual_grid_before_native_recipe(monkeypatch):
     )
 
 
+def test_crafting_table_uses_manual_grid_before_native_recipe(monkeypatch):
+    transport = FoodAndIronTransport()
+    transport.items["minecraft:oak_planks"] = 4
+    client = DummyClient(transport)
+    monkeypatch.setattr(harness_ops, "available", lambda: True)
+
+    def manual_table(_client):
+        transport.items["minecraft:oak_planks"] -= 4
+        transport.items["minecraft:crafting_table"] = 1
+        return True
+
+    monkeypatch.setattr(harness_ops, "craft_crafting_table_manual", manual_table)
+
+    assert inventory.craft(client, "minecraft:crafting_table", 1)
+    assert transport.items["minecraft:crafting_table"] == 1
+    assert not any(
+        route in {"craft", "auto_craft"}
+        and payload.get("item") == "minecraft:crafting_table"
+        for route, payload in transport.calls
+    )
+
+
 def test_tool_craft_prepares_sticks_before_pickaxe(monkeypatch):
     transport = RecipeAwareTransport()
     client = DummyClient(transport)

@@ -1002,7 +1002,7 @@ def craft(client, item_id: str, count: int = 1) -> bool:
     # Sticks remain on the bridge's small reliable auto-craft slice and are
     # needed before a table is open. Other explicit progression recipes should
     # skip the known-broken native lookup and go straight to the verified grid.
-    manual_recipe = manual_tool or (
+    manual_recipe = manual_tool or item_id == "minecraft:crafting_table" or (
         item_id in _MANUAL_GRID_RECIPES and item_id != "minecraft:stick"
     )
 
