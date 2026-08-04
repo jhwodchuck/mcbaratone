@@ -2347,6 +2347,18 @@ DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
     "minecraft:ladder": lambda client, qty: _craft_with_table(client, "minecraft:ladder", qty),
 }
 
+# A manual-grid recipe is, by definition, a supported ensure_supplies target.
+# Keep hand-tuned acquisition strategies above, then fill the mechanical craft
+# route for every remaining recipe. This prevents newly added progression
+# recipes from silently entering the "No handler ... skipping" timeout loop.
+for _manual_item_id in inventory._MANUAL_GRID_RECIPES:
+    DEFAULT_REQUIREMENT_STRATEGIES.setdefault(
+        _manual_item_id,
+        lambda client, qty, item_id=_manual_item_id: _craft_with_table(
+            client, item_id, qty
+        ),
+    )
+
 
 def _reserve_gathering_inventory(client, minimum_free_slots: int = 3) -> bool:
     """Maintain headroom before and during any resource collection loop."""

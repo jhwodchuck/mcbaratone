@@ -954,6 +954,7 @@ def test_manual_grid_recipe_shapes_match_vanilla():
         "minecraft:furnace": {"minecraft:cobblestone": 8},
         "minecraft:chest": {"#planks": 8},
         "minecraft:white_bed": {"minecraft:white_wool": 3, "#planks": 3},
+        "minecraft:bread": {"minecraft:wheat": 3},
         "minecraft:wooden_hoe": {"#planks": 2, "minecraft:stick": 2},
         # Stone tools.
         "minecraft:stone_sword": {"minecraft:cobblestone": 2, "minecraft:stick": 1},

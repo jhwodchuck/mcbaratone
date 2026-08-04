@@ -2,6 +2,10 @@
 
 from ...common import TaskResult
 from ...common.combat import entity_position, get_nearby_entities
+from ...common.farming import harvest_wheat_farm
+from ...common.inventory import count_item, withdraw_required_from_catalog
+from ...common.navigation import staged_goto
+from ...common.resources import ensure_supplies
 from ...common.villager import build_villager_breeder, start_villager_multiplication
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
@@ -18,6 +22,10 @@ class VillagerInfraHandler(PhaseHandler):
         self, client, resources: ResourceManager, state: StateManager
     ) -> TaskResult:
         missing = resources.check_phase_requirements(Phase.VILLAGER_INFRA)
+        if missing.get("minecraft:bread", 0) and self._provision_breeding_bread(
+            client, state
+        ):
+            missing.pop("minecraft:bread", None)
         if missing:
             return TaskResult.fail(
                 "Villager breeding supplies are missing",
@@ -72,3 +80,57 @@ class VillagerInfraHandler(PhaseHandler):
         state.record_phase_payload(Phase.VILLAGER_INFRA, payload)
         state.save_checkpoint(resources.get_summary()["inventory"])
         return TaskResult.ok("Villager breeder verified by new offspring", **payload)
+
+    @staticmethod
+    def _provision_breeding_bread(client, state: StateManager) -> bool:
+        """Withdraw or harvest enough wheat, then craft six verified bread."""
+        target = 6
+        try:
+            withdraw_required_from_catalog(
+                client,
+                {
+                    "minecraft:bread": target,
+                    "minecraft:wheat": target * 3,
+                },
+                state=state,
+                max_travel_distance=96.0,
+            )
+        except Exception:
+            pass
+        if count_item(client, "minecraft:bread") >= target:
+            return True
+
+        wheat_target = target * 3
+        if count_item(client, "minecraft:wheat") < wheat_target:
+            farm = state.custom_data.get("wheat_farm", {})
+            origin = farm.get("origin") if isinstance(farm, dict) else None
+            if not isinstance(origin, (list, tuple)) or len(origin) != 3:
+                print("  No checkpointed wheat farm can supply villager bread.")
+                return False
+            farm_position = tuple(int(value) for value in origin)
+            live = client.transport.dispatch("get_state", {})
+            position = live.get("block_position", live.get("position", {}))
+            current = (
+                int(position.get("x", 0)),
+                int(position.get("y", 64)),
+                int(position.get("z", 0)),
+            )
+            horizontal = (
+                (current[0] - farm_position[0]) ** 2
+                + (current[2] - farm_position[2]) ** 2
+            ) ** 0.5
+            if horizontal > 48.0 and not staged_goto(
+                client, farm_position, current
+            ):
+                print("  Could not reach the checkpointed wheat farm.")
+                return False
+            harvest_wheat_farm(client, *farm_position)
+        if count_item(client, "minecraft:wheat") < wheat_target:
+            print(
+                "  Wheat farm is not yet mature enough for six breeding bread."
+            )
+            return False
+        crafted = ensure_supplies(
+            client, {"minecraft:bread": target}, timeout=180
+        )
+        return crafted.success and count_item(client, "minecraft:bread") >= target

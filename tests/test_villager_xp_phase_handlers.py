@@ -218,7 +218,9 @@ def test_handlers_persist_executor_verifiable_payloads(monkeypatch):
 
 def test_handlers_fail_closed_on_missing_resources_or_capability(monkeypatch):
     state = DummyState()
-    missing = villager_phase.VillagerInfraHandler().execute(
+    handler = villager_phase.VillagerInfraHandler()
+    monkeypatch.setattr(handler, "_provision_breeding_bread", lambda *_args: False)
+    missing = handler.execute(
         SimpleNamespace(), DummyResources({"minecraft:bread": 6}), state
     )
     monkeypatch.setattr(xp_phase, "find_spawner", lambda *_args, **_kwargs: None)
@@ -230,6 +232,47 @@ def test_handlers_fail_closed_on_missing_resources_or_capability(monkeypatch):
     assert missing.data["missing_requirements"] == {"minecraft:bread": 6}
     assert not no_spawner.success
     assert no_spawner.data["capability_blocker"] == "generic_mob_farm_construction"
+
+
+def test_villager_handler_acquires_missing_bread_before_observation(monkeypatch):
+    state = DummyState()
+    handler = villager_phase.VillagerInfraHandler()
+    provisioned = []
+    monkeypatch.setattr(
+        handler,
+        "_provision_breeding_bread",
+        lambda *_args: provisioned.append(True) or True,
+    )
+    monkeypatch.setattr(
+        villager_phase,
+        "get_nearby_entities",
+        lambda *_args, **_kwargs: [adult(1, 10), adult(2, 12)],
+    )
+    monkeypatch.setattr(
+        villager_phase,
+        "build_villager_breeder",
+        lambda *_args, **_kwargs: {
+            "location": [11, 64, 10],
+            "required_beds": 3,
+            "bed_blocks": [[10 + index, 64, 12] for index in range(6)],
+            "verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        villager_phase,
+        "start_villager_multiplication",
+        lambda *_args, **_kwargs: {
+            "offspring_uuid": "new-baby",
+            "offspring_observed": True,
+        },
+    )
+
+    result = handler.execute(
+        SimpleNamespace(), DummyResources({"minecraft:bread": 6}), state
+    )
+
+    assert result.success
+    assert provisioned == [True]
 
 
 def test_resource_requirements_are_real_nonzero_preconditions():

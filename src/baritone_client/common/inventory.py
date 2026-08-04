@@ -623,6 +623,15 @@ _MANUAL_GRID_RECIPES: Dict[str, Dict] = {
             ("#planks", 6),
         ],
     },
+    # Villager breeding requires six bread. The live client cannot list this
+    # recipe, and its three-wide shape does not fit the player 2x2 grid.
+    "minecraft:bread": {
+        "placements": [
+            ("minecraft:wheat", 4),
+            ("minecraft:wheat", 5),
+            ("minecraft:wheat", 6),
+        ],
+    },
     # The starter-house repair path derives the door id from the carried
     # plank family. Keep these selectors literal so mixed planks cannot craft
     # a different door from the expected output.
