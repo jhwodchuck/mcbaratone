@@ -11,6 +11,19 @@ MIN_STORAGE_TRAVEL_FOOD = 18
 MAX_STORAGE_TRAVEL_DISTANCE = 96.0
 MAX_STORAGE_TOUR_STOPS = 4
 UNREACHABLE_STORAGE_COOLDOWN = 300.0
+OVERFLOW_BULK_ITEMS = {
+    "minecraft:basalt",
+    "minecraft:blackstone",
+    "minecraft:cobblestone",
+    "minecraft:mangrove_roots",
+    "minecraft:moss_carpet",
+    "minecraft:netherrack",
+}
+OVERFLOW_RETAIN_COUNTS = {
+    "minecraft:blackstone": 32,
+    "minecraft:cobblestone": 64,
+    "minecraft:netherrack": 32,
+}
 
 
 def storage_travel_safe(snapshot: Dict[str, Any]) -> bool:
@@ -191,7 +204,21 @@ def create_overflow_storage(client, harness_ops):
 def store_surplus_in_chest(client, required: int) -> bool:
     """Bank surplus in nearby storage, growing capacity when necessary."""
     from . import harness_ops
-    from .inventory import deposit_excess_to_chest, free_inventory_slots
+    from .inventory import (
+        EARLY_GAME_EXCESS_ITEMS,
+        deposit_excess_to_chest,
+        free_inventory_slots,
+    )
+
+    deposit_items = EARLY_GAME_EXCESS_ITEMS | OVERFLOW_BULK_ITEMS
+
+    def deposit(position) -> int:
+        return deposit_excess_to_chest(
+            client,
+            tuple(position),
+            deposit_items=deposit_items,
+            retain_counts=OVERFLOW_RETAIN_COUNTS,
+        )
 
     if not harness_ops.available():
         return False
@@ -222,7 +249,7 @@ def store_surplus_in_chest(client, required: int) -> bool:
         try:
             if harness_ops.chest_is_full(client, position):
                 continue
-            if deposit_excess_to_chest(client, tuple(position)) > 0:
+            if deposit(position) > 0:
                 if free_inventory_slots(client) >= required:
                     return True
         except Exception as exc:
@@ -239,7 +266,7 @@ def store_surplus_in_chest(client, required: int) -> bool:
         print("  STORAGE: new chest deposit deferred for survival recovery")
         return False
     try:
-        deposit_excess_to_chest(client, tuple(created[0]))
+        deposit(created[0])
     except Exception as exc:
         print(f"  STORAGE: deposit to new double chest failed ({exc})")
         return False

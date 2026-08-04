@@ -2430,6 +2430,7 @@ def test_surplus_storage_builds_one_carried_chest_when_double_is_unavailable(
         )
     )
     placed = []
+    deposits = []
     monkeypatch.setattr(harness_ops, "available", lambda: True)
     monkeypatch.setattr(
         harness_ops,
@@ -2458,7 +2459,7 @@ def test_surplus_storage_builds_one_carried_chest_when_double_is_unavailable(
     )
     monkeypatch.setattr(
         "baritone_client.common.inventory.deposit_excess_to_chest",
-        lambda *_args, **_kwargs: 2,
+        lambda *_args, **kwargs: deposits.append(kwargs) or 2,
     )
     monkeypatch.setattr(
         "baritone_client.common.inventory.free_inventory_slots", lambda _c: 4
@@ -2466,6 +2467,8 @@ def test_surplus_storage_builds_one_carried_chest_when_double_is_unavailable(
 
     assert res._store_surplus_in_chest(client, 3)
     assert placed == [(1, 64, 0, "minecraft:chest")]
+    assert "minecraft:basalt" in deposits[0]["deposit_items"]
+    assert deposits[0]["retain_counts"]["minecraft:cobblestone"] == 64
 
 
 def test_unreachable_storage_is_cooled_down_before_next_cleanup(monkeypatch):
