@@ -1486,6 +1486,7 @@ def deposit_excess_to_chest(
     """
     from . import harness_ops
     from .navigation import goto
+    from .storage_safety import load_storage_chunk, storage_travel_safe
 
     deposit_items = set(deposit_items or EARLY_GAME_EXCESS_ITEMS)
     keep_items = None if keep_items is None else set(keep_items)
@@ -1494,6 +1495,12 @@ def deposit_excess_to_chest(
         for item_id, count in (retain_counts or {}).items()
     }
     cx, cy, cz = (int(value) for value in chest_pos)
+
+    initial_state = client.transport.dispatch("get_state", {})
+    if not storage_travel_safe(initial_state):
+        print("STORAGE: refusing travel below health/hunger safety margin")
+        return -1
+    client._storage_survival_abort = False
 
     try:
         client.transport.dispatch("close_screen", {})
@@ -1511,53 +1518,7 @@ def deposit_excess_to_chest(
         # avoids both abandoning a real distant base and waiting forever on an
         # unreachable target.
         print(f"STORAGE: loading saved chest chunk at {(cx, cy, cz)}")
-        position = client.transport.dispatch("get_state", {}).get(
-            "block_position", {}
-        )
-        remaining = (
-            (float(position.get("x", 0)) - cx) ** 2
-            + (float(position.get("y", 0)) - cy) ** 2
-            + (float(position.get("z", 0)) - cz) ** 2
-        ) ** 0.5
-        reached = remaining <= 3.0
-        for leg in range(1, 9):
-            if reached:
-                break
-            leg_timeout = max(30, min(120, int(remaining / 2.0) + 20))
-            if goto(
-                client,
-                cx,
-                cy,
-                cz,
-                timeout=leg_timeout,
-                check_interval=0.5,
-                tolerance=3.0,
-            ):
-                reached = True
-                break
-
-            position = client.transport.dispatch("get_state", {}).get(
-                "block_position", {}
-            )
-            next_remaining = (
-                (float(position.get("x", 0)) - cx) ** 2
-                + (float(position.get("y", 0)) - cy) ** 2
-                + (float(position.get("z", 0)) - cz) ** 2
-            ) ** 0.5
-            progress = remaining - next_remaining
-            print(
-                "STORAGE: chest return leg "
-                f"{leg} moved {progress:.1f} blocks; "
-                f"{next_remaining:.1f} remain"
-            )
-            if next_remaining <= 3.0:
-                reached = True
-                break
-            if progress < 4.0:
-                break
-            remaining = next_remaining
-
-        if not reached:
+        if not load_storage_chunk(client, (cx, cy, cz), goto):
             print("STORAGE: could not reach saved chest chunk")
             return -1
         block = client.transport.dispatch(

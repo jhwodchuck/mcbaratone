@@ -1097,6 +1097,30 @@ def test_gathering_capacity_prefers_checkpointed_storage(monkeypatch):
     assert resources._reserve_gathering_inventory(client)
 
 
+def test_gathering_capacity_skips_distant_home_storage(monkeypatch):
+    state = SimpleNamespace(custom_data={})
+    client = SimpleNamespace(
+        transport=RecordingTransport(),
+        _automation_state=state,
+    )
+    monkeypatch.setattr(resources, "free_inventory_slots", lambda _client: 0)
+    monkeypatch.setattr(
+        inventory,
+        "resolve_storage_location",
+        lambda *_args, **_kwargs: (500, 65, 500),
+    )
+    monkeypatch.setattr(
+        inventory,
+        "deposit_excess_to_chest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("inventory cleanup must not start a distant chest tour")
+        ),
+    )
+    monkeypatch.setattr(resources, "manage_inventory", lambda *_a, **_k: True)
+
+    assert resources._reserve_gathering_inventory(client)
+
+
 def test_satisfied_stone_target_does_not_discard_inventory(monkeypatch):
     client = SimpleNamespace(transport=RecordingTransport())
     monkeypatch.setattr(
@@ -2273,6 +2297,54 @@ def test_surplus_storage_builds_a_double_chest_when_all_are_full(monkeypatch):
 
     assert res._store_surplus_in_chest(SimpleNamespace(), 3) is True
     assert built, "a new double chest must be built when every chest is full"
+
+
+def test_surplus_storage_ignores_remote_fleet_containers(monkeypatch):
+    """Emergency cleanup must not tour arbitrary fleet storage for one slot."""
+    from baritone_client.common import harness_ops
+    from baritone_client.common import resources as res
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: {
+                "health": 20,
+                "food_level": 20,
+                "dimension": "minecraft:overworld",
+                "block_position": {"x": 0, "y": 64, "z": 0},
+            }
+            if route == "get_state"
+            else {}
+        )
+    )
+    monkeypatch.setattr(harness_ops, "available", lambda: True)
+    monkeypatch.setattr(harness_ops, "create_double_chest", lambda _c: None)
+    monkeypatch.setattr(
+        "baritone_client.common.storage_catalog.catalog_for",
+        lambda _c: SimpleNamespace(
+            list_containers=lambda: [
+                {
+                    "dimension": "minecraft:overworld",
+                    "x": 600,
+                    "y": 64,
+                    "z": 600,
+                },
+                {
+                    "dimension": "minecraft:the_nether",
+                    "x": 4,
+                    "y": 64,
+                    "z": 4,
+                },
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.deposit_excess_to_chest",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("remote or cross-dimension storage must be ignored")
+        ),
+    )
+
+    assert res._store_surplus_in_chest(client, 3) is False
 
 
 class _PickTransport:

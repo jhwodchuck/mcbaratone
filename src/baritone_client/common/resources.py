@@ -25,6 +25,11 @@ from .movement_recovery import (
 )
 from .mining_safety import run_mining_defense
 from .surface_egress import try_lower_surface_egress
+from .storage_safety import (
+    MAX_STORAGE_TRAVEL_DISTANCE,
+    storage_distance,
+    store_surplus_in_chest as _store_surplus_in_chest,
+)
 from .wood_gathering import (
     maintain_survival_window,
     recover_after_aquatic_stop,
@@ -2365,73 +2370,28 @@ def _reserve_gathering_inventory(client, minimum_free_slots: int = 3) -> bool:
                 verify=False,
             )
         if chest_pos is not None:
-            deposited = deposit_excess_to_chest(
-                client,
-                chest_pos,
-                state=automation_state,
-            )
-            if deposited >= 0 and free_inventory_slots(client) >= required:
-                print(
-                    f"  Reserved {required} gathering slots in persistent home storage."
+            snapshot = client.transport.dispatch("get_state", {})
+            distance = storage_distance(snapshot, chest_pos)
+            if distance <= MAX_STORAGE_TRAVEL_DISTANCE:
+                deposited = deposit_excess_to_chest(
+                    client,
+                    chest_pos,
+                    state=automation_state,
                 )
-                return True
+                if deposited >= 0 and free_inventory_slots(client) >= required:
+                    print(
+                        f"  Reserved {required} gathering slots in persistent home storage."
+                    )
+                    return True
+            else:
+                print(
+                    "  Gathering cleanup skipped distant home storage "
+                    f"({distance:.1f} blocks away)."
+                )
     except Exception as exc:
         print(f"  Gathering storage cleanup unavailable ({exc}); using bounded disposal")
 
     return manage_inventory(client, minimum_free_slots=required)
-
-
-def _store_surplus_in_chest(client, required: int) -> bool:
-    """Deposit surplus into catalogued storage, growing it if every chest is full.
-
-    Returns True only when the requested free slots actually materialised, so
-    the caller still falls through to bounded discarding if storage cannot
-    take the load (no chests craftable, nowhere to place one, all unreachable).
-    """
-    from . import harness_ops
-    from .inventory import deposit_excess_to_chest, free_inventory_slots
-
-    if not harness_ops.available():
-        return False
-
-    containers = []
-    try:
-        from .storage_catalog import catalog_for
-
-        # list_containers already excludes status='missing', so a phantom
-        # coordinate is never walked to again.
-        for row in catalog_for(client).list_containers():
-            try:
-                containers.append((int(row["x"]), int(row["y"]), int(row["z"])))
-            except (KeyError, TypeError, ValueError):
-                continue
-    except Exception as exc:
-        print(f"  STORAGE: container list unavailable ({exc})")
-
-    for position in containers:
-        try:
-            if harness_ops.chest_is_full(client, position):
-                continue
-            if deposit_excess_to_chest(client, tuple(position)) > 0:
-                if free_inventory_slots(client) >= required:
-                    return True
-        except Exception as exc:
-            print(f"  STORAGE: deposit to {tuple(position)} failed ({exc})")
-
-    # Every known chest is full (or there are none): add capacity.
-    try:
-        created = harness_ops.create_double_chest(client)
-    except Exception as exc:
-        print(f"  STORAGE: could not build overflow storage ({exc})")
-        return False
-    if not created:
-        return False
-    try:
-        deposit_excess_to_chest(client, tuple(created[0]))
-    except Exception as exc:
-        print(f"  STORAGE: deposit to new double chest failed ({exc})")
-        return False
-    return free_inventory_slots(client) >= required
 
 
 def manage_inventory(client, minimum_free_slots: int = 1) -> bool:

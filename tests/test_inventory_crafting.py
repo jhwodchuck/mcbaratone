@@ -717,6 +717,36 @@ def test_deposit_resumes_long_chest_return_after_progress_timeout(monkeypatch):
     assert moves == [(1, 65, 1), (1, 65, 1)]
 
 
+def test_deposit_aborts_chest_travel_when_health_drops(monkeypatch):
+    class UnsafeTravelTransport:
+        def __init__(self):
+            self.health = 20.0
+
+        def dispatch(self, route, _payload):
+            if route == "get_block":
+                return {"id": "minecraft:void_air"}
+            if route == "get_state":
+                return {
+                    "health": self.health,
+                    "food_level": 20,
+                    "block_position": {"x": 0, "y": 65, "z": 0},
+                }
+            return {}
+
+    transport = UnsafeTravelTransport()
+    client = DummyClient(transport)
+
+    def unsafe_goto(_client, _x, _y, _z, *, on_tick, **_kwargs):
+        transport.health = 12.0
+        on_tick()
+        return False
+
+    monkeypatch.setattr("baritone_client.common.navigation.goto", unsafe_goto)
+
+    assert inventory.deposit_excess_to_chest(client, (80, 65, 0)) == -1
+    assert client._storage_survival_abort is True
+
+
 def test_storage_location_resolves_from_production_checkpoint_state(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
 
