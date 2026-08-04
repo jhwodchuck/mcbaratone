@@ -15,9 +15,17 @@ OVERFLOW_BULK_ITEMS = {
     "minecraft:basalt",
     "minecraft:blackstone",
     "minecraft:cobblestone",
+    "minecraft:glowstone_dust",
+    "minecraft:lapis_lazuli",
+    "minecraft:magma_block",
     "minecraft:mangrove_roots",
+    "minecraft:mossy_cobblestone",
     "minecraft:moss_carpet",
+    "minecraft:muddy_mangrove_roots",
     "minecraft:netherrack",
+    "minecraft:quartz",
+    "minecraft:raw_copper",
+    "minecraft:soul_sand",
 }
 OVERFLOW_RETAIN_COUNTS = {
     "minecraft:blackstone": 32,

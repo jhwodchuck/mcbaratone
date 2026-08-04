@@ -746,6 +746,42 @@ def test_smelter_prepares_fuel_before_locating_furnace(monkeypatch):
     assert events == ["fuel", "find", "smelt"]
 
 
+def test_smelter_builds_missing_furnace_through_table_aware_craft(monkeypatch):
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda *_args, **_kwargs: {})
+    )
+    crafted = []
+    monkeypatch.setattr(
+        resources,
+        "count_item",
+        lambda _client, item_id: {
+            "minecraft:raw_iron": 4,
+            "minecraft:cobblestone": 8,
+        }.get(item_id, 0),
+    )
+    monkeypatch.setattr(
+        resources, "_prepare_safe_furnace_fuel", lambda *_a: "minecraft:oak_planks"
+    )
+    monkeypatch.setattr(resources, "find_nearby_block", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        resources,
+        "craft",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("missing furnace must use the table-aware craft route")
+        ),
+    )
+    monkeypatch.setattr(
+        resources,
+        "_craft_with_table",
+        lambda _client, item_id, qty: crafted.append((item_id, qty)) or False,
+    )
+
+    assert not resources._smelt_with_furnace(
+        client, "minecraft:iron_ingot", 4
+    )
+    assert crafted == [("minecraft:furnace", 1)]
+
+
 def test_outdoor_gatherer_waits_at_night_boundary(monkeypatch):
     transport = RecordingTransport()
     client = SimpleNamespace(transport=transport)
@@ -2705,6 +2741,8 @@ def test_surplus_storage_builds_one_carried_chest_when_double_is_unavailable(
     assert res._store_surplus_in_chest(client, 3)
     assert placed == [(1, 64, 0, "minecraft:chest")]
     assert "minecraft:basalt" in deposits[0]["deposit_items"]
+    assert "minecraft:raw_copper" in deposits[0]["deposit_items"]
+    assert "minecraft:quartz" in deposits[0]["deposit_items"]
     assert deposits[0]["retain_counts"]["minecraft:cobblestone"] == 64
 
 

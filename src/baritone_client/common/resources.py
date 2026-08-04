@@ -2748,7 +2748,12 @@ def _smelt_with_furnace(
             if count_item(client, "minecraft:cobblestone") < 8:
                 if not gather_stone(client, count=8):
                     return False
-            if not craft(client, "minecraft:furnace", 1):
+            # A furnace is a 3x3 recipe. The raw craft route can fall back to
+            # making a table but does not acquire/convert its four planks;
+            # live Bot16 carried 42 logs and still repeated "any_planks:0"
+            # for the full supply timeout. The table-aware route converts a
+            # carried log first and then verifies the workstation craft.
+            if not _craft_with_table(client, "minecraft:furnace", 1):
                 return False
 
         print("  Placing furnace after fuel gathering is complete...")
