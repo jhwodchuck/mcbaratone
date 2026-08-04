@@ -710,6 +710,9 @@ def test_smelter_prepares_fuel_before_locating_furnace(monkeypatch):
 
     monkeypatch.setattr(resources, "count_item", item_count)
     monkeypatch.setattr(
+        resources, "collect_finished_furnace_output", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(
         resources,
         "_prepare_safe_furnace_fuel",
         lambda *_args: events.append("fuel") or "minecraft:birch_planks",
@@ -758,6 +761,9 @@ def test_smelter_builds_missing_furnace_through_table_aware_craft(monkeypatch):
             "minecraft:raw_iron": 4,
             "minecraft:cobblestone": 8,
         }.get(item_id, 0),
+    )
+    monkeypatch.setattr(
+        resources, "collect_finished_furnace_output", lambda *_a, **_k: False
     )
     monkeypatch.setattr(
         resources, "_prepare_safe_furnace_fuel", lambda *_a: "minecraft:oak_planks"
@@ -813,6 +819,18 @@ def test_smelter_fallback_collects_completed_output_before_requiring_input(monke
     monkeypatch.setattr(
         resources, "count_item", lambda _client, item_id: counts.get(item_id, 0)
     )
+    recovery_calls = []
+
+    def recover_finished(_client, item_id, qty, furnace_pos):
+        recovery_calls.append((item_id, qty, furnace_pos))
+        if len(recovery_calls) == 1:
+            return False
+        counts["minecraft:iron_ingot"] += 7
+        return True
+
+    monkeypatch.setattr(
+        resources, "collect_finished_furnace_output", recover_finished
+    )
     monkeypatch.setattr(
         resources, "_prepare_safe_furnace_fuel", lambda *_a: "minecraft:oak_planks"
     )
@@ -820,6 +838,49 @@ def test_smelter_fallback_collects_completed_output_before_requiring_input(monke
     monkeypatch.setattr(harness_ops, "available", lambda: True)
     monkeypatch.setattr(harness_ops, "smelt_in_furnace", lambda *_a, **_k: False)
     monkeypatch.setattr(base, "open_furnace", lambda _client: True)
+
+    assert resources._smelt_with_furnace(client, "minecraft:iron_ingot", 4)
+    assert counts["minecraft:iron_ingot"] == 8
+    assert recovery_calls == [
+        ("minecraft:iron_ingot", 4, None),
+        ("minecraft:iron_ingot", 4, (1, 64, 0)),
+    ]
+
+
+def test_smelter_collects_finished_output_before_new_gathering_or_fuel(monkeypatch):
+    counts = {
+        "minecraft:iron_ingot": 1,
+        "minecraft:raw_iron": 20,
+    }
+    client = SimpleNamespace()
+    monkeypatch.setattr(
+        resources, "count_item", lambda _client, item_id: counts.get(item_id, 0)
+    )
+
+    def collect(_client, item_id, qty, furnace_pos):
+        assert (item_id, qty, furnace_pos) == (
+            "minecraft:iron_ingot",
+            4,
+            None,
+        )
+        counts["minecraft:iron_ingot"] += 7
+        return True
+
+    monkeypatch.setattr(resources, "collect_finished_furnace_output", collect)
+    monkeypatch.setattr(
+        resources,
+        "gather_ores",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("finished output must be collected before new ore")
+        ),
+    )
+    monkeypatch.setattr(
+        resources,
+        "_prepare_safe_furnace_fuel",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("finished output must be collected before new fuel")
+        ),
+    )
 
     assert resources._smelt_with_furnace(client, "minecraft:iron_ingot", 4)
     assert counts["minecraft:iron_ingot"] == 8

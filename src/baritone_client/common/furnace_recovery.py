@@ -8,6 +8,74 @@ from typing import Optional
 from .inventory import count_item
 
 
+def collect_finished_furnace_output(
+    client,
+    output_item: str,
+    minimum_output: int,
+    furnace_pos=None,
+) -> bool:
+    """Find and collect durable furnace output before starting new work."""
+    if count_item(client, output_item) >= minimum_output:
+        return True
+
+    from . import harness_ops
+    from .navigation import find_nearby_block
+
+    candidate = None
+    if furnace_pos is not None:
+        try:
+            provided = tuple(int(value) for value in furnace_pos)
+        except (TypeError, ValueError):
+            provided = None
+        if provided is not None:
+            block = client.transport.dispatch(
+                "get_block",
+                {"x": provided[0], "y": provided[1], "z": provided[2]},
+            ).get("id", "")
+            if "furnace" in block:
+                candidate = provided
+    if candidate is None:
+        candidate = find_nearby_block(
+            client,
+            ["minecraft:furnace", "minecraft:blast_furnace"],
+            radius=32,
+        )
+    if candidate is None or not harness_ops.available():
+        return False
+
+    state = client.transport.dispatch("get_state", {})
+    position = state.get("block_position", state.get("position", {}))
+    try:
+        distance = sum(
+            (float(position[axis]) - float(coordinate)) ** 2
+            for axis, coordinate in zip(("x", "y", "z"), candidate)
+        ) ** 0.5
+    except (KeyError, TypeError, ValueError):
+        return False
+    if distance > 4.5 and not harness_ops.move_near(
+        client,
+        int(candidate[0]),
+        int(candidate[1]),
+        int(candidate[2]),
+        timeout=45.0,
+    ):
+        return False
+
+    input_item = (
+        "minecraft:raw_gold"
+        if output_item == "minecraft:gold_ingot"
+        else "minecraft:raw_iron"
+    )
+    return resume_active_furnace(
+        client,
+        candidate,
+        input_item,
+        output_item,
+        timeout=60.0,
+        minimum_output=minimum_output,
+    )
+
+
 def resume_active_furnace(
     client,
     furnace_pos,

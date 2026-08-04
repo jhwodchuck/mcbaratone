@@ -15,7 +15,7 @@ from .inventory import (
 from . import inventory
 _DEFAULT_INVENTORY_ENSURE_RAW_PLANKS = inventory._ensure_raw_planks
 from .tasks import PlayerDeathDetected, SurvivalRecoveryRequired, TaskResult
-from .furnace_recovery import resume_active_furnace
+from .furnace_recovery import collect_finished_furnace_output, resume_active_furnace
 from .combat import hunt_mobs
 from .navigation import find_nearby_block, goto, goto_xz
 from .movement_recovery import (
@@ -2699,6 +2699,13 @@ def _smelt_with_furnace(
     if needed <= 0:
         return True
 
+    # A previous attempt may have completed server-side after its screen read
+    # timed out. Recover that durable output before gathering more ore or
+    # leaving the workstation to prepare another fuel stack.
+    if collect_finished_furnace_output(client, item_id, qty, furnace_pos):
+        return True
+    needed = qty - count_item(client, item_id)
+
     # Gather input if missing
     if count_item(client, input_item) < needed:
         ore = "iron" if "iron" in input_item else "gold"
@@ -2823,6 +2830,9 @@ def _smelt_with_furnace(
         except Exception as e:
             print(f"  Harness smelt failed (falling back): {e}")
 
+    if collect_finished_furnace_output(client, item_id, qty, fpos):
+        return True
+
     # Native fallback uses the live container-slot list rather than raw player
     # indices, then collects partial output throughout the burn.
     if not open_furnace(client):
@@ -2830,28 +2840,6 @@ def _smelt_with_furnace(
     screen = client.transport.dispatch("get_screen", {})
     data = screen.get("data", screen)
     slots = data.get("slots", [])
-
-    # The harness can time out on a stale screen even though the server has
-    # finished smelting. Collect verified output before requiring another
-    # carried input/fuel stack; both may already be inside this furnace.
-    existing_output = next(
-        (
-            slot
-            for slot in slots
-            if int(slot.get("slot", -1)) == 2
-            and slot.get("id") == item_id
-            and int(slot.get("count", 0)) > 0
-        ),
-        None,
-    )
-    if existing_output is not None:
-        client.transport.dispatch(
-            "inventory_click",
-            {"slot": 2, "type": "QUICK_MOVE", "button": 0},
-        )
-        if count_item(client, item_id) >= qty:
-            client.transport.dispatch("close_screen", {})
-            return True
 
     fuel_slot = next(
         (
