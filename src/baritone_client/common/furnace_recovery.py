@@ -132,7 +132,46 @@ def resume_active_furnace(
 
     data, slots = furnace_slots()
     input_slot = slots.get(0, {})
+    fuel_slot = slots.get(1, {})
     output_slot = slots.get(2, {})
+    input_empty = (
+        input_slot.get("id") in (None, "minecraft:air")
+        or int(input_slot.get("count", 0)) <= 0
+    )
+    output_empty = (
+        output_slot.get("id") in (None, "minecraft:air")
+        or int(output_slot.get("count", 0)) <= 0
+    )
+    fuel_loaded = (
+        fuel_slot.get("id") not in (None, "minecraft:air")
+        and int(fuel_slot.get("count", 0)) > 0
+    )
+    if input_empty and output_empty and fuel_loaded:
+        carried_input = next(
+            (
+                slot
+                for slot in data.get("slots", [])
+                if int(slot.get("slot", -1)) >= 3
+                and slot.get("id") == input_item
+                and int(slot.get("count", 0)) > 0
+            ),
+            None,
+        )
+        if carried_input is not None:
+            payload = {
+                "slot": int(carried_input["slot"]),
+                "type": "QUICK_MOVE",
+                "button": 0,
+            }
+            sync_id = data.get("sync_id")
+            if sync_id is not None:
+                payload["sync_id"] = sync_id
+            client.transport.dispatch("inventory_click", payload)
+            time.sleep(0.2)
+            data, slots = furnace_slots()
+            input_slot = slots.get(0, {})
+            output_slot = slots.get(2, {})
+            print(f"  Loaded carried {input_item} into fueled furnace.")
     had_work = (
         input_slot.get("id") == input_item
         or output_slot.get("id") == output_item
