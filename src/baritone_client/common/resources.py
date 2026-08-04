@@ -1158,6 +1158,7 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
         stalled_checks = 0
         direct_failures = 0
         descent_attempted = False
+        dry_relocation_attempted = False
         failed_targets: set[tuple[int, int, int]] = set()
         
         while time.time() - start < timeout:
@@ -1295,6 +1296,19 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
                     if not descent_attempted:
                         descent_attempted = True
                         if _descend_to_stone_layer(client):
+                            direct_failures = 0
+                            failed_targets = set()
+                            idle_checks = 0
+                            stalled_checks = 0
+                            _start_mine_process(client, ORES[ore_type], count + 2)
+                            continue
+                    if not dry_relocation_attempted:
+                        dry_relocation_attempted = True
+                        if _relocate_to_dry_stone_terrain(client):
+                            # The first descent was tied to the rejected wet
+                            # column. Allow one fresh guarded descent after a
+                            # verified move onto dry natural terrain.
+                            descent_attempted = False
                             direct_failures = 0
                             failed_targets = set()
                             idle_checks = 0
