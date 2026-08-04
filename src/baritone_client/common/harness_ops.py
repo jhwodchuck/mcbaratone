@@ -605,8 +605,8 @@ def find_single_chest_spot(client, radius: int = 8):
     # Some bridge states report the top solid block as the player's integer
     # Y (live Bot16 stood at Y=64 while get_block Y=64 was mud). Try the
     # nominal feet layer first, then the air layer directly above that surface.
-    for target_y in (py, py + 1):
-        for dx, dz in offsets:
+    for dx, dz in offsets:
+        for target_y in (py, py + 1):
             target = (px + dx, target_y, pz + dz)
             if not _is_placeable_target(_block_at(client, *target)):
                 continue
