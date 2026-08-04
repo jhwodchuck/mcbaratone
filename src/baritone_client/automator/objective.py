@@ -9,9 +9,9 @@ Design constraints that keep the blast radius small:
   ``StateManager`` versioning and the Suite 1200 acceptance gates keep working.
 - The phase *handlers* are untouched: the planner only decides which handler runs
   next and what happens when one fails.
-- No cost/reward/utility scoring yet.  Selection is priority + graph depth.  Those
-  fields are intentionally deferred until handlers emit real timing/success
-  telemetry (otherwise scoring is invented numbers).
+- The graph owns eligibility while a caller-supplied live utility function may
+  rank runnable siblings.  If observation fails, selection falls back to stable
+  priority + graph depth.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ class Objective:
     max_interruptions: int = 6
     max_no_progress: int = 3
     terminal: bool = False
-    # --- deferred: the utility-planner era fills these in once telemetry is real ---
+    # --- future telemetry can refine utility without changing graph authority ---
     # est_cost: Optional[float] = None
     # est_reward: Optional[float] = None
     # interrupt_when: Optional[Callable] = None
@@ -139,16 +139,31 @@ class ObjectivePlanner:
             result.append(o)
         return result
 
-    def select(self, ready: Iterable[Objective]) -> Optional[Objective]:
-        """Choose the next objective: highest priority, then shallowest graph depth.
+    def select(
+        self,
+        ready: Iterable[Objective],
+        utility: Optional[Callable[[Objective], float]] = None,
+    ) -> Optional[Objective]:
+        """Choose the next objective using live utility or stable priority.
 
-        This is the placeholder for ``max(ready, key=utility)`` once utility scoring
-        lands.
+        ``utility`` changes preference only.  Callers must still obtain
+        ``ready`` from :meth:`runnable`, so game-state opportunities can never
+        bypass dependency gates.  If live observation is unavailable the
+        historic priority/depth order remains the deterministic fallback.
         """
         candidates = list(ready)
         if not candidates:
             return None
-        return max(candidates, key=lambda o: (o.priority, -len(o.requires)))
+        if utility is None:
+            return max(candidates, key=lambda o: (o.priority, -len(o.requires)))
+        return max(
+            candidates,
+            key=lambda o: (
+                float(utility(o)),
+                o.priority,
+                -len(o.requires),
+            ),
+        )
 
     def is_complete(self) -> bool:
         """True once every terminal objective is DONE."""

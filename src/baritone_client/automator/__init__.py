@@ -12,6 +12,7 @@ from .actions import (
     ActionOptimizer, PhaseCondition, PhaseReadinessEvaluator
 )
 from .telemetry import TelemetrySystem
+from .adaptive_scheduler import AdaptiveScheduler, GameSignals, OpportunityKind
 
 __all__ = [
     "StateManager",
@@ -29,5 +30,8 @@ __all__ = [
     "PhaseCondition",
     "PhaseReadinessEvaluator",
     "TelemetrySystem",
+    "AdaptiveScheduler",
+    "GameSignals",
+    "OpportunityKind",
 ]
 

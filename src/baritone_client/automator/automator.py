@@ -9,6 +9,7 @@ from .resource_manager import ResourceManager
 from .phase_executor import PhaseExecutor, PhaseHandler
 from .phase_verifier import PhaseVerifier
 from .objective import ObjectivePlanner, default_objectives
+from .adaptive_scheduler import AdaptiveScheduler
 from .objective_survival import recover_survival_before_objective
 from .pacing import wait_with_bridge_keepalive
 from .progress_control import progression_fingerprint
@@ -93,6 +94,7 @@ class EndGameAutomator:
         # Goal-graph scheduler.  Replaces the linear phase walk; reconstructed
         # from the checkpoint in run().
         self.planner = ObjectivePlanner(default_objectives())
+        self.scheduler = AdaptiveScheduler(client, self.resources, self.state)
 
         self.auto_checkpoint = auto_checkpoint
         self.checkpoint_interval = checkpoint_interval
@@ -393,19 +395,23 @@ class EndGameAutomator:
                     wait_with_bridge_keepalive(self.client, duration=5.0)
                     continue
 
-                # Choose the highest-value runnable objective.  Runnability is
-                # decided by graph prerequisites only: in this codebase
-                # PHASE_REQUIREMENTS are a phase's *outputs* (completion criteria the
-                # handler produces), not preconditions -- gating on is_phase_ready
-                # here would deadlock a phase behind items it is meant to create.
-                ready = self.planner.runnable()
-                obj = self.planner.select(ready)
+                # The adaptive scheduler may run one cooldown-protected local
+                # farm action, or rank the dependency-ready objective frontier.
+                decision = self.scheduler.next_step(self.planner)
+                if decision.local_work:
+                    print(decision.summary)
+                    self._persist_objective_progress()
+                    self._save_checkpoint()
+                    continue
+
+                obj = decision.objective
                 if obj is None:
                     self._maintain_stalled_objective_graph()
                     continue
 
                 phase = obj.phase
                 self._stall_reported = False
+                print(decision.summary)
                 self._activate_objective(obj)
 
                 if self.on_phase_start:
@@ -789,4 +795,5 @@ class EndGameAutomator:
             "phase_progress": self.state.get_progress(),
             "overall_progress": self.state.get_overall_progress(),
             "resources": self.resources.get_summary(),
+            "adaptive_scheduler": self.state.custom_data.get("adaptive_scheduler", {}),
         }
