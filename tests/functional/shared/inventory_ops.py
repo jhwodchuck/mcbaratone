@@ -2061,6 +2061,13 @@ def craft_planks_manual(ctx, plank_id: str, output_count: int = 4) -> bool:
     target = before + max(1, int(output_count))
     crafts_needed = (max(1, int(output_count)) + 3) // 4
 
+    # ``place_recipe`` can report ``crafted=true`` after consuming a log even
+    # when a full inventory has nowhere to put the planks. Reserve a verified
+    # destination before either the atomic bridge route or the click fallback
+    # so a successful response also means the output can be retained.
+    if not ensure_crafting_output_space(ctx):
+        return False
+
     # --- Bridge-native fast path ---
     try:
         payload = {

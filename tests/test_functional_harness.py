@@ -542,6 +542,61 @@ def test_manual_crafting_table_recovers_from_full_inventory(monkeypatch):
     assert (0, "QUICK_MOVE", 0) in clicks
 
 
+def test_manual_plank_craft_reserves_output_slot_before_atomic_recipe(monkeypatch):
+    slots = [
+        {"slot": slot, "id": "minecraft:diamond", "count": 64}
+        for slot in range(46)
+    ]
+    slots[0] = {"slot": 0, "id": "minecraft:air", "count": 0}
+    for slot in range(1, 9):
+        slots[slot] = {"slot": slot, "id": "minecraft:air", "count": 0}
+    slots[9] = {"slot": 9, "id": "minecraft:dirt", "count": 4}
+    slots[10] = {"slot": 10, "id": "minecraft:dark_oak_log", "count": 42}
+    calls = []
+
+    class Transport:
+        def dispatch(self, route, payload):
+            calls.append((route, payload))
+            if route == "get_screen":
+                return {"type": "PlayerScreenHandler", "slots": slots}
+            if route == "inventory_click":
+                assert payload == {"slot": 9, "type": "THROW", "button": 1}
+                slots[9] = {"slot": 9, "id": "minecraft:air", "count": 0}
+                return {}
+            if route == "place_recipe":
+                assert slots[9]["id"] == "minecraft:air"
+                slots[10]["count"] -= 1
+                slots[9] = {
+                    "slot": 9,
+                    "id": "minecraft:dark_oak_planks",
+                    "count": 4,
+                }
+                return {"crafted": True}
+            return {}
+
+    class Context:
+        client = type("Client", (), {"transport": Transport()})()
+
+        def log_event(self, _event):
+            return None
+
+        def count_item(self, item_id):
+            return sum(
+                int(slot.get("count", 0))
+                for slot in slots
+                if slot.get("id") == item_id
+            )
+
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _seconds: None)
+
+    assert inventory_ops.craft_planks_manual(
+        Context(), "minecraft:dark_oak_planks", output_count=4
+    )
+    assert calls.index(
+        ("inventory_click", {"slot": 9, "type": "THROW", "button": 1})
+    ) < next(index for index, call in enumerate(calls) if call[0] == "place_recipe")
+
+
 def test_out_of_reach_container_is_approached_before_giving_up(monkeypatch):
     """A container just outside reach must be walked to, not abandoned.
 
