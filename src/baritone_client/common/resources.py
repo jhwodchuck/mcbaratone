@@ -2830,6 +2830,29 @@ def _smelt_with_furnace(
     screen = client.transport.dispatch("get_screen", {})
     data = screen.get("data", screen)
     slots = data.get("slots", [])
+
+    # The harness can time out on a stale screen even though the server has
+    # finished smelting. Collect verified output before requiring another
+    # carried input/fuel stack; both may already be inside this furnace.
+    existing_output = next(
+        (
+            slot
+            for slot in slots
+            if int(slot.get("slot", -1)) == 2
+            and slot.get("id") == item_id
+            and int(slot.get("count", 0)) > 0
+        ),
+        None,
+    )
+    if existing_output is not None:
+        client.transport.dispatch(
+            "inventory_click",
+            {"slot": 2, "type": "QUICK_MOVE", "button": 0},
+        )
+        if count_item(client, item_id) >= qty:
+            client.transport.dispatch("close_screen", {})
+            return True
+
     fuel_slot = next(
         (
             int(slot["slot"])

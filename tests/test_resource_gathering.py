@@ -782,6 +782,49 @@ def test_smelter_builds_missing_furnace_through_table_aware_craft(monkeypatch):
     assert crafted == [("minecraft:furnace", 1)]
 
 
+def test_smelter_fallback_collects_completed_output_before_requiring_input(monkeypatch):
+    from baritone_client.common import base, harness_ops
+
+    counts = {
+        "minecraft:iron_ingot": 1,
+        "minecraft:raw_iron": 7,
+    }
+
+    class SmeltTransport:
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                return {"block_position": {"x": 0, "y": 64, "z": 0}}
+            if route == "get_block":
+                return {"id": "minecraft:furnace"}
+            if route == "get_screen":
+                return {
+                    "slots": [
+                        {"slot": 1, "id": "minecraft:oak_planks", "count": 19},
+                        {"slot": 2, "id": "minecraft:iron_ingot", "count": 7},
+                    ]
+                }
+            if route == "inventory_click":
+                assert payload == {"slot": 2, "type": "QUICK_MOVE", "button": 0}
+                counts["minecraft:iron_ingot"] += 7
+                return {}
+            return {}
+
+    client = SimpleNamespace(transport=SmeltTransport())
+    monkeypatch.setattr(
+        resources, "count_item", lambda _client, item_id: counts.get(item_id, 0)
+    )
+    monkeypatch.setattr(
+        resources, "_prepare_safe_furnace_fuel", lambda *_a: "minecraft:oak_planks"
+    )
+    monkeypatch.setattr(resources, "find_nearby_block", lambda *_a, **_k: (1, 64, 0))
+    monkeypatch.setattr(harness_ops, "available", lambda: True)
+    monkeypatch.setattr(harness_ops, "smelt_in_furnace", lambda *_a, **_k: False)
+    monkeypatch.setattr(base, "open_furnace", lambda _client: True)
+
+    assert resources._smelt_with_furnace(client, "minecraft:iron_ingot", 4)
+    assert counts["minecraft:iron_ingot"] == 8
+
+
 def test_outdoor_gatherer_waits_at_night_boundary(monkeypatch):
     transport = RecordingTransport()
     client = SimpleNamespace(transport=transport)
