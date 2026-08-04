@@ -1525,7 +1525,13 @@ def defend_or_flee(client) -> bool:
     if decision.mode == DefenseMode.RECOVER:
         print(f"DEFENSE: Recovery mode ({decision.reason})")
         _stop_for_defense(client)
-        heal_if_needed(client, threshold=12.0)
+        # ``heal_if_needed`` starts an asynchronous use action and returns.
+        # Re-entering this supervised tick can reset that action before the
+        # bite completes, leaving a critically wounded bot holding food for
+        # minutes without restoring hunger. Use the completion-aware flow so
+        # natural regeneration can actually begin.
+        if not eat_until_hunger(client, minimum_food=18):
+            heal_if_needed(client, threshold=12.0)
         return True
     if decision.primary is None:
         return False

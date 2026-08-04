@@ -1416,6 +1416,38 @@ def test_repeated_failed_evasion_escalates_to_fighting_back(monkeypatch):
     assert fought == [True]
 
 
+def test_critical_recovery_waits_for_completed_food_use(monkeypatch):
+    class CriticalTransport(CombatTransport):
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                self.calls.append((route, payload))
+                return {
+                    "health": 4.0,
+                    "food_level": 15,
+                    "block_position": {"x": 0, "y": 64, "z": 0},
+                }
+            return super().dispatch(route, payload)
+
+    client = SimpleNamespace(transport=CriticalTransport(health=4.0))
+    completed_food = []
+    async_heals = []
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        combat,
+        "eat_until_hunger",
+        lambda _client, minimum_food: completed_food.append(minimum_food) or True,
+    )
+    monkeypatch.setattr(
+        combat,
+        "heal_if_needed",
+        lambda *_args, **_kwargs: async_heals.append(True) or True,
+    )
+
+    assert combat.defend_or_flee(client)
+    assert completed_food == [18]
+    assert async_heals == []
+
+
 def test_evasion_failure_count_survives_primary_threat_switch(monkeypatch):
     """A crowded cave must not reset escape failure whenever scoring chooses
     a different attacker on the next tick."""
