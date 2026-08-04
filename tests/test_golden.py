@@ -1,12 +1,13 @@
 import json
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from baritone_client import WebSocketTransport
-# Note: JsonRpcRequest/JsonRpcResponse are internal to transport, not needed for this test
+from baritone_client.transport import transport as transport_module
 
 FIXTURE_PATH = os.path.join(os.path.dirname(__file__), "fixtures", "transcripts.json")
+
 
 def load_transcripts():
     if not os.path.exists(FIXTURE_PATH):
@@ -14,64 +15,69 @@ def load_transcripts():
     with open(FIXTURE_PATH, "r") as f:
         return json.load(f)
 
+
 TRANSCRIPTS = load_transcripts()
+
+
+class _DummyFuture:
+    """Stands in for the concurrent.futures.Future returned by the event loop."""
+
+    def result(self, timeout=None):
+        return None
+
 
 @pytest.mark.parametrize("transcript", TRANSCRIPTS)
 def test_golden_transcript(transcript):
-    """
-    Replay a golden transcript against the WebSocketTransport.
-    validates that:
-    1. Transport sends the expected JSON-RPC Request.
-    2. Transport returns the expected Result from the Response.
+    """Replay a golden transcript against WebSocketTransport.dispatch.
+
+    Validates that dispatch:
+      1. frames the request as JSON-RPC 2.0 with the expected method/params;
+      2. correlates the reply by request id and returns only ``result``.
+
+    The transport owns a websockets/asyncio connection, so the socket itself is
+    replaced rather than dialled -- these are offline tests and must never open
+    a real connection (an earlier version patched a ``connect`` symbol this code
+    path no longer uses, so every run burned the full reconnect backoff).
     """
     req_data = transcript["request"]
     resp_data = transcript["response"]
     rpc_method = req_data["method"]
     params = req_data["params"]
-    
-    # Setup Transport with Mock Socket
-    with patch("baritone_client.transport.connect") as mock_connect:
-        mock_socket = MagicMock()
-        mock_connect.return_value = mock_socket
-        
-        # Fix response ID to match what the transport will likely generate (1 for first request)
-        # Since we create a new transport per test, it always starts at 1
-        resp_data_fixed = resp_data.copy()
-        resp_data_fixed["id"] = 1
-        
-        # Configure socket to return the golden response ONCE, then simulate idle/disconnect
-        # This prevents the _read_loop from spinning infinitely on the same response
-        mock_socket.recv.side_effect = [json.dumps(resp_data_fixed), Exception("End of stream")]
-        
+
+    sent = []
+
+    with patch.object(WebSocketTransport, "_connect", lambda self: None):
         transport = WebSocketTransport("ws://localhost:9090")
-        
-        # Determine strict route from method name (reverse mapping)
-        # In transport.py we map "command/run" -> "commands.run"
-        # For this test, we can just pass the method name if we bypass the client facade,
-        # OR we can assume the transport dispatch accepts dotted notation fallback
-        # based on `rpc_method = method_map.get(route, route.replace("/", "."))`
-        
-        # Execute dispatch
-        # We use the method name directly as the route to test the generic dispatch
-        # capability, or we map it inverted if needed.
-        # Let's trust route.replace("/", ".") behavior for "commands.run" -> "commands/run"
-        route = rpc_method.replace(".", "/")
-        
-        result = transport.dispatch(route, params)
-        
-        # Verify Request
-        # The transport should have called socket.send with the JSON request
-        assert mock_socket.send.call_count == 1
-        args, _ = mock_socket.send.call_args
-        sent_json = args[0]
-        sent_dict = json.loads(sent_json)
-        
-        # Verify fields (excluding ID which is auto-incremented/random)
+
+        def fake_send(message):
+            # dispatch registers the response queue before sending, so the
+            # golden reply can be delivered exactly as the read loop would.
+            sent.append(message)
+            reply = dict(resp_data)
+            reply["id"] = message["id"]
+            transport._response_queues[message["id"]].put(reply)
+            return None
+
+        # dispatch evaluates self._send_message(req) before handing it to the
+        # loop, so fake_send does the work and the scheduling call is inert.
+        transport._send_message = fake_send
+
+        with patch.object(
+            transport_module.asyncio,
+            "run_coroutine_threadsafe",
+            lambda coro, loop: _DummyFuture(),
+        ):
+            route = rpc_method.replace(".", "/")
+            result = transport.dispatch(route, params)
+
+        assert len(sent) == 1
+        sent_dict = sent[0]
         assert sent_dict["jsonrpc"] == "2.0"
         assert sent_dict["method"] == rpc_method
         assert sent_dict["params"] == params
-        
-        # Verify Result
+        assert isinstance(sent_dict["id"], int)
+
+        # dispatch unwraps the envelope and hands back only the result payload.
         assert result == resp_data["result"]
-        
+
         transport.shutdown()

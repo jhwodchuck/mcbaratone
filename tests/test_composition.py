@@ -546,17 +546,26 @@ class FailingAction(IAction):
 class TestErrorHandling:
     """Tests for error handling in composition patterns."""
 
-    def test_sequence_handles_exceptions_gracefully(self, context):
-        """Test sequence handles exceptions in actions."""
+    def test_sequence_propagates_action_exceptions(self, context):
+        """A raising action propagates out of the sequence.
+
+        Composite actions deliberately do not convert exceptions into failure
+        results: ``PhaseExecutor`` owns retry semantics, and swallowing the
+        exception here would hide a real fault behind a generic failure.
+        """
         success_action = SuccessAction("success")
         failing_action = FailingAction(fail_mode='exception')
 
-        # Test with continue_on_failure=False (default)
         sequence = SequenceAction([success_action, failing_action])
-        result = sequence.execute(context)
+        with pytest.raises(RuntimeError, match="Test exception"):
+            sequence.execute(context)
 
-        assert result.success is False
-        assert len(result.data['results']) == 1  # Stopped at first failure
+        # continue_on_failure only governs failure *results*, not exceptions.
+        forgiving = SequenceAction(
+            [success_action, failing_action], continue_on_failure=True
+        )
+        with pytest.raises(RuntimeError, match="Test exception"):
+            forgiving.execute(context)
 
     def test_parallel_handles_partial_failures(self, context):
         """Test parallel execution handles some actions failing."""
@@ -587,8 +596,12 @@ class TestErrorHandling:
         assert result.success is True
         assert counter.count == 3  # Failed twice, succeeded third time
 
-    def test_conditional_with_exception_in_condition(self, context):
-        """Test conditional handles exceptions in condition evaluation."""
+    def test_conditional_propagates_exception_in_condition(self, context):
+        """A raising predicate propagates instead of picking a branch.
+
+        Neither branch may run when the condition itself is unevaluable --
+        silently taking the false branch would be an invented decision.
+        """
         def failing_condition(ctx):
             raise ValueError("Condition evaluation failed")
 
@@ -597,9 +610,11 @@ class TestErrorHandling:
 
         conditional = ConditionalAction(failing_condition, true_action, false_action)
 
-        # Should handle exception gracefully (implementation dependent)
-        result = conditional.execute(context)
-        assert isinstance(result.success, bool)  # At least returns a result
+        with pytest.raises(ValueError, match="Condition evaluation failed"):
+            conditional.execute(context)
+
+        assert true_action.executed is False
+        assert false_action.executed is False
 
     def test_nested_composition_error_propagation(self, context):
         """Test error propagation through nested compositions."""

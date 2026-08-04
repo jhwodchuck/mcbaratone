@@ -277,10 +277,50 @@ def test_defense_remains_in_recovery_after_successful_escape(monkeypatch):
         "heal_if_needed",
         lambda *_args, **_kwargs: healed.append(True) or False,
     )
+    # Recovery eats first: a full hunger bar is what enables natural regen.
+    # Healing is the fallback for when no food could be eaten, so force that
+    # branch here rather than relying on the mock's absent food field.
+    monkeypatch.setattr(combat, "eat_until_hunger", lambda *_args, **_kwargs: False)
 
     assert combat.defend_or_flee(client)
     assert combat.defend_or_flee(client)
     assert healed == [True]
+    assert client._mcbaratone_defense_runtime.mode == DefenseMode.RECOVER
+
+
+def test_recovery_prefers_eating_over_healing(monkeypatch):
+    """A successful feed must not also burn a heal on the same tick."""
+    threat = _entity(1, "zombie", 5, 5, 0)
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "health": 20,
+                    "block_position": {"x": 0, "y": 64, "z": 0},
+                }
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    scans = iter(([threat], []))
+    healed = []
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_args, **_kwargs: next(scans))
+    monkeypatch.setattr(combat, "get_equipped_armor", lambda _client: {})
+    monkeypatch.setattr(combat, "run_away", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        combat,
+        "heal_if_needed",
+        lambda *_args, **_kwargs: healed.append(True) or False,
+    )
+    monkeypatch.setattr(combat, "eat_until_hunger", lambda *_args, **_kwargs: True)
+
+    assert combat.defend_or_flee(client)
+    assert combat.defend_or_flee(client)
+    assert healed == []
     assert client._mcbaratone_defense_runtime.mode == DefenseMode.RECOVER
 
 

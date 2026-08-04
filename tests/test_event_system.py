@@ -1,7 +1,9 @@
 """Tests for enhanced event system (Phase 3)."""
+import json
 import time
 import sys
 import os
+import zlib
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -145,16 +147,17 @@ class TestEventManager:
         for i in range(4):
             manager.publish_event("test_event", {"count": i})
 
-        # Should have triggered aggregation
-        # Note: In real usage, aggregation happens asynchronously
-        # For testing, we check the aggregator state
+        # max_count=3 flushes and clears on the third event, so the fourth is
+        # the only one still pending -- accumulating all 4 would mean the
+        # aggregation threshold never fired.
         aggregator = manager._aggregators["test_event"]
-        assert len(aggregator._events) == 4
+        assert len(aggregator._events) == 1
 
-        # Flush should create aggregated event
+        # Flushing folds only the still-pending event; the first three already
+        # left in the threshold-triggered aggregate.
         aggregated = aggregator.flush()
         assert aggregated is not None
-        assert aggregated.data["count"] == 4
+        assert aggregated.data["count"] == 1
 
     def test_subscription_filtering(self):
         """Test event subscription with filtering."""
@@ -350,13 +353,16 @@ class TestAdvancedFiltering:
 class TestWebSocketTransportSubscriptions:
     """Test WebSocket transport subscription management."""
 
-    @patch('src.baritone_client.transport.transport.connect')
-    def test_subscription_management(self, mock_connect):
+    # Subscription bookkeeping needs no socket. The old `connect` patch target
+    # is not on this code path, so the constructor really dialled localhost and
+    # burned the full reconnect backoff before failing.
+    @patch(
+        'baritone_client.transport.transport.WebSocketTransport._connect',
+        lambda self: None,
+    )
+    def test_subscription_management(self):
         """Test subscription subscribe/unsubscribe."""
-        from src.baritone_client.transport.transport import WebSocketTransport
-
-        mock_socket = MagicMock()
-        mock_connect.return_value = mock_socket
+        from baritone_client.transport.transport import WebSocketTransport
 
         transport = WebSocketTransport("ws://localhost:8080")
 
@@ -373,27 +379,42 @@ class TestWebSocketTransportSubscriptions:
         assert not transport.is_subscribed(TransportEvent.CHAT)
         assert transport.is_subscribed("custom_event")
 
-    @patch('src.baritone_client.transport.transport.connect')
-    def test_emit_with_subscription(self, mock_connect):
+    @patch(
+        'baritone_client.transport.transport.WebSocketTransport._connect',
+        lambda self: None,
+    )
+    def test_emit_with_subscription(self):
         """Test that emit respects subscriptions."""
-        from src.baritone_client.transport.transport import WebSocketTransport
+        from baritone_client.transport.transport import WebSocketTransport
 
-        mock_socket = MagicMock()
-        mock_connect.return_value = mock_socket
+        from baritone_client.transport import transport as transport_module
+        from types import SimpleNamespace
 
         transport = WebSocketTransport("ws://localhost:8080")
         transport.subscribe_events({TransportEvent.CHAT})
 
-        # Emit subscribed event - should log streaming
-        with patch('src.baritone_client.transport.transport.logger') as mock_logger:
-            transport.emit(TransportEvent.CHAT, {"message": "test"})
-            mock_logger.debug.assert_called_with("WebSocket streaming event: chat")
+        # Present a connected socket so the streaming branch is reachable; the
+        # observable contract is whether a message is sent, not a log string.
+        transport._loop = object()
+        transport._websocket = SimpleNamespace(open=True)
+        transport._connection_state = "connected"
 
-        # Emit unsubscribed event - should not log streaming
-        with patch('src.baritone_client.transport.transport.logger') as mock_logger:
+        sent = []
+        transport._send_message = lambda message: sent.append(message)
+
+        with patch.object(
+            transport_module.asyncio,
+            "run_coroutine_threadsafe",
+            lambda coro, loop: None,
+        ):
+            # Subscribed event is streamed.
+            transport.emit(TransportEvent.CHAT, {"message": "test"})
+            assert len(sent) == 1
+            assert sent[0]["params"]["event"] == "chat"
+
+            # Unsubscribed event is not.
             transport.emit(TransportEvent.TICK, {"tick": 123})
-            # Should not call debug for streaming
-            assert not any("streaming" in str(call) for call in mock_logger.debug.call_args_list)
+            assert len(sent) == 1
 
 
 class TestIntegrationTests:
@@ -470,7 +491,9 @@ class TestIntegrationTests:
 
         # Create complex filter
         bbox = BoundingBox(min_x=0, max_x=100, min_y=0, max_y=100, min_z=0, max_z=100)
-        filter_ = EventFilter(coordinate_bounds=bbox)
+        # The entity_attack event below is in-bounds, so the type restriction is
+        # what excludes it; a bounds-only filter would legitimately match it.
+        filter_ = EventFilter(event_types={"block_break"}, coordinate_bounds=bbox)
 
         # Subscribe with filter
         events_received = []
@@ -560,7 +583,8 @@ class TestPerformanceTests:
 
     def test_memory_usage_with_advanced_features(self):
         """Test memory usage with advanced features enabled."""
-        import psutil
+        # psutil is not a declared dependency of this project.
+        psutil = pytest.importorskip("psutil")
         import os
 
         # Get initial memory
@@ -621,25 +645,37 @@ class TestPrioritization:
         events = manager.poll_events()
         assert len(events) == 3
 
-        # High severity error should have highest priority (1 + 5 = 6)
+        # base 1 + rule boost 5 + built-in "error" importance boost 3 = 9.
         assert events[0].data["severity"] == "high"
-        assert events[0].priority == 6
+        assert events[0].priority == 9
 
     def test_frequency_aware_adjustments(self):
         """Test frequency-aware priority adjustments."""
         manager = EventManager()
 
-        # Publish many events of same type to trigger frequency penalty
-        for i in range(15):  # More than threshold
-            manager.publish_event("chat", {"message": f"msg {i}"})
+        # Timestamps must be explicit and spaced: the penalty is derived from a
+        # rate, and a burst published inside one clock tick has a zero time span
+        # (no computable rate), which silently yields no penalty at all.
+        base = time.time()
+        for i in range(15):  # More than the 10-sample threshold
+            manager.publish_event(
+                "chat", {"message": f"msg {i}"}, timestamp=base + i * 0.002
+            )
 
         # Publish a new event - should get frequency penalty
-        manager.publish_event("chat", {"message": "latest"})
+        manager.publish_event(
+            "chat", {"message": "latest"}, timestamp=base + 15 * 0.002
+        )
         events = manager.poll_events()
 
-        # The latest event should have lower priority due to frequency penalty
+        # A penalty must actually have been computed for this burst...
+        penalty = manager._priority_manager._calculate_frequency_penalty("chat")
+        assert penalty < 0
+
+        # ...but calculate_dynamic_priority floors the result at 0, so the
+        # penalty can only cancel a boost, never invert an event's ordering.
         latest_event = next(e for e in events if e.data["message"] == "latest")
-        assert latest_event.priority < 0  # Should be negative due to penalty
+        assert latest_event.priority == 0
 
     def test_subscription_based_prioritization(self):
         """Test prioritization based on subscription metadata."""

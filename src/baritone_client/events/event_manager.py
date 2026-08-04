@@ -73,6 +73,41 @@ class TimeWindow:
         return start <= timestamp <= end
 
 
+#: Types with non-standard coordinate fields. Anything absent falls back to
+#: top-level x/y/z: the spatial index and the filter path must agree on which
+#: events are spatial, or the indexed fast path drops events the unindexed one
+#: would have matched.
+DEFAULT_COORDINATE_FIELDS: Dict[str, Tuple[str, str, str]] = {
+    "player_move": ("x", "y", "z"),
+    "block_update": ("x", "y", "z"),
+    "entity_move": ("x", "y", "z"),
+    "position": ("x", "y", "z"),
+}
+
+
+def resolve_coordinate_fields(event_type: str, mapping: Optional[Dict[str, Tuple[str, str, str]]] = None) -> Tuple[str, str, str]:
+    """Return the (x, y, z) field paths to read for an event type."""
+    table = DEFAULT_COORDINATE_FIELDS if mapping is None else mapping
+    return table.get(event_type, ("x", "y", "z"))
+
+
+def get_nested_value(data: Dict[str, Any], path_parts: List[str]) -> Any:
+    """Get nested value from data using dot-notation path parts.
+
+    Shared by the filters and by EventManager's coordinate extraction, which
+    previously called a copy that existed only on the filter classes.
+    """
+    current = data
+    for part in path_parts:
+        if isinstance(current, dict):
+            current = current[part]
+        elif isinstance(current, list) and part.isdigit():
+            current = current[int(part)]
+        else:
+            raise KeyError(f"Cannot access {part} in {current}")
+    return current
+
+
 @dataclass
 class PayloadFilter:
     """Filter events based on payload field values."""
@@ -83,22 +118,10 @@ class PayloadFilter:
     def matches(self, payload: Dict[str, Any]) -> bool:
         """Check if payload matches the filter criteria."""
         try:
-            field_value = self._get_nested_value(payload, self.field_path.split('.'))
+            field_value = get_nested_value(payload, self.field_path.split('.'))
             return self._apply_operator(field_value, self.operator, self.value)
         except (KeyError, TypeError, AttributeError):
             return False
-
-    def _get_nested_value(self, data: Dict[str, Any], path_parts: List[str]) -> Any:
-        """Get nested value from payload using dot-notation path."""
-        current = data
-        for part in path_parts:
-            if isinstance(current, dict):
-                current = current[part]
-            elif isinstance(current, list) and part.isdigit():
-                current = current[int(part)]
-            else:
-                raise KeyError(f"Cannot access {part} in {current}")
-        return current
 
     def _apply_operator(self, field_value: Any, operator: str, expected_value: Any) -> bool:
         """Apply comparison operator."""
@@ -219,15 +242,13 @@ class EventFilter:
         if not self.coordinate_bounds:
             return True
 
-        coord_fields = self.coordinate_fields.get(event.type)
-        if not coord_fields:
-            return True  # No coordinate mapping for this event type
+        coord_fields = resolve_coordinate_fields(event.type, self.coordinate_fields)
 
         try:
             x_field, y_field, z_field = coord_fields
-            x = self._get_nested_value(event.data, x_field.split('.'))
-            y = self._get_nested_value(event.data, y_field.split('.'))
-            z = self._get_nested_value(event.data, z_field.split('.'))
+            x = get_nested_value(event.data, x_field.split('.'))
+            y = get_nested_value(event.data, y_field.split('.'))
+            z = get_nested_value(event.data, z_field.split('.'))
             return self.coordinate_bounds.contains(x, y, z)
         except (KeyError, TypeError, ValueError):
             return False
@@ -250,18 +271,6 @@ class EventFilter:
         if not self.frequency_throttle:
             return True
         return self.frequency_throttle.should_allow(event.type)
-
-    def _get_nested_value(self, data: Dict[str, Any], path_parts: List[str]) -> Any:
-        """Get nested value from data using dot-notation path."""
-        current = data
-        for part in path_parts:
-            if isinstance(current, dict):
-                current = current[part]
-            elif isinstance(current, list) and part.isdigit():
-                current = current[int(part)]
-            else:
-                raise KeyError(f"Cannot access {part} in {current}")
-        return current
 
 
 @dataclass
@@ -451,8 +460,14 @@ class FilterCache:
 
     def generate_cache_key(self, filter_: EventFilter, event: Event) -> str:
         """Generate cache key for filter + event combination."""
-        # Create a deterministic key based on filter and event properties
-        key_parts = [event.type, str(event.timestamp)]
+        # The payload must be part of the key: type+timestamp alone collide for
+        # events published within one clock tick, letting one event's cached
+        # verdict decide a different event with an unrelated payload.
+        try:
+            payload_key = json.dumps(event.data, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            payload_key = repr(event.data)
+        key_parts = [event.type, str(event.timestamp), payload_key]
 
         if filter_.coordinate_bounds:
             bbox = filter_.coordinate_bounds
@@ -678,17 +693,7 @@ class EventManager:
             self._notify_subscribers(aggregated_event)
 
     def _has_coordinates(self, event: Event) -> bool:
-        """Check if event has coordinate data."""
-        coord_fields = {
-            "player_move": ("x", "y", "z"),
-            "block_update": ("x", "y", "z"),
-            "entity_move": ("x", "y", "z"),
-            "position": ("x", "y", "z"),
-        }
-        field_names = coord_fields.get(event.type)
-        if not field_names:
-            return False
-
+        """Check if the event actually carries readable coordinates."""
         try:
             self._extract_coordinates(event)
             return True
@@ -697,20 +702,10 @@ class EventManager:
 
     def _extract_coordinates(self, event: Event) -> Tuple[float, float, float]:
         """Extract coordinates from event data."""
-        coord_fields = {
-            "player_move": ("x", "y", "z"),
-            "block_update": ("x", "y", "z"),
-            "entity_move": ("x", "y", "z"),
-            "position": ("x", "y", "z"),
-        }
-        field_names = coord_fields.get(event.type)
-        if not field_names:
-            raise ValueError(f"No coordinate mapping for event type {event.type}")
-
-        x_field, y_field, z_field = field_names
-        x = self._get_nested_value(event.data, x_field.split('.'))
-        y = self._get_nested_value(event.data, y_field.split('.'))
-        z = self._get_nested_value(event.data, z_field.split('.'))
+        x_field, y_field, z_field = resolve_coordinate_fields(event.type)
+        x = get_nested_value(event.data, x_field.split('.'))
+        y = get_nested_value(event.data, y_field.split('.'))
+        z = get_nested_value(event.data, z_field.split('.'))
 
         return float(x), float(y), float(z)
 
@@ -804,6 +799,10 @@ class EventManager:
             for subscription in self._subscriptions:
                 if subscription.filter_ is None or subscription.filter_.matches(event):
                     to_notify.append(subscription.callback)
+            # Without this, subscribe_named() registered a dead callback.
+            for named in self._named_subscriptions.values():
+                if named.filter_ is None or named.filter_.matches(event):
+                    to_notify.append(named.callback)
 
         # Call callbacks outside lock to avoid deadlocks
         for callback in to_notify:

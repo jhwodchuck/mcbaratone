@@ -52,8 +52,12 @@ class TunnelCommandTest(unittest.TestCase):
         """Test that #tunnel 3 3 3 command is properly dispatched."""
         response = self.client.command.run("#tunnel 3 3 3")
 
-        # Verify command was dispatched
-        expected_payload = {"command": "chat", "params": {"message": "#tunnel 3 3 3"}}
+        # Verify command was dispatched. CommandFacade.run always sends an
+        # explicit priority alongside the message.
+        expected_payload = {
+            "command": "chat",
+            "params": {"message": "#tunnel 3 3 3", "priority": "normal"},
+        }
         self.assertIn(("command", expected_payload), self.transport.dispatched)
 
         # Verify response indicates success

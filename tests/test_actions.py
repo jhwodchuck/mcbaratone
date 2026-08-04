@@ -434,9 +434,21 @@ class TestToolProgressionPhase:
         """Test tool progression succeeds with proper inventory."""
         from baritone_client.actions.initial_gathering import ToolProgressionPhase
         action = ToolProgressionPhase()
-        
+
         # Mock ensure_crafting_table to avoid heavy simulation/hang
         action.crafting.ensure_crafting_table = lambda ctx: True
+
+        # Crafting now goes through the harness' manual 3x3 grid, which drives a
+        # real container screen the mock transport does not emulate. Stub it at
+        # the same seam as ensure_crafting_table so this test covers what it is
+        # named for -- the progression order -- rather than grid mechanics.
+        crafted = []
+
+        def fake_craft(ctx, item, count=1):
+            crafted.append(item)
+            return True
+
+        action.crafting.craft = fake_craft
 
         # Add some planks and sticks to inventory
         mock_context.client.transport.add_inventory_item("minecraft:oak_planks", 16, slot=0)
@@ -445,6 +457,14 @@ class TestToolProgressionPhase:
 
         result = action.execute(mock_context)
         assert result.success is True
+
+        # Wooden pickaxe first, then the stone tier gated behind it.
+        assert crafted == [
+            "minecraft:wooden_pickaxe",
+            "minecraft:stone_pickaxe",
+            "minecraft:stone_sword",
+            "minecraft:stone_axe",
+        ]
 
     def test_tool_progression_fails_without_materials(self, mock_context):
         """Test tool progression fails without required materials."""

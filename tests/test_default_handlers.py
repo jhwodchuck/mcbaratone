@@ -170,6 +170,15 @@ def test_initial_gathering_refuses_work_while_critically_wounded(monkeypatch):
     resources = MagicMock()
     resources.phase_ready_result.return_value = None
     monkeypatch.setattr(initial_gathering, "recover_health", lambda *_args, **_kwargs: False)
+    # Known-food recovery is consulted between health recovery and the
+    # emergency hunt; stub it at the same seam as its neighbours so this test
+    # covers the refusal contract rather than storage/farm/herd internals.
+    known_food_calls = []
+    monkeypatch.setattr(
+        initial_gathering,
+        "recover_known_food",
+        lambda *_args, **_kwargs: known_food_calls.append(True) and False,
+    )
     monkeypatch.setattr(
         initial_gathering,
         "acquire_emergency_food",
@@ -192,3 +201,4 @@ def test_initial_gathering_refuses_work_while_critically_wounded(monkeypatch):
         )
 
     client.transport.dispatch.assert_any_call("close_screen", {})
+    assert known_food_calls == [True], "known food must be tried before giving up"

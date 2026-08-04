@@ -1439,6 +1439,10 @@ def test_initial_pickaxe_gathers_wood_once_after_bounded_craft_failure(monkeypat
         lambda _client: None,
     )
     monkeypatch.setattr(iron_age, "count_item", lambda *_args: 0)
+    # No usable pickaxe carried, so the craft path below is the one under test.
+    monkeypatch.setattr(
+        iron_age, "remaining_pickaxe_durability", lambda *_args, **_kwargs: 0
+    )
     attempts = []
     monkeypatch.setattr(
         iron_age,

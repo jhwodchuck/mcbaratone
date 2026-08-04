@@ -368,6 +368,7 @@ def test_stalled_aquatic_ascent_builds_supported_shallow_water_walkway(
         def __init__(self):
             self.calls = []
             self.position = (4, 62, 4)
+            self.selected_slot = 2
             self.selected = "minecraft:dirt"
             self.blocks = {
                 (x, 60, 4): "minecraft:dirt"
@@ -390,7 +391,10 @@ def test_stalled_aquatic_ascent_builds_supported_shallow_water_walkway(
                 position = (payload["x"], payload["y"], payload["z"])
                 return {"id": self.blocks.get(position, "minecraft:air")}
             if route == "get_inventory":
+                # select_item verifies the swap landed by re-reading
+                # selected_slot, so the mock must report it like the bridge.
                 return {
+                    "selected_slot": self.selected_slot,
                     "inventory": [
                         {
                             "slot": 2,
@@ -414,6 +418,7 @@ def test_stalled_aquatic_ascent_builds_supported_shallow_water_walkway(
                 self.blocks[position] = self.selected
                 return {"placed": True}
             if route == "select_slot":
+                self.selected_slot = payload["slot"]
                 self.selected = {
                     2: "minecraft:dirt",
                     3: "minecraft:dark_oak_planks",

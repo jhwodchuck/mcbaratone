@@ -497,7 +497,7 @@ class WebSocketTransport(Transport):
         self._best_effort_retry_routes = {"close_screen"}
 
         # Advanced subscription management with filtering
-        self._subscriptions: Dict[str, EventFilter] = {}
+        self._event_subscriptions: Dict[str, EventFilter] = {}
         self._subscription_lock = threading.RLock()
 
         # Event buffering and priority queues
@@ -636,10 +636,10 @@ class WebSocketTransport(Transport):
     def _should_process_event(self, event_type: str, event_data: Dict[str, Any], priority: int) -> bool:
         """Check if event should be processed based on subscriptions and filters."""
         with self._subscription_lock:
-            if event_type not in self._subscriptions:
+            if event_type not in self._event_subscriptions:
                 return False
 
-            filter_ = self._subscriptions[event_type]
+            filter_ = self._event_subscriptions[event_type]
             if filter_ is None:
                 return True
 
@@ -714,7 +714,7 @@ class WebSocketTransport(Transport):
 
         with self._subscription_lock:
             for event_type in event_type_strings:
-                self._subscriptions[event_type] = filter_
+                self._event_subscriptions[event_type] = filter_
 
         # Send subscription request over WebSocket
         subscription_request = {
@@ -735,7 +735,7 @@ class WebSocketTransport(Transport):
 
         with self._subscription_lock:
             for event_type in event_type_strings:
-                self._subscriptions.pop(event_type, None)
+                self._event_subscriptions.pop(event_type, None)
 
         # Send unsubscription request over WebSocket
         unsubscription_request = {
@@ -750,13 +750,13 @@ class WebSocketTransport(Transport):
     def get_active_subscriptions(self) -> Dict[str, EventFilter]:
         """Get currently active event subscriptions with filters."""
         with self._subscription_lock:
-            return self._subscriptions.copy()
+            return self._event_subscriptions.copy()
 
     def is_subscribed(self, event_type: Union[str, TransportEvent]) -> bool:
         """Check if subscribed to a specific event type."""
         event_type_str = event_type.value if isinstance(event_type, TransportEvent) else event_type
         with self._subscription_lock:
-            return event_type_str in self._subscriptions
+            return event_type_str in self._event_subscriptions
 
     def get_missed_events(
         self,
@@ -937,7 +937,7 @@ class WebSocketTransport(Transport):
 
         # Clear subscriptions
         with self._subscription_lock:
-            self._subscriptions.clear()
+            self._event_subscriptions.clear()
 
         # Clear event buffer
         with self._buffer_lock:
