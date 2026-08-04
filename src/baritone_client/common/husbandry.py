@@ -42,6 +42,33 @@ BREEDING_FOOD: Dict[str, str] = {
 }
 
 
+#: Passive animals that drop leather. Undead horse variants share the "horse"
+#: substring but drop bones, so they must never be counted as a leather source.
+LEATHER_SOURCE_ANIMALS = ("cow", "mooshroom", "horse", "donkey", "mule", "llama")
+_NON_LIVESTOCK_MARKERS = ("skeleton", "zombie", "trader")
+
+
+def survey_leather_sources(client, radius: int = 64) -> Dict[str, int]:
+    """Count loaded leather-dropping animals by type, in one entity scan.
+
+    A bounded hunt burns its whole timeout before reporting that a region has
+    no animals in it. Surveying first turns that ten-minute discovery into a
+    single query, which matters because an exhausted region stays exhausted:
+    passive mobs only spawn during chunk generation, so a herd hunted to zero
+    never comes back on its own.
+    """
+    counts: Dict[str, int] = {}
+    for entity in get_nearby_entities(client, radius):
+        etype = str(entity.get("type", "")).lower()
+        if any(marker in etype for marker in _NON_LIVESTOCK_MARKERS):
+            continue
+        for animal in LEATHER_SOURCE_ANIMALS:
+            if animal in etype:
+                counts[animal] = counts.get(animal, 0) + 1
+                break
+    return counts
+
+
 def breeding_food_for(animal_type: str) -> Optional[str]:
     at = animal_type.lower()
     for family, food in BREEDING_FOOD.items():

@@ -18,6 +18,7 @@ from ...common.inventory import (
 )
 from ...common.combat import eat_until_hunger, hunt_mobs, scan_for_threats
 from ...common.husbandry import visit_known_herd_for_loot
+from . import leather_supply
 from ...common.navigation import find_nearby_block, goto
 from ...common.nether import enter_portal, find_nearest_portal
 from ...common.base import (
@@ -508,6 +509,9 @@ class EnchantingPipelineHandler(PhaseHandler):
             print("  Already have 46 leather.")
             return True
 
+        if leather_supply.search_is_futile(client, state):
+            return False
+
         if not self._wait_for_daylight(client, state):
             return False
         if local_expedition:
@@ -588,6 +592,7 @@ class EnchantingPipelineHandler(PhaseHandler):
             and returned
             and count_item(client, "minecraft:leather") >= target
         ):
+            leather_supply.record_attempt(state, gained=True)
             return True
 
         # The local bounded search above rotates through dozens of sectors
@@ -597,12 +602,26 @@ class EnchantingPipelineHandler(PhaseHandler):
         # operator-known distant herd instead of retrying the same empty
         # area forever.
         deficit = target - count_item(client, "minecraft:leather")
-        if deficit > 0 and visit_known_herd_for_loot(
-            client, {"minecraft:leather": deficit}, "cow"
-        ):
-            self._return_home(client, state)
+        if deficit > 0 and not leather_supply.herd_waypoint_is_exhausted(state):
+            # preserve_breeding_pair leaves two adults alive. Without it a
+            # 46-leather target is ~46 kills with no floor, which strips the
+            # herd that food recovery and every later leather run depend on;
+            # passive mobs do not respawn in already-generated chunks, so an
+            # exterminated waypoint is gone permanently.
+            reached = visit_known_herd_for_loot(
+                client,
+                {"minecraft:leather": deficit},
+                "cow",
+                preserve_breeding_pair=True,
+            )
+            if reached:
+                self._return_home(client, state)
+            else:
+                leather_supply.mark_herd_waypoint_exhausted(state)
 
-        return count_item(client, "minecraft:leather") >= target
+        final = count_item(client, "minecraft:leather")
+        leather_supply.record_attempt(state, gained=final > current)
+        return final >= target
 
     def _next_leather_exploration_center(self, origin, state=None):
         """Rotate retries durably across sectors surrounding the starter house.

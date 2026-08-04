@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from baritone_client.automator.phases import enchanting
+from baritone_client.automator.phases import enchanting, leather_supply
 from baritone_client.automator.state_manager import Phase, StateManager
 from baritone_client.common.tasks import TaskResult
 
@@ -249,14 +249,19 @@ def test_leather_hunt_falls_back_to_known_herd_when_local_search_fails(monkeypat
     monkeypatch.setattr(handler, "_return_home", lambda *_args: returns.append("return") or True)
 
     herd_calls = []
-    def herd_fallback(_client, required_loot, animal_type):
-        herd_calls.append((dict(required_loot), animal_type))
+    def herd_fallback(_client, required_loot, animal_type, **kwargs):
+        herd_calls.append((dict(required_loot), animal_type, kwargs))
         leather["count"] = 46
         return True
     monkeypatch.setattr(enchanting, "visit_known_herd_for_loot", herd_fallback)
 
     assert handler._gather_leather(client, state) is True
-    assert herd_calls == [({"minecraft:leather": 46}, "cow")]
+    # The herd must be left with a breeding pair: 46 leather is ~46 kills, and
+    # passive mobs never respawn in already-generated chunks, so hunting the
+    # waypoint flat permanently destroys the fleet's only renewable source.
+    assert herd_calls == [
+        ({"minecraft:leather": 46}, "cow", {"preserve_breeding_pair": True})
+    ]
     # _return_home must run again after the herd trip, on top of the one
     # already run in the failed local hunt's finally block.
     assert returns == ["return", "return"]
@@ -1001,3 +1006,145 @@ def test_reused_table_does_not_inflate_the_diamond_requirement(monkeypatch):
 
     assert requested, "expected a diamond withdrawal request"
     assert requested[0] == {"minecraft:diamond": 3}, requested[0]
+
+
+def _leather_handler(monkeypatch, *, leather=0, sources=None):
+    """Handler wired so only the futility/backoff logic is exercised."""
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda *_args, **_kwargs: {})
+    )
+    handler = enchanting.EnchantingPipelineHandler()
+    monkeypatch.setattr(
+        enchanting,
+        "count_item",
+        lambda _client, item_id: leather if item_id == "minecraft:leather" else 0,
+    )
+    monkeypatch.setattr(handler, "_withdraw_at_home", lambda *_args: 0)
+    monkeypatch.setattr(
+        leather_supply,
+        "survey_leather_sources",
+        lambda *_args, **_kwargs: dict(sources or {}),
+    )
+    return client, handler
+
+
+def test_leather_skips_expedition_when_stalled_and_no_animals_are_loaded(monkeypatch):
+    """A hunt that has gained nothing repeatedly must not keep paying its full
+    cost. The objective graph re-arms abandoned objectives about once a minute
+    so a run can never permanently stall, so an unconditional expedition here
+    consumes the entire runtime -- live: 90 consecutive failed leather attempts
+    on Bot17, zero leather gained, zero deaths, zero other progress."""
+    client, handler = _leather_handler(monkeypatch, sources={})
+    state = SimpleNamespace(
+        custom_data={leather_supply.NO_GAIN_KEY: leather_supply.NO_GAIN_LIMIT}
+    )
+
+    def fail_if_called(*_args, **_kwargs):  # pragma: no cover - must not run
+        raise AssertionError("a stalled leather search must not hunt again")
+
+    monkeypatch.setattr(enchanting, "hunt_mobs", fail_if_called)
+    monkeypatch.setattr(enchanting, "visit_known_herd_for_loot", fail_if_called)
+    monkeypatch.setattr(handler, "_wait_for_daylight", fail_if_called)
+
+    assert handler._gather_leather(client, state) is False
+
+
+def test_leather_still_hunts_while_animals_are_actually_in_range(monkeypatch):
+    """The backoff keys on a live survey, not on the failure count alone: a
+    stalled streak next to a real herd must still hunt."""
+    client, handler = _leather_handler(monkeypatch, sources={"cow": 4})
+    state = SimpleNamespace(
+        custom_data={leather_supply.NO_GAIN_KEY: leather_supply.NO_GAIN_LIMIT}
+    )
+    hunted = []
+    monkeypatch.setattr(handler, "_wait_for_daylight", lambda *_args: True)
+    monkeypatch.setattr(handler, "_leave_starter_house", lambda *_args: True)
+    monkeypatch.setattr(handler, "_return_home", lambda *_args: True)
+    monkeypatch.setattr(
+        enchanting,
+        "hunt_mobs",
+        lambda *_a, **_k: hunted.append(True) or TaskResult.fail("no targets"),
+    )
+    monkeypatch.setattr(
+        enchanting, "visit_known_herd_for_loot", lambda *_a, **_k: False
+    )
+
+    handler._gather_leather(client, state)
+    assert hunted == [True]
+
+
+def test_leather_forces_a_full_retry_periodically_while_stalled(monkeypatch):
+    """Suppression must never be permanent -- a world can regain animals via
+    breeding or newly generated chunks."""
+    client, handler = _leather_handler(monkeypatch, sources={})
+    state = SimpleNamespace(
+        custom_data={leather_supply.NO_GAIN_KEY: leather_supply.FULL_RETRY_EVERY}
+    )
+    hunted = []
+    monkeypatch.setattr(handler, "_wait_for_daylight", lambda *_args: True)
+    monkeypatch.setattr(handler, "_leave_starter_house", lambda *_args: True)
+    monkeypatch.setattr(handler, "_return_home", lambda *_args: True)
+    monkeypatch.setattr(
+        enchanting,
+        "hunt_mobs",
+        lambda *_a, **_k: hunted.append(True) or TaskResult.fail("no targets"),
+    )
+    monkeypatch.setattr(
+        enchanting, "visit_known_herd_for_loot", lambda *_a, **_k: False
+    )
+
+    handler._gather_leather(client, state)
+    assert hunted == [True], "periodic retry must still run a real expedition"
+
+
+def test_fruitless_herd_visit_suppresses_that_waypoint_then_expires(monkeypatch):
+    """A waypoint that is empty or unreachable must stop being walked to every
+    pass -- live, the operator waypoint held zero animals yet was retried on
+    every cycle -- but the suppression has to expire so a re-bred herd counts."""
+    client, handler = _leather_handler(monkeypatch, sources={})
+    state = SimpleNamespace(custom_data={})
+    monkeypatch.setattr(handler, "_wait_for_daylight", lambda *_args: True)
+    monkeypatch.setattr(handler, "_leave_starter_house", lambda *_args: True)
+    monkeypatch.setattr(handler, "_return_home", lambda *_args: True)
+    monkeypatch.setattr(
+        enchanting, "hunt_mobs", lambda *_a, **_k: TaskResult.fail("no targets")
+    )
+    visits = []
+    monkeypatch.setattr(
+        enchanting,
+        "visit_known_herd_for_loot",
+        lambda *_a, **_k: visits.append(True) or False,
+    )
+
+    assert handler._gather_leather(client, state) is False
+    assert visits == [True]
+    assert leather_supply.herd_waypoint_is_exhausted(state) is True
+
+    # Second pass must not walk to the same empty waypoint again.
+    assert handler._gather_leather(client, state) is False
+    assert visits == [True]
+
+    # ...but the suppression is a cooldown, not a permanent blacklist.
+    state.custom_data[leather_supply.HERD_EXHAUSTED_KEY] = 0
+    assert leather_supply.herd_waypoint_is_exhausted(state) is False
+
+
+def test_survey_leather_sources_ignores_undead_horses(monkeypatch):
+    """Skeleton/zombie horses share the 'horse' substring but drop bones, so
+    counting them would keep a dead-end hunt alive."""
+    from baritone_client.common import husbandry
+
+    entities = [
+        {"type": "minecraft:cow"},
+        {"type": "minecraft:skeleton_horse"},
+        {"type": "minecraft:zombie_horse"},
+        {"type": "minecraft:horse"},
+        {"type": "minecraft:zombie"},
+        {"type": "minecraft:llama"},
+    ]
+    monkeypatch.setattr(
+        husbandry, "get_nearby_entities", lambda _client, _radius: entities
+    )
+
+    counts = husbandry.survey_leather_sources(SimpleNamespace(), radius=64)
+    assert counts == {"cow": 1, "horse": 1, "llama": 1}
