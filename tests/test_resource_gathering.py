@@ -886,6 +886,41 @@ def test_smelter_collects_finished_output_before_new_gathering_or_fuel(monkeypat
     assert counts["minecraft:iron_ingot"] == 8
 
 
+def test_smelter_recounts_output_collected_at_recovery_timeout(monkeypatch):
+    counts = {
+        "minecraft:iron_ingot": 1,
+        "minecraft:raw_iron": 20,
+    }
+    client = SimpleNamespace()
+    monkeypatch.setattr(
+        resources, "count_item", lambda _client, item_id: counts.get(item_id, 0)
+    )
+
+    def collect_then_time_out(*_args, **_kwargs):
+        counts["minecraft:iron_ingot"] = 6
+        return False
+
+    monkeypatch.setattr(
+        resources, "collect_finished_furnace_output", collect_then_time_out
+    )
+    monkeypatch.setattr(
+        resources,
+        "gather_ores",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("recovered output already satisfies the target")
+        ),
+    )
+    monkeypatch.setattr(
+        resources,
+        "_prepare_safe_furnace_fuel",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("recovered output already satisfies the target")
+        ),
+    )
+
+    assert resources._smelt_with_furnace(client, "minecraft:iron_ingot", 4)
+
+
 def test_finished_furnace_recovery_skips_empty_nearest_candidate(monkeypatch):
     from baritone_client.common import furnace_recovery, harness_ops
 

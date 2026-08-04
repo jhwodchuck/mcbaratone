@@ -250,5 +250,13 @@ def resume_active_furnace(
         time.sleep(0.5)
 
     client.transport.dispatch("close_screen", {})
-    print("  Timed out while resuming loaded furnace.")
-    return False
+    completed = (
+        minimum_output is not None
+        and count_item(client, output_item) >= minimum_output
+    )
+    print(
+        "  Furnace output target reached at timeout boundary."
+        if completed
+        else "  Timed out while resuming loaded furnace."
+    )
+    return completed

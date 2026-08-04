@@ -2705,6 +2705,8 @@ def _smelt_with_furnace(
     if collect_finished_furnace_output(client, item_id, qty, furnace_pos):
         return True
     needed = qty - count_item(client, item_id)
+    if needed <= 0:
+        return True
 
     # Gather input if missing
     if count_item(client, input_item) < needed:
