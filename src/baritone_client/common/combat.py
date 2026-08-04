@@ -1513,8 +1513,13 @@ def defend_or_flee(client) -> bool:
         threat_id = primary.entity.get("id")
         escaped = run_away(client, primary.entity)
         runtime.record_evade_result(threat_id, escaped)
-        if escaped or not runtime.should_escalate_to_combat(threat_id):
-            runtime.hold_recovery(8.0 if escaped else 12.0)
+        if escaped:
+            runtime.hold_recovery(8.0)
+            return True
+        if not runtime.should_escalate_to_combat(threat_id):
+            # The attacker is still present. Recovery hysteresis after a
+            # failed escape made the bot stand still and try to heal while it
+            # was being hit; retry defense immediately on the next tick.
             return True
         # Some threats must never be meleed no matter how badly evasion is
         # going: a creeper detonates when you close on it, and an early-game
@@ -1533,7 +1538,36 @@ def defend_or_flee(client) -> bool:
             )
             relocated = _relocate_away_from(client, primary.entity)
             runtime.record_evade_result(threat_id, relocated)
-            runtime.hold_recovery(8.0 if relocated else 15.0)
+            if relocated:
+                runtime.hold_recovery(8.0)
+                return True
+
+            # Never close on the explosive threat itself, but do not let a
+            # high-scored creeper hide the zombie already in melee range. A
+            # failed relocation leaves fighting the close non-explosive
+            # attacker as the only action that can reduce incoming damage.
+            alternative = next(
+                (
+                    item
+                    for item in assessments
+                    if item.entity.get("id") != threat_id
+                    and item.style not in (AttackStyle.EXPLOSIVE, AttackStyle.BOSS)
+                    and item.distance <= 6.5
+                ),
+                None,
+            )
+            if alternative is not None:
+                defeated = safe_combat(
+                    client,
+                    alternative.entity.get("id"),
+                    no_retreat=True,
+                    abort_on_other_hostiles=False,
+                )
+                if defeated:
+                    runtime.record_evade_result(
+                        alternative.entity.get("id"), True
+                    )
+                    runtime.hold_recovery(6.0)
             return True
         # Repeated evasion against this exact threat has failed every time
         # (see DefenseRuntime.record_evade_result) -- continuing to hold that
@@ -1558,11 +1592,14 @@ def defend_or_flee(client) -> bool:
             client,
             threat_id,
             no_retreat=True,
-            abort_on_other_hostiles=True,
+            # Reaching this branch proves that escape has already failed.
+            # Aborting because another hostile is nearby simply recreated the
+            # same no-op loop in crowded caves.
+            abort_on_other_hostiles=False,
         )
         if defeated:
             runtime.record_evade_result(threat_id, True)
-        runtime.hold_recovery(6.0 if defeated else 10.0)
+            runtime.hold_recovery(6.0)
         return True
 
     defeated = safe_combat(

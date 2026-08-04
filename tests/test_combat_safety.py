@@ -1363,19 +1363,18 @@ def test_repeated_failed_evasion_escalates_to_fighting_back(monkeypatch):
         lambda *_a, **_k: fought.append(True) or True,
     )
 
-    # Same runtime persists across calls (stashed on the client), so repeated
-    # ticks against the SAME threat id accumulate failures.
-    for _ in range(3):
-        assert combat.defend_or_flee(client)
-    assert not fought  # not yet -- below the escalation threshold
-
+    # Same runtime persists across calls (stashed on the client). One failed
+    # escape gets another chance; the second must act before incoming damage
+    # makes any recovery impossible.
     assert combat.defend_or_flee(client)
-    assert fought == [True]  # 4th consecutive failure escalates
+    assert not fought
+    assert combat.defend_or_flee(client)
+    assert fought == [True]
 
 
-def test_evasion_failure_count_resets_against_a_different_threat(monkeypatch):
-    """Failures against threat A must not silently escalate a fresh
-    encounter with threat B."""
+def test_evasion_failure_count_survives_primary_threat_switch(monkeypatch):
+    """A crowded cave must not reset escape failure whenever scoring chooses
+    a different attacker on the next tick."""
     transport = CombatTransport(health=20.0)
     client = SimpleNamespace(transport=transport)
     monkeypatch.setattr(combat, "get_equipped_armor", lambda _c: {})
@@ -1391,8 +1390,7 @@ def test_evasion_failure_count_resets_against_a_different_threat(monkeypatch):
         "position": {"x": 8, "y": 64, "z": 0},
     }
     monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [threat_a])
-    for _ in range(3):
-        combat.defend_or_flee(client)
+    combat.defend_or_flee(client)
 
     threat_b = {
         "id": 2, "type": "minecraft:zombie", "distance": 8.0,
@@ -1400,7 +1398,7 @@ def test_evasion_failure_count_resets_against_a_different_threat(monkeypatch):
     }
     monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [threat_b])
     assert combat.defend_or_flee(client)
-    assert not fought  # a new threat starts its own failure count at 1
+    assert fought == [True]
 
 
 def test_a_successful_evade_never_escalates(monkeypatch):
@@ -1564,6 +1562,75 @@ def test_repeated_evasion_still_fights_back_against_a_zombie(monkeypatch):
 
     assert fought, "a cornered zombie should still be fought as a last resort"
     assert not relocated
+
+
+def test_switching_attackers_does_not_reset_failed_escape_escalation(monkeypatch):
+    transport = CombatTransport(health=20.0)
+    client = SimpleNamespace(transport=transport)
+    next_id = {"value": 70}
+
+    def rotating_threats(*_args, **_kwargs):
+        next_id["value"] += 1
+        return [
+            {
+                "id": next_id["value"],
+                "type": "minecraft:bogged",
+                "distance": 3.0,
+                "position": {"x": 3, "y": 64, "z": 0},
+            }
+        ]
+
+    monkeypatch.setattr(combat, "scan_for_threats", rotating_threats)
+    monkeypatch.setattr(combat, "get_equipped_armor", lambda _c: {})
+    monkeypatch.setattr(combat, "run_away", lambda *_a, **_k: False)
+    fought = []
+    monkeypatch.setattr(
+        combat,
+        "safe_combat",
+        lambda _client, entity_id, **kwargs: fought.append((entity_id, kwargs)) or True,
+    )
+
+    assert combat.defend_or_flee(client)
+    assert combat.defend_or_flee(client)
+
+    assert fought
+    assert fought[0][1]["no_retreat"] is True
+    assert fought[0][1]["abort_on_other_hostiles"] is False
+
+
+def test_failed_creeper_relocation_fights_close_zombie_not_creeper(monkeypatch):
+    transport = CombatTransport(health=20.0)
+    client = SimpleNamespace(transport=transport)
+    threats = [
+        {
+            "id": 77,
+            "type": "minecraft:creeper",
+            "distance": 8.0,
+            "position": {"x": 8, "y": 64, "z": 0},
+        },
+        {
+            "id": 78,
+            "type": "minecraft:zombie",
+            "distance": 2.0,
+            "position": {"x": 2, "y": 64, "z": 0},
+        },
+    ]
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: threats)
+    monkeypatch.setattr(combat, "get_equipped_armor", lambda _c: {})
+    monkeypatch.setattr(combat, "run_away", lambda *_a, **_k: False)
+    monkeypatch.setattr(combat, "_relocate_away_from", lambda *_a, **_k: False)
+    fought = []
+    monkeypatch.setattr(
+        combat,
+        "safe_combat",
+        lambda _client, entity_id, **kwargs: fought.append((entity_id, kwargs)) or True,
+    )
+
+    assert combat.defend_or_flee(client)
+    assert combat.defend_or_flee(client)
+
+    assert [entity_id for entity_id, _kwargs in fought] == [78]
+    assert fought[0][1]["abort_on_other_hostiles"] is False
 
 
 class _RelocateTransport:

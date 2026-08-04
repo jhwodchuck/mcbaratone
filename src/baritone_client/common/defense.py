@@ -82,9 +82,16 @@ class DefenseRuntime:
     # than even an unfavorable fight. See evade_escalation_threshold below.
     evade_failures: int = 0
     evade_failure_entity: Optional[int] = None
+    # A crowded cave can rotate the highest-scored entity every tick. Keep an
+    # aggregate streak as well so switching between two attackers does not
+    # reset a demonstrably failed escape strategy forever.
+    consecutive_evade_failures: int = 0
 
     def record_evade_result(self, entity_id: Optional[int], escaped: bool) -> None:
         """Track a run_away() outcome against one specific threat."""
+        self.consecutive_evade_failures = (
+            0 if escaped else self.consecutive_evade_failures + 1
+        )
         if escaped or entity_id != self.evade_failure_entity:
             self.evade_failures = 0 if escaped else 1
             self.evade_failure_entity = None if escaped else entity_id
@@ -92,13 +99,16 @@ class DefenseRuntime:
             self.evade_failures += 1
 
     def should_escalate_to_combat(
-        self, entity_id: Optional[int], *, threshold: int = 4
+        self, entity_id: Optional[int], *, threshold: int = 2
     ) -> bool:
         """True once evasion has demonstrably failed repeatedly for this threat."""
         return (
-            entity_id is not None
-            and entity_id == self.evade_failure_entity
-            and self.evade_failures >= threshold
+            self.consecutive_evade_failures >= threshold
+            or (
+                entity_id is not None
+                and entity_id == self.evade_failure_entity
+                and self.evade_failures >= threshold
+            )
         )
 
     def transition(
