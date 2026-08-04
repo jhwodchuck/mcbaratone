@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, Optional
 
+from . import combat_telemetry
 from .defense import (
     AttackStyle,
     EscapeCandidate,
@@ -242,6 +243,7 @@ def relocate_away_from(
     return False
 
 
+@combat_telemetry.trace_escape
 def run_away(
     client: Any,
     threat: Dict,
@@ -286,11 +288,29 @@ def run_away(
         ]
         if not safe:
             safe = surface_adjusted_candidates(client, candidates)
+        combat_telemetry.record_combat_action(
+            client,
+            "escape_plan",
+            outcome="ready" if safe else "no_safe_endpoint",
+            candidate_count=len(candidates),
+            safe_candidate_count=len(safe),
+        )
         if not safe:
             print("FLEE: no terrain-safe escape endpoint found")
             return False
         per_candidate = max(1.5, timeout / len(safe))
         for candidate in safe:
+            destination = {
+                "x": candidate.x,
+                "y": candidate.y,
+                "z": candidate.z,
+            }
+            combat_telemetry.record_combat_action(
+                client,
+                "escape_route",
+                outcome="attempted",
+                destination=destination,
+            )
             print(
                 f"FLEE: pathing to {candidate.x},{candidate.y},{candidate.z}; "
                 f"initial separation {initial:.1f}m"
@@ -307,9 +327,21 @@ def run_away(
                 timeout=per_candidate,
                 minimum_gain=minimum_gain,
             ):
+                combat_telemetry.record_combat_action(
+                    client,
+                    "escape_route",
+                    outcome="verified",
+                    destination=destination,
+                )
                 print("FLEE: separation verified")
                 return True
             client.transport.dispatch("cancel", {})
+            combat_telemetry.record_combat_action(
+                client,
+                "escape_route",
+                outcome="failed",
+                destination=destination,
+            )
         print("FLEE: candidate routes did not increase separation")
         return False
     except api.PlayerDeathDetected:

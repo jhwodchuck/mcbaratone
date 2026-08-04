@@ -5,6 +5,7 @@ Combat utilities - Mob engagement, retreat logic, and healing.
 import logging
 import time
 from typing import Callable, Dict, List, Optional
+from . import combat_telemetry
 from .food_recovery import (
     bounded_exploration_origin,
     collect_edible_drop,
@@ -200,6 +201,7 @@ def attack_nearest(
         return False
 
 
+@combat_telemetry.trace_safe_combat
 def safe_combat(
     client,
     target_id: int,
@@ -250,6 +252,7 @@ def safe_combat(
                 client,
                 radius=max(30, tracking_radius),
             )
+        combat_telemetry.record_combat_snapshot(client, {"player": state, "entities": entities})
 
         # Surface before drowning: a fish fight keeps the bot submerged and
         # attacking in place with no goto to trigger the normal reflex. Allow a
@@ -316,6 +319,7 @@ def safe_combat(
                         "min_cooldown": MELEE_ATTACK_COOLDOWN_THRESHOLD,
                     },
                 )
+                combat_telemetry.record_melee_attack(client, target, result)
             except Exception as exc:
                 # The entity can die or unload between the entity scan and
                 # attack dispatch.  That is a successful end to this combat,
@@ -1452,6 +1456,7 @@ def defend_or_flee(client) -> bool:
         runtime=runtime,
     )
     runtime.transition(decision.mode, decision.reason)
+    combat_telemetry.record_defense_decision(client, decision, state, threats)
 
     if decision.mode == DefenseMode.CLEAR:
         return False
