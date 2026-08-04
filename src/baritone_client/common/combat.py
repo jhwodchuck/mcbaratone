@@ -42,7 +42,7 @@ from .inventory import (
     select_item,
 )
 from .tasks import PlayerDeathDetected, TaskResult
-from .navigation import goto
+from .navigation import goto, goto_xz
 
 logger = logging.getLogger(__name__)
 
@@ -1026,6 +1026,7 @@ def hunt_mobs(
         return TaskResult.ok("Already satisfied", kills=kills, missing={})
 
     exploring = False
+    exploration_idle_checks = 0
     last_time_check = 0
     while (missing or (target_kills and kills < target_kills)) and time.time() - start < timeout:
         if max_kills is not None and kills >= max(0, int(max_kills)):
@@ -1159,6 +1160,32 @@ def hunt_mobs(
                 else:
                     client.transport.dispatch("chat", {"message": "#explore"})
                 exploring = True
+                exploration_idle_checks = 0
+            elif explore_when_empty and exploring:
+                if live_state.get("is_pathing") is False:
+                    exploration_idle_checks += 1
+                else:
+                    exploration_idle_checks = 0
+                if exploration_idle_checks >= 3 and exploration_center is not None:
+                    # The bridge can accept a centered explore request while
+                    # Baritone immediately rejects its goal in already loaded
+                    # terrain. Walk horizontally toward the bounded sector so
+                    # the hunt keeps scanning genuinely new chunks.
+                    client.transport.dispatch("chat", {"message": "#stop"})
+                    client.transport.dispatch("cancel", {})
+                    exploring = False
+                    exploration_idle_checks = 0
+                    print(
+                        "  Exploration goal was idle; staging toward sector "
+                        f"{exploration_center}..."
+                    )
+                    goto_xz(
+                        client,
+                        int(exploration_center[0]),
+                        int(exploration_center[1]),
+                        timeout=45,
+                        tolerance=24.0,
+                    )
             time.sleep(3)
             continue
 

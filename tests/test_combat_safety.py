@@ -1064,6 +1064,50 @@ def test_hunt_uses_explicit_exploration_center_when_no_targets(monkeypatch):
     ) not in transport.calls
 
 
+def test_hunt_stages_toward_center_when_explore_goal_stays_idle(monkeypatch):
+    class IdleExploreTransport(CombatTransport):
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                self.calls.append((route, payload))
+                return {
+                    "health": 20,
+                    "food_level": 20,
+                    "world_time": 1000,
+                    "is_pathing": False,
+                    "block_position": {"x": 0, "y": 64, "z": 0},
+                }
+            return super().dispatch(route, payload)
+
+    class ReachedSectorFallback(Exception):
+        pass
+
+    transport = IdleExploreTransport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(combat.time, "time", lambda: 0.0)
+    monkeypatch.setattr(combat.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(combat, "count_item", lambda *_args: 0)
+    monkeypatch.setattr(combat, "heal_if_needed", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(combat, "find_entity_by_type", lambda *_args, **_kwargs: None)
+
+    def stage(_client, x, z, **kwargs):
+        assert (x, z) == (-6, -250)
+        assert kwargs == {"timeout": 45, "tolerance": 24.0}
+        raise ReachedSectorFallback()
+
+    monkeypatch.setattr(combat, "goto_xz", stage)
+
+    with pytest.raises(ReachedSectorFallback):
+        combat.hunt_mobs(
+            client,
+            ["cow"],
+            {"minecraft:leather": 1},
+            timeout=30,
+            exploration_center=(-6, -250),
+        )
+    assert ("explore", {"x": -6, "z": -250}) in transport.calls
+    assert ("chat", {"message": "#stop"}) in transport.calls
+
+
 def test_hunt_eats_before_selecting_another_target(monkeypatch):
     """Hunting a non-food mob (e.g. blaze/enderman) with no carried food and
     no way to eat must stop rather than keep fighting hungry -- unlike a
