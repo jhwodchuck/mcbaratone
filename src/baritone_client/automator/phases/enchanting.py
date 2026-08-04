@@ -498,7 +498,10 @@ class EnchantingPipelineHandler(PhaseHandler):
     def _gather_leather(self, client, state: StateManager) -> bool:
         """Safely collect leather for 46 books, including banked supplies."""
         target = 46
-        self._withdraw_at_home(client, state, {"minecraft:leather": target})
+        withdrawn = self._withdraw_at_home(
+            client, state, {"minecraft:leather": target}
+        )
+        local_expedition = withdrawn < 0
         current = count_item(client, "minecraft:leather")
         if current >= target:
             print("  Already have 46 leather.")
@@ -506,16 +509,29 @@ class EnchantingPipelineHandler(PhaseHandler):
 
         if not self._wait_for_daylight(client, state):
             return False
-        self._bank_diamonds_before_expedition(client, state)
-        if not self._leave_starter_house(client, state):
-            return False
+        if local_expedition:
+            print(
+                "  Home route is unavailable; starting a bounded leather "
+                "expedition from the live position."
+            )
+        else:
+            self._bank_diamonds_before_expedition(client, state)
+            if not self._leave_starter_house(client, state):
+                return False
 
         missing = target - current
         print(f"  Hunting cows for {missing} additional leather...")
         house = state.custom_data.get("structures", {}).get("starter_house", {})
         origin = house.get("origin") or state.custom_data.get("base_location")
         exploration_center = None
-        if isinstance(origin, (list, tuple)) and len(origin) == 3:
+        if local_expedition:
+            live = client.transport.dispatch("get_state", {})
+            position = live.get("block_position", live.get("position", {}))
+            exploration_center = (
+                int(position.get("x", 0)),
+                int(position.get("z", 0)),
+            )
+        elif isinstance(origin, (list, tuple)) and len(origin) == 3:
             exploration_center = self._next_leather_exploration_center(
                 origin,
                 state,
@@ -551,7 +567,10 @@ class EnchantingPipelineHandler(PhaseHandler):
             if int(live_state.get("world_time", 0)) % 24000 >= 12000:
                 print("  Return window missed; sheltering until daylight.")
                 wait_for_safe_daylight(client, max_wait=720.0)
-            returned = self._return_home(client, state)
+            # The phase only needs the carried leather. If the initial home
+            # route was unavailable, repeating that same route after a local
+            # hunt merely discards real resource progress.
+            returned = local_expedition or self._return_home(client, state)
 
         if (
             result

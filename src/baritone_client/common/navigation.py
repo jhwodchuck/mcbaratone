@@ -96,6 +96,56 @@ def goto(
         return False
 
 
+def goto_xz(
+    client,
+    x: int,
+    z: int,
+    timeout: int = 120,
+    check_interval: float = 1.0,
+    tolerance: float = 6.0,
+) -> bool:
+    """Navigate to a horizontal column while Baritone chooses loaded terrain Y."""
+    try:
+        client._last_navigation_survival_abort = False
+        client.transport.dispatch("chat", {"message": f"#goto {x} {z}"})
+        start = time.time()
+        last_position = None
+        idle_unpathing_checks = 0
+        while time.time() - start < timeout:
+            state = client.transport.dispatch("get_state", {})
+            from .combat import survival_tick
+
+            if survival_tick(client, state):
+                client._last_navigation_survival_abort = True
+                client.transport.dispatch("cancel", {})
+                return False
+            position = state.get("block_position", state.get("position", {}))
+            px = float(position.get("x", state.get("x", 0)) or 0)
+            pz = float(position.get("z", state.get("z", 0)) or 0)
+            if math.hypot(px - x, pz - z) <= tolerance:
+                client.transport.dispatch("cancel", {})
+                return True
+
+            current_position = (px, pz)
+            is_pathing = state.get("is_pathing")
+            if is_pathing is False and current_position == last_position:
+                idle_unpathing_checks += 1
+            elif is_pathing is False:
+                idle_unpathing_checks = 1
+            else:
+                idle_unpathing_checks = 0
+            last_position = current_position
+            if idle_unpathing_checks >= 3:
+                client.transport.dispatch("cancel", {})
+                return False
+            time.sleep(check_interval)
+        client.transport.dispatch("cancel", {})
+        return False
+    except Exception as exc:
+        print(f"Horizontal navigation error: {exc}")
+        return False
+
+
 def staged_goto(
     client,
     target: tuple[int, int, int],
@@ -135,13 +185,39 @@ def staged_goto(
             check_interval=1.0,
             tolerance=6.0,
         ):
-            return False
-    return navigate(
+            print(
+                "  Exact staging height was rejected; retrying the column "
+                "without pinning Y..."
+            )
+            if not goto_xz(
+                client,
+                waypoint[0],
+                waypoint[2],
+                timeout=90,
+                tolerance=6.0,
+            ):
+                return False
+    if navigate(
         client,
         target_x,
         target_y,
         target_z,
         timeout=180,
+        check_interval=1.0,
+        tolerance=2.0,
+    ):
+        return True
+    # The final column may still be unloaded after the last interpolation
+    # leg. Load it with a Y-agnostic goal, then retry the exact doorway/farm
+    # height once its terrain is known.
+    if not goto_xz(client, target_x, target_z, timeout=120, tolerance=6.0):
+        return False
+    return navigate(
+        client,
+        target_x,
+        target_y,
+        target_z,
+        timeout=90,
         check_interval=1.0,
         tolerance=2.0,
     )

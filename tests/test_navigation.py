@@ -58,3 +58,36 @@ def test_staged_goto_targets_loaded_column_surface(monkeypatch):
 
     assert destinations[0] == (-150, 63, -318)
     assert destinations[-1] == (-160, 104, -388)
+
+
+def test_staged_goto_falls_back_to_y_agnostic_column(monkeypatch):
+    class Transport:
+        def dispatch(self, _route, _payload):
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    destinations = []
+    attempts = {"count": 0}
+
+    def navigate(_client, x, y, z, **_kwargs):
+        attempts["count"] += 1
+        destinations.append((x, y, z))
+        return attempts["count"] > 1
+
+    horizontal = []
+    monkeypatch.setattr(
+        navigation,
+        "goto_xz",
+        lambda _client, x, z, **_kwargs: horizontal.append((x, z)) or True,
+    )
+    monkeypatch.setattr(navigation, "_loaded_stage_y", lambda *_a, **_k: 70)
+
+    assert navigation.staged_goto(
+        client,
+        (96, 90, 0),
+        (0, 64, 0),
+        maximum_leg=32,
+        navigate=navigate,
+    )
+    assert horizontal == [(32, 0)]
+    assert destinations[0] == (32, 70, 0)
