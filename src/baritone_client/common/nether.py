@@ -864,6 +864,14 @@ def hunt_blazes(
         start_time = time.time()
         deadline = start_time + timeout
         rods_start = count_item(client, "minecraft:blaze_rod")
+        world_state = client.transport.dispatch("get_state", {})
+        difficulty = str(world_state.get("difficulty") or "").lower()
+        if difficulty == "peaceful":
+            logger.error(
+                "Cannot hunt blazes while world difficulty is Peaceful; "
+                "hostile spawning is disabled"
+            )
+            return rods_start
 
         # Shared sightings are normal world knowledge. Reuse them before
         # making every controller independently rediscover the same fortress.

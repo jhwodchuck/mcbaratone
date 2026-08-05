@@ -1103,6 +1103,25 @@ def test_blaze_spawner_camp_holds_position_and_reanchors(monkeypatch):
     assert all(call[1]["radius"] == 8 for call in travels)
 
 
+def test_blaze_hunt_fails_fast_on_peaceful(monkeypatch, caplog):
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: (
+                {"difficulty": "peaceful"} if route == "get_state" else {}
+            )
+        )
+    )
+    monkeypatch.setattr(nether, "count_item", lambda *_args: 3)
+    monkeypatch.setattr(
+        nether,
+        "_shared_blaze_spawners",
+        lambda *_args: pytest.fail("Peaceful must fail before spawner travel"),
+    )
+
+    assert nether.hunt_blazes(client, target_count=6, timeout=600) == 3
+    assert "world difficulty is Peaceful" in caplog.text
+
+
 def test_blaze_spawner_camp_rejects_an_under_armored_bot(monkeypatch):
     client = SimpleNamespace(transport=PortalTransport())
     hunts = []

@@ -54,6 +54,16 @@ def _is_ranged_target(target, state) -> bool:
     return bool(assessments and assessments[0].style == api.AttackStyle.RANGED)
 
 
+def _prepare_ranged_shield(client, target, state, shield) -> bool:
+    """Prepare a carried shield when the current target attacks at range."""
+    if not _is_ranged_target(target, state):
+        return False
+    if not shield["checked"]:
+        shield["ready"] = _prepare_shield(client)
+        shield["checked"] = True
+    return bool(shield["ready"])
+
+
 def execute_safe_combat(
     client,
     target_id: int,
@@ -167,9 +177,16 @@ def execute_safe_combat(
         if target_health is not None and float(target_health) <= 0:
             return finish("verified_health_zero", True)
 
+        # Keep shielding ranged mobs even inside 4.5m. Live Bot16 bypassed its
+        # shield when a spawner placed a blaze at 1.2m and burned to death.
+        ranged_approach["active"] = _prepare_ranged_shield(
+            client, target, state, shield
+        )
+        if ranged_approach["active"]:
+            navigation_watchdog()
+
         distance = target.get("distance", 999)
         if distance < 4.5:
-            ranged_approach["active"] = False
             if time.monotonic() < shield["blocked_until"]:
                 # The bridge releases use_item on its own.  Wait for that
                 # release before attacking so a raised shield cannot suppress
@@ -205,12 +222,6 @@ def execute_safe_combat(
             if state.get("is_pathing", False):
                 client.transport.dispatch("chat", {"message": "#stop"})
         else:
-            ranged_approach["active"] = _is_ranged_target(target, state)
-            if ranged_approach["active"] and not shield["checked"]:
-                shield["ready"] = _prepare_shield(client)
-                shield["checked"] = True
-            if ranged_approach["active"] and shield["ready"]:
-                navigation_watchdog()
             target_position = api.entity_position(target)
             if target_position is None:
                 return finish("target_position_missing")

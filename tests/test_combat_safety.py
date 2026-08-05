@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from baritone_client.common import combat
+from baritone_client.common import combat, combat_melee
 from baritone_client.common.tasks import PlayerDeathDetected
 
 
@@ -1204,6 +1204,78 @@ def test_forced_ranged_approach_equips_and_raises_carried_shield(monkeypatch):
         "use_item",
         {"duration_ms": 1800},
     ) in transport.calls
+
+
+def test_close_ranged_target_raises_shield_before_melee(monkeypatch):
+    """A blaze spawning in melee range must not bypass the carried shield."""
+    blaze = {
+        "id": 42,
+        "type": "minecraft:blaze",
+        "distance": 1.2,
+        "position": {"x": 1, "y": 64, "z": 0},
+    }
+
+    class ShieldTransport(CombatTransport):
+        def __init__(self):
+            super().__init__(health=20.0)
+            self.equipped = False
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_inventory":
+                return {
+                    "inventory": [] if self.equipped else [
+                        {"id": "minecraft:shield", "count": 1}
+                    ],
+                    "offhand": [
+                        {"id": "minecraft:shield", "count": 1}
+                    ] if self.equipped else [],
+                }
+            if route == "equip":
+                self.equipped = True
+                return {"equipped": True}
+            if route == "attack_entity":
+                self.attacked = True
+                return {"attacked": True}
+            return super().dispatch(route, payload)
+
+    transport = ShieldTransport()
+    transport.attacked = False
+    client = SimpleNamespace(transport=transport)
+    clock = {"now": 0.0}
+
+    def monotonic():
+        clock["now"] += 0.1
+        return clock["now"]
+
+    def snapshot(*_args, **_kwargs):
+        target = {**blaze, "health": 0} if transport.attacked else blaze
+        return {"player": {"health": 20.0}, "entities": [target]}
+
+    monkeypatch.setattr(combat, "_get_combat_snapshot", snapshot)
+    monkeypatch.setattr(combat, "equip_best_weapon", lambda _client: True)
+    monkeypatch.setattr(combat, "look_at_entity", lambda *_args: True)
+    monkeypatch.setattr(combat, "_attack_cooldown", lambda _state: 1.0)
+    monkeypatch.setattr(combat_melee.time, "monotonic", monotonic)
+    monkeypatch.setattr(combat_melee.time, "sleep", lambda _seconds: None)
+
+    assert combat.safe_combat(
+        client,
+        blaze["id"],
+        no_retreat=True,
+        max_duration=2,
+    )
+    shield_call = transport.calls.index(("use_item", {"duration_ms": 1800}))
+    attack_call = transport.calls.index(
+        (
+            "attack_entity",
+            {
+                "entity_id": blaze["id"],
+                "min_cooldown": combat.MELEE_ATTACK_COOLDOWN_THRESHOLD,
+            },
+        )
+    )
+    assert shield_call < attack_call
 
 
 def test_melee_approach_does_not_raise_shield(monkeypatch):

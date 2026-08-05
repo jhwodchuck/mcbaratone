@@ -170,3 +170,7 @@ def teardown_test_world(
         clear_box(ctx, bounds)
     if restore_rules:
         restore_gamerules(ctx)
+        # prepare_test_world defaults to Peaceful.  Restore the disposable
+        # server profile's Normal difficulty as part of the same cleanup so
+        # a failed or partial selection cannot poison the next suite run.
+        set_difficulty(ctx, "normal")
