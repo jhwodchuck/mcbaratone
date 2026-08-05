@@ -2403,19 +2403,10 @@ def _reserve_gathering_inventory(client, minimum_free_slots: int = 3) -> bool:
     except Exception as exc:
         print(f"  Gathering storage cleanup unavailable ({exc}); using bounded disposal")
 
-    return manage_inventory(
-        client,
-        minimum_free_slots=required,
-        discard_clutter_before_storage=True,
-    )
+    return manage_inventory(client, minimum_free_slots=required)
 
 
-def manage_inventory(
-    client,
-    minimum_free_slots: int = 1,
-    *,
-    discard_clutter_before_storage: bool = False,
-) -> bool:
+def manage_inventory(client, minimum_free_slots: int = 1) -> bool:
     """Reserve carried slots for progression outputs by dropping bounded junk.
 
     ``drop_items`` now verifies the PlayerInventory-to-screen slot mapping, so
@@ -2430,9 +2421,8 @@ def manage_inventory(
         return True
 
     # These one-off loot blocks and renewable saplings have no progression
-    # consumer. Drop them before walking a full storage tour: live Bot16 spent
-    # minutes visiting nearby barrels that accepted zero stacks while this
-    # clutter prevented the final boot ingot from being picked up.
+    # consumer. They are also in EARLY_GAME_EXCESS_ITEMS so nearby storage can
+    # bank them before this bounded drop fallback is considered.
     disposable_clutter = (
         "minecraft:acacia_sapling",
         "minecraft:birch_sapling",
@@ -2448,18 +2438,6 @@ def manage_inventory(
         "minecraft:waxed_oxidized_cut_copper_stairs",
         "minecraft:tuff_bricks",
     )
-    if discard_clutter_before_storage:
-        while free_inventory_slots(client) < required:
-            needed = required - free_inventory_slots(client)
-            if drop_items(
-                client,
-                disposable_clutter,
-                max_stacks=needed,
-            ) <= 0:
-                break
-        if free_inventory_slots(client) >= required:
-            return True
-
     # Prefer banking the surplus over destroying it. Suite 1100 has grown
     # storage this way for 100+ live runs: use a chest that still has room,
     # and when they are all full build another double chest rather than

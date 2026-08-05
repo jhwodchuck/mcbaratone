@@ -2740,42 +2740,16 @@ def test_manage_inventory_can_shed_raw_copper(monkeypatch):
     )
 
 
-def test_manage_inventory_can_shed_orphaned_decorative_loot(monkeypatch):
-    offered = []
-    free = {"slots": 0}
+def test_orphaned_decorative_loot_is_storage_eligible():
+    from baritone_client.common.inventory import EARLY_GAME_EXCESS_ITEMS
 
-    def fake_drop(_client, candidates, max_stacks=1, retain_counts=None):
-        offered.append(list(candidates))
-        if "minecraft:decorated_pot" in candidates:
-            free["slots"] = 1
-            return 1
-        return 0
-
-    monkeypatch.setattr(
-        "baritone_client.common.inventory.free_inventory_slots",
-        lambda _client: free["slots"],
-    )
-    monkeypatch.setattr(
-        "baritone_client.common.inventory.drop_items", fake_drop
-    )
-    monkeypatch.setattr(
-        resources,
-        "_store_surplus_in_chest",
-        lambda *_args: (_ for _ in ()).throw(
-            AssertionError("disposable clutter should not start a storage tour")
-        ),
-    )
-
-    assert resources.manage_inventory(
-        SimpleNamespace(),
-        minimum_free_slots=1,
-        discard_clutter_before_storage=True,
-    ) is True
-    assert any("minecraft:decorated_pot" in tier for tier in offered)
-    assert any(
-        "minecraft:waxed_oxidized_cut_copper_stairs" in tier
-        for tier in offered
-    )
+    assert {
+        "minecraft:decorated_pot",
+        "minecraft:tuff_bricks",
+        "minecraft:waxed_copper_block",
+        "minecraft:waxed_exposed_copper_bulb",
+        "minecraft:waxed_oxidized_cut_copper_stairs",
+    } <= EARLY_GAME_EXCESS_ITEMS
 
 
 def test_copper_is_shed_after_stone_not_before(monkeypatch):
