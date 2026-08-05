@@ -703,10 +703,12 @@ def test_catalog_withdraw_prefers_known_item_container(monkeypatch):
         state=None,
         *,
         open_attempts=4,
+        allow_recovery_access=False,
     ):
         assert position == (20, 65, 20)
         assert requirements == {"minecraft:bread": 8}
         received_attempts.append(open_attempts)
+        assert allow_recovery_access is False
         counts["minecraft:bread"] = 8
         return 1
 

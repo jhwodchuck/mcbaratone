@@ -1803,6 +1803,7 @@ def withdraw_required_from_chest(
     state=None,
     *,
     open_attempts: int = 4,
+    allow_recovery_access: bool = False,
 ) -> int:
     """Withdraw only banked stacks needed by the current objective.
 
@@ -1841,6 +1842,7 @@ def withdraw_required_from_chest(
             (cx, cy, cz),
             timeout=4.0,
             attempts=open_attempts,
+            allow_recovery_access=allow_recovery_access,
         )
     except Exception as exc:
         print(f"STORAGE: could not open supply chest ({exc})")
@@ -1917,6 +1919,7 @@ def withdraw_required_from_catalog(
     max_snapshot_age: float = 300.0,
     max_travel_distance: Optional[float] = None,
     max_vertical_distance: Optional[float] = None,
+    allow_recovery_access: bool = False,
 ) -> int:
     """Find and withdraw required items across known storage containers.
 
@@ -2069,6 +2072,7 @@ def withdraw_required_from_catalog(
             outstanding,
             state=state,
             open_attempts=1,
+            allow_recovery_access=allow_recovery_access,
         )
         if moved < 0:
             continue

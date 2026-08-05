@@ -199,6 +199,7 @@ def recover_food_from_known_sources(
             _STORED_FOOD_TARGETS,
             state=state,
             max_travel_distance=96.0,
+            allow_recovery_access=True,
         )
         if moved >= 0 and eat_fn(client, minimum_food=12):
             return True

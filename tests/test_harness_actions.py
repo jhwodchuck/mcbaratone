@@ -211,6 +211,73 @@ def test_harness_open_container_defends_before_opening_gui(monkeypatch):
     assert ("defend", client) in calls
 
 
+def test_harness_open_container_allows_adjacent_survival_recovery(monkeypatch):
+    from baritone_client.common import harness_ops
+
+    calls = []
+
+    def dispatch(route, _payload):
+        if route == "get_state":
+            return {
+                "health": 8.0,
+                "food_level": 14,
+                "block_position": {"x": 1, "y": 2, "z": 3},
+            }
+        calls.append(route)
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    monkeypatch.setattr(
+        "baritone_client.common.combat.scan_for_threats",
+        lambda *_a, **_k: [],
+    )
+    monkeypatch.setattr(
+        harness_ops,
+        "_load",
+        lambda: {"open_container": lambda *_a, **_k: True},
+    )
+    monkeypatch.setattr(harness_ops, "make_ctx", lambda value: value)
+
+    assert harness_ops.open_container(
+        client,
+        (2, 2, 3),
+        allow_recovery_access=True,
+    )
+    assert "cancel" not in calls
+
+
+def test_harness_open_container_recovery_exception_stays_local(monkeypatch):
+    from baritone_client.common import harness_ops
+
+    calls = []
+
+    def dispatch(route, _payload):
+        if route == "get_state":
+            return {
+                "health": 8.0,
+                "food_level": 14,
+                "block_position": {"x": 1, "y": 2, "z": 3},
+            }
+        calls.append(route)
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    monkeypatch.setattr(
+        harness_ops,
+        "_load",
+        lambda: {"open_container": lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("distant critical recovery must not open the GUI")
+        )},
+    )
+
+    assert harness_ops.open_container(
+        client,
+        (20, 2, 3),
+        allow_recovery_access=True,
+    ) is False
+    assert "cancel" in calls
+
+
 def test_harness_context_accepts_current_player_inventory_menu(monkeypatch):
     from baritone_client.common import harness_ops
 

@@ -294,6 +294,27 @@ def test_known_food_recovery_uses_nearest_persisted_food_landmark():
     assert client._safe_recovery_navigation_depth == 0
 
 
+def test_known_food_recovery_marks_storage_open_as_survival_recovery():
+    calls = []
+    state = SimpleNamespace(checkpoint_dir="checkpoint", custom_data={})
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_args: {}))
+
+    def withdraw(active_client, requirements, **kwargs):
+        calls.append((active_client, requirements, kwargs))
+        return 1
+
+    assert recover_food_from_known_sources(
+        client,
+        state,
+        {"cow": ("minecraft:beef", "minecraft:cooked_beef")},
+        withdraw_fn=withdraw,
+        eat_fn=lambda *_args, **_kwargs: True,
+    )
+    assert calls[0][0] is client
+    assert calls[0][2]["allow_recovery_access"] is True
+    assert client._safe_recovery_navigation_depth == 0
+
+
 def test_submerged_food_search_reaches_dry_surface_even_above_y_floor(
     monkeypatch,
 ):

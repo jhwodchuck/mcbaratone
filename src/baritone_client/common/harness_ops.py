@@ -443,12 +443,21 @@ def smelt_in_furnace(client, furnace_pos, input_id, fuel_id, output_id, output_c
     return bool(_load()["smelt_in_furnace"](make_ctx(client), furnace_pos, input_id, fuel_id, output_id, output_count, wait_per_item=wait_per_item))
 
 
-def open_container(client, block_pos, timeout=4.0, attempts=4) -> bool:
+def open_container(
+    client,
+    block_pos,
+    timeout=4.0,
+    attempts=4,
+    *,
+    allow_recovery_access: bool = False,
+) -> bool:
     """Open a known container only after a guarded final approach.
 
     Container screens prevent ordinary phase logic from reacting while a mob
-    attacks. Refuse the slow interaction below the storage survival margin,
-    and hand any nearby hostile to the combat policy before opening the GUI.
+    attacks. Refuse ordinary slow interactions below the storage survival
+    margin, and hand any nearby hostile to the combat policy before opening
+    the GUI. Critical food recovery may open an already-adjacent container,
+    but it may not use this exception to start another storage journey.
     """
     position = tuple(int(axis) for axis in block_pos)
     try:
@@ -460,7 +469,11 @@ def open_container(client, block_pos, timeout=4.0, attempts=4) -> bool:
         from .combat import defend_or_flee, scan_for_threats
         from .storage_safety import storage_distance, storage_travel_safe
 
-        if not storage_travel_safe(state):
+        travel_safe = storage_travel_safe(state)
+        distance = storage_distance(state, position)
+        if not travel_safe and (
+            not allow_recovery_access or distance > 4.5
+        ):
             try:
                 client.transport.dispatch("cancel", {})
             except Exception:
@@ -480,7 +493,9 @@ def open_container(client, block_pos, timeout=4.0, attempts=4) -> bool:
                 print(f"STORAGE: container defense failed ({exc})")
             print("STORAGE: defended nearby hostile before container interaction")
             return False
-        if storage_distance(state, position) > 4.5 and not move_near(
+        if not travel_safe:
+            print("STORAGE: permitting adjacent survival-recovery container access")
+        if distance > 4.5 and not move_near(
             client, *position, timeout=max(5.0, float(timeout))
         ):
             return False
