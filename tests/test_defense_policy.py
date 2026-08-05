@@ -283,6 +283,24 @@ def test_surface_escape_scan_is_bounded_for_active_combat():
     ]
 
 
+def test_run_away_never_starts_broad_surface_scan_under_attack(monkeypatch):
+    threat = _entity(1, "zombie", 6, 6, 0)
+    client = SimpleNamespace(transport=EscapeTransport(threat))
+    monkeypatch.setattr(
+        escape_recovery, "destination_safe", lambda *_args: False
+    )
+    monkeypatch.setattr(
+        escape_recovery,
+        "surface_adjusted_candidates",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("active combat must not start a broad block scan")
+        ),
+    )
+
+    assert combat.run_away(client, threat, timeout=1) is False
+    assert client._last_escape_failure_reason == "no_safe_endpoint"
+
+
 def test_defense_remains_in_recovery_after_successful_escape(monkeypatch):
     threat = _entity(1, "zombie", 5, 5, 0)
 

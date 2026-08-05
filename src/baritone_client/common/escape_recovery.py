@@ -283,13 +283,16 @@ def run_away(
         ]
         initial = separation_from(threat, position)
         candidates = plan_escape_candidates(position, assessments)
+        # Active combat cannot afford a broad surface-block scan. Live Bot16
+        # spent ~22 seconds inside the retried find_blocks fallback while four
+        # cave mobs kept attacking. Screen the nearest local candidates only;
+        # when none are safe, the caller immediately chooses relocation or
+        # last-resort combat.
         safe = [
             candidate
-            for candidate in candidates[:8]
+            for candidate in candidates[:4]
             if destination_safe(client, candidate.x, candidate.y, candidate.z)
         ]
-        if not safe:
-            safe = surface_adjusted_candidates(client, candidates)
         combat_telemetry.record_combat_action(
             client,
             "escape_plan",
