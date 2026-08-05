@@ -108,7 +108,31 @@ java {
 }
 
 jar {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    // Loom consumes the access widener during compilation, but Fabric Loader
+    // still requires the declared file in the distributable mod JAR.
+    from("src/main/resources/baritone-api-bridge.accesswidener")
+
     from("LICENSE") {
         rename { "${it}_${project.base.archivesName.get()}" }
     }
 }
+
+tasks.register("verifyBridgeJarContents") {
+    dependsOn tasks.jar
+
+    doLast {
+        def bridgeJar = tasks.jar.archiveFile.get().asFile
+        def accessWidener = zipTree(bridgeJar).matching {
+            include "baritone-api-bridge.accesswidener"
+        }
+        if (accessWidener.isEmpty()) {
+            throw new GradleException(
+                "Bridge JAR is missing baritone-api-bridge.accesswidener"
+            )
+        }
+    }
+}
+
+tasks.check.dependsOn tasks.verifyBridgeJarContents
