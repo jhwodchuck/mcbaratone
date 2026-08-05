@@ -1164,6 +1164,30 @@ def test_blaze_hunt_fails_fast_on_peaceful(monkeypatch, caplog):
     assert "world difficulty is Peaceful" in caplog.text
 
 
+def test_blaze_hunt_reads_difficulty_from_world_info(monkeypatch, caplog):
+    calls = []
+
+    def dispatch(route, _payload):
+        calls.append(route)
+        if route == "get_state":
+            return {"dimension": "minecraft:the_nether"}
+        if route == "get_world_info":
+            return {"difficulty": "peaceful"}
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    monkeypatch.setattr(nether, "count_item", lambda *_args: 3)
+    monkeypatch.setattr(
+        nether,
+        "_shared_blaze_spawners",
+        lambda *_args: pytest.fail("Peaceful must fail before spawner travel"),
+    )
+
+    assert nether.hunt_blazes(client, target_count=6, timeout=600) == 3
+    assert "get_world_info" in calls
+    assert "world difficulty is Peaceful" in caplog.text
+
+
 def test_blaze_spawner_camp_rejects_an_under_armored_bot(monkeypatch):
     client = SimpleNamespace(transport=PortalTransport())
     hunts = []

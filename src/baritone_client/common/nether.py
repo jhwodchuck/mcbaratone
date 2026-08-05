@@ -847,6 +847,18 @@ def _camp_blaze_spawner(
     )
 
 
+def _world_difficulty(client, state: Dict) -> str:
+    """Read difficulty from state or the bridge's world-info capability."""
+    difficulty = str(state.get("difficulty") or "").lower()
+    if difficulty:
+        return difficulty
+    try:
+        world = client.transport.dispatch("get_world_info", {})
+    except Exception:
+        return ""
+    return str(world.get("difficulty") or "").lower() if isinstance(world, dict) else ""
+
+
 def hunt_blazes(
     client,
     target_count: int = 8,
@@ -865,7 +877,7 @@ def hunt_blazes(
         deadline = start_time + timeout
         rods_start = count_item(client, "minecraft:blaze_rod")
         world_state = client.transport.dispatch("get_state", {})
-        difficulty = str(world_state.get("difficulty") or "").lower()
+        difficulty = _world_difficulty(client, world_state)
         if difficulty == "peaceful":
             logger.error(
                 "Cannot hunt blazes while world difficulty is Peaceful; "
