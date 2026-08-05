@@ -61,6 +61,55 @@ def test_goto_cancels_when_defense_intervenes(monkeypatch):
     assert transport.calls[-1] == ("cancel", {})
 
 
+def test_recovery_goto_uses_recovery_aware_defense(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, dict(payload)))
+            if route == "get_state":
+                return {
+                    "health": 5,
+                    "is_pathing": True,
+                    "block_position": {"x": 20, "y": 64, "z": 0},
+                }
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    checks = []
+    monkeypatch.setattr(
+        navigation,
+        "recovery_navigation_defense",
+        lambda checked: checks.append(checked) or False,
+    )
+
+    assert navigation.recovery_goto(client, 20, 64, 0)
+    assert checks == [client]
+
+
+def test_recovery_scope_marks_all_nested_default_routes(monkeypatch):
+    from baritone_client.common import combat
+
+    client = SimpleNamespace(transport=SimpleNamespace())
+    calls = []
+    monkeypatch.setattr(
+        combat,
+        "defend_or_flee",
+        lambda checked, **kwargs: calls.append((checked, kwargs)) or False,
+    )
+
+    @navigation.allow_recovery_navigation
+    def nested_recovery(active_client):
+        return navigation.run_navigation_defense(active_client)
+
+    assert not nested_recovery(client)
+    assert calls == [
+        (client, {"allow_safe_recovery_movement": True}),
+    ]
+    assert client._safe_recovery_navigation_depth == 0
+
+
 def test_staged_goto_targets_loaded_column_surface(monkeypatch):
     class Transport:
         def dispatch(self, route, payload):

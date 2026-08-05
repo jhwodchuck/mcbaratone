@@ -6,6 +6,7 @@ from ..common.combat import eat_until_hunger
 from ..common.farming import harvest_wheat_farm
 from ..common.husbandry import visit_known_herd_for_loot
 from ..common.inventory import withdraw_required_from_catalog
+from ..common.navigation import allow_recovery_navigation
 
 
 _STORED_FOOD_TARGETS = {
@@ -179,6 +180,7 @@ def record_failed_food_source(source: dict, threshold: int = 2) -> int:
     return failures
 
 
+@allow_recovery_navigation
 def recover_food_from_known_sources(
     client,
     state,

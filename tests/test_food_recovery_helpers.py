@@ -264,25 +264,34 @@ def test_known_food_recovery_uses_nearest_persisted_food_landmark():
         },
     )
 
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda *_args: {
+                "block_position": {"x": 200, "y": 64, "z": -100}
+            }
+        )
+    )
+
+    def visit(active_client, _requirements, animal, **kwargs):
+        assert active_client._safe_recovery_navigation_depth == 1
+        calls.append(
+            (animal, kwargs["location"], kwargs["preserve_breeding_pair"])
+        )
+        return True
+
     recovered = recover_food_from_known_sources(
-        SimpleNamespace(
-            transport=SimpleNamespace(
-                dispatch=lambda *_args: {
-                    "block_position": {"x": 200, "y": 64, "z": -100}
-                }
-            )
-        ),
+        client,
         state,
         {"pig": ("minecraft:porkchop", "minecraft:cooked_porkchop"),
          "cow": ("minecraft:beef", "minecraft:cooked_beef")},
         withdraw_fn=lambda *_args, **_kwargs: -1,
         eat_fn=lambda *_args, **_kwargs: calls.append(("eat",)) or len(calls) > 1,
-        visit_herd_fn=lambda _client, _requirements, animal, **kwargs:
-            calls.append((animal, kwargs["location"], kwargs["preserve_breeding_pair"])) or True,
+        visit_herd_fn=visit,
     )
 
     assert recovered
     assert calls == [("pig", [148, 65, -143], False), ("eat",)]
+    assert client._safe_recovery_navigation_depth == 0
 
 
 def test_submerged_food_search_reaches_dry_surface_even_above_y_floor(

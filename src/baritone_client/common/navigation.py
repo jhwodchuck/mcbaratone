@@ -4,6 +4,7 @@ Navigation utilities - Movement, exploration, and hazard avoidance.
 
 import math
 import time
+from functools import wraps
 from typing import Callable, Iterable, Optional, Tuple
 
 from .tasks import PlayerDeathDetected, TaskResult
@@ -11,6 +12,22 @@ from .tasks import PlayerDeathDetected, TaskResult
 
 DefenseCallback = Callable[[], bool]
 _DEFENSE_GUARD = "_navigation_defense_callback_active"
+_RECOVERY_DEPTH = "_safe_recovery_navigation_depth"
+
+
+def allow_recovery_navigation(function):
+    """Mark nested routes as intentional food/health recovery movement."""
+
+    @wraps(function)
+    def wrapped(client, *args, **kwargs):
+        depth = int(getattr(client, _RECOVERY_DEPTH, 0) or 0)
+        setattr(client, _RECOVERY_DEPTH, depth + 1)
+        try:
+            return function(client, *args, **kwargs)
+        finally:
+            setattr(client, _RECOVERY_DEPTH, depth)
+
+    return wrapped
 
 
 def run_navigation_defense(
@@ -28,13 +45,28 @@ def run_navigation_defense(
     if on_defense is None:
         from .combat import defend_or_flee
 
-        on_defense = lambda: defend_or_flee(client)
+        on_defense = lambda: defend_or_flee(
+            client,
+            allow_safe_recovery_movement=bool(
+                getattr(client, _RECOVERY_DEPTH, 0)
+            ),
+        )
 
     setattr(client, _DEFENSE_GUARD, True)
     try:
         return bool(on_defense())
     finally:
         setattr(client, _DEFENSE_GUARD, False)
+
+
+def recovery_navigation_defense(client) -> bool:
+    """Defend recovery travel without canceling clear-area movement."""
+    from .combat import defend_or_flee
+
+    return defend_or_flee(
+        client,
+        allow_safe_recovery_movement=True,
+    )
 
 
 def goto(
@@ -135,6 +167,15 @@ def goto(
     except Exception as e:
         print(f"Navigation error: {e}")
         return False
+
+
+def recovery_goto(client, x: int, y: int, z: int, **kwargs) -> bool:
+    """Navigate for food/health recovery while retaining hostile defense."""
+    kwargs.setdefault(
+        "on_defense",
+        lambda: recovery_navigation_defense(client),
+    )
+    return goto(client, x, y, z, **kwargs)
 
 
 def goto_xz(

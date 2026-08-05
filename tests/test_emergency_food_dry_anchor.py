@@ -103,4 +103,5 @@ def test_exhausted_food_search_returns_to_checkpoint_anchor(monkeypatch):
         (10.0, 64.0, 20.0),
     )
     assert routed[0][:3] == (10, 64, 20)
+    assert callable(routed[0][3]["on_defense"])
     assert client._emergency_food_dry_anchor == (10, 64, 20)

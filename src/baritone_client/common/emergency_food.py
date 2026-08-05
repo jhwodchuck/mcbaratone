@@ -228,9 +228,9 @@ def return_to_food_search_anchor(
         "RECOVERY: returning exhausted food search to stable home anchor "
         f"{target}"
     )
-    from .navigation import goto
+    from .navigation import recovery_goto
 
-    reached = goto(
+    reached = recovery_goto(
         client,
         target[0],
         target[1],
@@ -389,7 +389,7 @@ def reach_food_search_surface(client: Any, state: Dict) -> bool:
             return True
 
     from .build_site_recovery import excavate_surface_egress
-    from .navigation import goto
+    from .navigation import recovery_goto
     from .surface_recovery import reach_dry_surface
 
     reason = "submerged" if in_water else f"underground at y={position[1]}"
@@ -401,7 +401,7 @@ def reach_food_search_surface(client: Any, state: Dict) -> bool:
         client,
         origin=position,
         expected_y=expected_y,
-        goto=goto,
+        goto=recovery_goto,
     )
     if recovered is not None and not _is_dry_food_search_surface(
         client, recovered
@@ -705,9 +705,9 @@ def hunt_target(
             print("RECOVERY: could not prove breathing air after aquatic hunt")
             return False
     else:
-        from .navigation import goto
+        from .navigation import recovery_goto
 
-        goto(
+        recovery_goto(
             client,
             int(target_pos[0]),
             int(target_pos[1]),

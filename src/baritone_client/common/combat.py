@@ -35,8 +35,10 @@ from ..core.exceptions import TransportError
 
 from .defense import (
     AttackStyle,
+    DefenseDecision,
     DefenseMode,
     DefenseRuntime,
+    ThreatAssessment,
     assess_threats,
     choose_defense_action,
 )
@@ -48,7 +50,7 @@ from .inventory import (
     select_item,
 )
 from .tasks import PlayerDeathDetected, TaskResult
-from .navigation import goto, goto_xz
+from .navigation import allow_recovery_navigation, goto, goto_xz
 
 logger = logging.getLogger(__name__)
 
@@ -521,6 +523,7 @@ def heal_if_needed(client, threshold: float = 10.0) -> bool:
     return False
 
 
+@allow_recovery_navigation
 def acquire_emergency_food(
     client,
     minimum_health: float = 12.0,
@@ -669,7 +672,7 @@ def acquire_emergency_food(
             ):
                 time.sleep(2.0)
                 continue
-        from .navigation import goto as recovery_goto
+        from .navigation import recovery_goto
 
         if collect_edible_drop(
             client,
@@ -1270,7 +1273,31 @@ def _fight_defensive_target(client, target: Dict, **kwargs) -> bool:
     )
 
 
-def defend_or_flee(client) -> bool:
+def _handle_defense_recovery(
+    client,
+    decision: DefenseDecision,
+    assessments: List[ThreatAssessment],
+    *,
+    allow_safe_recovery_movement: bool,
+) -> bool:
+    """Pause to recover unless clear-area movement is the recovery action."""
+    if allow_safe_recovery_movement and not assessments:
+        client._last_defense_intervention = "recovery_movement"
+        return False
+    print(f"DEFENSE: Recovery mode ({decision.reason})")
+    _stop_for_defense(client)
+    # Wait for the bite; restarting asynchronous use each tick prevents
+    # hunger recovery and therefore natural regeneration.
+    if not eat_until_hunger(client, minimum_food=18):
+        heal_if_needed(client, threshold=12.0)
+    return True
+
+
+def defend_or_flee(
+    client,
+    *,
+    allow_safe_recovery_movement: bool = False,
+) -> bool:
     """Advance the canonical defensive state machine by one supervised tick."""
     client._last_defense_intervention = None
     snapshot = _get_combat_snapshot(client)
@@ -1341,13 +1368,12 @@ def defend_or_flee(client) -> bool:
     if decision.mode == DefenseMode.ALERT:
         return False
     if decision.mode == DefenseMode.RECOVER:
-        print(f"DEFENSE: Recovery mode ({decision.reason})")
-        _stop_for_defense(client)
-        # Wait for the bite; restarting asynchronous use each tick prevents
-        # hunger recovery and therefore natural regeneration.
-        if not eat_until_hunger(client, minimum_food=18):
-            heal_if_needed(client, threshold=12.0)
-        return True
+        return _handle_defense_recovery(
+            client,
+            decision,
+            assessments,
+            allow_safe_recovery_movement=allow_safe_recovery_movement,
+        )
     if decision.primary is None:
         return False
 
