@@ -403,6 +403,37 @@ def _remember_death(
     persist_pending_recovery(context.state, expected_critical)
 
 
+def _overworld_recovery_portals(context: ActionContext) -> list:
+    """Return nearby then durable Overworld portal candidates."""
+    candidates = []
+    nearby = find_nearest_portal(context.client, "overworld")
+    if nearby is not None:
+        candidates.append(tuple(nearby))
+    try:
+        stored = context.state.get_locations("nether_portal").get(
+            "nether_portal", []
+        )
+    except (AttributeError, TypeError):
+        stored = []
+    active_first = sorted(
+        stored,
+        key=lambda item: 0
+        if {str(tag).lower() for tag in item.get("tags", [])}
+        & {"active", "active_entry", "verified"}
+        else 1,
+    )
+    for location in active_first:
+        if "overworld" not in str(location.get("dimension", "")).lower():
+            continue
+        try:
+            portal = tuple(int(location[key]) for key in ("x", "y", "z"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if portal not in candidates:
+            candidates.append(portal)
+    return candidates
+
+
 def _recover_nether_death(
     context: ActionContext,
     death_coords: Tuple[int, int, int],
@@ -414,25 +445,27 @@ def _recover_nether_death(
     live_state = client.transport.dispatch("get_state", {})
     live_dimension = str(live_state.get("dimension") or "").lower()
     if "nether" not in live_dimension:
-        portal = find_nearest_portal(client, "overworld")
-        if portal is None:
+        portals = _overworld_recovery_portals(context)
+        if not portals:
             return ActionResult.fail(
                 "Could not find an Overworld portal for Nether grave recovery"
             )
-        print(f"Entering Nether at {portal} before grave recovery...")
-        if not enter_nether_portal(
-            client,
-            timeout=90,
-            target_dimension="minecraft:the_nether",
-            portal=portal,
-        ):
+        entered = False
+        for portal in portals:
+            print(f"Entering Nether at {portal} before grave recovery...")
+            if enter_nether_portal(
+                client,
+                timeout=90,
+                target_dimension="minecraft:the_nether",
+                portal=portal,
+            ):
+                verified = client.transport.dispatch("get_state", {})
+                if "nether" in str(verified.get("dimension") or "").lower():
+                    entered = True
+                    break
+        if not entered:
             return ActionResult.fail(
                 "Failed to enter Nether before approaching the grave"
-            )
-        verified = client.transport.dispatch("get_state", {})
-        if "nether" not in str(verified.get("dimension") or "").lower():
-            return ActionResult.fail(
-                "Portal traversal did not verify the Nether dimension"
             )
 
     if current_phase in (Phase.NETHER_AND_BLAZE, Phase.WORLD_UNLOCK):

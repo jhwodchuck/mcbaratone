@@ -233,6 +233,62 @@ def test_nether_grave_recovery_enters_dimension_before_goto(monkeypatch):
     assert order == ["enter", "goto"]
 
 
+def test_nether_grave_recovery_uses_persisted_overworld_portal(monkeypatch):
+    context = _context({})
+    context.client.transport.dead = False
+    context.state.phase = Phase.NETHER_AND_BLAZE
+    context.state.custom_data["locations"] = {
+        "nether_portal": [
+            {
+                "x": -19,
+                "y": 85,
+                "z": -35,
+                "dimension": "minecraft:overworld",
+                "tags": ["active_entry"],
+            }
+        ]
+    }
+    context.state.get_locations = lambda category: {
+        category: context.state.custom_data["locations"].get(category, [])
+    }
+    current_dimension = {"value": "minecraft:overworld"}
+
+    def dispatch(route, _payload):
+        if route == "get_state":
+            return {
+                "is_dead": False,
+                "health": 20,
+                "dimension": current_dimension["value"],
+                "block_position": {"x": 0, "y": 70, "z": 4},
+            }
+        return {}
+
+    context.client.transport.dispatch = dispatch
+    monkeypatch.setattr(
+        death_recovery_action, "find_nearest_portal", lambda *_args: None
+    )
+    entered = []
+
+    def enter(*_args, **kwargs):
+        entered.append(kwargs["portal"])
+        current_dimension["value"] = "minecraft:the_nether"
+        return True
+
+    monkeypatch.setattr(death_recovery_action, "enter_nether_portal", enter)
+    monkeypatch.setattr(death_recovery_action, "goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        death_recovery_action, "_sweep_death_drops", lambda *_args: True
+    )
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _seconds: None)
+
+    result = death_recovery_action._recover_nether_death(
+        context, (-286, 76, 77), Phase.NETHER_AND_BLAZE, {}
+    )
+
+    assert result.success
+    assert entered == [(-19, 85, -35)]
+
+
 def test_death_recovery_falls_back_to_pre_respawn_position(monkeypatch):
     context = _context({"has_death_location": False})
     destinations = []
