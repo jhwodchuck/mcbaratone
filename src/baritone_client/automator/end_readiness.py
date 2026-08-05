@@ -100,7 +100,7 @@ def role_focused_candidates(
     objectives: Iterable[Any],
     completed: Iterable[Phase],
     role: FleetRole,
-) -> tuple[list[Any], str]:
+) -> tuple[list[Any], str, bool]:
     """Keep a post-iron bot on its assigned objective until it is verified.
 
     Returning an empty list is deliberate when the focused objective is
@@ -110,17 +110,20 @@ def role_focused_candidates(
     completed_set = set(completed)
     available = list(candidates)
     if Phase.FOOD_AND_IRON not in completed_set or role is FleetRole.BALANCED:
-        return available, ""
+        return available, "", False
 
     by_phase = {objective.phase: objective for objective in objectives}
-    for phase in _ROLE_FOCUS.get(role, ()):
+    focus = _ROLE_FOCUS.get(role, ())
+    for phase in focus:
         if phase in completed_set:
             continue
         if phase not in by_phase:
             continue
         focused = [candidate for candidate in available if candidate.phase is phase]
-        return focused, f"fleet role {role.value} is locked to {phase.name}"
-    return available, ""
+        return focused, f"fleet role {role.value} is locked to {phase.name}", False
+    if focus:
+        return [], f"fleet role {role.value} has completed its assignment", True
+    return available, "", False
 
 
 def allows_local_work(role: FleetRole) -> bool:

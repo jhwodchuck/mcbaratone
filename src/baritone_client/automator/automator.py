@@ -385,11 +385,8 @@ class EndGameAutomator:
                 if self._handle_death_recovery():
                     continue
 
-                # A failed objective may leave the player alive but critically
-                # wounded or starving. The DAG is allowed to try another
-                # runnable objective after an ordinary failure, but no phase is
-                # safe at this margin. Recover first instead of converting a
-                # survival failure into unrelated progression work.
+                # Recover before an ordinary failure can turn into unsafe,
+                # unrelated objective work.
                 if not recover_survival_before_objective(self.client, self.state):
                     self._save_checkpoint()
                     wait_with_bridge_keepalive(self.client, duration=5.0)
@@ -406,6 +403,10 @@ class EndGameAutomator:
 
                 obj = decision.objective
                 if obj is None:
+                    if decision.role_hold:
+                        print(decision.summary)
+                        wait_with_bridge_keepalive(self.client, duration=30.0)
+                        continue
                     self._maintain_stalled_objective_graph()
                     continue
 

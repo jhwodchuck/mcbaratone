@@ -39,7 +39,7 @@ def test_bot_number_shards_current_fleet_into_stable_roles(tmp_path):
 
 def test_end_runner_stays_on_nether_and_does_not_rotate_when_abandoned():
     planner = _post_food_planner()
-    candidates, reason = role_focused_candidates(
+    candidates, reason, complete = role_focused_candidates(
         planner.runnable(),
         planner.objectives,
         planner.completed_phases(),
@@ -47,22 +47,24 @@ def test_end_runner_stays_on_nether_and_does_not_rotate_when_abandoned():
     )
     assert [candidate.phase for candidate in candidates] == [Phase.NETHER_AND_BLAZE]
     assert "end_runner" in reason
+    assert complete is False
 
     planner._by_phase[Phase.NETHER_AND_BLAZE].status = ObjStatus.ABANDONED
-    candidates, _reason = role_focused_candidates(
+    candidates, _reason, complete = role_focused_candidates(
         planner.runnable(),
         planner.objectives,
         planner.completed_phases(),
         FleetRole.END_RUNNER,
     )
     assert candidates == []
+    assert complete is False
 
 
 def test_end_runner_advances_to_world_unlock_after_verified_nether():
     planner = _post_food_planner()
     planner._by_phase[Phase.NETHER_AND_BLAZE].status = ObjStatus.DONE
 
-    candidates, reason = role_focused_candidates(
+    candidates, reason, complete = role_focused_candidates(
         planner.runnable(),
         planner.objectives,
         planner.completed_phases(),
@@ -71,6 +73,23 @@ def test_end_runner_advances_to_world_unlock_after_verified_nether():
 
     assert [candidate.phase for candidate in candidates] == [Phase.WORLD_UNLOCK]
     assert "WORLD_UNLOCK" in reason
+    assert complete is False
+
+
+def test_completed_nether_supplier_holds_instead_of_taking_sibling_work():
+    planner = _post_food_planner()
+    planner._by_phase[Phase.NETHER_AND_BLAZE].status = ObjStatus.DONE
+
+    candidates, reason, complete = role_focused_candidates(
+        planner.runnable(),
+        planner.objectives,
+        planner.completed_phases(),
+        FleetRole.NETHER_SUPPLY,
+    )
+
+    assert candidates == []
+    assert "completed its assignment" in reason
+    assert complete is True
 
 
 def test_readiness_requires_eye_path_and_complete_launch_loadout():

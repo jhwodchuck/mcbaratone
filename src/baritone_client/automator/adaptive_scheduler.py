@@ -155,6 +155,7 @@ class SchedulingDecision:
     opportunity_result: Optional[OpportunityResult] = None
     score: float = 0.0
     reasons: Tuple[str, ...] = ()
+    role_hold: bool = False
 
     @property
     def local_work(self) -> bool:
@@ -473,7 +474,7 @@ class AdaptiveScheduler:
                 opportunity_result=self.run_local_opportunity(opportunity)
             )
 
-        candidates, focus_reason = role_focused_candidates(
+        candidates, focus_reason, role_complete = role_focused_candidates(
             planner.runnable(),
             planner.objectives,
             completed,
@@ -485,7 +486,7 @@ class AdaptiveScheduler:
         )
         if objective is None:
             reasons = (focus_reason,) if focus_reason else ()
-            return SchedulingDecision(reasons=reasons)
+            return SchedulingDecision(reasons=reasons, role_hold=role_complete)
         self.record_decision(objective, signals)
         contribution = score_phase(objective.phase, signals)
         reasons = contribution.reasons or ("stable graph fallback",)
