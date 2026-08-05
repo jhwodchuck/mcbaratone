@@ -1418,9 +1418,8 @@ def dump_to_chest(client, keep_items: List[str], state=None) -> int:
     )
 
 
-EARLY_GAME_EXCESS_ITEMS = {
+DISPOSABLE_CLUTTER_ITEMS = (
     "minecraft:acacia_sapling",
-    "minecraft:birch_door",
     "minecraft:birch_sapling",
     "minecraft:cherry_sapling",
     "minecraft:dark_oak_sapling",
@@ -1428,6 +1427,16 @@ EARLY_GAME_EXCESS_ITEMS = {
     "minecraft:oak_sapling",
     "minecraft:spruce_sapling",
     "minecraft:mangrove_propagule",
+    "minecraft:decorated_pot",
+    "minecraft:tuff_bricks",
+    "minecraft:waxed_copper_block",
+    "minecraft:waxed_exposed_copper_bulb",
+    "minecraft:waxed_oxidized_cut_copper_stairs",
+)
+
+EARLY_GAME_EXCESS_ITEMS = {
+    *DISPOSABLE_CLUTTER_ITEMS,
+    "minecraft:birch_door",
     "minecraft:bone",
     "minecraft:pumpkin_seeds",
     "minecraft:melon_seeds",
@@ -1457,11 +1466,6 @@ EARLY_GAME_EXCESS_ITEMS = {
     "minecraft:leaf_litter",
     "minecraft:name_tag",
     "minecraft:redstone",
-    "minecraft:decorated_pot",
-    "minecraft:tuff_bricks",
-    "minecraft:waxed_copper_block",
-    "minecraft:waxed_exposed_copper_bulb",
-    "minecraft:waxed_oxidized_cut_copper_stairs",
 }
 
 # Durable progression should leave the player's inventory after each risky

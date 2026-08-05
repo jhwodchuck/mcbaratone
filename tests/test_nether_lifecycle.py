@@ -219,6 +219,51 @@ def test_nether_handler_persists_portal_pair_and_fortress(monkeypatch, tmp_path)
     assert state.get_phase_payload(Phase.NETHER_AND_BLAZE)["blaze_rods"] == 6
 
 
+def test_nether_handler_records_existing_overworld_blaze_supply_without_rearming(
+    monkeypatch, tmp_path
+):
+    handler, client, state = _portal_reuse_handler(tmp_path)
+    monkeypatch.setattr(nether_prep, "count_item", lambda *_args: 11)
+    monkeypatch.setattr(
+        handler,
+        "_ensure_nether_readiness",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("completed blaze supply must not trigger another rearm")
+        ),
+    )
+    monkeypatch.setattr(
+        handler,
+        "_return_to_overworld",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("an Overworld bot must not enter or leave a portal")
+        ),
+    )
+
+    result = handler.execute(client, ResourceManager(client), state)
+
+    assert result.success
+    assert result.data["blaze_rods"] == 11
+    assert state.get_phase_payload(Phase.NETHER_AND_BLAZE)["blaze_rods"] == 11
+
+
+def test_nether_handler_returns_existing_blaze_supply_from_nether(monkeypatch, tmp_path):
+    handler, client, state = _portal_reuse_handler(tmp_path)
+    client.transport.dimension = "minecraft:the_nether"
+    returned = []
+    monkeypatch.setattr(nether_prep, "count_item", lambda *_args: 6)
+    monkeypatch.setattr(
+        handler,
+        "_return_to_overworld",
+        lambda *_args: returned.append(True) or True,
+    )
+
+    result = handler.execute(client, ResourceManager(client), state)
+
+    assert result.success
+    assert returned == [True]
+    assert state.get_phase_payload(Phase.NETHER_AND_BLAZE)["blaze_rods"] == 6
+
+
 def test_nether_readiness_blocks_a_naked_checkpoint_resume(monkeypatch, tmp_path):
     handler, client, state = _portal_reuse_handler(tmp_path)
     client.transport.dimension = "minecraft:the_nether"

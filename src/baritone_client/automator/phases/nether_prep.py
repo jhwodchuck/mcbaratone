@@ -41,6 +41,15 @@ class NetherAndBlazeHandler(PhaseHandler):
         return "Nether Phase (Hour 3-4)"
     
     def execute(self, client, resources: ResourceManager, state: StateManager) -> TaskResult:
+        rods = count_item(client, "minecraft:blaze_rod")
+        if rods >= 6:
+            if "nether" in self._current_dimension(client):
+                if not self._return_to_overworld(client, state):
+                    return TaskResult.fail(
+                        "Blaze supply is ready but the bot could not return safely"
+                    )
+            return self._record_blaze_supply(client, state)
+
         tasks = [
             ActionTask(
                 "Verify Nether expedition loadout",
@@ -69,6 +78,10 @@ class NetherAndBlazeHandler(PhaseHandler):
         result = executor.run(client)
         if not result.success:
             return result
+        return self._record_blaze_supply(client, state)
+
+    @staticmethod
+    def _record_blaze_supply(client, state: StateManager) -> TaskResult:
         rods = count_item(client, "minecraft:blaze_rod")
         payload = {
             "blaze_rods": rods,

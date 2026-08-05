@@ -1153,14 +1153,10 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
         current_total = count_item(client, drop_item)
         if current_total >= count:
             return True
-        # Preserve the normal route-debris buffer even for a one-item repair.
-        # The completion check below exits before another cleanup once the raw
-        # ore arrives, while three slots prevent incidental cave blocks from
-        # displacing that pickup first.
+        # Keep three slots so incidental cave blocks cannot displace the ore;
+        # the loop exits before another cleanup once the target arrives.
         required_slots = 3
-        if not _reserve_gathering_inventory(
-            client, minimum_free_slots=required_slots
-        ):
+        if not _reserve_gathering_inventory(client, required_slots):
             return False
 
         # Initial check for pickaxe - preventing infinite loops after tool wear.
@@ -1202,14 +1198,11 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
                     return False
                 continue
 
-            # Check the requested postcondition before reserving headroom.
-            # The mined drop may have consumed the final free slot, which is a
-            # success for a one-item shortfall rather than a cleanup failure.
+            # A target pickup is success even when it consumes the final slot.
             total = count_item(client, drop_item)
             if total >= count:
                 client.transport.dispatch("cancel", {})
                 return True
-            required_slots = 3
             if free_inventory_slots(client) < required_slots:
                 _serialized_dispatch(
                     client,
@@ -2420,24 +2413,6 @@ def manage_inventory(client, minimum_free_slots: int = 1) -> bool:
     if free_inventory_slots(client) >= required:
         return True
 
-    # These one-off loot blocks and renewable saplings have no progression
-    # consumer. They are also in EARLY_GAME_EXCESS_ITEMS so nearby storage can
-    # bank them before this bounded drop fallback is considered.
-    disposable_clutter = (
-        "minecraft:acacia_sapling",
-        "minecraft:birch_sapling",
-        "minecraft:cherry_sapling",
-        "minecraft:dark_oak_sapling",
-        "minecraft:jungle_sapling",
-        "minecraft:oak_sapling",
-        "minecraft:spruce_sapling",
-        "minecraft:mangrove_propagule",
-        "minecraft:decorated_pot",
-        "minecraft:waxed_copper_block",
-        "minecraft:waxed_exposed_copper_bulb",
-        "minecraft:waxed_oxidized_cut_copper_stairs",
-        "minecraft:tuff_bricks",
-    )
     # Prefer banking the surplus over destroying it. Suite 1100 has grown
     # storage this way for 100+ live runs: use a chest that still has room,
     # and when they are all full build another double chest rather than
@@ -2462,7 +2437,7 @@ def manage_inventory(client, minimum_free_slots: int = 1) -> bool:
             "minecraft:beetroot_seeds",
             "minecraft:melon_seeds",
             "minecraft:pumpkin_seeds",
-            *disposable_clutter,
+            *inventory.DISPOSABLE_CLUTTER_ITEMS,
             "minecraft:oak_leaves",
             "minecraft:birch_leaves",
             "minecraft:spruce_leaves",
