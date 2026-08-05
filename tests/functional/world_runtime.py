@@ -39,15 +39,23 @@ def verify_bridge(port: int, expected_server: str, require_admin: bool) -> dict:
             raise RuntimeError("bridge is listening but the player is not ready")
 
         if require_admin:
+            marker = {
+                "x": int(position["x"]),
+                "y": int(position["y"]) - 1,
+                "z": int(position["z"]),
+            }
             transport.dispatch(
                 "chat",
-                {"message": "/setblock 0 99 0 minecraft:bedrock"},
+                {
+                    "message": (
+                        f"/setblock {marker['x']} {marker['y']} {marker['z']} "
+                        "minecraft:bedrock"
+                    )
+                },
             )
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
-                block = transport.dispatch(
-                    "get_block", {"x": 0, "y": 99, "z": 0}
-                )
+                block = transport.dispatch("get_block", marker)
                 if _block_id(block) == "minecraft:bedrock":
                     break
                 time.sleep(0.25)
