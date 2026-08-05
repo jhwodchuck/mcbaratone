@@ -338,7 +338,7 @@ def choose_defense_action(
         return DefenseDecision(
             DefenseMode.EVADE,
             "multiple threats inside defense radius",
-            threats[0],
+            urgent[0],
         )
     primary = urgent[0] if urgent else threats[0]
     if not urgent and primary.closing_speed <= 0.15:

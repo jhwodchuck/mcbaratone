@@ -153,6 +153,8 @@ def test_distant_high_severity_threat_with_urgent_melee_forces_evasion():
 
     assert decision.mode == DefenseMode.EVADE
     assert "multiple" in decision.reason
+    assert decision.primary.entity["id"] == 2
+    assert decision.primary.distance == 4
 
 
 def test_recovery_hysteresis_prevents_immediate_clear():
