@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from baritone_client.automator.phases import end_game
 from baritone_client.automator.state_manager import Phase, StateManager
-from baritone_client.common import end
+from baritone_client.common import end, nether
 
 
 def _frames():
@@ -128,6 +128,98 @@ def test_world_unlock_persists_real_milestones(monkeypatch, tmp_path):
     payload = state.get_phase_payload(Phase.WORLD_UNLOCK)
     assert payload["stronghold_coords"] == [100, 200]
     assert payload["dragon_defeated"] is True
+
+
+def test_world_unlock_acquires_missing_pearls_before_crafting_eyes(monkeypatch, tmp_path):
+    inventory = {
+        "minecraft:ender_eye": 0,
+        "minecraft:ender_pearl": 0,
+        "minecraft:blaze_rod": 6,
+        "minecraft:blaze_powder": 0,
+    }
+    state = StateManager(tmp_path)
+    resources = SimpleNamespace(
+        refresh_inventory=lambda: None,
+        get_summary=lambda: {"inventory": dict(inventory)},
+    )
+    calls = []
+    monkeypatch.setattr(
+        end_game,
+        "count_item",
+        lambda _client, item: inventory.get(item, 0),
+    )
+    monkeypatch.setattr(
+        end_game,
+        "withdraw_required_from_catalog",
+        lambda *_args, **_kwargs: 0,
+    )
+
+    def hunt(_client, target_count, timeout):
+        calls.append(("hunt", target_count, timeout))
+        inventory["minecraft:ender_pearl"] = target_count
+        return target_count
+
+    def ensure(_client, requirements, timeout):
+        calls.append(("ensure", requirements, timeout))
+        inventory["minecraft:ender_eye"] = 12
+        return SimpleNamespace(success=True)
+
+    monkeypatch.setattr(end_game, "hunt_endermen", hunt)
+    monkeypatch.setattr(end_game, "ensure_supplies", ensure)
+
+    assert end_game.WorldUnlockHandler()._craft_eyes(
+        SimpleNamespace(), state, resources
+    )
+    assert calls == [
+        ("hunt", 12, 1200),
+        ("ensure", {"minecraft:blaze_powder": 12}, 120),
+        ("ensure", {"minecraft:ender_eye": 12}, 120),
+    ]
+    assert state.get_phase_payload(Phase.WORLD_UNLOCK)["eyes_ready"] == 12
+
+
+def test_world_unlock_fails_fast_when_blaze_supply_was_lost(monkeypatch, tmp_path):
+    inventory = {
+        "minecraft:ender_eye": 0,
+        "minecraft:ender_pearl": 12,
+        "minecraft:blaze_rod": 0,
+        "minecraft:blaze_powder": 0,
+    }
+    monkeypatch.setattr(
+        end_game,
+        "count_item",
+        lambda _client, item: inventory.get(item, 0),
+    )
+    monkeypatch.setattr(
+        end_game,
+        "withdraw_required_from_catalog",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        end_game,
+        "ensure_supplies",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("missing blaze supply must not enter recipe retries")
+        ),
+    )
+    state = StateManager(tmp_path)
+
+    assert not end_game.WorldUnlockHandler()._craft_eyes(
+        SimpleNamespace(), state, SimpleNamespace()
+    )
+
+
+def test_enderman_hunt_target_is_total_inventory_not_additional(monkeypatch):
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("an already satisfied target must not start a hunt")
+            )
+        )
+    )
+    monkeypatch.setattr(nether, "count_item", lambda *_args: 12)
+
+    assert nether.hunt_endermen(client, target_count=12, timeout=1) == 12
 
 
 def test_gateway_traversal_requires_verified_displacement(monkeypatch):

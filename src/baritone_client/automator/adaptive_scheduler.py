@@ -19,6 +19,12 @@ from ..common.defense import assess_threats
 from ..common.husbandry import BREEDING_FOOD, breed_pair
 from ..common.inventory import get_inventory
 from ..common.navigation import find_nearby_block, goto
+from .end_readiness import (
+    allows_local_work,
+    fleet_role,
+    record_readiness,
+    role_focused_candidates,
+)
 from .objective import Objective
 from .state_manager import Phase
 
@@ -164,6 +170,8 @@ class SchedulingDecision:
                 f"{result.opportunity.reason} ({result.detail})"
             )
         if self.objective is None:
+            if self.reasons:
+                return f"END READINESS HOLD: {'; '.join(self.reasons)}"
             return "ADAPTIVE PHASE: no runnable objective"
         explanation = "; ".join(self.reasons) or "stable graph fallback"
         return (
@@ -448,27 +456,45 @@ class AdaptiveScheduler:
     def next_step(self, planner: Any) -> SchedulingDecision:
         """Observe once, run useful local work, or choose a runnable objective."""
         signals = self.observe()
-        opportunity = self.select_local_opportunity(
-            signals,
-            tuple(planner.completed_phases()),
-        )
+        completed = tuple(planner.completed_phases())
+        role = fleet_role(self.state)
+        if signals.observed:
+            record_readiness(
+                self.state,
+                signals.inventory,
+                completed=completed,
+                known_portal=signals.known_portal,
+            )
+        opportunity = None
+        if allows_local_work(role):
+            opportunity = self.select_local_opportunity(signals, completed)
         if opportunity is not None:
             return SchedulingDecision(
                 opportunity_result=self.run_local_opportunity(opportunity)
             )
 
-        objective = planner.select(
+        candidates, focus_reason = role_focused_candidates(
             planner.runnable(),
+            planner.objectives,
+            completed,
+            role,
+        )
+        objective = planner.select(
+            candidates,
             utility=lambda candidate: self.objective_score(candidate, signals),
         )
         if objective is None:
-            return SchedulingDecision()
+            reasons = (focus_reason,) if focus_reason else ()
+            return SchedulingDecision(reasons=reasons)
         self.record_decision(objective, signals)
         contribution = score_phase(objective.phase, signals)
+        reasons = contribution.reasons or ("stable graph fallback",)
+        if focus_reason:
+            reasons = (focus_reason, *reasons)
         return SchedulingDecision(
             objective=objective,
             score=self.objective_score(objective, signals),
-            reasons=contribution.reasons or ("stable graph fallback",),
+            reasons=reasons,
         )
 
     @staticmethod
@@ -481,6 +507,7 @@ class AdaptiveScheduler:
         runtime = self._runtime()
         runtime["last_decision"] = {
             "phase": objective.phase.name,
+            "fleet_role": fleet_role(self.state).value,
             "score": self.objective_score(objective, signals),
             "signals": list(contribution.reasons) or ["stable graph fallback"],
             "timestamp": time.time(),

@@ -13,6 +13,7 @@ _CUSTOM_PROGRESS_KEYS = {
     "bootstrap_base_location",
     "completed_objectives",
     "end_city",
+    "end_readiness",
     "end_portal",
     "farm_location",
     "locations",

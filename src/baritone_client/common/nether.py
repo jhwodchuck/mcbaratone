@@ -1055,8 +1055,8 @@ def hunt_endermen(client, target_count: int = 12, timeout: int = 900) -> int:
             # Check if we have enough pearls
             current_pearls = count_item(client, "minecraft:ender_pearl")
             collected = current_pearls - pearls_start
-            if collected >= target_count:
-                logger.info("Collected %d pearls, target reached", collected)
+            if current_pearls >= target_count:
+                logger.info("Pearl inventory target reached: %d/%d", current_pearls, target_count)
                 break
 
             # Get current position

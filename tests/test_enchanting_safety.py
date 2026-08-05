@@ -162,6 +162,44 @@ def test_base_restore_fails_before_workstations_when_shell_repair_fails(monkeypa
     assert not handler._ensure_starter_base(client, state)
 
 
+def test_owned_workstation_clears_exact_wrong_target_before_placement(monkeypatch):
+    calls = []
+
+    class Transport:
+        def dispatch(self, route, payload):
+            calls.append((route, payload))
+            if route == "get_block":
+                return {"id": "minecraft:pointed_dripstone"}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    handler = enchanting.EnchantingPipelineHandler()
+    monkeypatch.setattr(
+        enchanting,
+        "_clear_wrong_house_target",
+        lambda _client, x, y, z, requested: calls.append(
+            ("clear", (x, y, z), requested)
+        )
+        or True,
+    )
+    monkeypatch.setattr(
+        enchanting.harness_ops,
+        "place_block_exact",
+        lambda *_args, **_kwargs: True,
+    )
+
+    assert handler._place_owned_base_block(
+        client,
+        (-162, 104, -384),
+        "minecraft:chest",
+    )
+    assert (
+        "clear",
+        (-162, 104, -384),
+        "minecraft:chest",
+    ) in calls
+
+
 def test_base_restore_defers_when_far_from_starter_house(monkeypatch):
     """This is the first task in ENCHANTING_PIPELINE's sequence, so it
     reruns on every phase-level retry -- including mid-expedition, hundreds

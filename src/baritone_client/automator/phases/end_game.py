@@ -7,7 +7,12 @@ from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
 from ...common import TaskResult, SequentialTask, ActionTask
 from ...common.resources import ensure_supplies
+from ...common.inventory import (
+    count_item,
+    withdraw_required_from_catalog,
+)
 from ...common.navigation import goto
+from ...common.nether import hunt_endermen
 from ...common.end import (
     acquire_elytra,
     acquire_shulker_boxes,
@@ -51,11 +56,69 @@ class WorldUnlockHandler(PhaseHandler):
     def _craft_eyes(
         self, client, state: StateManager, resources: ResourceManager
     ) -> bool:
-        """Craft 12 Eyes of Ender."""
-        if not ensure_supplies(client, {"minecraft:ender_eye": 12}).success:
+        """Acquire missing pearls, then craft 12 Eyes of Ender.
+
+        The old phase asked the generic recipe loop to craft Eyes for ten
+        minutes even when no pearls existed.  Pearl acquisition was stranded
+        in an unregistered legacy handler, so the production objective graph
+        had no executable path from blaze rods to the End.
+        """
+        eyes = count_item(client, "minecraft:ender_eye")
+        if eyes >= 12:
+            return self._record_eyes_ready(state, resources, 12)
+
+        needed = 12 - eyes
+        bank_requirements = {"minecraft:ender_pearl": needed}
+        carried_powder = count_item(client, "minecraft:blaze_powder")
+        rods_needed = max(0, (needed - carried_powder + 1) // 2)
+        if rods_needed:
+            bank_requirements["minecraft:blaze_rod"] = rods_needed
+        withdraw_required_from_catalog(
+            client,
+            bank_requirements,
+            state=state,
+            max_containers=3,
+            max_travel_distance=96.0,
+            max_vertical_distance=32.0,
+        )
+        pearls = count_item(client, "minecraft:ender_pearl")
+        if pearls < needed:
+            print(f"  Acquiring Ender pearls for Eyes ({pearls}/{needed}).")
+            pearls = hunt_endermen(client, target_count=needed, timeout=1200)
+        if pearls < needed:
+            print(f"  Eye crafting blocked: Ender pearls remain {pearls}/{needed}.")
             return False
+
+        powder = count_item(client, "minecraft:blaze_powder")
+        rods = count_item(client, "minecraft:blaze_rod")
+        if powder + rods * 2 < needed:
+            print(
+                "  Eye crafting blocked: blaze supply cannot produce "
+                f"{needed} powder ({powder} powder, {rods} rods)."
+            )
+            return False
+        if not ensure_supplies(
+            client,
+            {"minecraft:blaze_powder": needed},
+            timeout=120,
+        ).success:
+            return False
+        if not ensure_supplies(
+            client,
+            {"minecraft:ender_eye": 12},
+            timeout=120,
+        ).success:
+            return False
+        return self._record_eyes_ready(state, resources, 12)
+
+    def _record_eyes_ready(
+        self,
+        state: StateManager,
+        resources: ResourceManager,
+        count: int,
+    ) -> bool:
         payload = state.get_phase_payload(Phase.WORLD_UNLOCK)
-        payload["eyes_ready"] = 12
+        payload["eyes_ready"] = int(count)
         state.record_phase_payload(Phase.WORLD_UNLOCK, payload)
         self._checkpoint(state, resources)
         return True

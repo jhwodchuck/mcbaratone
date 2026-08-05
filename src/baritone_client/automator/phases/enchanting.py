@@ -22,6 +22,7 @@ from . import leather_supply
 from ...common.navigation import find_nearby_block, goto
 from ...common.nether import enter_portal, find_nearest_portal
 from ...common.base import (
+    _clear_wrong_house_target,
     _good_house_plan,
     _house_door_aligned,
     _matches_house_role,
@@ -312,6 +313,20 @@ class EnchantingPipelineHandler(PhaseHandler):
 
     def _place_owned_base_block(self, client, target, item_id: str) -> bool:
         """Place a workstation without allowing its approach to mine the house."""
+        current = client.transport.dispatch(
+            "get_block",
+            {"x": target[0], "y": target[1], "z": target[2]},
+        ).get("id", "")
+        if current == item_id:
+            return True
+        if not _clear_wrong_house_target(
+            client,
+            target[0],
+            target[1],
+            target[2],
+            item_id,
+        ):
+            return False
         client.transport.dispatch("chat", {"message": "#set allowBreak false"})
         try:
             return harness_ops.place_block_exact(
