@@ -2039,7 +2039,10 @@ def test_repeated_evasion_still_fights_back_against_a_zombie(monkeypatch):
     assert not relocated
 
 
-def test_full_armor_and_shield_engages_one_close_blaze(monkeypatch):
+@pytest.mark.parametrize("blaze_count", [1, 2])
+def test_full_armor_and_shield_engages_small_close_blaze_pack(
+    monkeypatch, blaze_count
+):
     transport = CombatTransport(health=20.0)
     client = SimpleNamespace(transport=transport)
     blaze = {
@@ -2048,7 +2051,11 @@ def test_full_armor_and_shield_engages_one_close_blaze(monkeypatch):
         "distance": 1.3,
         "position": {"x": 1, "y": 64, "z": 0},
     }
-    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [blaze])
+    threats = [
+        {**blaze, "id": blaze["id"] + index, "distance": 1.3 + index * 3}
+        for index in range(blaze_count)
+    ]
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: threats)
     monkeypatch.setattr(
         combat,
         "get_equipped_armor",
@@ -2081,11 +2088,39 @@ def test_full_armor_and_shield_engages_one_close_blaze(monkeypatch):
                 "purpose": "hostile_defense",
                 "source": "defend_or_flee",
                 "target_metadata": blaze,
-                "retreat_health": 12.0,
-                "abort_on_other_hostiles": True,
+                "no_retreat": True,
+                "abort_on_other_hostiles": False,
             },
         )
     ]
+
+
+def test_shielded_blaze_exception_rejects_three_urgent_threats(monkeypatch):
+    client, _transport = _evade_client(monkeypatch, "blaze", escaped=True)
+    threats = [
+        {
+            "id": 80 + index,
+            "type": "minecraft:blaze",
+            "distance": 1.0 + index,
+            "position": {"x": index + 1, "y": 64, "z": 0},
+        }
+        for index in range(3)
+    ]
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: threats)
+    monkeypatch.setattr(
+        combat,
+        "get_equipped_armor",
+        lambda _client: {slot: {} for slot in ("head", "chest", "legs", "feet")},
+    )
+    monkeypatch.setattr(combat, "count_item", lambda *_a: 1)
+    fought = []
+    monkeypatch.setattr(
+        combat, "safe_combat", lambda *_a, **_k: fought.append(True) or True
+    )
+
+    assert combat.defend_or_flee(client)
+
+    assert not fought
 
 
 def test_switching_attackers_does_not_reset_failed_escape_escalation(monkeypatch):

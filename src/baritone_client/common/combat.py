@@ -1349,19 +1349,19 @@ def defend_or_flee(
     if assessments:
         primary = assessments[0]
         urgent_count = sum(item.distance <= 10.0 for item in assessments)
+        urgent = [item for item in assessments if item.distance <= 10.0]
         shielded_blaze = (
-            primary.entity_type == "blaze"
-            and health >= 16.0
+            1 <= len(urgent) <= 2
+            and all(item.entity_type == "blaze" for item in urgent)
+            and health >= 12.0
             and armor_count >= 4
-            and primary.distance <= 10.0
-            and len(assessments) == 1
             and count_item(client, "minecraft:shield") > 0
         )
         if (
-            health >= 16.0
+            (health >= 16.0 or shielded_blaze)
             and armor_count >= 3
             and primary.distance <= 10.0
-            and urgent_count <= 1
+            and (urgent_count <= 1 or shielded_blaze)
             and (not primary.always_evade or shielded_blaze)
         ):
             has_weapon = equip_best_weapon(client)
@@ -1497,8 +1497,11 @@ def defend_or_flee(
     defeated = _fight_defensive_target(
         client,
         primary.entity,
-        retreat_health=12.0,
-        abort_on_other_hostiles=True,
+        **(
+            {"no_retreat": True, "abort_on_other_hostiles": False}
+            if shielded_blaze
+            else {"retreat_health": 12.0, "abort_on_other_hostiles": True}
+        ),
     )
     if not defeated:
         escape_target = primary.entity
