@@ -351,6 +351,7 @@ class NetherAndBlazeHandler(PhaseHandler):
                 client,
                 minimum_health=18.0,
                 minimum_food=18,
+                minimum_reserve=6,
                 timeout=180.0,
                 max_exploration_distance=64.0,
             )

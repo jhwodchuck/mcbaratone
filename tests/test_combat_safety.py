@@ -303,6 +303,35 @@ def test_acquire_emergency_food_uses_carried_wheat_recovery(monkeypatch):
     assert crafted == [True]
 
 
+def test_full_hunger_still_acquires_requested_expedition_reserve(monkeypatch):
+    state = {"health": 20.0, "food_level": 20, "world_time": 1000}
+    reserve = {"count": 0}
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda route, _payload: dict(state))
+    )
+    prepared = []
+    monkeypatch.setattr(combat, "recover_health", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        combat,
+        "_emergency_food_count",
+        lambda _client: reserve["count"],
+    )
+
+    def prepare(_client, _state, _minimum_food, *_args):
+        prepared.append(True)
+        reserve["count"] = 6
+        return True
+
+    monkeypatch.setattr(combat, "prepare_carried_wheat_recovery", prepare)
+
+    assert combat.acquire_emergency_food(
+        client,
+        minimum_food=18,
+        minimum_reserve=6,
+    )
+    assert prepared == [True]
+
+
 def test_emergency_recovery_ignores_hostile_sealed_far_below_player():
     state = {"block_position": {"x": -7, "y": 72, "z": 33}}
     cave_creeper = {

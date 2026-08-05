@@ -527,6 +527,7 @@ def acquire_emergency_food(
     client,
     minimum_health: float = 12.0,
     minimum_food: int = 14,
+    minimum_reserve: int = 0,
     timeout: float = 240.0,
     max_exploration_distance: float = 96.0,
     exploration_center: Optional[tuple[float, ...]] = None,
@@ -541,12 +542,17 @@ def acquire_emergency_food(
     blind while critically wounded, and aborts when a hostile approaches.
     """
     minimum_food = max(1, min(int(minimum_food), 20))
+    minimum_reserve = max(0, int(minimum_reserve))
 
     def recovery_complete(state: Optional[Dict] = None) -> bool:
         state = state or client.transport.dispatch("get_state", {})
         health = float(state.get("health", 20) or 0)
         food = int(state.get("food_level", state.get("food", 20)))
-        return health >= minimum_health and food >= minimum_food
+        return (
+            health >= minimum_health
+            and food >= minimum_food
+            and _emergency_food_count(client) >= minimum_reserve
+        )
 
     recover_health(client, minimum_health=minimum_health, timeout=10.0)
     if recovery_complete():

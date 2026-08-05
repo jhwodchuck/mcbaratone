@@ -313,6 +313,27 @@ def test_nether_rearm_provisions_and_equips_armor_incrementally(monkeypatch, tmp
     ]
 
 
+def test_nether_rearm_requests_a_six_item_food_reserve(monkeypatch, tmp_path):
+    handler, client, state = _portal_reuse_handler(tmp_path)
+    readiness = iter((False, True))
+    requested = []
+    monkeypatch.setattr(handler, "_nether_loadout_ready", lambda *_a: next(readiness))
+    monkeypatch.setattr(handler, "_provision_iron_gear", lambda *_a: True)
+    monkeypatch.setattr(nether_prep, "equip_best_armor", lambda *_a: 4)
+    monkeypatch.setattr(nether_prep, "equip_best_weapon", lambda *_a: True)
+    monkeypatch.setattr(nether_prep, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(nether_prep, "recover_health", lambda *_a, **_k: True)
+    monkeypatch.setattr(nether_prep, "_emergency_food_count", lambda *_a: 0)
+    monkeypatch.setattr(
+        nether_prep,
+        "acquire_emergency_food",
+        lambda *_a, **kwargs: requested.append(kwargs) or True,
+    )
+
+    assert handler._ensure_nether_readiness(client, state)
+    assert requested[0]["minimum_reserve"] == 6
+
+
 def test_nether_rearm_equips_recovered_armor_before_any_mining(monkeypatch, tmp_path):
     handler, client, state = _portal_reuse_handler(tmp_path)
     events = []
