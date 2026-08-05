@@ -6,6 +6,8 @@ from typing import Dict, Optional, List, Tuple
 import logging
 import time
 
+from .storage_safety import remember_unreachable_storage, storage_retry_ready
+
 logger = logging.getLogger(__name__)
 
 _last_inventory: Dict[str, int] = {}
@@ -1745,6 +1747,10 @@ def withdraw_required_from_chest(
         return 0
 
     cx, cy, cz = (int(value) for value in chest_pos)
+    position = (cx, cy, cz)
+    if not storage_retry_ready(client, position):
+        print(f"STORAGE: skipping recently failed supply container at {position}")
+        return -1
     block = client.transport.dispatch(
         "get_block", {"x": cx, "y": cy, "z": cz}
     ).get("id", "")
@@ -1758,9 +1764,11 @@ def withdraw_required_from_chest(
         opened = harness_ops.open_container(client, (cx, cy, cz), timeout=4.0)
     except Exception as exc:
         print(f"STORAGE: could not open supply chest ({exc})")
+        remember_unreachable_storage(client, position)
         return -1
     if not opened:
         print("STORAGE: supply chest screen did not open")
+        remember_unreachable_storage(client, position)
         return -1
 
     try:
@@ -1771,6 +1779,7 @@ def withdraw_required_from_chest(
         container_slots = total_slots - 36
         if container_slots not in (27, 54):
             print(f"STORAGE: unexpected container layout ({total_slots} slots)")
+            remember_unreachable_storage(client, position)
             return -1
 
         sync_id = data.get("sync_id", screen.get("sync_id"))
@@ -1872,6 +1881,8 @@ def withdraw_required_from_catalog(
             )
         except (KeyError, TypeError, ValueError):
             return
+        if not storage_retry_ready(client, position):
+            return
         if position not in seen:
             seen.add(position)
             candidates.append(position)
@@ -1936,6 +1947,7 @@ def withdraw_required_from_catalog(
                 tolerance=3.0,
             ):
                 print(f"STORAGE: could not load cataloged container at {position}")
+                remember_unreachable_storage(client, position)
                 continue
         try:
             state_resp = client.transport.dispatch("get_state", {})
@@ -1959,6 +1971,7 @@ def withdraw_required_from_catalog(
             client, *position, timeout=90.0
         ):
             print(f"STORAGE: could not reach cataloged container at {position}")
+            remember_unreachable_storage(client, position)
             continue
         moved = withdraw_required_from_chest(
             client,

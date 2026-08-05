@@ -96,6 +96,12 @@ def remember_unreachable_storage(client, position: Tuple[int, int, int]) -> None
     client._unreachable_storage_until = cooldowns
 
 
+def storage_retry_ready(client, position: Tuple[int, int, int]) -> bool:
+    """Return whether a failed storage destination may be attempted again."""
+    cooldowns = getattr(client, "_unreachable_storage_until", {})
+    return float(cooldowns.get(tuple(position), 0)) <= time.monotonic()
+
+
 def nearby_storage_positions(
     client,
     snapshot: Dict[str, Any],

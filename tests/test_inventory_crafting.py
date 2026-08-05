@@ -1,5 +1,6 @@
 from baritone_client.common import inventory
 from baritone_client.common import harness_ops
+from baritone_client.common import storage_safety
 from baritone_client.common.state import WorldState
 from baritone_client.actions.crafting import CraftingAction
 from types import SimpleNamespace
@@ -552,6 +553,34 @@ def test_withdraw_required_uses_chest_slots_and_leaves_other_storage(monkeypatch
     ]
 
 
+def test_withdraw_cools_down_supply_chest_when_ui_does_not_open(monkeypatch):
+    client = DummyClient(
+        DummyTransport(
+            {
+                "get_inventory": {"inventory": [], "armor": [], "offhand": []},
+                "get_block": {"id": "minecraft:chest"},
+            }
+        )
+    )
+    opens = []
+    monkeypatch.setattr(
+        "baritone_client.common.harness_ops.open_container",
+        lambda *_args, **_kwargs: opens.append(True) or False,
+    )
+
+    assert inventory.withdraw_required_from_chest(
+        client,
+        (1, 65, 1),
+        {"minecraft:bread": 6},
+    ) == -1
+    assert inventory.withdraw_required_from_chest(
+        client,
+        (1, 65, 1),
+        {"minecraft:bread": 6},
+    ) == -1
+    assert opens == [True]
+
+
 def test_catalog_withdraw_prefers_known_item_container(monkeypatch):
     class Catalog:
         def find_item(self, item_id):
@@ -607,6 +636,51 @@ def test_catalog_withdraw_prefers_known_item_container(monkeypatch):
         state=SimpleNamespace(),
     ) == 1
     assert visited == [(20, 65, 20)]
+
+
+def test_catalog_withdraw_skips_recently_failed_known_item_container(monkeypatch):
+    class Catalog:
+        def find_item(self, _item_id):
+            return [
+                {
+                    "dimension": "minecraft:overworld",
+                    "x": 20,
+                    "y": 65,
+                    "z": 20,
+                }
+            ]
+
+        def list_containers(self):
+            return []
+
+    monkeypatch.setattr(
+        "baritone_client.common.storage_catalog.catalog_for",
+        lambda _client, _state: Catalog(),
+    )
+    monkeypatch.setattr(inventory, "count_item", lambda *_args: 0)
+    monkeypatch.setattr(
+        "baritone_client.common.harness_ops.move_near",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("cooled container must not trigger travel")
+        ),
+    )
+    client = DummyClient(
+        DummyTransport(
+            {
+                "get_state": {
+                    "dimension": "minecraft:overworld",
+                    "block_position": {"x": 0, "y": 65, "z": 0},
+                }
+            }
+        )
+    )
+    storage_safety.remember_unreachable_storage(client, (20, 65, 20))
+
+    assert inventory.withdraw_required_from_catalog(
+        client,
+        {"minecraft:bread": 6},
+        state=SimpleNamespace(),
+    ) == 0
 
 
 def test_catalog_withdraw_skips_recent_container_known_not_to_hold_item(monkeypatch):
