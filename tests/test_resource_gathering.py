@@ -340,7 +340,7 @@ def test_ore_gather_recounts_drops_when_pathing_stops(monkeypatch):
     assert resources.gather_ores(client, "iron", count=15, timeout=30)
 
 
-def test_single_ore_shortfall_reserves_incidental_slot_and_exits_when_done(
+def test_single_ore_shortfall_keeps_debris_buffer_and_exits_when_done(
     monkeypatch,
 ):
     class OreTransport(RecordingTransport):
@@ -384,7 +384,7 @@ def test_single_ore_shortfall_reserves_incidental_slot_and_exits_when_done(
     monkeypatch.setattr(resources, "free_inventory_slots", lambda _client: 0)
 
     assert resources.gather_ores(client, "iron", count=1, timeout=30)
-    assert reservations == [2]
+    assert reservations == [3]
 
 
 def test_pickaxe_durability_uses_damage_from_raw_inventory():
@@ -2758,9 +2758,18 @@ def test_manage_inventory_can_shed_orphaned_decorative_loot(monkeypatch):
     monkeypatch.setattr(
         "baritone_client.common.inventory.drop_items", fake_drop
     )
+    monkeypatch.setattr(
+        resources,
+        "_store_surplus_in_chest",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("disposable clutter should not start a storage tour")
+        ),
+    )
 
     assert resources.manage_inventory(
-        SimpleNamespace(), minimum_free_slots=1
+        SimpleNamespace(),
+        minimum_free_slots=1,
+        discard_clutter_before_storage=True,
     ) is True
     assert any("minecraft:decorated_pot" in tier for tier in offered)
     assert any(

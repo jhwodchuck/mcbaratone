@@ -1153,12 +1153,11 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
         current_total = count_item(client, drop_item)
         if current_total >= count:
             return True
-        # A one-item repair shortfall needs one output stack plus one slot for
-        # incidental stone, not the generic three-slot expedition reserve.
-        # Live Bot16 had one empty slot and three ingots toward boots; with
-        # only one reserved slot cobblestone repeatedly displaced the raw-iron
-        # pickup and restarted cleanup.
-        required_slots = 2 if count - current_total <= 1 else 3
+        # Preserve the normal route-debris buffer even for a one-item repair.
+        # The completion check below exits before another cleanup once the raw
+        # ore arrives, while three slots prevent incidental cave blocks from
+        # displacing that pickup first.
+        required_slots = 3
         if not _reserve_gathering_inventory(
             client, minimum_free_slots=required_slots
         ):
@@ -1210,7 +1209,7 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
             if total >= count:
                 client.transport.dispatch("cancel", {})
                 return True
-            required_slots = 2 if count - total <= 1 else 3
+            required_slots = 3
             if free_inventory_slots(client) < required_slots:
                 _serialized_dispatch(
                     client,
@@ -2404,10 +2403,19 @@ def _reserve_gathering_inventory(client, minimum_free_slots: int = 3) -> bool:
     except Exception as exc:
         print(f"  Gathering storage cleanup unavailable ({exc}); using bounded disposal")
 
-    return manage_inventory(client, minimum_free_slots=required)
+    return manage_inventory(
+        client,
+        minimum_free_slots=required,
+        discard_clutter_before_storage=True,
+    )
 
 
-def manage_inventory(client, minimum_free_slots: int = 1) -> bool:
+def manage_inventory(
+    client,
+    minimum_free_slots: int = 1,
+    *,
+    discard_clutter_before_storage: bool = False,
+) -> bool:
     """Reserve carried slots for progression outputs by dropping bounded junk.
 
     ``drop_items`` now verifies the PlayerInventory-to-screen slot mapping, so
@@ -2420,6 +2428,37 @@ def manage_inventory(client, minimum_free_slots: int = 1) -> bool:
     required = max(0, int(minimum_free_slots))
     if free_inventory_slots(client) >= required:
         return True
+
+    # These one-off loot blocks and renewable saplings have no progression
+    # consumer. Drop them before walking a full storage tour: live Bot16 spent
+    # minutes visiting nearby barrels that accepted zero stacks while this
+    # clutter prevented the final boot ingot from being picked up.
+    disposable_clutter = (
+        "minecraft:acacia_sapling",
+        "minecraft:birch_sapling",
+        "minecraft:cherry_sapling",
+        "minecraft:dark_oak_sapling",
+        "minecraft:jungle_sapling",
+        "minecraft:oak_sapling",
+        "minecraft:spruce_sapling",
+        "minecraft:mangrove_propagule",
+        "minecraft:decorated_pot",
+        "minecraft:waxed_copper_block",
+        "minecraft:waxed_exposed_copper_bulb",
+        "minecraft:waxed_oxidized_cut_copper_stairs",
+        "minecraft:tuff_bricks",
+    )
+    if discard_clutter_before_storage:
+        while free_inventory_slots(client) < required:
+            needed = required - free_inventory_slots(client)
+            if drop_items(
+                client,
+                disposable_clutter,
+                max_stacks=needed,
+            ) <= 0:
+                break
+        if free_inventory_slots(client) >= required:
+            return True
 
     # Prefer banking the surplus over destroying it. Suite 1100 has grown
     # storage this way for 100+ live runs: use a chest that still has room,
@@ -2445,14 +2484,7 @@ def manage_inventory(client, minimum_free_slots: int = 1) -> bool:
             "minecraft:beetroot_seeds",
             "minecraft:melon_seeds",
             "minecraft:pumpkin_seeds",
-            "minecraft:acacia_sapling",
-            "minecraft:birch_sapling",
-            "minecraft:cherry_sapling",
-            "minecraft:dark_oak_sapling",
-            "minecraft:jungle_sapling",
-            "minecraft:oak_sapling",
-            "minecraft:spruce_sapling",
-            "minecraft:mangrove_propagule",
+            *disposable_clutter,
             "minecraft:oak_leaves",
             "minecraft:birch_leaves",
             "minecraft:spruce_leaves",
@@ -2464,14 +2496,6 @@ def manage_inventory(client, minimum_free_slots: int = 1) -> bool:
             "minecraft:smooth_basalt",
             "minecraft:calcite",
             "minecraft:jungle_pressure_plate",
-            # Looted decorative blocks have no progression consumer. A full
-            # Bot16 inventory retained one of each indefinitely, so incidental
-            # cobblestone consumed the only ore-output slot on every retry.
-            "minecraft:decorated_pot",
-            "minecraft:waxed_copper_block",
-            "minecraft:waxed_exposed_copper_bulb",
-            "minecraft:waxed_oxidized_cut_copper_stairs",
-            "minecraft:tuff_bricks",
             "minecraft:shears",
             "minecraft:dirt",
             "minecraft:gravel",
