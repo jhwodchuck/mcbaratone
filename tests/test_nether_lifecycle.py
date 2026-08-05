@@ -251,6 +251,7 @@ def test_nether_rearm_provisions_and_equips_armor_incrementally(monkeypatch, tmp
         lambda _client, item_id: counts.get(item_id, 0),
     )
     monkeypatch.setattr(nether_prep, "_emergency_food_count", lambda *_a: 6)
+    monkeypatch.setattr(nether_prep, "armor_piece_is_durable", lambda *_a: True)
     monkeypatch.setattr(
         nether_prep,
         "equip_best_armor",
@@ -318,7 +319,9 @@ def test_nether_rearm_requests_a_six_item_food_reserve(monkeypatch, tmp_path):
     readiness = iter((False, True))
     requested = []
     monkeypatch.setattr(handler, "_nether_loadout_ready", lambda *_a: next(readiness))
-    monkeypatch.setattr(handler, "_provision_iron_gear", lambda *_a: True)
+    monkeypatch.setattr(
+        handler, "_provision_iron_gear", lambda *_a, **_k: True
+    )
     monkeypatch.setattr(nether_prep, "equip_best_armor", lambda *_a: 4)
     monkeypatch.setattr(nether_prep, "equip_best_weapon", lambda *_a: True)
     monkeypatch.setattr(nether_prep, "eat_until_hunger", lambda *_a, **_k: True)
@@ -351,6 +354,7 @@ def test_nether_rearm_equips_recovered_armor_before_any_mining(monkeypatch, tmp_
         lambda _client, item_id: counts.get(item_id, 0),
     )
     monkeypatch.setattr(nether_prep, "_emergency_food_count", lambda *_a: 6)
+    monkeypatch.setattr(nether_prep, "armor_piece_is_durable", lambda *_a: True)
     monkeypatch.setattr(
         nether_prep,
         "equip_best_armor",
@@ -380,6 +384,34 @@ def test_nether_rearm_equips_recovered_armor_before_any_mining(monkeypatch, tmp_
     )
     assert events.index("equip_armor") < first_supply
     assert events[first_supply] == ("supplies", {"minecraft:iron_ingot": 8})
+
+
+def test_nether_rearm_crafts_a_replacement_for_worn_armor(monkeypatch, tmp_path):
+    handler, client, _state = _portal_reuse_handler(tmp_path)
+    counts = {
+        "minecraft:iron_chestplate": 1,
+        "minecraft:iron_ingot": 8,
+    }
+    requested = []
+    monkeypatch.setattr(
+        nether_prep,
+        "count_item",
+        lambda _client, item_id: counts.get(item_id, 0),
+    )
+    monkeypatch.setattr(
+        nether_prep,
+        "ensure_supplies",
+        lambda _client, required, **_kwargs: requested.append(required)
+        or TaskResult.ok(),
+    )
+
+    assert handler._provision_iron_gear(
+        client,
+        "minecraft:iron_chestplate",
+        8,
+        force_replacement=True,
+    )
+    assert requested == [{"minecraft:iron_chestplate": 2}]
 
 
 def _portal_reuse_handler(tmp_path):

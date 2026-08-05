@@ -453,6 +453,79 @@ def test_full_armor_verification_reads_equipped_section_only():
     )
 
 
+def test_durable_full_armor_rejects_nearly_broken_piece():
+    class EquippedTransport:
+        def dispatch(self, route, _payload):
+            if route == "get_inventory":
+                armor = [
+                    {
+                        "id": f"minecraft:iron_{piece}",
+                        "count": 1,
+                        "damage": 0,
+                        "max_damage": 200,
+                    }
+                    for piece in ("helmet", "chestplate", "leggings", "boots")
+                ]
+                armor[1].update({"damage": 186, "max_damage": 200})
+                return {"inventory": [], "armor": armor, "offhand": []}
+            return {}
+
+    client = DummyClient(EquippedTransport())
+
+    assert inventory.has_full_armor(client, minimum_material="iron")
+    assert not inventory.has_durable_full_armor(
+        client, minimum_material="iron", minimum_remaining=64
+    )
+
+
+def test_equip_best_armor_replaces_nearly_broken_same_tier_piece():
+    class DurabilityTransport:
+        def __init__(self):
+            self.inventory_items = [
+                {
+                    "slot": 0,
+                    "id": "minecraft:iron_chestplate",
+                    "count": 1,
+                    "damage": 0,
+                    "max_damage": 240,
+                }
+            ]
+            self.armor_items = [
+                {
+                    "slot": 38,
+                    "id": "minecraft:iron_chestplate",
+                    "count": 1,
+                    "damage": 226,
+                    "max_damage": 240,
+                }
+            ]
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_inventory":
+                return {
+                    "inventory": list(self.inventory_items),
+                    "armor": list(self.armor_items),
+                    "offhand": [],
+                }
+            if route == "inventory_click" and payload["slot"] == 6:
+                self.armor_items = []
+            if route == "inventory_click" and payload["slot"] == 36:
+                self.armor_items = [self.inventory_items.pop(0)]
+            return {}
+
+    transport = DurabilityTransport()
+    client = DummyClient(transport)
+
+    assert inventory.equip_best_armor(client) == 1
+    assert transport.armor_items[0]["damage"] == 0
+    assert (
+        "inventory_click",
+        {"slot": 6, "type": "QUICK_MOVE", "button": 0},
+    ) in transport.calls
+
+
 def test_deposit_excess_uses_live_chest_screen_player_slots_only():
     class ChestTransport:
         def __init__(self):

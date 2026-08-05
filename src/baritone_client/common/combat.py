@@ -46,6 +46,7 @@ from .inventory import (
     count_item,
     equip_best_weapon,
     get_equipped_armor,
+    has_durable_full_armor,
     select_item,
 )
 from .tasks import PlayerDeathDetected, TaskResult
@@ -1297,6 +1298,53 @@ def _handle_defense_recovery(
     return True
 
 
+def _choose_supervised_defense(
+    client,
+    assessments,
+    *,
+    health: float,
+    armor_count: int,
+    runtime: DefenseRuntime,
+):
+    """Choose defense with the narrow shielded-blaze live override."""
+    has_weapon = False
+    shielded_blaze = False
+    if assessments:
+        primary = assessments[0]
+        urgent_count = sum(item.distance <= 10.0 for item in assessments)
+        urgent = [item for item in assessments if item.distance <= 10.0]
+        shielded_blaze = (
+            1 <= len(urgent) <= 2
+            and all(item.entity_type == "blaze" for item in urgent)
+            and health >= 12.0
+            and armor_count >= 4
+            and has_durable_full_armor(client, minimum_remaining=16)
+            and count_item(client, "minecraft:shield") > 0
+        )
+        if (
+            (health >= 16.0 or shielded_blaze)
+            and armor_count >= 3
+            and primary.distance <= 10.0
+            and (urgent_count <= 1 or shielded_blaze)
+            and (not primary.always_evade or shielded_blaze)
+        ):
+            has_weapon = equip_best_weapon(client)
+    decision = choose_defense_action(
+        assessments,
+        health=health,
+        armor_count=armor_count,
+        has_weapon=has_weapon,
+        runtime=runtime,
+    )
+    if shielded_blaze and has_weapon:
+        decision = DefenseDecision(
+            DefenseMode.ENGAGE,
+            "full armor and shield against one close blaze",
+            assessments[0],
+        )
+    return decision, shielded_blaze
+
+
 def defend_or_flee(
     client,
     *,
@@ -1344,41 +1392,13 @@ def defend_or_flee(
         if assessments and "armor_count" in state
         else len(get_equipped_armor(client)) if assessments else 0
     )
-    has_weapon = False
-    shielded_blaze = False
-    if assessments:
-        primary = assessments[0]
-        urgent_count = sum(item.distance <= 10.0 for item in assessments)
-        urgent = [item for item in assessments if item.distance <= 10.0]
-        shielded_blaze = (
-            1 <= len(urgent) <= 2
-            and all(item.entity_type == "blaze" for item in urgent)
-            and health >= 12.0
-            and armor_count >= 4
-            and count_item(client, "minecraft:shield") > 0
-        )
-        if (
-            (health >= 16.0 or shielded_blaze)
-            and armor_count >= 3
-            and primary.distance <= 10.0
-            and (urgent_count <= 1 or shielded_blaze)
-            and (not primary.always_evade or shielded_blaze)
-        ):
-            has_weapon = equip_best_weapon(client)
-
-    decision = choose_defense_action(
+    decision, shielded_blaze = _choose_supervised_defense(
+        client,
         assessments,
         health=health,
         armor_count=armor_count,
-        has_weapon=has_weapon,
         runtime=runtime,
     )
-    if shielded_blaze and has_weapon:
-        decision = DefenseDecision(
-            DefenseMode.ENGAGE,
-            "full armor and shield against one close blaze",
-            assessments[0],
-        )
     runtime.transition(decision.mode, decision.reason)
     combat_telemetry.record_defense_decision(client, decision, state, threats)
 

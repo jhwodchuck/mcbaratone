@@ -9,9 +9,11 @@ from ...common import TaskResult, SequentialTask, ActionTask
 from ...common.resources import ensure_supplies, _read_state_with_retry
 from ...common.inventory import (
     _ensure_raw_planks,
+    armor_piece_is_durable,
     count_item,
     equip_best_armor,
     equip_best_weapon,
+    has_durable_full_armor,
     has_full_armor,
 )
 from ...common.combat import (
@@ -271,6 +273,7 @@ class NetherAndBlazeHandler(PhaseHandler):
             and health >= 18.0
             and food >= 18
             and has_full_armor(client, minimum_material="iron")
+            and has_durable_full_armor(client, minimum_material="iron")
             and count_item(client, "minecraft:shield") >= 1
             and _emergency_food_count(client) >= 6
             and equip_best_weapon(client)
@@ -327,7 +330,12 @@ class NetherAndBlazeHandler(PhaseHandler):
             ("minecraft:iron_leggings", 7),
         )
         for item_id, iron_cost in armor_plan:
-            if not self._provision_iron_gear(client, item_id, iron_cost):
+            replace = count_item(client, item_id) >= 1 and not armor_piece_is_durable(
+                client, item_id
+            )
+            if not self._provision_iron_gear(
+                client, item_id, iron_cost, force_replacement=replace
+            ):
                 return False
             equip_best_armor(client)
 
@@ -337,8 +345,16 @@ class NetherAndBlazeHandler(PhaseHandler):
             return False
         equip_best_weapon(client)
 
+        replace_chestplate = count_item(
+            client, "minecraft:iron_chestplate"
+        ) >= 1 and not armor_piece_is_durable(
+            client, "minecraft:iron_chestplate"
+        )
         if not self._provision_iron_gear(
-            client, "minecraft:iron_chestplate", 8
+            client,
+            "minecraft:iron_chestplate",
+            8,
+            force_replacement=replace_chestplate,
         ):
             return False
         equip_best_armor(client)
@@ -365,9 +381,16 @@ class NetherAndBlazeHandler(PhaseHandler):
         return verified
 
     @staticmethod
-    def _provision_iron_gear(client, item_id: str, iron_cost: int) -> bool:
+    def _provision_iron_gear(
+        client,
+        item_id: str,
+        iron_cost: int,
+        *,
+        force_replacement: bool = False,
+    ) -> bool:
         """Gather and consume only the iron needed for one gear upgrade."""
-        if count_item(client, item_id) >= 1:
+        current = count_item(client, item_id)
+        if current >= 1 and not force_replacement:
             return True
         if count_item(client, "minecraft:iron_ingot") < iron_cost:
             ingots = ensure_supplies(
@@ -378,7 +401,11 @@ class NetherAndBlazeHandler(PhaseHandler):
             if not ingots.success:
                 print(f"  Could not provision iron for {item_id}.")
                 return False
-        gear = ensure_supplies(client, {item_id: 1}, timeout=300)
+        gear = ensure_supplies(
+            client,
+            {item_id: current + 1 if force_replacement else 1},
+            timeout=300,
+        )
         if not gear.success:
             print(f"  Could not craft {item_id}; Nether rearm remains blocked.")
             return False

@@ -247,6 +247,7 @@ _ARMOR_RANK = {
     "netherite": 6,
 }
 _ARMOR_PIECES = ("helmet", "chestplate", "leggings", "boots")
+MIN_COMBAT_ARMOR_DURABILITY = 64
 _PLAYER_ARMOR_CONTAINER_SLOTS = {
     "helmet": 5,
     "chestplate": 6,
@@ -281,6 +282,45 @@ def get_equipped_armor(client) -> Dict[str, str]:
         return {}
 
 
+def get_equipped_armor_details(client) -> Dict[str, Dict]:
+    """Return raw equipped armor records keyed by armor piece."""
+    try:
+        response = client.transport.dispatch("get_inventory", {})
+        data = response.get("data", response)
+        equipped = {}
+        for item in data.get("armor", []):
+            identity = _armor_identity(item.get("id", ""))
+            if identity and item.get("count", 0) > 0:
+                equipped[identity[1]] = dict(item)
+        return equipped
+    except Exception as exc:
+        logger.warning("Could not inspect armor durability: %s", exc)
+        return {}
+
+
+def _remaining_durability(item: Dict) -> Optional[int]:
+    maximum = int(item.get("max_damage", 0) or 0)
+    if maximum <= 0:
+        return None
+    return max(0, maximum - max(0, int(item.get("damage", 0) or 0)))
+
+
+def armor_piece_is_durable(
+    client,
+    item_id: str,
+    minimum_remaining: int = MIN_COMBAT_ARMOR_DURABILITY,
+) -> bool:
+    """Verify one exact equipped armor item has a safe durability reserve."""
+    identity = _armor_identity(item_id)
+    if identity is None:
+        return False
+    equipped = get_equipped_armor_details(client).get(identity[1])
+    if not equipped or equipped.get("id") != item_id:
+        return False
+    remaining = _remaining_durability(equipped)
+    return remaining is None or remaining >= minimum_remaining
+
+
 def has_full_armor(client, minimum_material: str = "iron") -> bool:
     """Verify all four equipped pieces meet a minimum material tier."""
     minimum_rank = _ARMOR_RANK.get(minimum_material, _ARMOR_RANK["iron"])
@@ -288,6 +328,25 @@ def has_full_armor(client, minimum_material: str = "iron") -> bool:
     for piece in _ARMOR_PIECES:
         identity = _armor_identity(equipped.get(piece, ""))
         if not identity or identity[2] < minimum_rank:
+            return False
+    return True
+
+
+def has_durable_full_armor(
+    client,
+    minimum_material: str = "iron",
+    minimum_remaining: int = MIN_COMBAT_ARMOR_DURABILITY,
+) -> bool:
+    """Verify armor tier and a remaining-durability floor on every piece."""
+    minimum_rank = _ARMOR_RANK.get(minimum_material, _ARMOR_RANK["iron"])
+    equipped = get_equipped_armor_details(client)
+    for piece in _ARMOR_PIECES:
+        item = equipped.get(piece)
+        identity = _armor_identity(item.get("id", "")) if item else None
+        if not identity or identity[2] < minimum_rank:
+            return False
+        remaining = _remaining_durability(item)
+        if remaining is not None and remaining < minimum_remaining:
             return False
     return True
 
@@ -307,21 +366,35 @@ def equip_best_armor(client) -> int:
     for piece in _ARMOR_PIECES:
         response = client.transport.dispatch("get_inventory", {})
         data = response.get("data", response)
-        current = get_equipped_armor(client).get(piece)
+        equipped_details = get_equipped_armor_details(client)
+        current_item = equipped_details.get(piece, {})
+        current = current_item.get("id")
         current_identity = _armor_identity(current or "")
         current_rank = current_identity[2] if current_identity else 0
+        current_remaining = _remaining_durability(current_item)
 
         candidates = []
         for item in data.get("inventory", []):
             identity = _armor_identity(item.get("id", ""))
             if not identity or identity[1] != piece or item.get("count", 0) <= 0:
                 continue
-            candidates.append((identity[2], item))
+            remaining = _remaining_durability(item)
+            candidates.append((identity[2], remaining or 0, item))
         if not candidates:
             continue
 
-        best_rank, best_item = max(candidates, key=lambda entry: entry[0])
-        if best_rank <= current_rank:
+        best_rank, best_remaining, best_item = max(
+            candidates, key=lambda entry: (entry[0], entry[1])
+        )
+        same_tier_replacement = (
+            best_rank == current_rank
+            and current_remaining is not None
+            and current_remaining < MIN_COMBAT_ARMOR_DURABILITY
+            and best_remaining > current_remaining
+        )
+        if best_rank < current_rank or (
+            best_rank == current_rank and not same_tier_replacement
+        ):
             continue
 
         try:

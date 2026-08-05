@@ -2066,6 +2066,7 @@ def test_full_armor_and_shield_engages_small_close_blaze_pack(
         "count_item",
         lambda _client, item: 1 if item == "minecraft:shield" else 0,
     )
+    monkeypatch.setattr(combat, "has_durable_full_armor", lambda *_a, **_k: True)
     monkeypatch.setattr(combat, "equip_best_weapon", lambda _client: True)
     escaped = []
     fought = []
