@@ -74,9 +74,10 @@ def surface_adjusted_candidates(
                     "minecraft:coarse_dirt",
                     "minecraft:podzol",
                 ],
-                "radius": radius,
-                "limit": 4096,
+                "radius": min(16, max(4, int(radius))),
+                "limit": 512,
             },
+            timeout=2.0,
         )
     except Exception:
         return []
@@ -254,6 +255,7 @@ def run_away(
     """Choose a safe endpoint and prove movement away from a threat."""
     from . import combat as api
 
+    client._last_escape_failure_reason = None
     try:
         state = client.transport.dispatch("get_state", {})
         position = state.get("block_position", state.get("position", {})) or {}
@@ -297,6 +299,7 @@ def run_away(
         )
         if not safe:
             print("FLEE: no terrain-safe escape endpoint found")
+            client._last_escape_failure_reason = "no_safe_endpoint"
             return False
         per_candidate = max(1.5, timeout / len(safe))
         for candidate in safe:
@@ -343,9 +346,11 @@ def run_away(
                 destination=destination,
             )
         print("FLEE: candidate routes did not increase separation")
+        client._last_escape_failure_reason = "no_separation_gain"
         return False
     except api.PlayerDeathDetected:
         raise
     except Exception as exc:
+        client._last_escape_failure_reason = "error"
         print(f"Run away failed: {exc}")
         return False

@@ -1939,6 +1939,84 @@ def test_evasion_failure_count_survives_primary_threat_switch(monkeypatch):
     assert fought == [True]
 
 
+def test_no_escape_endpoint_fights_non_explosive_threat_immediately(monkeypatch):
+    """A cave with no valid flee tile must not wait for a second outer tick.
+
+    Live Bot16 entered this branch at full health with two creepers, a
+    skeleton, and a zombie nearby. Escape planning failed while damage kept
+    arriving, and the caller moved on to recovery instead of invoking defense
+    again. Commit to the close zombie on the first proven terrain failure.
+    """
+    transport = CombatTransport(health=20.0)
+    client = SimpleNamespace(transport=transport)
+    threats = [
+        {
+            "id": 10,
+            "type": "minecraft:zombie",
+            "distance": 6.5,
+            "position": {"x": 6, "y": 64, "z": 0},
+        },
+        {
+            "id": 11,
+            "type": "minecraft:creeper",
+            "distance": 10.5,
+            "position": {"x": -10, "y": 64, "z": 0},
+        },
+    ]
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: threats)
+    monkeypatch.setattr(
+        combat,
+        "get_equipped_armor",
+        lambda _client: {slot: {} for slot in ("head", "chest", "legs", "feet")},
+    )
+    monkeypatch.setattr(combat, "equip_best_weapon", lambda _client: True)
+
+    def no_endpoint(value, _target):
+        value._last_escape_failure_reason = "no_safe_endpoint"
+        return False
+
+    monkeypatch.setattr(combat, "run_away", no_endpoint)
+    fought = []
+    monkeypatch.setattr(
+        combat,
+        "safe_combat",
+        lambda _client, entity_id, **kwargs: fought.append((entity_id, kwargs)) or True,
+    )
+
+    assert combat.defend_or_flee(client)
+    assert fought == [
+        (
+            10,
+            {
+                "purpose": "hostile_defense",
+                "source": "defend_or_flee",
+                "target_metadata": threats[0],
+                "no_retreat": True,
+                "abort_on_other_hostiles": False,
+                "max_duration": 12,
+            },
+        )
+    ]
+
+
+def test_no_escape_endpoint_never_melees_primary_creeper(monkeypatch):
+    client, _transport = _evade_client(monkeypatch, "creeper")
+
+    def no_endpoint(value, _target):
+        value._last_escape_failure_reason = "no_safe_endpoint"
+        return False
+
+    monkeypatch.setattr(combat, "run_away", no_endpoint)
+    monkeypatch.setattr(combat, "equip_best_weapon", lambda _client: True)
+    fought = []
+    monkeypatch.setattr(
+        combat, "safe_combat", lambda *_a, **_k: fought.append(True) or True
+    )
+
+    assert combat.defend_or_flee(client)
+    assert not fought
+
+
 def test_a_successful_evade_never_escalates(monkeypatch):
     transport = CombatTransport(health=20.0)
     client = SimpleNamespace(transport=transport)

@@ -1476,6 +1476,14 @@ def defend_or_flee(
         if escaped:
             runtime.hold_recovery(8.0)
             return True
+        from .cornered_defense import fight_if_no_escape
+        if fight_if_no_escape(
+            client,
+            primary,
+            runtime,
+            equip_weapon=equip_best_weapon, fight=_fight_defensive_target,
+        ):
+            return True
         if not runtime.should_escalate_to_combat(threat_id):
             # The attacker is still present. Recovery hysteresis after a
             # failed escape made the bot stand still and try to heal while it

@@ -1,10 +1,11 @@
 from types import SimpleNamespace
 
 from baritone_client.actions.combat import CombatAction
-from baritone_client.common import combat
+from baritone_client.common import combat, escape_recovery
 from baritone_client.common.defense import (
     DefenseMode,
     DefenseRuntime,
+    EscapeCandidate,
     assess_threats,
     choose_defense_action,
     plan_escape_candidates,
@@ -250,6 +251,36 @@ def test_run_away_rejects_lava_endpoint_before_pathing():
     goals = [payload for route, payload in transport.calls if route == "goal"]
     assert goals
     assert goals[0] != {"x": -30, "y": 64, "z": 0}
+
+
+def test_surface_escape_scan_is_bounded_for_active_combat():
+    calls = []
+
+    class Transport:
+        def dispatch(self, route, payload, timeout=None):
+            calls.append((route, payload, timeout))
+            return {"found": []}
+
+    client = SimpleNamespace(transport=Transport())
+    planned = [EscapeCandidate(24, 64, 0, 1.0)]
+
+    assert escape_recovery.surface_adjusted_candidates(client, planned) == []
+    assert calls == [
+        (
+            "find_blocks",
+            {
+                "blocks": [
+                    "minecraft:grass_block",
+                    "minecraft:dirt",
+                    "minecraft:coarse_dirt",
+                    "minecraft:podzol",
+                ],
+                "radius": 16,
+                "limit": 512,
+            },
+            2.0,
+        )
+    ]
 
 
 def test_defense_remains_in_recovery_after_successful_escape(monkeypatch):
