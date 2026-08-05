@@ -30,6 +30,10 @@ from extended_suite_900 import create_extended_suite_900
 from extended_suite_1000 import create_extended_suite_1000
 from extended_suite_1100 import create_extended_suite_1100
 from survival.suite import create_extended_suite_1200
+from world_safety import (
+    selection_requires_disposable_world,
+    validate_disposable_world,
+)
 
 
 def _sanitize_label(value: str) -> str:
@@ -54,6 +58,19 @@ def _select_log_file(args) -> str:
     log_dir = os.path.join(os.path.dirname(__file__), "logs")
     stamp = time.strftime("%Y%m%d_%H%M%S")
     return os.path.join(log_dir, f"{label}_{stamp}.log")
+
+
+def _selected_suite_names(harness, args):
+    if args.suite:
+        return {args.suite} if args.suite in harness.suites else set()
+    if args.test:
+        target_ids = {value.strip() for value in args.test.split(",") if value.strip()}
+        return {
+            suite.name
+            for suite in harness.suites.values()
+            if any(test.id in target_ids for test in suite.tests)
+        }
+    return set(harness.suites)
 
 
 class _Tee:
@@ -88,6 +105,13 @@ def main():
         "--checkpoint",
         help="Production checkpoint used by the read-only Survival progression suite",
     )
+    parser.add_argument(
+        "--expect-server",
+        help=(
+            "Required safety identity for mutating suites, for example "
+            "localhost:25580"
+        ),
+    )
     args = parser.parse_args()
 
     log_file = _select_log_file(args)
@@ -118,6 +142,7 @@ def main():
         harness.register_suite(create_extended_suite_1000())
         harness.register_suite(create_extended_suite_1100())
         harness.register_suite(create_extended_suite_1200(args.checkpoint))
+        selected_suite_names = _selected_suite_names(harness, args)
         
         # List mode
         if args.list:
@@ -129,6 +154,17 @@ def main():
                     print(f"  {test.id}: {test.name}")
                     print(f"       {test.description}")
             return
+
+        mutating_selection = selection_requires_disposable_world(
+            selected_suite_names
+        )
+        if mutating_selection and not args.expect_server:
+            print(
+                "Refusing mutating functional tests without --expect-server. "
+                "Use the disposable admin or persistent world from "
+                "scripts\\functional_worlds.ps1."
+            )
+            sys.exit(2)
         
         # Connect
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Runner start")
@@ -138,6 +174,16 @@ def main():
             sys.exit(1)
 
         print("Connected!\n")
+        if mutating_selection:
+            try:
+                state = harness.client.transport.dispatch("get_state", {})
+                verified_server = validate_disposable_world(
+                    args.expect_server, state
+                )
+            except Exception as exc:
+                print(f"Functional world safety check failed: {exc}")
+                sys.exit(2)
+            print(f"Disposable world identity verified: {verified_server}")
         try:
             version = harness.client.transport.dispatch("get_version", {})
             data = version.get("data", version)

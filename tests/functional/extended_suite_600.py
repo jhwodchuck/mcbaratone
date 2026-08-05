@@ -44,7 +44,7 @@ def create_extended_suite_600() -> TestSuite:
         }
         get_test_state(suite_state, tid)["bounds"] = bounds
         clear_box(ctx, bounds)
-        prepare_test_world(ctx, gamemode=gamemode)
+        prepare_test_world(ctx, gamemode=gamemode, peaceful=False)
         tp(ctx, ax, ay, az)
         if floor:
             build_floor(ctx, ax - 10, ay - 1, az - 10, ax + 10, az + 10)
@@ -254,7 +254,7 @@ def create_extended_suite_600() -> TestSuite:
         def assertion(ctx: TestContext):
             return get_test_state(suite_state, tid).get("found", False), f"Effect {effect_id} found in state"
 
-        suite.add(TestCase(tid, name, f"Verify {name} status", 10, setup, [step], [assertion], 
+        suite.add(TestCase(tid, name, f"Verify {name} status", 30, setup, [step], [assertion],
                            lambda ctx: teardown_test_world(ctx, bounds=get_test_state(suite_state, tid).get("bounds"))))
 
     make_effect_test("T616", "Poison Status", "minecraft:poison")

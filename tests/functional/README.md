@@ -15,6 +15,46 @@ for the same world.
 Never run all functional suites in a real autonomous world. Use `--list`, then
 select an explicit test ID or suite.
 
+## Disposable worlds
+
+Two local runtimes isolate destructive tests from the autonomous fleet:
+
+| Profile | Suites | Minecraft | Bridge | Runtime |
+| --- | --- | --- | --- | --- |
+| `admin` | 100-1000, including Suite 600 combat | `localhost:25580` | `localhost:5695` | `runs/functional/admin` |
+| `persistent` | Suite 1100 prototypes | `localhost:25581` | `localhost:5696` | `runs/functional/persistent` |
+
+Both use fixed seeds, separate HeadlessMC clients, operator identities, world
+directories, RCON ports, logs, and PID files. They never reuse the fleet server
+on `localhost:25565` or a fleet checkpoint. Set them up and start them with:
+
+```powershell
+.\scripts\functional_worlds.ps1 -Action Setup
+.\scripts\functional_worlds.ps1 -Action Start -World admin
+.\scripts\functional_worlds.ps1 -Action Start -World persistent
+```
+
+The runner requires the expected server identity for every mutating selection:
+
+```powershell
+python tests\functional\run_tests.py `
+  --test T600 `
+  --host localhost `
+  --port 5695 `
+  --expect-server localhost:25580
+```
+
+Stop a profile cleanly through RCON, or recreate its world and client state:
+
+```powershell
+.\scripts\functional_worlds.ps1 -Action Stop -World admin
+.\scripts\functional_worlds.ps1 -Action Reset -World admin
+```
+
+`Reset` recursively removes only the selected directory beneath
+`runs/functional`, after resolving and checking that exact path. The recreated
+profile is stopped until `Start` is requested.
+
 ## Layout
 
 ```text
