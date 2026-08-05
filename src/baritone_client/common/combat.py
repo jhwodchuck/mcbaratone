@@ -38,7 +38,6 @@ from .defense import (
     DefenseDecision,
     DefenseMode,
     DefenseRuntime,
-    ThreatAssessment,
     assess_threats,
     choose_defense_action,
 )
@@ -1276,12 +1275,11 @@ def _fight_defensive_target(client, target: Dict, **kwargs) -> bool:
 def _handle_defense_recovery(
     client,
     decision: DefenseDecision,
-    assessments: List[ThreatAssessment],
     *,
     allow_safe_recovery_movement: bool,
 ) -> bool:
     """Pause to recover unless clear-area movement is the recovery action."""
-    if allow_safe_recovery_movement and not assessments:
+    if allow_safe_recovery_movement and decision.primary is None:
         client._last_defense_intervention = "recovery_movement"
         return False
     print(f"DEFENSE: Recovery mode ({decision.reason})")
@@ -1371,7 +1369,6 @@ def defend_or_flee(
         return _handle_defense_recovery(
             client,
             decision,
-            assessments,
             allow_safe_recovery_movement=allow_safe_recovery_movement,
         )
     if decision.primary is None:

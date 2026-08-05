@@ -72,6 +72,45 @@ def test_clear_area_recovery_navigation_is_not_cancelled(monkeypatch):
     assert not any(route in {"cancel", "chat"} for route, _ in transport.calls)
 
 
+def test_distant_hostile_does_not_cancel_recovery_navigation(monkeypatch):
+    transport = CombatTransport(health=5.0)
+    client = SimpleNamespace(transport=transport)
+    threat = {
+        "id": 9,
+        "type": "minecraft:skeleton",
+        "distance": 13.5,
+        "is_aggressive": False,
+        "can_see_player": False,
+        "position": {"x": 13.5, "y": 64, "z": 0},
+    }
+    monkeypatch.setattr(
+        combat,
+        "_get_combat_snapshot",
+        lambda *_args, **_kwargs: {
+            "player": {
+                "health": 5.0,
+                "food_level": 10,
+                "block_position": {"x": 0, "y": 64, "z": 0},
+            },
+            "entities": [threat],
+        },
+    )
+    monkeypatch.setattr(
+        combat,
+        "eat_until_hunger",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a non-actionable hostile must not stop recovery")
+        ),
+    )
+
+    assert not combat.defend_or_flee(
+        client,
+        allow_safe_recovery_movement=True,
+    )
+    assert client._last_defense_intervention == "recovery_movement"
+    assert not any(route in {"cancel", "chat"} for route, _ in transport.calls)
+
+
 def test_recovery_navigation_still_intervenes_for_hostile(monkeypatch):
     transport = CombatTransport(health=5.0)
     client = SimpleNamespace(transport=transport)
