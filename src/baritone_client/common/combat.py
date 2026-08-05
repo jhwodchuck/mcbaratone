@@ -832,8 +832,23 @@ def hunt_passive_mobs(
     return int(result.data.get("kills", 0))
 
 
-def _post_hunt_recovery(client, heal_threshold, missing, kills):
-    """Stabilize a committed hostile hunter before it moves again."""
+def _post_hunt_recovery(
+    client, heal_threshold, missing, kills, recovery_anchor
+):
+    """Leave the spawn radius, then stabilize before moving again."""
+    if recovery_anchor is not None:
+        print(f"RECOVERY: leaving hostile spawn radius toward {recovery_anchor}")
+        goto(
+            client,
+            *recovery_anchor,
+            timeout=20,
+            check_interval=0.25,
+            tolerance=5.0,
+            # The purpose of this route is to break contact. Re-entering the
+            # combat policy here cancels the escape and strands the bot at the
+            # spawner again.
+            on_defense=lambda: False,
+        )
     state = client.transport.dispatch("get_state", {})
     health = float(state.get("health", 20) or 0)
     if health >= heal_threshold or recover_health(
@@ -866,6 +881,7 @@ def hunt_mobs(
     explore_when_empty: bool = True,
     no_retreat: bool = False,
     recover_after_combat: bool = False,
+    recovery_anchor: Optional[tuple[int, int, int]] = None,
 ) -> TaskResult:
     """
     Hunt a set of mobs until loot requirements are satisfied.
@@ -884,6 +900,7 @@ def hunt_mobs(
         max_kills: Hard safety cap, even when requested loot is still missing
         no_retreat: Commit to the selected target instead of disengaging mid-kill
         recover_after_combat: Stabilize health before moving to drops or a new target
+        recovery_anchor: Known route back outside a hostile spawn radius
     """
     start = time.time()
     baseline = {item: count_item(client, item) for item in required_loot}
@@ -1049,7 +1066,7 @@ def hunt_mobs(
         )
         if recover_after_combat:
             recovery_failure = _post_hunt_recovery(
-                client, heal_threshold, missing, kills
+                client, heal_threshold, missing, kills, recovery_anchor
             )
             if recovery_failure is not None:
                 return recovery_failure

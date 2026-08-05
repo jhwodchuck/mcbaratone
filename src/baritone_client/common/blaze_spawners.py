@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Any, Callable, List, Mapping, Tuple
 
@@ -91,6 +92,18 @@ def _observed_block(client, position: Position) -> str:
     return str(payload.get("id") or payload.get("block") or payload.get("type") or "")
 
 
+def _retreat_anchor(position: Position, approach: Position) -> Position:
+    """Project 24 blocks back onto the route that successfully approached."""
+    delta = tuple(approach[index] - position[index] for index in range(3))
+    distance = math.sqrt(sum(value * value for value in delta))
+    if distance <= 24.0:
+        return approach
+    scale = 24.0 / distance
+    return tuple(
+        int(round(position[index] + delta[index] * scale)) for index in range(3)
+    )
+
+
 def camp_blaze_spawner(
     client,
     position: Position,
@@ -106,6 +119,7 @@ def camp_blaze_spawner(
             position,
         )
         return False
+    approach = _position(client.transport.dispatch("get_state", {}))
     remaining = deadline - time.time()
     if remaining <= 0 or not travel_to(
         client, position, radius=8, timeout=min(120.0, remaining)
@@ -120,12 +134,13 @@ def camp_blaze_spawner(
         logger.info("Skipping stale shared spawner at %s (%s)", position, observed)
         return False
 
+    recovery_anchor = _retreat_anchor(position, approach)
     logger.info("Camping blaze spawner at %s until %d rods", position, target_count)
     while time.time() < deadline:
         current_rods = count_item(client, "minecraft:blaze_rod")
         if current_rods >= target_count:
             return True
-        hunt_mobs(
+        hunt_result = hunt_mobs(
             client,
             mob_types=["blaze"],
             required_loot={"minecraft:blaze_rod": target_count - current_rods},
@@ -142,7 +157,15 @@ def camp_blaze_spawner(
             # iron and a shield, so finish one bounded target and stabilize.
             no_retreat=True,
             recover_after_combat=True,
+            recovery_anchor=recovery_anchor,
         )
+        if not hunt_result.success:
+            logger.warning(
+                "Leaving blaze spawner %s after unsafe recovery: %s",
+                position,
+                hunt_result.reason,
+            )
+            return False
         if count_item(client, "minecraft:blaze_rod") < target_count:
             remaining = deadline - time.time()
             if remaining <= 0 or not travel_to(

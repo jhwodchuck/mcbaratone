@@ -1375,6 +1375,7 @@ def test_hostile_hunt_can_commit_then_recover_before_loot_movement(monkeypatch):
     rods = {"count": 0}
     combat_calls = []
     recovered = []
+    sequence = []
     monkeypatch.setattr(
         combat,
         "count_item",
@@ -1387,18 +1388,24 @@ def test_hostile_hunt_can_commit_then_recover_before_loot_movement(monkeypatch):
 
     def fight(_client, _target_id, **kwargs):
         combat_calls.append(kwargs)
+        sequence.append("fight")
         rods["count"] = 1
         transport.health = 9.0
         return True
 
     def recover(_client, **kwargs):
         recovered.append(kwargs)
+        sequence.append("recover")
         transport.health = 16.0
+        return True
+
+    def move(_client, *_position, **_kwargs):
+        sequence.append("move")
         return True
 
     monkeypatch.setattr(combat, "safe_combat", fight)
     monkeypatch.setattr(combat, "recover_health", recover)
-    monkeypatch.setattr(combat, "goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(combat, "goto", move)
     monkeypatch.setattr(combat.time, "sleep", lambda _seconds: None)
 
     result = combat.hunt_mobs(
@@ -1408,11 +1415,13 @@ def test_hostile_hunt_can_commit_then_recover_before_loot_movement(monkeypatch):
         heal_threshold=16.0,
         no_retreat=True,
         recover_after_combat=True,
+        recovery_anchor=(24, 64, 0),
     )
 
     assert result.success
     assert combat_calls[0]["no_retreat"] is True
     assert recovered == [{"minimum_health": 16.0, "timeout": 30.0}]
+    assert sequence == ["fight", "move", "recover", "move"]
 
 
 def test_passive_hunt_stops_at_daylight_return_boundary(monkeypatch):
