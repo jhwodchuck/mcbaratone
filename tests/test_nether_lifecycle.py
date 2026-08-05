@@ -1131,6 +1131,8 @@ def test_blaze_spawner_camp_holds_position_and_reanchors(monkeypatch):
     assert all(call["explore_when_empty"] is False for call in hunts)
     assert all(call["search_radius"] == 20 for call in hunts)
     assert all(call["heal_threshold"] == 16.0 for call in hunts)
+    assert all(call["no_retreat"] is True for call in hunts)
+    assert all(call["recover_after_combat"] is True for call in hunts)
     assert len(travels) == 2, "combat must re-anchor at the spawner"
     assert all(call[1]["radius"] == 8 for call in travels)
 

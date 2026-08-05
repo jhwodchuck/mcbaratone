@@ -1202,7 +1202,7 @@ def test_forced_ranged_approach_equips_and_raises_carried_shield(monkeypatch):
     ) in transport.calls
     assert (
         "use_item",
-        {"duration_ms": 1800},
+        {"duration_ms": combat_melee.SHIELD_HOLD_MS},
     ) in transport.calls
 
 
@@ -1265,7 +1265,9 @@ def test_close_ranged_target_raises_shield_before_melee(monkeypatch):
         no_retreat=True,
         max_duration=2,
     )
-    shield_call = transport.calls.index(("use_item", {"duration_ms": 1800}))
+    shield_call = transport.calls.index(
+        ("use_item", {"duration_ms": combat_melee.SHIELD_HOLD_MS})
+    )
     attack_call = transport.calls.index(
         (
             "attack_entity",
@@ -1359,6 +1361,58 @@ def test_hunt_steps_onto_kill_position_before_rechecking_loot(monkeypatch):
             {"timeout": 10, "check_interval": 0.25, "tolerance": 0.75},
         )
     ]
+
+
+def test_hostile_hunt_can_commit_then_recover_before_loot_movement(monkeypatch):
+    target = {
+        "id": 43,
+        "type": "minecraft:blaze",
+        "distance": 3.0,
+        "position": {"x": 3.0, "y": 64.0, "z": 0.0},
+    }
+    transport = CombatTransport()
+    client = SimpleNamespace(transport=transport)
+    rods = {"count": 0}
+    combat_calls = []
+    recovered = []
+    monkeypatch.setattr(
+        combat,
+        "count_item",
+        lambda _client, item_id: rods["count"]
+        if item_id == "minecraft:blaze_rod"
+        else 0,
+    )
+    monkeypatch.setattr(combat, "heal_if_needed", lambda *_a, **_k: False)
+    monkeypatch.setattr(combat, "find_entity_by_type", lambda *_a, **_k: target)
+
+    def fight(_client, _target_id, **kwargs):
+        combat_calls.append(kwargs)
+        rods["count"] = 1
+        transport.health = 9.0
+        return True
+
+    def recover(_client, **kwargs):
+        recovered.append(kwargs)
+        transport.health = 16.0
+        return True
+
+    monkeypatch.setattr(combat, "safe_combat", fight)
+    monkeypatch.setattr(combat, "recover_health", recover)
+    monkeypatch.setattr(combat, "goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(combat.time, "sleep", lambda _seconds: None)
+
+    result = combat.hunt_mobs(
+        client,
+        ["blaze"],
+        {"minecraft:blaze_rod": 1},
+        heal_threshold=16.0,
+        no_retreat=True,
+        recover_after_combat=True,
+    )
+
+    assert result.success
+    assert combat_calls[0]["no_retreat"] is True
+    assert recovered == [{"minimum_health": 16.0, "timeout": 30.0}]
 
 
 def test_passive_hunt_stops_at_daylight_return_boundary(monkeypatch):

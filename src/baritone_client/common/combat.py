@@ -832,6 +832,24 @@ def hunt_passive_mobs(
     return int(result.data.get("kills", 0))
 
 
+def _post_hunt_recovery(client, heal_threshold, missing, kills):
+    """Stabilize a committed hostile hunter before it moves again."""
+    state = client.transport.dispatch("get_state", {})
+    health = float(state.get("health", 20) or 0)
+    if health >= heal_threshold or recover_health(
+        client,
+        minimum_health=heal_threshold,
+        timeout=30.0,
+    ):
+        return None
+    return TaskResult.fail(
+        "Hunt stopped because post-combat health did not recover",
+        missing=missing,
+        kills=kills,
+        health=health,
+    )
+
+
 def hunt_mobs(
     client,
     mob_types: List[str],
@@ -844,7 +862,10 @@ def hunt_mobs(
     latest_world_time: Optional[int] = None,
     max_distance_from_origin: Optional[float] = None,
     exploration_center: Optional[tuple[int, int]] = None,
-    max_kills: Optional[int] = None, explore_when_empty: bool = True,
+    max_kills: Optional[int] = None,
+    explore_when_empty: bool = True,
+    no_retreat: bool = False,
+    recover_after_combat: bool = False,
 ) -> TaskResult:
     """
     Hunt a set of mobs until loot requirements are satisfied.
@@ -861,6 +882,8 @@ def hunt_mobs(
         max_distance_from_origin: Bound expedition radius around its start
         exploration_center: Explicit X/Z center that leads away from owned structures
         max_kills: Hard safety cap, even when requested loot is still missing
+        no_retreat: Commit to the selected target instead of disengaging mid-kill
+        recover_after_combat: Stabilize health before moving to drops or a new target
     """
     start = time.time()
     baseline = {item: count_item(client, item) for item in required_loot}
@@ -1012,7 +1035,7 @@ def hunt_mobs(
             if assess_threats([entity], live_state)
             else "passive_hunt"
         )
-        if safe_combat(
+        defeated = safe_combat(
             client,
             target_id,
             retreat_health=heal_threshold - 2,
@@ -1022,7 +1045,15 @@ def hunt_mobs(
             purpose=target_purpose,
             source="hunt_mobs",
             target_metadata=entity,
-        ):
+            no_retreat=no_retreat,
+        )
+        if recover_after_combat:
+            recovery_failure = _post_hunt_recovery(
+                client, heal_threshold, missing, kills
+            )
+            if recovery_failure is not None:
+                return recovery_failure
+        if defeated:
             kills += 1
             # Entity death can be detected while the player is still near the
             # edge of melee range.  Step onto the last known position after

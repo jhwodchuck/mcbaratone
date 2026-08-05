@@ -5,8 +5,11 @@ import time
 from . import combat as api
 
 
-SHIELD_HOLD_MS = 1800
-SHIELD_REFRESH_SECONDS = 2.0
+# Cover one blaze fireball volley without delaying every sword swing by nearly
+# two seconds. Live Bot16 reduced a blaze to 2 HP, then died because the old
+# 1.8-second shield pulse postponed the finishing hit past the retreat floor.
+SHIELD_HOLD_MS = 900
+SHIELD_REFRESH_SECONDS = 1.1
 
 
 def _inventory_payload(response):

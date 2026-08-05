@@ -136,6 +136,12 @@ def camp_blaze_spawner(
             # still outpace a follow-up volley.
             heal_threshold=16.0,
             explore_when_empty=False,
+            # A live Bot16 fight reduced a blaze to 2 HP, then the generic
+            # retreat floor suppressed the finishing hit while fire damage
+            # continued to death. This path already requires durable full
+            # iron and a shield, so finish one bounded target and stabilize.
+            no_retreat=True,
+            recover_after_combat=True,
         )
         if count_item(client, "minecraft:blaze_rod") < target_count:
             remaining = deadline - time.time()
