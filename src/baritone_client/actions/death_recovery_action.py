@@ -7,7 +7,7 @@ from typing import Dict, Optional, Tuple
 from ..core.interfaces import ActionContext, ActionResult
 from ..core.exceptions import TransportError
 from ..actions.base import BaseAction
-from ..common.nether import find_nearest_portal
+from ..common.nether import enter_nether_portal, find_nearest_portal
 from ..common import goto
 from ..common.combat import (
     defend_or_flee,
@@ -407,17 +407,55 @@ def _recover_nether_death(
     context: ActionContext,
     death_coords: Tuple[int, int, int],
     current_phase: Phase,
+    expected_critical: Dict[str, int],
 ) -> ActionResult:
     """Recover in the Nether or return through a verified portal."""
     client = context.client
+    live_state = client.transport.dispatch("get_state", {})
+    live_dimension = str(live_state.get("dimension") or "").lower()
+    if "nether" not in live_dimension:
+        portal = find_nearest_portal(client, "overworld")
+        if portal is None:
+            return ActionResult.fail(
+                "Could not find an Overworld portal for Nether grave recovery"
+            )
+        print(f"Entering Nether at {portal} before grave recovery...")
+        if not enter_nether_portal(
+            client,
+            timeout=90,
+            target_dimension="minecraft:the_nether",
+            portal=portal,
+        ):
+            return ActionResult.fail(
+                "Failed to enter Nether before approaching the grave"
+            )
+        verified = client.transport.dispatch("get_state", {})
+        if "nether" not in str(verified.get("dimension") or "").lower():
+            return ActionResult.fail(
+                "Portal traversal did not verify the Nether dimension"
+            )
+
     if current_phase in (Phase.NETHER_AND_BLAZE, Phase.WORLD_UNLOCK):
         print("Recovering items in Nether...")
-        if goto(client, *death_coords, timeout=600):
-            time.sleep(2.0)
-            return ActionResult.ok(
-                "Recovery completed in Nether", recovered_in_nether=True
+        if not goto(client, *death_coords, timeout=600):
+            return ActionResult.fail("Failed to reach Nether death location")
+        time.sleep(2.0)
+        if not _sweep_death_drops(client, death_coords):
+            return ActionResult.fail(
+                "Nether death-pile item entities remain after recovery sweep"
             )
-        return ActionResult.fail("Failed to reach Nether death location")
+        shortfall = _recovery_shortfall(client, expected_critical)
+        if shortfall:
+            failures = _record_unsafe_recovery(context.state, death_coords)
+            return ActionResult.fail(
+                "Critical Nether inventory recovery is incomplete",
+                missing=shortfall,
+                unsafe_recovery_failures=failures,
+            )
+        _clear_unsafe_recovery(context.state)
+        return ActionResult.ok(
+            "Recovery completed in Nether", recovered_in_nether=True
+        )
 
     print("Recovering items in Nether before returning to Overworld...")
     if goto(client, *death_coords, timeout=600):
@@ -428,8 +466,6 @@ def _recover_nether_death(
     print(f"Found Nether portal at {portal}")
     if not goto(client, *portal, timeout=300):
         return ActionResult.fail("Failed to reach Nether portal")
-    from ..common import enter_nether_portal
-
     if not enter_nether_portal(
         client,
         timeout=60,
@@ -441,6 +477,72 @@ def _recover_nether_death(
     return ActionResult.ok(
         "Reset to bootstrap phase after Nether recovery", reset_phase=True
     )
+
+
+def _resume_alive_pending_recovery(
+    context: ActionContext,
+    live_state: Dict,
+) -> Optional[ActionResult]:
+    """Resume a critical persisted grave without requiring another death."""
+    recovery = context.state.custom_data.get("death_recovery")
+    if not isinstance(recovery, dict):
+        return None
+    # The existing alive-restart circuit owns graves that already failed an
+    # approach.  Let it abandon those instead of replaying a proven unsafe
+    # route; this helper is only for an interrupted or falsely-completed first
+    # recovery such as Bot16's cross-dimension coordinate match.
+    if int(recovery.get("unsafe_failures", 0)) >= 1:
+        return None
+    location = recovery.get("pending_location")
+    expected = recovery.get("expected_critical")
+    if (
+        not isinstance(location, (list, tuple))
+        or len(location) != 3
+        or not isinstance(expected, dict)
+        or not expected
+    ):
+        return None
+    expected_critical = {
+        str(item_id): max(0, int(count))
+        for item_id, count in expected.items()
+    }
+    if not _recovery_shortfall(context.client, expected_critical):
+        _clear_unsafe_recovery(context.state)
+        return ActionResult.ok(
+            "Pending critical grave was already recovered",
+            recovered=True,
+        )
+    death_coords = tuple(int(value) for value in location)
+    pending_dimension = str(
+        recovery.get("pending_dimension", "minecraft:overworld")
+    ).lower()
+    print(
+        "RECOVERY: resuming critical pending grave while alive at "
+        f"{death_coords} in {pending_dimension}"
+    )
+    if "nether" in pending_dimension:
+        return _recover_nether_death(
+            context,
+            death_coords,
+            context.state.get_current_phase(),
+            expected_critical,
+        )
+    if not _reach_overworld_grave(context.client, death_coords):
+        return ActionResult.fail("Failed to reach pending Overworld grave")
+    if not _sweep_death_drops(context.client, death_coords):
+        return ActionResult.fail(
+            "Pending Overworld death-pile items remain after recovery sweep"
+        )
+    shortfall = _recovery_shortfall(context.client, expected_critical)
+    if shortfall:
+        failures = _record_unsafe_recovery(context.state, death_coords)
+        return ActionResult.fail(
+            "Critical pending inventory recovery is incomplete",
+            missing=shortfall,
+            unsafe_recovery_failures=failures,
+        )
+    _clear_unsafe_recovery(context.state)
+    return ActionResult.ok("Pending grave recovery completed", recovered=True)
 
 
 def _rebuild_after_lethal_grave(context: ActionContext, abandoned: Dict) -> ActionResult:
@@ -503,6 +605,9 @@ class DeathRecoveryAction(BaseAction):
                 )
                 return ActionResult.ok("Death recovery deferred due transport timeout")
             if not state.get("is_dead", False) and state.get("health", 20) > 0:
+                resumed = _resume_alive_pending_recovery(context, state)
+                if resumed is not None:
+                    return resumed
                 return handle_alive_pending_recovery(context, state, get_inventory)
             death_position, death_dimension, death_was_aquatic = _death_details(
                 context.client, state
@@ -647,7 +752,10 @@ class DeathRecoveryAction(BaseAction):
 
                 if "nether" in death_dim:
                     return _recover_nether_death(
-                        context, death_coords, current_phase
+                        context,
+                        death_coords,
+                        current_phase,
+                        expected_critical,
                     )
 
                 else:

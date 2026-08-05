@@ -130,6 +130,109 @@ def test_alive_player_clears_noncritical_stale_grave(monkeypatch):
     ] == "alive_with_no_critical_items_pending"
 
 
+def test_alive_player_resumes_critical_nether_grave(monkeypatch):
+    context = _context({})
+    context.client.transport.dead = False
+    original_dispatch = context.client.transport.dispatch
+
+    def dispatch(route, payload):
+        if route == "get_state":
+            return {
+                "is_dead": False,
+                "health": 20,
+                "dimension": "minecraft:the_nether",
+                "block_position": {"x": -20, "y": 84, "z": -35},
+            }
+        return original_dispatch(route, payload)
+
+    context.client.transport.dispatch = dispatch
+    context.state.phase = Phase.NETHER_AND_BLAZE
+    context.state.custom_data["death_recovery"] = {
+        "pending_location": [-286, 76, 77],
+        "pending_dimension": "minecraft:the_nether",
+        "expected_critical": {"minecraft:iron_sword": 1},
+    }
+    recovered = {"value": False}
+    destinations = []
+    monkeypatch.setattr(
+        death_recovery_action,
+        "get_inventory",
+        lambda _client: (
+            {"minecraft:iron_sword": 1} if recovered["value"] else {}
+        ),
+    )
+
+    def goto(_client, x, y, z, **_kwargs):
+        destinations.append((x, y, z))
+        recovered["value"] = True
+        return True
+
+    monkeypatch.setattr(death_recovery_action, "goto", goto)
+    monkeypatch.setattr(
+        death_recovery_action, "_sweep_death_drops", lambda *_args: True
+    )
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _seconds: None)
+
+    result = DeathRecoveryAction().execute(context)
+
+    assert result.success
+    assert result.data["recovered_in_nether"]
+    assert destinations == [(-286, 76, 77)]
+    assert "death_recovery" not in context.state.custom_data
+
+
+def test_nether_grave_recovery_enters_dimension_before_goto(monkeypatch):
+    context = _context({})
+    context.client.transport.dead = False
+    current_dimension = {"value": "minecraft:overworld"}
+
+    def dispatch(route, _payload):
+        if route == "get_state":
+            return {
+                "is_dead": False,
+                "health": 20,
+                "dimension": current_dimension["value"],
+                "block_position": {"x": 0, "y": 70, "z": 4},
+            }
+        return {}
+
+    context.client.transport.dispatch = dispatch
+    context.state.phase = Phase.NETHER_AND_BLAZE
+    order = []
+    monkeypatch.setattr(
+        death_recovery_action,
+        "find_nearest_portal",
+        lambda *_args: (-19, 85, -35),
+    )
+
+    def enter(*_args, **_kwargs):
+        order.append("enter")
+        current_dimension["value"] = "minecraft:the_nether"
+        return True
+
+    def goto(*_args, **_kwargs):
+        assert current_dimension["value"] == "minecraft:the_nether"
+        order.append("goto")
+        return True
+
+    monkeypatch.setattr(death_recovery_action, "enter_nether_portal", enter)
+    monkeypatch.setattr(death_recovery_action, "goto", goto)
+    monkeypatch.setattr(
+        death_recovery_action, "_sweep_death_drops", lambda *_args: True
+    )
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _seconds: None)
+
+    result = death_recovery_action._recover_nether_death(
+        context,
+        (-286, 76, 77),
+        Phase.NETHER_AND_BLAZE,
+        {},
+    )
+
+    assert result.success
+    assert order == ["enter", "goto"]
+
+
 def test_death_recovery_falls_back_to_pre_respawn_position(monkeypatch):
     context = _context({"has_death_location": False})
     destinations = []
