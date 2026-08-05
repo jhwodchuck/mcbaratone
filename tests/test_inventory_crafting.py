@@ -621,9 +621,19 @@ def test_catalog_withdraw_prefers_known_item_container(monkeypatch):
         lambda _client, item_id: counts.get(item_id, 0),
     )
 
-    def withdraw(_client, position, requirements, state=None):
+    received_attempts = []
+
+    def withdraw(
+        _client,
+        position,
+        requirements,
+        state=None,
+        *,
+        open_attempts=4,
+    ):
         assert position == (20, 65, 20)
         assert requirements == {"minecraft:bread": 8}
+        received_attempts.append(open_attempts)
         counts["minecraft:bread"] = 8
         return 1
 
@@ -636,6 +646,7 @@ def test_catalog_withdraw_prefers_known_item_container(monkeypatch):
         state=SimpleNamespace(),
     ) == 1
     assert visited == [(20, 65, 20)]
+    assert received_attempts == [1]
 
 
 def test_catalog_withdraw_skips_recently_failed_known_item_container(monkeypatch):

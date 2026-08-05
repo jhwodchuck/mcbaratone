@@ -1728,6 +1728,8 @@ def withdraw_required_from_chest(
     chest_pos: Tuple[int, int, int],
     requirements: Dict[str, int],
     state=None,
+    *,
+    open_attempts: int = 4,
 ) -> int:
     """Withdraw only banked stacks needed by the current objective.
 
@@ -1761,7 +1763,12 @@ def withdraw_required_from_chest(
 
     try:
         client.transport.dispatch("close_screen", {})
-        opened = harness_ops.open_container(client, (cx, cy, cz), timeout=4.0)
+        opened = harness_ops.open_container(
+            client,
+            (cx, cy, cz),
+            timeout=4.0,
+            attempts=open_attempts,
+        )
     except Exception as exc:
         print(f"STORAGE: could not open supply chest ({exc})")
         remember_unreachable_storage(client, position)
@@ -1978,6 +1985,7 @@ def withdraw_required_from_catalog(
             position,
             outstanding,
             state=state,
+            open_attempts=1,
         )
         if moved < 0:
             continue

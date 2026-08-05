@@ -674,6 +674,54 @@ def test_container_still_out_of_reach_after_approach_gives_up(monkeypatch):
     assert any("Still too far" in e for e in ctx.events)
 
 
+def test_catalog_container_probe_can_limit_open_attempts(monkeypatch):
+    """A blocked catalog landmark should not hold the bot for four cycles."""
+
+    class Transport:
+        def dispatch(self, route, _payload=None):
+            if route == "get_screen":
+                return {
+                    "data": {
+                        "type": "PlayerScreenHandler",
+                        "sync_id": 0,
+                        "total_slots": 46,
+                    }
+                }
+            return {}
+
+    class Context:
+        client = type("Client", (), {"transport": Transport()})()
+
+        def __init__(self):
+            self.events = []
+
+        def log_event(self, event):
+            self.events.append(event)
+
+        def get_position(self):
+            return (1.0, 65.0, 1.0)
+
+    interactions = []
+    monkeypatch.setattr(
+        inventory_ops, "block_id_at", lambda *_args: "minecraft:chest"
+    )
+    monkeypatch.setattr(inventory_ops, "close_screen", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        inventory_ops,
+        "robust_interact_block",
+        lambda *_args, **_kwargs: interactions.append(True) or False,
+    )
+
+    assert not inventory_ops.do_open_container(
+        Context(),
+        (1, 65, 1),
+        timeout=0.01,
+        attempts=1,
+    )
+    assert interactions == [True]
+
+
 def test_adjacent_support_finds_a_lateral_neighbour():
     """A roof interior has air below but a solid block beside it.
 

@@ -434,11 +434,14 @@ def smelt_in_furnace(client, furnace_pos, input_id, fuel_id, output_id, output_c
     return bool(_load()["smelt_in_furnace"](make_ctx(client), furnace_pos, input_id, fuel_id, output_id, output_count, wait_per_item=wait_per_item))
 
 
-def open_container(client, block_pos, timeout=4.0) -> bool:
+def open_container(client, block_pos, timeout=4.0, attempts=4) -> bool:
     """Open a known container and verify its expected screen layout."""
     return bool(
         _load()["open_container"](
-            make_ctx(client), tuple(block_pos), timeout=timeout
+            make_ctx(client),
+            tuple(block_pos),
+            timeout=timeout,
+            attempts=attempts,
         )
     )
 

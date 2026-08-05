@@ -313,7 +313,12 @@ def ensure_player_crafting_output_space(ctx, screen=None) -> bool:
     return ensure_crafting_output_space(ctx, screen=screen)
 
 
-def do_open_container(ctx, pos: Tuple[int, int, int], timeout: float = 3.0) -> bool:
+def do_open_container(
+    ctx,
+    pos: Tuple[int, int, int],
+    timeout: float = 3.0,
+    attempts: int = 4,
+) -> bool:
     """
     Open container at specified position.
 
@@ -384,8 +389,10 @@ def do_open_container(ctx, pos: Tuple[int, int, int], timeout: float = 3.0) -> b
             return False, data
         return total_slots in expected_total_slots, data
 
-    # Retry opening; we frequently see a stale 46-slot screen returned.
-    attempts = 4
+    # Retry opening; we frequently see a stale 46-slot screen returned. Callers
+    # probing an untrusted catalog landmark may choose one bounded attempt so a
+    # blocked chest cannot hold the player exposed for the full retry cycle.
+    attempts = max(1, int(attempts))
     per_attempt_timeout = max(0.3, timeout / attempts)
     last_data: Dict = {}
     for attempt in range(1, attempts + 1):
