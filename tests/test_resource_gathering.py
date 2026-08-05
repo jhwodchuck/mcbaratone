@@ -340,6 +340,51 @@ def test_ore_gather_recounts_drops_when_pathing_stops(monkeypatch):
     assert resources.gather_ores(client, "iron", count=15, timeout=30)
 
 
+def test_single_ore_shortfall_uses_one_slot_and_exits_before_cleanup(monkeypatch):
+    class OreTransport(RecordingTransport):
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {"is_pathing": True, "food_level": 20}
+            return {}
+
+    client = SimpleNamespace(transport=OreTransport())
+    mined = {"started": False}
+    reservations = []
+
+    monkeypatch.setattr(
+        resources,
+        "count_item",
+        lambda _client, item_id: (
+            1
+            if item_id == "minecraft:raw_iron" and mined["started"]
+            else 0
+        ),
+    )
+    monkeypatch.setattr(
+        resources,
+        "remaining_pickaxe_durability",
+        lambda *_args, **_kwargs: 100,
+    )
+    monkeypatch.setattr(
+        resources,
+        "_reserve_gathering_inventory",
+        lambda _client, minimum_free_slots=3: reservations.append(
+            minimum_free_slots
+        )
+        or True,
+    )
+    monkeypatch.setattr(
+        resources,
+        "_start_mine_process",
+        lambda *_args, **_kwargs: mined.__setitem__("started", True),
+    )
+    monkeypatch.setattr(resources, "free_inventory_slots", lambda _client: 0)
+
+    assert resources.gather_ores(client, "iron", count=1, timeout=30)
+    assert reservations == [1]
+
+
 def test_pickaxe_durability_uses_damage_from_raw_inventory():
     class InventoryTransport(RecordingTransport):
         def dispatch(self, route, payload):
