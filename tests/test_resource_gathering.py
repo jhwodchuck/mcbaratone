@@ -2738,6 +2738,35 @@ def test_manage_inventory_can_shed_raw_copper(monkeypatch):
     )
 
 
+def test_manage_inventory_can_shed_orphaned_decorative_loot(monkeypatch):
+    offered = []
+    free = {"slots": 0}
+
+    def fake_drop(_client, candidates, max_stacks=1, retain_counts=None):
+        offered.append(list(candidates))
+        if "minecraft:decorated_pot" in candidates:
+            free["slots"] = 1
+            return 1
+        return 0
+
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.free_inventory_slots",
+        lambda _client: free["slots"],
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.drop_items", fake_drop
+    )
+
+    assert resources.manage_inventory(
+        SimpleNamespace(), minimum_free_slots=1
+    ) is True
+    assert any("minecraft:decorated_pot" in tier for tier in offered)
+    assert any(
+        "minecraft:waxed_oxidized_cut_copper_stairs" in tier
+        for tier in offered
+    )
+
+
 def test_copper_is_shed_after_stone_not_before(monkeypatch):
     """A bot mining for iron should shed unusable ore before usable material."""
     from baritone_client.common import resources as res
