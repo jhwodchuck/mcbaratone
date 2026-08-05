@@ -26,8 +26,39 @@ def test_goto_fails_fast_when_goal_is_rejected_without_movement(monkeypatch):
     assert not navigation.goto(client, -160, 104, -388, timeout=300)
 
     state_reads = [call for call in transport.calls if call[0] == "get_state"]
-    assert len(state_reads) == 3
+    # Three route observations plus one fresh state sample per defense tick.
+    assert len(state_reads) == 6
     assert transport.calls[-1][0] == "cancel"
+
+
+def test_goto_cancels_when_defense_intervenes(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, dict(payload)))
+            if route == "get_state":
+                return {
+                    "health": 20,
+                    "is_pathing": True,
+                    "block_position": {"x": 0, "y": 64, "z": 0},
+                }
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    defended = []
+
+    assert not navigation.goto(
+        client,
+        20,
+        64,
+        0,
+        on_defense=lambda: defended.append(True) or True,
+    )
+    assert defended == [True]
+    assert transport.calls[-1] == ("cancel", {})
 
 
 def test_staged_goto_targets_loaded_column_surface(monkeypatch):

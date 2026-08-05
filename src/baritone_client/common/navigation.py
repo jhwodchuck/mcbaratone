@@ -6,7 +6,35 @@ import math
 import time
 from typing import Callable, Iterable, Optional, Tuple
 
-from .tasks import TaskResult
+from .tasks import PlayerDeathDetected, TaskResult
+
+
+DefenseCallback = Callable[[], bool]
+_DEFENSE_GUARD = "_navigation_defense_callback_active"
+
+
+def run_navigation_defense(
+    client,
+    on_defense: Optional[DefenseCallback] = None,
+) -> bool:
+    """Run one guarded defense tick during a long navigation operation.
+
+    The lazy import avoids the combat/navigation module cycle. Nested
+    navigation started by the defense policy still performs survival checks,
+    but it does not recursively start another defense policy invocation.
+    """
+    if getattr(client, _DEFENSE_GUARD, False):
+        return False
+    if on_defense is None:
+        from .combat import defend_or_flee
+
+        on_defense = lambda: defend_or_flee(client)
+
+    setattr(client, _DEFENSE_GUARD, True)
+    try:
+        return bool(on_defense())
+    finally:
+        setattr(client, _DEFENSE_GUARD, False)
 
 
 def goto(
@@ -18,6 +46,8 @@ def goto(
     check_interval: float = 2.0,
     tolerance: float = 3.0,
     on_tick: Optional[Callable[[], None]] = None,
+    on_defense: Optional[DefenseCallback] = None,
+    defense_check_interval: float = 0.5,
 ) -> bool:
     """
     Navigate to specific coordinates.
@@ -33,6 +63,8 @@ def goto(
     Returns:
         True if reached destination
     """
+    defense_check_interval = max(0.1, float(defense_check_interval))
+
     try:
         client._last_navigation_survival_abort = False
         client.transport.dispatch("goto", {"x": x, "y": y, "z": z})
@@ -43,7 +75,6 @@ def goto(
         while time.time() - start < timeout:
             if on_tick:
                 on_tick()
-                
             state = client.transport.dispatch("get_state", {})
 
             # Central survival reflex: surface before drowning. Surfacing
@@ -54,6 +85,10 @@ def goto(
 
             if survival_tick(client, state):
                 client._last_navigation_survival_abort = True
+                client.transport.dispatch("cancel", {})
+                return False
+
+            if run_navigation_defense(client, on_defense):
                 client.transport.dispatch("cancel", {})
                 return False
 
@@ -86,11 +121,17 @@ def goto(
                 client.transport.dispatch("cancel", {})
                 return False
 
-            time.sleep(check_interval)
+            time.sleep(min(float(check_interval), defense_check_interval))
         
         client.transport.dispatch("cancel", {})
         return False
         
+    except PlayerDeathDetected:
+        try:
+            client.transport.dispatch("cancel", {})
+        except Exception:
+            pass
+        raise
     except Exception as e:
         print(f"Navigation error: {e}")
         return False
@@ -103,8 +144,12 @@ def goto_xz(
     timeout: int = 120,
     check_interval: float = 1.0,
     tolerance: float = 6.0,
+    on_defense: Optional[DefenseCallback] = None,
+    defense_check_interval: float = 0.5,
 ) -> bool:
     """Navigate to a horizontal column while Baritone chooses loaded terrain Y."""
+    defense_check_interval = max(0.1, float(defense_check_interval))
+
     try:
         client._last_navigation_survival_abort = False
         client.transport.dispatch("chat", {"message": f"#goto {x} {z}"})
@@ -117,6 +162,9 @@ def goto_xz(
 
             if survival_tick(client, state):
                 client._last_navigation_survival_abort = True
+                client.transport.dispatch("cancel", {})
+                return False
+            if run_navigation_defense(client, on_defense):
                 client.transport.dispatch("cancel", {})
                 return False
             position = state.get("block_position", state.get("position", {}))
@@ -138,9 +186,15 @@ def goto_xz(
             if idle_unpathing_checks >= 3:
                 client.transport.dispatch("cancel", {})
                 return False
-            time.sleep(check_interval)
+            time.sleep(min(float(check_interval), defense_check_interval))
         client.transport.dispatch("cancel", {})
         return False
+    except PlayerDeathDetected:
+        try:
+            client.transport.dispatch("cancel", {})
+        except Exception:
+            pass
+        raise
     except Exception as exc:
         print(f"Horizontal navigation error: {exc}")
         return False

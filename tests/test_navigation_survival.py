@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 
+import pytest
+
 from baritone_client.common import navigation, combat
+from baritone_client.common.tasks import PlayerDeathDetected
 
 
 class SubmergedNavTransport:
@@ -41,3 +44,33 @@ def test_goto_surfaces_and_aborts_submerged_path_without_replay(monkeypatch):
     assert surfaced == [True]  # drowning reflex fired mid-path
     assert client.transport.gotos == 1
     assert client._last_navigation_survival_abort is True
+
+
+@pytest.mark.parametrize("horizontal", [False, True])
+def test_navigation_propagates_player_death(horizontal):
+    class DeadTransport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, dict(payload)))
+            if route == "get_state":
+                return {
+                    "health": 0,
+                    "is_dead": True,
+                    "block_position": {"x": 0, "y": 64, "z": 0},
+                }
+            return {}
+
+    transport = DeadTransport()
+    client = SimpleNamespace(
+        transport=transport,
+        _navigation_defense_callback_active=True,
+    )
+
+    with pytest.raises(PlayerDeathDetected):
+        if horizontal:
+            navigation.goto_xz(client, 20, 0)
+        else:
+            navigation.goto(client, 20, 64, 0)
+    assert transport.calls[-1] == ("cancel", {})

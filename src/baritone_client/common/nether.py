@@ -8,7 +8,7 @@ primarily used by higher-level scripts as orchestration primitives.
 
 import logging
 import time
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from .automation_utils import place_block
 from .blaze_spawners import (
@@ -731,75 +731,20 @@ def _travel_to(
     *,
     radius: int,
     timeout: float = 45.0,
+    on_defense: Optional[Callable[[], bool]] = None,
+    defense_check_interval: float = 0.5,
 ) -> bool:
-    """Issue a goto and wait for arrival instead of immediately retargeting.
+    """Wait for a Nether goal with survival and defense supervision."""
+    from .nether_travel import execute_nether_travel
 
-    Dispatching a goto and sleeping a fixed few seconds does not move a bot
-    anywhere: the next dispatch replaces the path before Baritone has walked
-    more than a few blocks. Wait for arrival, and give up early only when the
-    bot has genuinely stopped closing the distance.
-    """
-    x, y, z = int(target[0]), int(target[1]), int(target[2])
-    try:
-        client.transport.dispatch(
-            "goto", {"x": x, "y": y, "z": z, "radius": int(radius)}
-        )
-    except Exception as exc:
-        logger.warning("Travel dispatch failed: %s", exc)
-        return False
-    deadline = time.time() + timeout
-    previous_remaining = None
-    stalled = 0
-    egress_attempted = False
-    while time.time() < deadline:
-        time.sleep(2)
-        state = _unwrap(client.transport.dispatch("get_state", {}))
-        here = _position(state)
-        remaining = max(abs(here[0] - x), abs(here[2] - z))
-        if remaining <= radius + 2:
-            return True
-        # Give up on closing progress, not on raw displacement: a bot
-        # threading a corridor moves constantly without getting nearer, and
-        # one that is walking a long straight leg covers little ground per
-        # poll yet is doing exactly the right thing.
-        if previous_remaining is not None and remaining >= previous_remaining:
-            stalled += 1
-            if stalled >= 3:
-                # A valid goal can be unreachable because the bot is standing
-                # on a tiny generated shelf or its own one-block pillar. In
-                # that case every new goal fails in exactly the same place.
-                # Give the bounded shelf escape one chance before declaring
-                # the destination unreachable. Live 2026-08-03: Bot16 and
-                # Bot17 were idle/not pathing for an hour while even 24-block
-                # Nether goals stopped closing from (-104,86,-126) and
-                # (4,92,62), respectively.
-                if not egress_attempted and not bool(state.get("is_pathing")):
-                    egress_attempted = True
-                    landing = try_lower_surface_egress(
-                        client,
-                        state,
-                        minimum_altitude=0,
-                        allow_upward_excavation=False,
-                    )
-                    if landing is not None:
-                        logger.info(
-                            "Recovered marooned travel via lower surface %s",
-                            landing,
-                        )
-                        client.transport.dispatch(
-                            "goto",
-                            {"x": x, "y": y, "z": z, "radius": int(radius)},
-                        )
-                        previous_remaining = None
-                        stalled = 0
-                        continue
-                logger.info("Travel to (%d, %d, %d) stopped closing", x, y, z)
-                return False
-        else:
-            stalled = 0
-        previous_remaining = remaining
-    return False
-
+    return execute_nether_travel(
+        client,
+        target,
+        radius=radius,
+        timeout=timeout,
+        on_defense=on_defense,
+        defense_check_interval=defense_check_interval,
+    )
 
 def _advance_blaze_frontier(
     client,

@@ -1,10 +1,13 @@
-from tests.functional.suite_utils import get_test_state
 """
 Extended Suite 600: Combat & Entities (Granular Action Tests)
 T600-T621: Melee, Critical Hit, Shield, Ranged, Combat Mechanics
 """
 
 import time
+
+from baritone_client.common.combat import safe_combat
+from tests.functional.suite_utils import get_test_state
+
 from test_base import TestCase, TestSuite, TestContext
 
 from utils.mc_harness import (
@@ -77,30 +80,38 @@ def create_extended_suite_600() -> TestSuite:
         
         get_test_state(suite_state, "T600")["target_id"] = target["id"]
         
-        ctx.client.transport.dispatch("look_at", {"x": target["position"]["x"], "y": target["position"]["y"]+1.5, "z": target["position"]["z"]})
         select_hotbar_item(ctx, "minecraft:iron_sword")
-        
-        # Hit 4 times (enough to kill with iron sword usually)
-        for _ in range(4):
-            ctx.client.transport.dispatch("attack_entity", {"entity_id": target["id"]})
-            time.sleep(0.6) # Cooldown
-            
-        return True
+
+        result = safe_combat(
+            ctx.client,
+            target["id"],
+            retreat_health=6.0,
+            max_duration=20,
+            purpose="functional_hostile",
+            source="suite_600",
+            target_metadata=target,
+        )
+        get_test_state(suite_state, "T600")["combat_result"] = result
+        return result
 
     def t600_assert_killed(ctx: TestContext):
         # Verify gone
         tid = get_test_state(suite_state, "T600").get("target_id")
         if not tid: return False, "No target ID"
         
-        # Check if entity still exists
+        result = get_test_state(suite_state, "T600").get("combat_result")
         ents = get_entities(ctx, radius=10)
-        alive = any(e["id"] == tid for e in ents)
-        return not alive, f"Target dead: {not alive}"
+        observed = next((e for e in ents if e["id"] == tid), None)
+        verified_dead = observed is None or float(observed.get("health", 1)) <= 0
+        return (
+            result is True and verified_dead,
+            f"safe_combat={result}; target verified dead={verified_dead}",
+        )
 
     suite.add(TestCase(
         id="T600",
         name="Melee Attack",
-        description="Kill NoAI zombie",
+        description="Kill NoAI zombie through production safe_combat",
         setup=t600_setup,
         steps=[t600_step_attack],
         assertions=[t600_assert_killed],

@@ -1,10 +1,12 @@
 from types import SimpleNamespace
 
+import pytest
+
 from baritone_client.automator.phases import nether_prep
 from baritone_client.automator.resource_manager import ResourceManager
 from baritone_client.automator.state_manager import Phase, StateManager
 from baritone_client.common import blaze_spawners, nether
-from baritone_client.common.tasks import TaskResult
+from baritone_client.common.tasks import PlayerDeathDetected, TaskResult
 
 
 class MissionStub:
@@ -1328,6 +1330,56 @@ def test_nether_travel_escapes_a_marooned_pillar_before_failing(monkeypatch):
     assert len(recoveries) == 1
     assert recoveries[0][1]["minimum_altitude"] == 0
     assert len(transport.gotos) == 2, "the original goal must be re-issued"
+
+
+def test_nether_travel_cancels_when_defense_intervenes():
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, dict(payload)))
+            if route == "get_state":
+                return {
+                    "health": 20,
+                    "is_pathing": True,
+                    "block_position": {"x": 0, "y": 64, "z": 0},
+                }
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+
+    assert not nether._travel_to(
+        client,
+        (20, 64, 0),
+        radius=2,
+        on_defense=lambda: True,
+    )
+    assert transport.calls[-1] == ("cancel", {})
+
+
+def test_nether_travel_propagates_player_death():
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, dict(payload)))
+            if route == "get_state":
+                return {
+                    "health": 0,
+                    "is_dead": True,
+                    "block_position": {"x": 0, "y": 64, "z": 0},
+                }
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+
+    with pytest.raises(PlayerDeathDetected):
+        nether._travel_to(client, (20, 64, 0), radius=2)
+    assert transport.calls[-1] == ("cancel", {})
 
 
 def test_portal_approach_leaves_water_before_a_long_overland_route(monkeypatch):

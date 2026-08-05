@@ -94,6 +94,9 @@ class _CombatState:
     last_snapshot_at: float = 0.0
     last_health: Optional[float] = None
     source: Optional[str] = None
+    purpose: Optional[str] = None
+    target_metadata: Optional[Dict[str, Any]] = None
+    disengagement_reason: Optional[str] = None
     threat_health: Dict[str, float] = field(default_factory=dict)
     target_ids: set[str] = field(default_factory=set)
 
@@ -137,6 +140,7 @@ class CombatTelemetryRecorder:
             "encounter_active": event != "combat_end",
             "client_type": self.client_label,
             "transport_type": self.transport_label,
+            "purpose": self._state.purpose,
         }
         payload.update({key: _bounded(value) for key, value in fields.items()})
         try:
@@ -148,14 +152,24 @@ class CombatTelemetryRecorder:
         self,
         *,
         source: str,
+        purpose: Optional[str] = None,
         player: Optional[Any] = None,
         threats: Optional[Iterable[Any]] = None,
         target_id: Any = None,
+        target_metadata: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Start an encounter if idle; return whether this call owns it."""
         with self._lock:
             if self._state.encounter_id is not None:
-                return False
+                # Explicitly different purposes must not share one lifecycle.
+                # This is how a passive cow hunt previously appeared inside
+                # a defensive hostile encounter in fleet telemetry.
+                if purpose is None or self._state.purpose == purpose:
+                    return False
+                self.end_encounter(
+                    outcome="interrupted",
+                    reason="purpose_changed",
+                )
             now = time.monotonic()
             threat_list = list(threats or [])[:MAX_THREATS]
             self._state = _CombatState(
@@ -163,7 +177,11 @@ class CombatTelemetryRecorder:
                 started_at=now,
                 last_snapshot_at=now,
                 last_health=_health(player),
+                purpose=purpose or source,
                 source=source,
+                target_metadata=_bounded(target_metadata)
+                if isinstance(target_metadata, dict)
+                else None,
                 threat_health=_threat_health(threat_list),
                 target_ids={str(target_id)} if target_id is not None else set(),
             )
@@ -173,8 +191,16 @@ class CombatTelemetryRecorder:
                 player=_player(player),
                 threats=_threats(threat_list),
                 target_id=target_id,
+                target=target_metadata if isinstance(target_metadata, dict) else None,
             )
             return True
+
+    def set_disengagement_reason(self, reason: Optional[str]) -> None:
+        if reason is None:
+            return
+        with self._lock:
+            if self._state.encounter_id is not None:
+                self._state.disengagement_reason = str(reason)
 
     def record_decision(
         self,
@@ -292,7 +318,7 @@ class CombatTelemetryRecorder:
             self._emit(
                 "combat_end",
                 outcome=outcome,
-                reason=reason,
+                reason=reason or self._state.disengagement_reason,
                 duration_s=duration,
                 player=_player(player),
                 threats=_threats(threats),
@@ -333,11 +359,29 @@ def trace_safe_combat(function):
 
     @functools.wraps(function)
     def traced(client, target_id, *args, **kwargs):
+        encounter_source = kwargs.get("source", "safe_combat")
+        if not isinstance(encounter_source, str):
+            encounter_source = "safe_combat"
+        encounter_purpose = kwargs.get("purpose", None)
+        if not isinstance(encounter_purpose, str):
+            encounter_purpose = None
+        encounter_target_metadata = (
+            kwargs["target_metadata"]
+            if isinstance(kwargs.get("target_metadata"), dict)
+            else None
+        )
         recorder = get_combat_telemetry(client)
         owns_encounter = recorder.begin_encounter(
-            source="safe_combat", target_id=target_id
+            source=encounter_source,
+            purpose=encounter_purpose,
+            target_id=target_id,
+            target_metadata=encounter_target_metadata,
         )
-        recorder.record_decision("engage", reason="safe_combat", target={"id": target_id})
+        recorder.record_decision(
+            "engage",
+            reason=encounter_purpose or "safe_combat",
+            target=encounter_target_metadata or {"id": target_id},
+        )
         try:
             result = function(client, target_id, *args, **kwargs)
         except Exception as exc:
@@ -348,7 +392,7 @@ def trace_safe_combat(function):
             raise
         if owns_encounter:
             recorder.end_encounter(
-                outcome="target_cleared" if result else "disengaged"
+                outcome="target_killed" if result else "disengaged"
             )
         return result
 
@@ -362,7 +406,10 @@ def trace_escape(function):
     def traced(client, threat, *args, **kwargs):
         recorder = get_combat_telemetry(client)
         owns_encounter = recorder.begin_encounter(
-            source="run_away", threats=[threat], target_id=threat.get("id")
+            source="run_away",
+            purpose="defensive_escape",
+            threats=[threat],
+            target_id=threat.get("id"),
         )
         recorder.record_decision(
             "evade", reason="run_away", threats=[threat], target=threat
@@ -404,7 +451,10 @@ def record_defense_decision(
     mode = getattr(getattr(decision, "mode", None), "value", "unknown")
     if threat_list:
         recorder.begin_encounter(
-            source="defend_or_flee", player=state, threats=threat_list
+            source="defend_or_flee",
+            purpose="hostile_defense",
+            player=state,
+            threats=threat_list,
         )
     if recorder.encounter_id is None:
         return

@@ -179,6 +179,33 @@ def test_safe_combat_decorator_preserves_result_and_exception(
 
     endings = [event for event in events if event["event"] == "combat_end"]
     assert [event["outcome"] for event in endings] == [
-        "target_cleared",
+        "target_killed",
         "error",
     ]
+
+
+def test_explicit_purpose_change_separates_encounters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = emitted(monkeypatch)
+    recorder = telemetry.get_combat_telemetry(Client())
+
+    assert recorder.begin_encounter(
+        source="defend_or_flee", purpose="hostile_defense", target_id=7
+    )
+    assert recorder.begin_encounter(
+        source="hunt_mobs",
+        purpose="passive_hunt",
+        target_id=42,
+        target_metadata={"id": 42, "type": "minecraft:cow"},
+    )
+
+    endings = [event for event in events if event["event"] == "combat_end"]
+    starts = [event for event in events if event["event"] == "combat_start"]
+    assert endings[-1]["outcome"] == "interrupted"
+    assert endings[-1]["reason"] == "purpose_changed"
+    assert [event["purpose"] for event in starts] == [
+        "hostile_defense",
+        "passive_hunt",
+    ]
+    assert starts[-1]["target"]["type"] == "minecraft:cow"

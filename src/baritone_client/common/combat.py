@@ -4,7 +4,7 @@ Combat utilities - Mob engagement, retreat logic, and healing.
 
 import logging
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from . import combat_telemetry
 from .food_recovery import (
     bounded_exploration_origin,
@@ -210,165 +210,23 @@ def safe_combat(
     abort_on_other_hostiles: bool = False,
     tracking_radius: int = 30,
     no_retreat: bool = False,
+    *,
+    purpose: Optional[str] = None,
+    source: str = "safe_combat",
+    target_metadata: Optional[Dict[str, Any]] = None,
 ) -> bool:
-    """
-    Fight target with retreat logic.
+    """Fight one target through the supervised cooldown-aware melee loop."""
+    from .combat_melee import execute_safe_combat
 
-    Args:
-        client: Baritone client
-        target_id: Entity ID to attack
-        retreat_health: Retreat if health drops below this
-        max_duration: Maximum combat duration
-        no_retreat: Skip the health-based retreat check entirely. Only for
-            last-resort callers where fleeing has already been tried and
-            failed repeatedly -- a fixed retreat_health floor doesn't work
-            there because each failed flee attempt costs HP unpredictably,
-            so health is often already below any floor by the time this is
-            reached (live proof: Bot09 hit "Retreating! Health: 1.999" with
-            retreat_health=2.0 and never landed a single hit before dying).
-            Other safety checks (drowning, other-hostiles abort) still apply.
-
-    Returns:
-        True if target killed, False if retreated or failed
-    """
-    # Equip weapon
-    equip_best_weapon(client)
-    
-    start = time.time()
-    
-    approach_failures = 0
-    
-    while time.time() - start < max_duration:
-        snapshot = _get_combat_snapshot(
-            client,
-            radius=max(30, tracking_radius),
-        )
-        if snapshot is not None:
-            state = snapshot["player"]
-            entities = snapshot["entities"]
-        else:
-            state = client.transport.dispatch("get_state", {})
-            entities = get_nearby_entities(
-                client,
-                radius=max(30, tracking_radius),
-            )
-        combat_telemetry.record_combat_snapshot(client, {"player": state, "entities": entities})
-
-        # Surface before drowning: a fish fight keeps the bot submerged and
-        # attacking in place with no goto to trigger the normal reflex. Allow a
-        # brief dive, then force a surface well under the ~15s air supply.
-        if _submerged_too_long(client, state, max_seconds=8.0):
-            print("SURVIVAL: submerged too long mid-combat; surfacing to avoid drowning")
-            client.transport.dispatch("cancel", {})
-            _surface_after_aquatic_hunt(client, timeout=8.0)
-            client._submerged_since = None
-            return False
-
-        # Check health
-        health = state.get("health", 20)
-        if health < retreat_health and not no_retreat:
-            print(f"Retreating! Health: {health}")
-            client.transport.dispatch("cancel", {})
-            return False
-        if health <= 0:
-            return False
-        
-        # Check if target still exists
-        target = next((e for e in entities if e.get("id") == target_id), None)
-
-        if abort_on_other_hostiles:
-            other_threat = next(
-                (
-                    threat
-                    for threat in assess_threats(entities, state)
-                    if threat.entity.get("id") != target_id
-                    and threat.distance <= MULTI_THREAT_ABORT_RADIUS
-                ),
-                None,
-            )
-            if other_threat is not None:
-                print(
-                    f"Combat aborted: {other_threat.entity.get('type')} entered "
-                    f"{other_threat.distance:.1f}m safety radius"
-                )
-                client.transport.dispatch("chat", {"message": "#stop"})
-                client.transport.dispatch("cancel", {})
-                return False
-        
-        if target is None:
-            # Target dead or escaped
-            return True
-        
-        dist = target.get("distance", 999)
-        
-        # Attack if in range
-        if dist < 4.5:
-            look_at_entity(client, target)
-            cooldown = _attack_cooldown(state)
-            if cooldown < MELEE_ATTACK_COOLDOWN_THRESHOLD:
-                # Continue observing the fight while the weapon recharges.
-                # The bridge repeats this check on the game thread so a
-                # delayed request cannot turn into a weak spam attack.
-                time.sleep(0.05)
-                continue
-            try:
-                result = client.transport.dispatch(
-                    "attack_entity",
-                    {
-                        "entity_id": target_id,
-                        "min_cooldown": MELEE_ATTACK_COOLDOWN_THRESHOLD,
-                    },
-                )
-                combat_telemetry.record_melee_attack(client, target, result)
-            except Exception as exc:
-                # The entity can die or unload between the entity scan and
-                # attack dispatch.  That is a successful end to this combat,
-                # not a phase-level exception that should crash recovery.
-                if "entity not found" in str(exc).lower():
-                    return True
-                print(f"Combat attack failed: {exc}")
-                return False
-            if isinstance(result, dict) and result.get("attacked") is False:
-                if result.get("reason") == "cooldown":
-                    time.sleep(0.05)
-                    continue
-                print(f"Combat attack declined: {result.get('reason', 'unknown')}")
-                return False
-            # Reset pathing if we are close enough to just whack it
-            if state.get("is_pathing", False):
-                 client.transport.dispatch("chat", {"message": "#stop"})
-        else:
-            # A live run proved that replacing the same entity goal every
-            # 200ms can keep Baritone permanently in its pre-path state.  Give
-            # one coordinate snapshot a bounded chance to finish, then rescan
-            # the moving target before issuing another goal.
-            tpos = entity_position(target)
-            if tpos is None:
-                return False
-            tx, ty, tz = int(tpos[0]), int(tpos[1]), int(tpos[2])
-            remaining = max(1.0, max_duration - (time.time() - start))
-            approached = goto(
-                client,
-                tx,
-                ty,
-                tz,
-                timeout=min(15, int(remaining)),
-                check_interval=0.5,
-                tolerance=3.0,
-            )
-            if approached:
-                approach_failures = 0
-            else:
-                approach_failures += 1
-                if approach_failures >= 3:
-                    print("DEBUG: Baritone failed three bounded target approaches")
-                    client.transport.dispatch("cancel", {})
-                    return False
-
-        time.sleep(0.2)
-    
-    return False
-
+    return execute_safe_combat(
+        client,
+        target_id,
+        retreat_health,
+        max_duration,
+        abort_on_other_hostiles,
+        tracking_radius,
+        no_retreat,
+    )
 
 def _approach_aquatic_food(
     client,
@@ -1140,6 +998,11 @@ def hunt_mobs(
             continue
             
         target_pos = entity_position(entity)
+        target_purpose = (
+            "hostile_hunt"
+            if assess_threats([entity], live_state)
+            else "passive_hunt"
+        )
         if safe_combat(
             client,
             target_id,
@@ -1147,6 +1010,9 @@ def hunt_mobs(
             max_duration=40,
             abort_on_other_hostiles=abort_on_other_hostiles,
             tracking_radius=search_radius,
+            purpose=target_purpose,
+            source="hunt_mobs",
+            target_metadata=entity,
         ):
             kills += 1
             # Entity death can be detected while the player is still near the
@@ -1392,6 +1258,18 @@ def ensure_alive(client, state: Optional[Dict] = None) -> bool:
     return False
 
 
+def _fight_defensive_target(client, target: Dict, **kwargs) -> bool:
+    """Run melee while consistently labeling a defensive target."""
+    return safe_combat(
+        client,
+        target.get("id"),
+        purpose="hostile_defense",
+        source="defend_or_flee",
+        target_metadata=target,
+        **kwargs,
+    )
+
+
 def defend_or_flee(client) -> bool:
     """Advance the canonical defensive state machine by one supervised tick."""
     client._last_defense_intervention = None
@@ -1527,9 +1405,9 @@ def defend_or_flee(client) -> bool:
                 None,
             )
             if alternative is not None:
-                defeated = safe_combat(
+                defeated = _fight_defensive_target(
                     client,
-                    alternative.entity.get("id"),
+                    alternative.entity,
                     no_retreat=True,
                     abort_on_other_hostiles=False,
                 )
@@ -1558,9 +1436,9 @@ def defend_or_flee(client) -> bool:
         # died anyway. Skip the retreat check entirely: evasion is already a
         # proven 0% strategy against this threat, so committing to the fight
         # is strictly better regardless of current health.
-        defeated = safe_combat(
+        defeated = _fight_defensive_target(
             client,
-            threat_id,
+            primary.entity,
             no_retreat=True,
             # Reaching this branch proves that escape has already failed.
             # Aborting because another hostile is nearby simply recreated the
@@ -1572,9 +1450,9 @@ def defend_or_flee(client) -> bool:
             runtime.hold_recovery(6.0)
         return True
 
-    defeated = safe_combat(
+    defeated = _fight_defensive_target(
         client,
-        primary.entity.get("id"),
+        primary.entity,
         retreat_health=12.0,
         abort_on_other_hostiles=True,
     )

@@ -832,7 +832,7 @@ def test_secure_recovery_area_keeps_defense_attached_to_threat(monkeypatch):
     assert defended == [True]
 
 
-def test_combat_treats_vanished_target_as_finished(monkeypatch):
+def test_combat_does_not_count_unobserved_target_as_kill(monkeypatch):
     target = {
         "id": 42,
         "type": "minecraft:zombie",
@@ -851,7 +851,7 @@ def test_combat_treats_vanished_target_as_finished(monkeypatch):
     monkeypatch.setattr(combat, "equip_best_weapon", lambda _client: True)
     monkeypatch.setattr(combat, "look_at_entity", lambda *_args: True)
 
-    assert combat.safe_combat(client, 42, max_duration=1)
+    assert not combat.safe_combat(client, 42, max_duration=1)
 
 
 def test_melee_waits_for_attack_cooldown_before_dispatch(monkeypatch):
@@ -873,7 +873,7 @@ def test_melee_waits_for_attack_cooldown_before_dispatch(monkeypatch):
             },
             {
                 "player": {"health": 20, "attack_cooldown": 0.1},
-                "entities": [],
+                "entities": [{**target, "health": 0}],
             },
         )
     )
@@ -977,7 +977,7 @@ def test_far_combat_target_gets_one_bounded_navigation_goal(monkeypatch):
     }
     client = SimpleNamespace(transport=CombatTransport())
     navigation_calls = []
-    scans = iter(([target], []))
+    scans = iter(([target], [{**target, "health": 0}]))
     scan_radii = []
 
     def scan(_client, radius):
