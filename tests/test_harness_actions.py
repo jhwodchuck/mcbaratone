@@ -110,9 +110,7 @@ def test_move_near_stops_after_three_stationary_candidate_failures(monkeypatch):
 
 
 def test_harness_ops_move_near_raises_player_death_for_the_controller(monkeypatch):
-    """The harness returns False (right for the read-only suites); the
-    adapter must escalate it so the automator enters death recovery instead
-    of retrying movement on a corpse."""
+    """A failed guarded move escalates a live corpse to death recovery."""
     import pytest
     from baritone_client.common import harness_ops
     from baritone_client.common.tasks import PlayerDeathDetected
@@ -123,9 +121,8 @@ def test_harness_ops_move_near_raises_player_death_for_the_controller(monkeypatc
         )
     )
     monkeypatch.setattr(
-        harness_ops, "_load", lambda: {"move_near": lambda *_a, **_k: False}
+        "baritone_client.common.navigation.goto", lambda *_a, **_k: False
     )
-    monkeypatch.setattr(harness_ops, "make_ctx", lambda _c: object())
 
     with pytest.raises(PlayerDeathDetected):
         harness_ops.move_near(client, 1, 2, 3)
@@ -141,11 +138,77 @@ def test_harness_ops_move_near_returns_false_when_alive_but_blocked(monkeypatch)
         )
     )
     monkeypatch.setattr(
-        harness_ops, "_load", lambda: {"move_near": lambda *_a, **_k: False}
+        "baritone_client.common.navigation.goto", lambda *_a, **_k: False
     )
-    monkeypatch.setattr(harness_ops, "make_ctx", lambda _c: object())
 
     assert harness_ops.move_near(client, 1, 2, 3) is False
+
+
+def test_harness_ops_move_near_uses_guarded_navigation(monkeypatch):
+    from baritone_client.common import harness_ops
+
+    calls = []
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.goto",
+        lambda client, x, y, z, **kwargs: calls.append(
+            (client, x, y, z, kwargs)
+        )
+        or True,
+    )
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
+
+    assert harness_ops.move_near(client, 1.9, 2.2, 3.8, timeout=7.5)
+    assert calls == [
+        (
+            client,
+            1,
+            2,
+            3,
+            {
+                "timeout": 7,
+                "check_interval": 0.5,
+                "tolerance": 4.0,
+                "defense_check_interval": 0.5,
+            },
+        )
+    ]
+
+
+def test_harness_open_container_defends_before_opening_gui(monkeypatch):
+    from baritone_client.common import harness_ops
+
+    calls = []
+
+    def dispatch(route, _payload):
+        if route == "get_state":
+            return {
+                "health": 20.0,
+                "food_level": 20,
+                "block_position": {"x": 1, "y": 2, "z": 3},
+            }
+        calls.append(route)
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    monkeypatch.setattr(
+        "baritone_client.common.combat.scan_for_threats",
+        lambda *_a, **_k: [{"type": "minecraft:zombie", "distance": 2.0}],
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.combat.defend_or_flee",
+        lambda value: calls.append(("defend", value)) or True,
+    )
+    monkeypatch.setattr(
+        harness_ops,
+        "_load",
+        lambda: {"open_container": lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("GUI must not open while a hostile is nearby")
+        )},
+    )
+
+    assert harness_ops.open_container(client, (1, 2, 3)) is False
+    assert "close_screen" in calls
+    assert ("defend", client) in calls
 
 
 def test_harness_context_accepts_current_player_inventory_menu(monkeypatch):

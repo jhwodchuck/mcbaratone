@@ -179,19 +179,28 @@ def find_place_pos_near(client, x, y, z, radius=4):
 
 
 def move_near(client, x, y, z, timeout=20.0) -> bool:
-    """Move near a coordinate, surfacing a death to the controller.
+    """Move near a coordinate with production survival supervision.
 
-    The harness itself only returns False when the player is dead, which is
-    right for the read-only functional suites but useless to the automator:
-    the caller just treats it as "move failed" and retries. Live blocker --
-    Bot07/Bot08 died mid-move and their controllers kept retrying movement on
-    a corpse for minutes instead of running death recovery. Translating it to
-    PlayerDeathDetected here (the adapter boundary) puts the controller into
-    its normal death path immediately, without making the harness raise on
-    the test suites.
+    The functional harness waits inside ``do_goto`` without polling combat.
+    That is appropriate in a disposable test world, but production storage
+    and crafting callers also reach it through this adapter. Live 2026-08-05:
+    Bot16 lost 11.6 health to an underground hostile while the final storage
+    approach kept running. Route production movement through the shared
+    navigation loop so drowning, hostile defense, and death checks remain
+    active every half second.
     """
-    h = _load()
-    moved = bool(h["move_near"](make_ctx(client), x, y, z, timeout=timeout))
+    from .navigation import goto
+
+    moved = goto(
+        client,
+        int(x),
+        int(y),
+        int(z),
+        timeout=max(1, int(timeout)),
+        check_interval=0.5,
+        tolerance=4.0,
+        defense_check_interval=0.5,
+    )
     if not moved:
         from .tasks import PlayerDeathDetected
 
@@ -435,11 +444,50 @@ def smelt_in_furnace(client, furnace_pos, input_id, fuel_id, output_id, output_c
 
 
 def open_container(client, block_pos, timeout=4.0, attempts=4) -> bool:
-    """Open a known container and verify its expected screen layout."""
+    """Open a known container only after a guarded final approach.
+
+    Container screens prevent ordinary phase logic from reacting while a mob
+    attacks. Refuse the slow interaction below the storage survival margin,
+    and hand any nearby hostile to the combat policy before opening the GUI.
+    """
+    position = tuple(int(axis) for axis in block_pos)
+    try:
+        state = client.transport.dispatch("get_state", {})
+    except Exception as exc:
+        state = None
+        print(f"STORAGE: container state preflight unavailable ({exc})")
+    if state is not None:
+        from .combat import defend_or_flee, scan_for_threats
+        from .storage_safety import storage_distance, storage_travel_safe
+
+        if not storage_travel_safe(state):
+            try:
+                client.transport.dispatch("cancel", {})
+            except Exception:
+                pass
+            print("STORAGE: refusing container interaction outside survival margin")
+            return False
+        try:
+            threats = scan_for_threats(client, radius=12, player_state=state)
+        except Exception as exc:
+            threats = []
+            print(f"STORAGE: container threat preflight unavailable ({exc})")
+        if threats:
+            try:
+                client.transport.dispatch("close_screen", {})
+                defend_or_flee(client)
+            except Exception as exc:
+                print(f"STORAGE: container defense failed ({exc})")
+            print("STORAGE: defended nearby hostile before container interaction")
+            return False
+        if storage_distance(state, position) > 4.5 and not move_near(
+            client, *position, timeout=max(5.0, float(timeout))
+        ):
+            return False
     return bool(
         _load()["open_container"](
             make_ctx(client),
-            tuple(block_pos),
+            position,
             timeout=timeout,
             attempts=attempts,
         )
