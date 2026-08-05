@@ -1345,15 +1345,24 @@ def defend_or_flee(
         else len(get_equipped_armor(client)) if assessments else 0
     )
     has_weapon = False
+    shielded_blaze = False
     if assessments:
         primary = assessments[0]
         urgent_count = sum(item.distance <= 10.0 for item in assessments)
+        shielded_blaze = (
+            primary.entity_type == "blaze"
+            and health >= 16.0
+            and armor_count >= 4
+            and primary.distance <= 10.0
+            and len(assessments) == 1
+            and count_item(client, "minecraft:shield") > 0
+        )
         if (
             health >= 16.0
             and armor_count >= 3
-            and not primary.always_evade
             and primary.distance <= 10.0
             and urgent_count <= 1
+            and (not primary.always_evade or shielded_blaze)
         ):
             has_weapon = equip_best_weapon(client)
 
@@ -1364,6 +1373,12 @@ def defend_or_flee(
         has_weapon=has_weapon,
         runtime=runtime,
     )
+    if shielded_blaze and has_weapon:
+        decision = DefenseDecision(
+            DefenseMode.ENGAGE,
+            "full armor and shield against one close blaze",
+            assessments[0],
+        )
     runtime.transition(decision.mode, decision.reason)
     combat_telemetry.record_defense_decision(client, decision, state, threats)
 

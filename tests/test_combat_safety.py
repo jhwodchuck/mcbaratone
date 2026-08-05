@@ -2039,6 +2039,55 @@ def test_repeated_evasion_still_fights_back_against_a_zombie(monkeypatch):
     assert not relocated
 
 
+def test_full_armor_and_shield_engages_one_close_blaze(monkeypatch):
+    transport = CombatTransport(health=20.0)
+    client = SimpleNamespace(transport=transport)
+    blaze = {
+        "id": 79,
+        "type": "minecraft:blaze",
+        "distance": 1.3,
+        "position": {"x": 1, "y": 64, "z": 0},
+    }
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [blaze])
+    monkeypatch.setattr(
+        combat,
+        "get_equipped_armor",
+        lambda _client: {slot: {} for slot in ("head", "chest", "legs", "feet")},
+    )
+    monkeypatch.setattr(
+        combat,
+        "count_item",
+        lambda _client, item: 1 if item == "minecraft:shield" else 0,
+    )
+    monkeypatch.setattr(combat, "equip_best_weapon", lambda _client: True)
+    escaped = []
+    fought = []
+    monkeypatch.setattr(
+        combat, "run_away", lambda *_a, **_k: escaped.append(True) or True
+    )
+    monkeypatch.setattr(
+        combat,
+        "safe_combat",
+        lambda _client, entity_id, **kwargs: fought.append((entity_id, kwargs)) or True,
+    )
+
+    assert combat.defend_or_flee(client)
+
+    assert not escaped
+    assert fought == [
+        (
+            79,
+            {
+                "purpose": "hostile_defense",
+                "source": "defend_or_flee",
+                "target_metadata": blaze,
+                "retreat_health": 12.0,
+                "abort_on_other_hostiles": True,
+            },
+        )
+    ]
+
+
 def test_switching_attackers_does_not_reset_failed_escape_escalation(monkeypatch):
     transport = CombatTransport(health=20.0)
     client = SimpleNamespace(transport=transport)
