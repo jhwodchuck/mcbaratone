@@ -1103,6 +1103,117 @@ def test_far_combat_target_gets_one_bounded_navigation_goal(monkeypatch):
     assert scan_radii == [64, 64]
 
 
+def test_forced_ranged_approach_equips_and_raises_carried_shield(monkeypatch):
+    skeleton = {
+        "id": 42,
+        "type": "minecraft:skeleton",
+        "distance": 8.0,
+        "position": {"x": 8, "y": 64, "z": 0},
+    }
+
+    class ShieldTransport(CombatTransport):
+        def __init__(self):
+            super().__init__(health=5.0)
+            self.equipped = False
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "health": self.health,
+                    "block_position": {"x": 0, "y": 64, "z": 0},
+                }
+            if route == "get_inventory":
+                return {
+                    "inventory": [] if self.equipped else [
+                        {"id": "minecraft:shield", "count": 1}
+                    ],
+                    "offhand": [
+                        {"id": "minecraft:shield", "count": 1}
+                    ] if self.equipped else [],
+                }
+            if route == "equip":
+                self.equipped = True
+                return {"equipped": True}
+            return {}
+
+    transport = ShieldTransport()
+    client = SimpleNamespace(transport=transport)
+    snapshots = iter(
+        (
+            {"player": {"health": 5.0}, "entities": [skeleton]},
+            {
+                "player": {"health": 5.0},
+                "entities": [{**skeleton, "health": 0}],
+            },
+        )
+    )
+    monkeypatch.setattr(
+        combat, "_get_combat_snapshot", lambda *_args, **_kwargs: next(snapshots)
+    )
+    monkeypatch.setattr(combat, "equip_best_weapon", lambda _client: True)
+    monkeypatch.setattr(
+        combat,
+        "goto",
+        lambda _client, _x, _y, _z, **kwargs: (
+            kwargs["on_defense"]() is False
+        ),
+    )
+    monkeypatch.setattr(combat.time, "sleep", lambda _seconds: None)
+
+    assert combat.safe_combat(
+        client,
+        skeleton["id"],
+        no_retreat=True,
+        max_duration=2,
+    )
+    assert (
+        "equip",
+        {"slot": "offhand", "item": "minecraft:shield"},
+    ) in transport.calls
+    assert (
+        "use_item",
+        {"duration_ms": 1800},
+    ) in transport.calls
+
+
+def test_melee_approach_does_not_raise_shield(monkeypatch):
+    zombie = {
+        "id": 42,
+        "type": "minecraft:zombie",
+        "distance": 8.0,
+        "position": {"x": 8, "y": 64, "z": 0},
+    }
+    transport = CombatTransport(health=5.0)
+    client = SimpleNamespace(transport=transport)
+    snapshots = iter(
+        (
+            {"player": {"health": 5.0}, "entities": [zombie]},
+            {
+                "player": {"health": 5.0},
+                "entities": [{**zombie, "health": 0}],
+            },
+        )
+    )
+    monkeypatch.setattr(
+        combat, "_get_combat_snapshot", lambda *_args, **_kwargs: next(snapshots)
+    )
+    monkeypatch.setattr(combat, "equip_best_weapon", lambda _client: True)
+    monkeypatch.setattr(combat, "goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(combat.time, "sleep", lambda _seconds: None)
+
+    assert combat.safe_combat(
+        client,
+        zombie["id"],
+        no_retreat=True,
+        max_duration=2,
+    )
+    assert not any(
+        route in {"get_inventory", "equip", "use_item"}
+        for route, _payload in transport.calls
+    )
+
+
 def test_hunt_steps_onto_kill_position_before_rechecking_loot(monkeypatch):
     target = {
         "id": 42,

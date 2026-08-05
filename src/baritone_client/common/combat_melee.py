@@ -5,6 +5,55 @@ import time
 from . import combat as api
 
 
+SHIELD_HOLD_MS = 1800
+SHIELD_REFRESH_SECONDS = 2.0
+
+
+def _inventory_payload(response):
+    """Unwrap bridge inventory responses without depending on one transport."""
+    if not isinstance(response, dict):
+        return {}
+    data = response.get("data")
+    return data if isinstance(data, dict) else response
+
+
+def _has_shield(entries) -> bool:
+    return any(
+        isinstance(item, dict)
+        and item.get("id") == "minecraft:shield"
+        and int(item.get("count", 0) or 0) > 0
+        for item in (entries or [])
+    )
+
+
+def _prepare_shield(client) -> bool:
+    """Equip and verify a carried shield for a forced ranged approach."""
+    try:
+        inventory = _inventory_payload(
+            client.transport.dispatch("get_inventory", {})
+        )
+        if _has_shield(inventory.get("offhand")):
+            return True
+        if not _has_shield(inventory.get("inventory")):
+            return False
+        client.transport.dispatch(
+            "equip",
+            {"slot": "offhand", "item": "minecraft:shield"},
+        )
+        refreshed = _inventory_payload(
+            client.transport.dispatch("get_inventory", {})
+        )
+        return _has_shield(refreshed.get("offhand"))
+    except Exception as exc:
+        print(f"COMBAT: shield preparation failed: {exc}")
+        return False
+
+
+def _is_ranged_target(target, state) -> bool:
+    assessments = api.assess_threats([target], state)
+    return bool(assessments and assessments[0].style == api.AttackStyle.RANGED)
+
+
 def execute_safe_combat(
     client,
     target_id: int,
@@ -17,6 +66,13 @@ def execute_safe_combat(
     """Fight one target while preserving survival and truthful outcomes."""
     api.equip_best_weapon(client)
     intervention = {"reason": None}
+    ranged_approach = {"active": False}
+    shield = {
+        "checked": False,
+        "ready": False,
+        "blocked_until": 0.0,
+        "refresh_at": 0.0,
+    }
 
     def finish(reason: str, result: bool = False) -> bool:
         api.combat_telemetry.get_combat_telemetry(
@@ -31,6 +87,17 @@ def execute_safe_combat(
         if not no_retreat and health < retreat_health:
             intervention["reason"] = "retreat_health"
             return True
+        now = time.monotonic()
+        if (
+            ranged_approach["active"]
+            and shield["ready"]
+            and now >= shield["refresh_at"]
+        ):
+            client.transport.dispatch(
+                "use_item", {"duration_ms": SHIELD_HOLD_MS}
+            )
+            shield["blocked_until"] = now + SHIELD_HOLD_MS / 1000.0
+            shield["refresh_at"] = now + SHIELD_REFRESH_SECONDS
         return False
 
     started_at = time.time()
@@ -102,6 +169,13 @@ def execute_safe_combat(
 
         distance = target.get("distance", 999)
         if distance < 4.5:
+            ranged_approach["active"] = False
+            if time.monotonic() < shield["blocked_until"]:
+                # The bridge releases use_item on its own.  Wait for that
+                # release before attacking so a raised shield cannot suppress
+                # the first melee swing after the approach completes.
+                time.sleep(0.05)
+                continue
             api.look_at_entity(client, target)
             cooldown = api._attack_cooldown(state)
             if cooldown < api.MELEE_ATTACK_COOLDOWN_THRESHOLD:
@@ -131,6 +205,12 @@ def execute_safe_combat(
             if state.get("is_pathing", False):
                 client.transport.dispatch("chat", {"message": "#stop"})
         else:
+            ranged_approach["active"] = _is_ranged_target(target, state)
+            if ranged_approach["active"] and not shield["checked"]:
+                shield["ready"] = _prepare_shield(client)
+                shield["checked"] = True
+            if ranged_approach["active"] and shield["ready"]:
+                navigation_watchdog()
             target_position = api.entity_position(target)
             if target_position is None:
                 return finish("target_position_missing")
