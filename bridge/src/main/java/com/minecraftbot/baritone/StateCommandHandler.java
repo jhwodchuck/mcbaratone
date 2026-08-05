@@ -150,6 +150,7 @@ public class StateCommandHandler extends AbstractCommandHandler {
 
             // World info (dimension key is immutable, time is volatile)
             data.addProperty("dimension", client.level.dimension().identifier().toString());
+            data.addProperty("difficulty", client.level.getDifficulty().getSerializedName());
             data.addProperty("world_time", client.level.getOverworldClockTime());
             String biomeId = client.level.getBiome(blockPos).unwrapKey()
                 .map(key -> key.identifier().toString())
