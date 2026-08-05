@@ -340,7 +340,9 @@ def test_ore_gather_recounts_drops_when_pathing_stops(monkeypatch):
     assert resources.gather_ores(client, "iron", count=15, timeout=30)
 
 
-def test_single_ore_shortfall_uses_one_slot_and_exits_before_cleanup(monkeypatch):
+def test_single_ore_shortfall_reserves_incidental_slot_and_exits_when_done(
+    monkeypatch,
+):
     class OreTransport(RecordingTransport):
         def dispatch(self, route, payload):
             self.calls.append((route, payload))
@@ -382,7 +384,7 @@ def test_single_ore_shortfall_uses_one_slot_and_exits_before_cleanup(monkeypatch
     monkeypatch.setattr(resources, "free_inventory_slots", lambda _client: 0)
 
     assert resources.gather_ores(client, "iron", count=1, timeout=30)
-    assert reservations == [1]
+    assert reservations == [2]
 
 
 def test_pickaxe_durability_uses_damage_from_raw_inventory():

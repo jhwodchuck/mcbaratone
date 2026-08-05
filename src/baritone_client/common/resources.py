@@ -1153,11 +1153,12 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
         current_total = count_item(client, drop_item)
         if current_total >= count:
             return True
-        # A one-item repair shortfall needs one output stack, not the generic
-        # three-slot expedition reserve. Live Bot16 had one empty slot and
-        # three ingots toward boots, but repeatedly toured furnaces and chests
-        # because the fourth ingot was gated on three empty slots.
-        required_slots = 1 if count - current_total <= 1 else 3
+        # A one-item repair shortfall needs one output stack plus one slot for
+        # incidental stone, not the generic three-slot expedition reserve.
+        # Live Bot16 had one empty slot and three ingots toward boots; with
+        # only one reserved slot cobblestone repeatedly displaced the raw-iron
+        # pickup and restarted cleanup.
+        required_slots = 2 if count - current_total <= 1 else 3
         if not _reserve_gathering_inventory(
             client, minimum_free_slots=required_slots
         ):
@@ -1209,7 +1210,7 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
             if total >= count:
                 client.transport.dispatch("cancel", {})
                 return True
-            required_slots = 1 if count - total <= 1 else 3
+            required_slots = 2 if count - total <= 1 else 3
             if free_inventory_slots(client) < required_slots:
                 _serialized_dispatch(
                     client,
