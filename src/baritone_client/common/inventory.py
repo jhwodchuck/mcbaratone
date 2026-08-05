@@ -1843,6 +1843,7 @@ def withdraw_required_from_catalog(
     max_containers: int = 8,
     max_snapshot_age: float = 300.0,
     max_travel_distance: Optional[float] = None,
+    max_vertical_distance: Optional[float] = None,
 ) -> int:
     """Find and withdraw required items across known storage containers.
 
@@ -1920,6 +1921,15 @@ def withdraw_required_from_catalog(
     moved_total = 0
     opened_any = False
     for position in candidates[: max(0, int(max_containers))]:
+        if max_vertical_distance is not None and "y" in current_position:
+            vertical_distance = abs(float(current_position["y"]) - position[1])
+            if vertical_distance > max(0.0, float(max_vertical_distance)):
+                print(
+                    "STORAGE: skipping cataloged container at "
+                    f"{position}; {vertical_distance:.1f}m vertical separation "
+                    f"exceeds the {float(max_vertical_distance):.1f}m safety limit"
+                )
+                continue
         if max_travel_distance is not None and all(
             axis in current_position for axis in ("x", "y", "z")
         ):

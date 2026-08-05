@@ -94,6 +94,7 @@ class VillagerInfraHandler(PhaseHandler):
                 },
                 state=state,
                 max_travel_distance=96.0,
+                max_vertical_distance=32.0,
             )
         except Exception:
             pass

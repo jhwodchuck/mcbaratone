@@ -694,6 +694,52 @@ def test_catalog_withdraw_skips_recently_failed_known_item_container(monkeypatch
     ) == 0
 
 
+def test_catalog_withdraw_skips_excessive_vertical_recovery_route(monkeypatch):
+    class Catalog:
+        def find_item(self, _item_id):
+            return [
+                {
+                    "dimension": "minecraft:overworld",
+                    "x": 10,
+                    "y": -27,
+                    "z": 10,
+                }
+            ]
+
+        def list_containers(self):
+            return []
+
+    monkeypatch.setattr(
+        "baritone_client.common.storage_catalog.catalog_for",
+        lambda _client, _state: Catalog(),
+    )
+    monkeypatch.setattr(inventory, "count_item", lambda *_args: 0)
+    monkeypatch.setattr(
+        "baritone_client.common.harness_ops.move_near",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("deep container must not trigger recovery travel")
+        ),
+    )
+    client = DummyClient(
+        DummyTransport(
+            {
+                "get_state": {
+                    "dimension": "minecraft:overworld",
+                    "block_position": {"x": 0, "y": 55, "z": 0},
+                }
+            }
+        )
+    )
+
+    assert inventory.withdraw_required_from_catalog(
+        client,
+        {"minecraft:bread": 6},
+        state=SimpleNamespace(),
+        max_travel_distance=96.0,
+        max_vertical_distance=32.0,
+    ) == -1
+
+
 def test_catalog_withdraw_skips_recent_container_known_not_to_hold_item(monkeypatch):
     class Catalog:
         def find_item(self, _item_id):
