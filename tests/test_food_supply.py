@@ -160,8 +160,17 @@ def test_expansion_moves_beyond_four_rejected_cardinal_sites(monkeypatch):
     for _ in range(7):
         food_supply.run_food_cycle(object(), state)
 
+    # Intent: rejected cardinals must not stall siting forever. The original
+    # assertion also required moving beyond 32 blocks, which is the behaviour
+    # that let plots march outward until the worker could no longer reach them
+    # (Bot18 ended 461 blocks from its own farm). Expansion must still explore
+    # many distinct sites, but all of them within one short walk of base.
+    from math import hypot
     assert len(set(attempted)) > 4
-    assert any(abs(x) > 32 or abs(z) > 32 for x, _y, z in attempted)
+    assert all(
+        hypot(x, z) <= food_supply.MAX_ANCHOR_RADIUS + 1
+        for x, _y, z in attempted
+    ), attempted
 
 
 def test_dead_state_fails_closed_before_self_feed_or_farm_travel(monkeypatch):

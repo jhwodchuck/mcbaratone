@@ -86,14 +86,20 @@ def test_an_unreachable_farm_does_not_trigger_building_another_one(monkeypatch):
 
 def test_a_reachable_but_barren_farm_still_tries_to_expand(monkeypatch):
     """Arriving and finding nothing IS a reason to establish another plot."""
-    monkeypatch.setattr(food_supply, "harvest_wheat_farm", lambda *_a, **_k: True)
+    client = _Client()
+
+    def arrive(_c, x, y, z, **_k):
+        client.position = (x, y, z)  # a real harvest trip ends at the plot
+        return True
+
+    monkeypatch.setattr(food_supply, "harvest_wheat_farm", arrive)
     established = []
     monkeypatch.setattr(
         food_supply, "establish_wheat_farm",
         lambda *a, **k: established.append(a) or None,
     )
 
-    result = food_supply.run_food_cycle(_Client(), _state())
+    result = food_supply.run_food_cycle(client, _state())
 
     assert established, "a reached-but-empty farm must still expand"
     assert "could not reach" not in result.detail
@@ -114,3 +120,52 @@ def test_the_unreachable_plot_is_recorded_for_an_operator():
 
     worker = state.custom_data["food_worker"]
     assert worker.get("unreachable_plots") == [[-183, 104, -404]]
+
+
+def test_new_plots_are_sited_within_walking_distance_of_base():
+    """Siting used to march outward with every rejection.
+
+    Bot18's six attempts landed at 20, 26, 48, 51, 64 and 72 blocks from base
+    and the grid fallback grows without limit, so the worker eventually owned
+    farms it never visited again.
+    """
+    from math import dist
+    anchor = (-166, 105, -417)
+    for cursor in range(24):
+        candidate = food_supply._candidate(
+            anchor, [(-183, 104, -404)], [], 32, cursor, 3
+        )
+        if candidate is None:
+            continue
+        assert dist(anchor, candidate) <= food_supply.MAX_ANCHOR_RADIUS + 1, (
+            cursor, candidate, dist(anchor, candidate)
+        )
+
+
+def test_siting_reports_nothing_rather_than_wandering_when_base_is_boxed_in():
+    """If every nearby site is rejected, say so instead of walking away.
+
+    Returning None is the honest answer; an operator can then clear ground.
+    Silently siting a farm 500 blocks out looks like progress and is not.
+    """
+    anchor = (0, 64, 0)
+    rejected = [
+        food_supply._candidate(anchor, [], [], 32, cursor, 3) for cursor in range(40)
+    ]
+    rejected = [site for site in rejected if site]
+    assert food_supply._candidate(anchor, [], rejected, 32, 99, 3) is None
+
+
+def test_the_radius_still_permits_more_than_one_plot():
+    """A cap that only ever allows a single farm would starve the fleet."""
+    from math import dist
+    anchor = (0, 64, 0)
+    found, rejected = [], []
+    for cursor in range(40):
+        candidate = food_supply._candidate(anchor, found, rejected, 32, cursor, 3)
+        if candidate and candidate not in found:
+            found.append(candidate)
+        elif candidate:
+            rejected.append(candidate)
+    assert len(found) >= 2, found
+    assert all(dist(anchor, site) <= food_supply.MAX_ANCHOR_RADIUS + 1 for site in found)

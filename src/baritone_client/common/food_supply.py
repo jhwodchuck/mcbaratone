@@ -20,6 +20,15 @@ from .inventory import (
 WHEAT = "minecraft:wheat"
 SEEDS = "minecraft:wheat_seeds"
 BREAD = "minecraft:bread"
+#: Farms must stay within one short walk of the durable base anchor. A plot
+#: further out is not an asset: the worker stops visiting it, the harvest step
+#: times out travelling, and the fleet accumulates farms it never uses. At 64
+#: the siting search still offers eight distinct sites -- enough that rejected
+#: ground never stalls expansion -- and the furthest is a ~15 second walk.
+MAX_ANCHOR_RADIUS = 64
+#: Beyond this the worker plainly never arrived at the plot; harvest travel
+#: uses a 4-block tolerance, so anything much larger is a failed journey.
+UNREACHED_PLOT_DISTANCE = 24.0
 
 
 @dataclass(frozen=True)
@@ -102,6 +111,21 @@ def _anchor(state: Any, plots: Sequence[Tuple[int, int, int]]) -> Optional[Tuple
     return plots[0] if plots else None
 
 
+def _within_reach(
+    candidate: Tuple[int, int, int],
+    anchor: Tuple[int, int, int],
+    radius: int,
+) -> bool:
+    """A farm is only useful if the worker can actually walk to it.
+
+    Siting used to march outward with every rejection -- Bot18's six attempts
+    landed 20, 26, 48, 51, 64 and 72 blocks from base, and the unbounded grid
+    fallback keeps going. A farm the worker cannot reach in one trip produces
+    nothing, and the fleet ends up owning plots it never visits again.
+    """
+    return hypot(candidate[0] - anchor[0], candidate[2] - anchor[2]) <= radius
+
+
 def _candidate(
     anchor: Tuple[int, int, int],
     plots: Sequence[Tuple[int, int, int]],
@@ -109,6 +133,7 @@ def _candidate(
     distance: int,
     cursor: int,
     maximum_slots: int,
+    max_anchor_radius: int = MAX_ANCHOR_RADIUS,
 ) -> Optional[Tuple[int, int, int]]:
     """Inspect a bounded rotating frontier; each verified plot adds four legs."""
     offsets = ((distance, 0), (0, distance), (-distance, 0), (0, -distance))
@@ -120,6 +145,8 @@ def _candidate(
         dx, dz = offsets[slot % len(offsets)]
         candidate = (origin[0] + dx, origin[1], origin[2] + dz)
         if candidate in rejected:
+            continue
+        if not _within_reach(candidate, anchor, max_anchor_radius):
             continue
         if all(
             hypot(candidate[0] - plot[0], candidate[2] - plot[2]) >= distance
@@ -137,9 +164,15 @@ def _candidate(
         anchor[1],
         anchor[2] + grid_z * distance,
     )
-    if candidate not in rejected and all(
-        hypot(candidate[0] - plot[0], candidate[2] - plot[2]) >= distance
-        for plot in plots
+    # The grid ring grows without limit by design, so it must be clipped to a
+    # walkable radius or the worker eventually sites farms it can never visit.
+    if (
+        candidate not in rejected
+        and _within_reach(candidate, anchor, max_anchor_radius)
+        and all(
+            hypot(candidate[0] - plot[0], candidate[2] - plot[2]) >= distance
+            for plot in plots
+        )
     ):
         return candidate
     return None
@@ -282,27 +315,30 @@ def run_food_cycle(
     unreachable = []
     for plot in inspected:
         plot_before = _count(get_inventory(client), WHEAT)
-        # harvest_wheat_farm travels first and reports whether it arrived.
-        # Discarding that made "I never reached the farm" indistinguishable
-        # from "the farm had no ripe wheat", so a worker 461 blocks from its
-        # own plot reported "harvested 0 wheat" and then tried to solve it by
-        # building another farm it also could not reach.
-        if not harvest_wheat_farm(client, *plot, range_=max(1, int(farm_range))):
-            unreachable.append(plot)
-            continue
+        harvest_wheat_farm(client, *plot, range_=max(1, int(farm_range)))
         harvested += max(0, _count(get_inventory(client), WHEAT) - plot_before)
+        # harvest_wheat_farm returns False both when it never arrived and when
+        # it arrived to find nothing ripe, so its flag cannot distinguish them.
+        # Measure instead: still far from the plot means the trip failed, and
+        # that is a different problem from an empty farm. Bot18 sat 461 blocks
+        # from its own plot reporting "harvested 0 wheat" six times, then tried
+        # to fix it by building another farm it also could not reach.
+        separation = _plot_distance(client, plot)
+        if separation == separation and separation > UNREACHED_PLOT_DISTANCE:
+            unreachable.append((plot, separation))
     if known:
         worker["plot_cursor"] = (cursor + len(inspected)) % len(known)
-    if unreachable and harvested == 0:
-        # Establishing another plot near the same distant anchor would repeat
-        # the trip that just failed. Report the real obstacle instead.
-        worker["unreachable_plots"] = [list(plot) for plot in unreachable]
+    if unreachable and len(unreachable) == len(inspected) and harvested == 0:
+        # Every plot this pass was out of reach. Establishing another near the
+        # same distant anchor would repeat the trip that just failed.
+        worker["unreachable_plots"] = [list(plot) for plot, _ in unreachable]
         _flush(state, client)
+        nearest = min(distance for _, distance in unreachable)
         return _result(
             worker,
             False,
             f"could not reach {len(unreachable)} known farm plot(s); "
-            f"nearest is {_plot_distance(client, unreachable[0]):.0f} blocks away",
+            f"nearest is {nearest:.0f} blocks away",
         )
 
     new_plots = 0
