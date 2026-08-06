@@ -52,6 +52,9 @@ def _stub_environment(monkeypatch):
     monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
     monkeypatch.setattr(food_supply, "resolve_storage_location", lambda *_a, **_k: None)
     monkeypatch.setattr(food_supply, "craft", lambda *_a, **_k: True)
+    # Without this the unreachable branch runs a real 300s goto against a stub
+    # and the suite hangs. Tests that assert on the walk-home re-patch it.
+    monkeypatch.setattr(food_supply, "_return_to_anchor", lambda *_a, **_k: True)
 
 
 def test_an_unreachable_farm_is_reported_as_unreachable(monkeypatch):
@@ -169,3 +172,46 @@ def test_the_radius_still_permits_more_than_one_plot():
             rejected.append(candidate)
     assert len(found) >= 2, found
     assert all(dist(anchor, site) <= food_supply.MAX_ANCHOR_RADIUS + 1 for site in found)
+
+
+def test_a_plot_beyond_the_siting_radius_is_retired(monkeypatch):
+    """Plots left far out by the old unbounded search are not assets.
+
+    Keeping them in rotation means every cycle burns its travel budget on a
+    trip that cannot finish. Retiring one frees the next cycle to site near base.
+    """
+    monkeypatch.setattr(food_supply, "harvest_wheat_farm", lambda *_a, **_k: False)
+    monkeypatch.setattr(food_supply, "establish_wheat_farm", lambda *_a, **_k: None)
+    state = SimpleNamespace(custom_data={
+        "food_worker": {"farm_plots": [{"origin": [900, 64, 900]}]},
+        "base_location": [-166, 105, -417],
+    })
+
+    result = food_supply.run_food_cycle(_Client(), state)
+
+    assert "retired" in result.detail, result.detail
+    assert state.custom_data["food_worker"]["farm_plots"] == []
+    assert state.custom_data["food_worker"]["retired_plots"] == [[900, 64, 900]]
+
+
+def test_a_good_plot_is_kept_and_the_worker_walks_home_instead(monkeypatch):
+    """Bot18's exact case: the plot is fine, the BOT wandered 468 blocks.
+
+    Retiring a healthy farm because the worker strayed would destroy real work.
+    """
+    monkeypatch.setattr(food_supply, "harvest_wheat_farm", lambda *_a, **_k: False)
+    monkeypatch.setattr(food_supply, "establish_wheat_farm", lambda *_a, **_k: None)
+    walked = []
+    monkeypatch.setattr(
+        food_supply, "_return_to_anchor",
+        lambda _c, anchor: walked.append(anchor) or True,
+    )
+    state = _state()  # plot 21 blocks from base, bot 468 away
+
+    result = food_supply.run_food_cycle(_Client(), state)
+
+    assert state.custom_data["food_worker"]["farm_plots"] == [
+        {"origin": [-183, 104, -404]}
+    ], "a healthy farm must not be retired because the worker strayed"
+    assert walked == [(-166, 105, -417)], walked
+    assert "walked back toward base" in result.detail, result.detail

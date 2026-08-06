@@ -29,6 +29,11 @@ MAX_ANCHOR_RADIUS = 64
 #: Beyond this the worker plainly never arrived at the plot; harvest travel
 #: uses a 4-block tolerance, so anything much larger is a failed journey.
 UNREACHED_PLOT_DISTANCE = 24.0
+#: A worker that has drifted hundreds of blocks needs more than the harvest
+#: step's 120s travel budget to get home. Kept well short of a full journey on
+#: purpose: this blocks one scheduling tick, and partial progress still counts
+#: because the next cycle starts closer than the last.
+RETURN_HOME_TIMEOUT = 150
 
 
 @dataclass(frozen=True)
@@ -195,6 +200,51 @@ def _grid_offset(slot: int) -> Tuple[int, int]:
     return perimeter[position % len(perimeter)]
 
 
+def _retire_distant_plots(worker: dict, anchor: Optional[Tuple[int, int, int]]) -> list:
+    """Drop plots the siting radius would never choose today.
+
+    The unbounded search left plots scattered far from base. They are not
+    assets: the worker cannot reach them, and keeping them in the rotation
+    means every cycle burns its travel budget on a trip that cannot finish.
+    Retiring one frees the next cycle to site a fresh plot near base.
+    """
+    if anchor is None:
+        return []
+    kept, retired = [], []
+    for record in worker.get("farm_plots", []):
+        plot = _position(record)
+        if plot is None:
+            continue
+        if _within_reach(plot, anchor, MAX_ANCHOR_RADIUS):
+            kept.append({"origin": list(plot)})
+        else:
+            retired.append(list(plot))
+    if retired:
+        worker["farm_plots"] = kept
+        history = worker.setdefault("retired_plots", [])
+        history.extend(retired)
+    return retired
+
+
+def _return_to_anchor(client: Any, anchor: Optional[Tuple[int, int, int]]) -> bool:
+    """Walk back toward base so the next cycle starts within reach.
+
+    A 468-block journey cannot finish inside the harvest step's 120s travel
+    budget, which is why the worker never got home on its own. This trip is
+    given room to complete, and partial progress still helps: the next cycle
+    starts closer than the last.
+    """
+    if anchor is None:
+        return False
+    try:
+        from .navigation import goto as _goto
+
+        return bool(_goto(client, anchor[0], anchor[1], anchor[2],
+                          timeout=RETURN_HOME_TIMEOUT, tolerance=8.0))
+    except Exception:
+        return False
+
+
 def _survival_ready(client: Any) -> bool:
     """Refuse farm travel from dead, wrong-dimension, or critically hurt state."""
     try:
@@ -332,13 +382,30 @@ def run_food_cycle(
         # Every plot this pass was out of reach. Establishing another near the
         # same distant anchor would repeat the trip that just failed.
         worker["unreachable_plots"] = [list(plot) for plot, _ in unreachable]
-        _flush(state, client)
         nearest = min(distance for _, distance in unreachable)
+        anchor = _anchor(state, known)
+        # Two different failures wear the same symptom. A plot beyond the
+        # siting radius is a bad plot, left over from the unbounded search, and
+        # is retired so a fresh one can be sited near base. A good plot the
+        # worker simply walked away from needs the worker brought home instead
+        # -- Bot18's plot sat 21 blocks from its anchor while the bot was 468.
+        retired = _retire_distant_plots(worker, anchor)
+        if retired:
+            _flush(state, client)
+            return _result(
+                worker,
+                False,
+                f"retired {len(retired)} farm plot(s) beyond the "
+                f"{MAX_ANCHOR_RADIUS}-block siting radius; will resite near base",
+            )
+        went_home = _return_to_anchor(client, anchor)
+        _flush(state, client)
         return _result(
             worker,
             False,
-            f"could not reach {len(unreachable)} known farm plot(s); "
-            f"nearest is {nearest:.0f} blocks away",
+            f"could not reach {len(unreachable)} known farm plot(s); nearest is "
+            f"{nearest:.0f} blocks away; "
+            + ("walked back toward base" if went_home else "return to base failed"),
         )
 
     new_plots = 0
