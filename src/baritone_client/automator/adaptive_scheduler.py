@@ -9,7 +9,7 @@ phase still has to pass its normal handler and verifier before it is DONE.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from ..common.combat import get_nearby_entities
@@ -18,6 +18,7 @@ from ..common.husbandry import BREEDING_FOOD, breed_pair
 from ..common.forestry import run_wood_cycle
 from ..common.inventory import get_inventory
 from ..common.navigation import find_nearby_block, goto
+from ..common.storage_organizer import run_quartermaster_cycle
 from .end_readiness import (
     FleetRole,
     allows_local_work,
@@ -25,13 +26,15 @@ from .end_readiness import (
     record_readiness,
     role_focused_candidates,
 )
+from .fleet_coverage import borrowed_specialty_roles
 from . import food_opportunity
-from .common.role_opportunities import run_role_opportunity, select_role_opportunity
+from .common.role_opportunities import run_role_opportunity
 from .common.crop_opportunity import run_crop_opportunity
-from .iron_scheduler import iron_cycle_ready, run_scheduled_iron_cycle
+from .iron_scheduler import run_scheduled_iron_cycle
 from .local_opportunity import LocalOpportunity, OpportunityKind
 from .objective import Objective
 from .state_manager import Phase
+from .specialty_scheduler import select_specialty_opportunity
 from .work_progress import productive_snapshot, record_productive_attempt
 
 
@@ -442,7 +445,9 @@ class AdaptiveScheduler:
         OpportunityKind.ENCHANTING_MATERIAL: 180.0,
         OpportunityKind.END_FRONTIER: 600.0,
         OpportunityKind.END_CITY_ROUTE: 300.0,
+        OpportunityKind.STORAGE_MAINTENANCE: 120.0,
     }
+    _BORROWED_SPECIALTY_COOLDOWN = 300.0
 
     def __init__(self, client: Any, resources: Any, state: Any):
         self.client = client
@@ -525,65 +530,50 @@ class AdaptiveScheduler:
         role: Optional[FleetRole] = None,
     ) -> Optional[LocalOpportunity]:
         """Choose one safe renewable-resource action, if any is useful now."""
-        if Phase.SPAWN_BOOTSTRAP not in set(completed):
+        completed_set = set(completed)
+        if Phase.SPAWN_BOOTSTRAP not in completed_set:
             return None
         current_time = time.time() if now is None else float(now)
         role = FleetRole.BALANCED if role is None else role
-        # Recovery always wins over post-assignment supply work.  It does not
-        # require the normal local-work safety predicate because it exists to
-        # restore the food side of that predicate.
-        if role in {FleetRole.END_RUNNER, FleetRole.NETHER_SUPPLY, FleetRole.ENCHANTING}:
-            recovery = food_opportunity.select_food_recovery_opportunity(
-                signals.food,
-                self._cooldown_ready(OpportunityKind.FOOD_RECOVERY, current_time),
-            )
-            if recovery is not None:
-                return recovery
-            candidate = select_role_opportunity(role, signals, self.state, cooldown_ready=True)
-            if candidate and self._cooldown_ready(candidate.kind, current_time):
-                return candidate
-            return None
-        if role is FleetRole.IRON_SUPPLY:
-            if (recovery := food_opportunity.select_food_recovery_opportunity(signals.food, self._cooldown_ready(OpportunityKind.FOOD_RECOVERY, current_time))) is not None: return recovery
-            if (
-                iron_cycle_ready(
-                    signals,
-                    worker_bootstrapped=Phase.INITIAL_GATHERING in set(completed),
-                )
-                and self._cooldown_ready(OpportunityKind.IRON_MINE, current_time)
+        primary = select_specialty_opportunity(
+            client=self.client,
+            state=self.state,
+            role=role,
+            signals=signals,
+            completed=completed,
+            current_time=current_time,
+            cooldown_ready=self._cooldown_ready,
+            allow_recovery=True,
+        )
+        specialty_candidates = []
+        if primary is not None:
+            specialty_candidates.append(replace(primary, assigned_role=role.value))
+
+        runtime = self._runtime()
+        last_borrowed = float(runtime.get("last_borrowed_specialty_at", 0) or 0)
+        if current_time - last_borrowed >= self._BORROWED_SPECIALTY_COOLDOWN:
+            for borrowed in borrowed_specialty_roles(
+                self.state, role, now=current_time
             ):
-                return LocalOpportunity(
-                    OpportunityKind.IRON_MINE,
-                    200,
-                    "the dedicated iron supplier can mine, smelt, and bank a bounded batch",
+                candidate = select_specialty_opportunity(
+                    client=self.client,
+                    state=self.state,
+                    role=borrowed,
+                    signals=signals,
+                    completed=completed,
+                    current_time=current_time,
+                    cooldown_ready=self._cooldown_ready,
+                    allow_recovery=False,
                 )
+                if candidate is not None:
+                    specialty_candidates.append(
+                        replace(candidate, assigned_role=borrowed.value)
+                    )
+        if specialty_candidates:
+            return max(specialty_candidates, key=lambda candidate: candidate.score)
+        if role is not FleetRole.BALANCED:
             return None
-        if role is FleetRole.VILLAGE_FOOD:
-            recovery = food_opportunity.select_food_recovery_opportunity(
-                signals.food,
-                self._cooldown_ready(OpportunityKind.FOOD_RECOVERY, current_time),
-            )
-            if recovery is not None:
-                return recovery
-            if not signals.safe_for_local_work:
-                return None
-            return food_opportunity.select_village_food_production_opportunity(
-                signals.food,
-                completed,
-                self._cooldown_ready(OpportunityKind.FOOD_PRODUCTION, current_time),
-            )
         if not signals.safe_for_local_work:
-            return None
-        if role is FleetRole.WOOD_SUPPLY:
-            if (
-                Phase.BOOT_SEQUENCE in set(completed)
-                and self._cooldown_ready(OpportunityKind.WOOD_FARM, current_time)
-            ):
-                return LocalOpportunity(
-                    OpportunityKind.WOOD_FARM,
-                    200,
-                    "the dedicated wood supplier can harvest, replant, and bank a bounded batch",
-                )
             return None
         candidates = []
 
@@ -693,6 +683,20 @@ class AdaptiveScheduler:
                     ),
                 )
                 self._runtime()["food_banked"] = result.after
+            elif opportunity.kind is OpportunityKind.STORAGE_MAINTENANCE:
+                before_total = int(
+                    self._runtime().get("quartermaster_items_moved", 0) or 0
+                )
+                cycle = run_quartermaster_cycle(self.client, self.state)
+                after_total = max(before_total, int(cycle.total_items_moved or 0))
+                self._runtime()["quartermaster_items_moved"] = after_total
+                result = OpportunityResult(
+                    opportunity,
+                    cycle.success,
+                    cycle.detail,
+                    before_total,
+                    after_total,
+                )
             elif opportunity.kind in {
                 OpportunityKind.END_SUPPLY,
                 OpportunityKind.NETHER_SUPPLY,
@@ -723,6 +727,13 @@ class AdaptiveScheduler:
                 f"{type(exc).__name__}: {exc}",
             )
         self._record_opportunity_result(result)
+        if (
+            opportunity.assigned_role
+            and opportunity.assigned_role != fleet_role(self.state).value
+        ):
+            runtime = self._runtime()
+            runtime["last_borrowed_specialty_at"] = time.time()
+            runtime["last_borrowed_specialty_role"] = opportunity.assigned_role
         record_productive_attempt(
             self.state,
             opportunity.kind.value,

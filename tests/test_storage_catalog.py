@@ -286,3 +286,33 @@ def test_old_chest_only_test_rejected_a_real_barrel():
     barrel = "minecraft:barrel"
     assert ("chest" in barrel) is False  # the old predicate said "missing"
     assert _is_storage_container(barrel) is True  # the new one finds it
+
+
+def test_resource_lease_is_exclusive_and_recovers_after_expiry(tmp_path):
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+
+    assert catalog.acquire_lease("quartermaster:cycle", "Bot07", now=100.0)
+    assert not catalog.acquire_lease("quartermaster:cycle", "Bot15", now=110.0)
+    assert catalog.acquire_lease("quartermaster:cycle", "Bot15", now=230.0)
+    assert not catalog.release_lease("quartermaster:cycle", "Bot07")
+    assert catalog.release_lease("quartermaster:cycle", "Bot15")
+
+
+def test_container_inventory_is_scoped_to_exact_container(tmp_path):
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+    catalog.observe_inventory(
+        (1, 64, 1),
+        [{"slot": 0, "id": "minecraft:iron_ingot", "count": 12}],
+        dimension="minecraft:overworld",
+        capacity_slots=27,
+    )
+    catalog.observe_inventory(
+        (2, 64, 1),
+        [{"slot": 0, "id": "minecraft:iron_ingot", "count": 7}],
+        dimension="minecraft:overworld",
+        capacity_slots=27,
+    )
+
+    assert catalog.container_inventory(
+        (1, 64, 1), dimension="minecraft:overworld"
+    ) == {"minecraft:iron_ingot": 12}

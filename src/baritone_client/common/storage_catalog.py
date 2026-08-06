@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence, Tuple
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_CATALOG_NAME = "storage_catalog.sqlite3"
 SHARED_CATALOG_ENV = "MC_SHARED_STORAGE_CATALOG"
 FLEET_DIRECTORY_NAMES = {"aternos", "headlessmc"}
@@ -169,6 +169,16 @@ class StorageCatalog:
                 );
                 CREATE INDEX IF NOT EXISTS idx_landmarks_lookup
                     ON landmarks(world_id, dimension, category, last_seen);
+                CREATE TABLE IF NOT EXISTS resource_leases (
+                    world_id TEXT NOT NULL,
+                    lease_key TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    acquired_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    PRIMARY KEY (world_id, lease_key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_resource_leases_expiry
+                    ON resource_leases(world_id, expires_at);
                 """
             )
             db.execute(
@@ -418,6 +428,77 @@ class StorageCatalog:
                 (self.world_id,),
             ).fetchall()
         return {str(row["item_id"]): int(row["count"]) for row in rows}
+
+    def container_inventory(
+        self,
+        position: Tuple[int, int, int],
+        *,
+        dimension: str,
+    ) -> Dict[str, int]:
+        """Return last-known item totals for one physical container."""
+        x, y, z = (int(value) for value in position)
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT item_id, COALESCE(SUM(count), 0) AS count
+                   FROM container_items
+                   WHERE world_id=? AND dimension=? AND x=? AND y=? AND z=?
+                   GROUP BY item_id""",
+                (self.world_id, str(dimension), x, y, z),
+            ).fetchall()
+        return {str(row["item_id"]): int(row["count"]) for row in rows}
+
+    def acquire_lease(
+        self,
+        lease_key: str,
+        owner: str,
+        *,
+        ttl_seconds: float = 120.0,
+        now: Optional[float] = None,
+    ) -> bool:
+        """Atomically claim or renew a world-scoped bounded-work lease."""
+        observed = time.time() if now is None else float(now)
+        expires = observed + max(1.0, float(ttl_seconds))
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                """INSERT INTO resource_leases(
+                       world_id, lease_key, owner, acquired_at, expires_at
+                   ) VALUES(?, ?, ?, ?, ?)
+                   ON CONFLICT(world_id, lease_key) DO UPDATE SET
+                       owner=excluded.owner,
+                       acquired_at=excluded.acquired_at,
+                       expires_at=excluded.expires_at
+                   WHERE resource_leases.expires_at <= ?
+                      OR resource_leases.owner = excluded.owner""",
+                (
+                    self.world_id,
+                    str(lease_key),
+                    str(owner),
+                    observed,
+                    expires,
+                    observed,
+                ),
+            )
+            row = db.execute(
+                """SELECT owner, expires_at FROM resource_leases
+                   WHERE world_id=? AND lease_key=?""",
+                (self.world_id, str(lease_key)),
+            ).fetchone()
+        return bool(
+            row
+            and str(row["owner"]) == str(owner)
+            and float(row["expires_at"]) >= expires
+        )
+
+    def release_lease(self, lease_key: str, owner: str) -> bool:
+        """Release a lease only when it is still owned by this controller."""
+        with self._connect() as db:
+            cursor = db.execute(
+                """DELETE FROM resource_leases
+                   WHERE world_id=? AND lease_key=? AND owner=?""",
+                (self.world_id, str(lease_key), str(owner)),
+            )
+        return bool(cursor.rowcount)
 
     def register_landmark(
         self,

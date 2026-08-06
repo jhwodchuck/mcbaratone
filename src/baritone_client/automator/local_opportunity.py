@@ -23,6 +23,7 @@ class OpportunityKind(str, Enum):
     ENCHANTING_MATERIAL = "enchanting_material"
     END_FRONTIER = "end_frontier"
     END_CITY_ROUTE = "end_city_route"
+    STORAGE_MAINTENANCE = "storage_maintenance"
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class LocalOpportunity:
     animal_type: str = ""
     location: Optional[Tuple[int, int, int]] = None
     target_item: str = ""
+    assigned_role: str = ""
 
 
 __all__ = ["LocalOpportunity", "OpportunityKind"]

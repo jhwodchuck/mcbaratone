@@ -28,6 +28,7 @@ class FleetRole(str, Enum):
     VILLAGE_FOOD = "village_food"
     WOOD_SUPPLY = "wood_supply"
     IRON_SUPPLY = "iron_supply"
+    QUARTERMASTER = "quartermaster"
 
 
 _ROLE_BY_REMAINDER = {
@@ -83,6 +84,13 @@ def bot_name(state: Any) -> str:
     return ""
 
 
+def default_fleet_role(name: str) -> FleetRole:
+    """Return the deterministic fallback role for a BotNN identity."""
+    if not re.fullmatch(r"Bot\d{2}", str(name), re.IGNORECASE):
+        return FleetRole.BALANCED
+    return _ROLE_BY_REMAINDER[int(str(name)[-2:]) % 4]
+
+
 def fleet_role(state: Any) -> FleetRole:
     """Return an explicit role, or a deterministic BotNN sharding fallback."""
     explicit = str(os.environ.get("MC_FLEET_ROLE", "")).strip().lower()
@@ -104,7 +112,7 @@ def fleet_role(state: Any) -> FleetRole:
     name = bot_name(state)
     if not name:
         return FleetRole.BALANCED
-    return _ROLE_BY_REMAINDER[int(name[-2:]) % 4]
+    return default_fleet_role(name)
 
 
 def role_focused_candidates(
@@ -121,6 +129,8 @@ def role_focused_candidates(
     """
     completed_set = set(completed)
     available = list(candidates)
+    if role is FleetRole.QUARTERMASTER and Phase.BOOT_SEQUENCE in completed_set:
+        return [], "fleet role quartermaster is maintaining shared storage", True
     if role is FleetRole.WOOD_SUPPLY and Phase.BOOT_SEQUENCE in completed_set:
         return [], "fleet role wood_supply is assigned to renewable forestry", True
     iron_worker_ready = {
@@ -157,6 +167,7 @@ def allows_local_work(role: FleetRole) -> bool:
         FleetRole.VILLAGE_FOOD,
         FleetRole.WOOD_SUPPLY,
         FleetRole.IRON_SUPPLY,
+        FleetRole.QUARTERMASTER,
         FleetRole.END_RUNNER,
         FleetRole.NETHER_SUPPLY,
     }
@@ -323,6 +334,7 @@ __all__ = [
     "PREPARED_FOOD_ITEMS",
     "allows_local_work",
     "bot_name",
+    "default_fleet_role",
     "fleet_role",
     "readiness_snapshot",
     "record_readiness",

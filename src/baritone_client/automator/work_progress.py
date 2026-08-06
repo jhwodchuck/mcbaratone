@@ -43,6 +43,11 @@ _COUNTER_KEYS = {
     "chunks_completed",
     "districts_completed",
     "rings_completed",
+    "double_chests_created",
+    "items_moved",
+    "stacks_moved",
+    "free_slots_added",
+    "legacy_chests_emptied",
 }
 
 _PRODUCTIVE_OPPORTUNITIES = {
@@ -55,6 +60,7 @@ _PRODUCTIVE_OPPORTUNITIES = {
     "nether_supply",
     "enchanting_xp",
     "enchanting_material",
+    "storage_maintenance",
 }
 
 

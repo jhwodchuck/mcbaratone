@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from baritone_client.automator import adaptive_scheduler as adaptive
+from baritone_client.automator import specialty_scheduler as specialty
 from baritone_client.automator.adaptive_scheduler import (
     AdaptiveScheduler,
     GameSignals,
@@ -18,6 +19,7 @@ from baritone_client.automator.objective import (
 from baritone_client.automator.state_manager import Phase
 from baritone_client.automator.end_readiness import FleetRole
 from baritone_client.common.forestry import WoodCycleResult
+from baritone_client.common.storage_organizer import QuartermasterCycleResult
 
 
 def _state(custom_data=None):
@@ -685,3 +687,72 @@ def test_next_step_runs_local_work_before_selecting_a_long_phase(monkeypatch):
     assert decision.local_work
     assert decision.objective is None
     assert "animal_farm verified" in decision.summary
+
+
+def test_quartermaster_role_selects_leased_storage_work(monkeypatch):
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), _state())
+    monkeypatch.setattr(specialty, "quartermaster_work_available", lambda *_args: True)
+
+    opportunity = scheduler.select_local_opportunity(
+        _signals(),
+        [Phase.SPAWN_BOOTSTRAP, Phase.BOOT_SEQUENCE],
+        role=FleetRole.QUARTERMASTER,
+        now=1000.0,
+    )
+
+    assert opportunity is not None
+    assert opportunity.kind is OpportunityKind.STORAGE_MAINTENANCE
+    assert opportunity.assigned_role == "quartermaster"
+
+
+def test_one_bot_can_borrow_unstaffed_quartermaster_duty(tmp_path, monkeypatch):
+    controller = tmp_path / "runs" / "headlessmc" / "Bot07" / "controller"
+    controller.mkdir(parents=True)
+    state = SimpleNamespace(custom_data={}, checkpoint_dir=controller)
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    monkeypatch.setattr(specialty, "quartermaster_work_available", lambda *_args: True)
+    monkeypatch.setattr(specialty, "select_role_opportunity", lambda *_args, **_kwargs: None)
+
+    opportunity = scheduler.select_local_opportunity(
+        _signals(),
+        [
+            Phase.SPAWN_BOOTSTRAP,
+            Phase.INITIAL_GATHERING,
+            Phase.BOOT_SEQUENCE,
+        ],
+        role=FleetRole.END_RUNNER,
+        now=1000.0,
+    )
+
+    assert opportunity is not None
+    assert opportunity.kind is OpportunityKind.STORAGE_MAINTENANCE
+    assert opportunity.assigned_role == "quartermaster"
+
+
+def test_quartermaster_result_records_verified_item_delta(monkeypatch):
+    state = _state()
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    monkeypatch.setattr(
+        adaptive,
+        "run_quartermaster_cycle",
+        lambda *_args: QuartermasterCycleResult(
+            True,
+            "moved ten ores",
+            items_moved=10,
+            stacks_moved=1,
+            total_items_moved=10,
+        ),
+    )
+    opportunity = LocalOpportunity(
+        OpportunityKind.STORAGE_MAINTENANCE,
+        230,
+        "test Quartermaster",
+        assigned_role="quartermaster",
+    )
+
+    result = scheduler.run_local_opportunity(opportunity)
+
+    assert result.success
+    assert result.before == 0
+    assert result.after == 10
+    assert state.custom_data["adaptive_scheduler"]["quartermaster_items_moved"] == 10
