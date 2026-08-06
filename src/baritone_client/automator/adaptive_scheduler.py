@@ -520,7 +520,8 @@ class AdaptiveScheduler:
         if role is FleetRole.IRON_SUPPLY:
             if (
                 iron_cycle_ready(
-                    signals, boot_completed=Phase.BOOT_SEQUENCE in set(completed)
+                    signals,
+                    worker_bootstrapped=Phase.INITIAL_GATHERING in set(completed),
                 )
                 and self._cooldown_ready(OpportunityKind.IRON_MINE, current_time)
             ):

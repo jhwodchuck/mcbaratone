@@ -7,10 +7,15 @@ from typing import Any, MutableMapping
 from ..common.iron_supply import run_iron_cycle
 
 
-def iron_cycle_ready(signals: Any, *, boot_completed: bool) -> bool:
-    """Require observed threat safety, but not daylight, for mining work."""
+def iron_cycle_ready(signals: Any, *, worker_bootstrapped: bool) -> bool:
+    """Require basic worker setup and observed threat safety for mining work.
+
+    A dedicated supplier does not need the general homestead construction
+    sequence before it can mine.  The cycle itself still verifies its pickaxe,
+    survival margin, dimension, and storage before crediting production.
+    """
     return bool(
-        boot_completed
+        worker_bootstrapped
         and signals.observed
         and signals.entities_observed
         and "overworld" in signals.dimension

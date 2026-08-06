@@ -217,7 +217,7 @@ def test_wood_role_selects_forestry_only_after_safe_bootstrap():
     assert opportunity.kind is OpportunityKind.WOOD_FARM
 
 
-def test_iron_role_selects_bounded_mining_after_boot_even_at_night():
+def test_iron_role_selects_bounded_mining_after_initial_setup_even_at_night():
     scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), _state())
     signals = _signals(world_time=18000)
 
@@ -229,7 +229,7 @@ def test_iron_role_selects_bounded_mining_after_boot_even_at_night():
     ) is None
     opportunity = scheduler.select_local_opportunity(
         signals,
-        [Phase.SPAWN_BOOTSTRAP, Phase.BOOT_SEQUENCE],
+        [Phase.SPAWN_BOOTSTRAP, Phase.INITIAL_GATHERING],
         now=1000.0,
         role=FleetRole.IRON_SUPPLY,
     )
