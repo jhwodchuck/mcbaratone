@@ -34,7 +34,16 @@ def test_no_permanent_terminal_plot_cap(monkeypatch):
     monkeypatch.setattr(food_supply, "harvest_wheat_farm", lambda *_a, **_k: False)
     monkeypatch.setattr(food_supply, "establish_wheat_farm", lambda _c, x, y, z, **_k: (x, y, z))
     monkeypatch.setattr(food_supply, "resolve_storage_location", lambda *_a, **_k: None)
-    state = _state({"wheat_farm": {"origin": [0, 64, 0]}, "food_worker": {"farm_plots": [{"origin": [i * 40, 64, 0]} for i in range(20)]}})
+    state = _state(
+        {
+            "wheat_farm": {"origin": [0, 64, 0]},
+            "food_worker": {
+                "farm_plots": [
+                    {"origin": [index * 40, 64, 0]} for index in range(20)
+                ]
+            },
+        }
+    )
     result = food_supply.run_food_cycle(object(), state)
     assert result.plots == 1
     assert len(state.custom_data["food_worker"]["farm_plots"]) == 21
@@ -132,6 +141,29 @@ def test_frontier_keeps_expanding_past_four_verified_plots(monkeypatch):
     assert len(state.custom_data["food_worker"]["farm_plots"]) == 7
 
 
+def test_expansion_moves_beyond_four_rejected_cardinal_sites(monkeypatch):
+    _inventory(monkeypatch, {"minecraft:wheat_seeds": 64})
+    monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(food_supply, "harvest_wheat_farm", lambda *_a, **_k: False)
+    attempted = []
+
+    def reject(_client, x, y, z, **_kwargs):
+        attempted.append((x, y, z))
+        return None
+
+    monkeypatch.setattr(food_supply, "establish_wheat_farm", reject)
+    monkeypatch.setattr(
+        food_supply, "resolve_storage_location", lambda *_a, **_k: None
+    )
+    state = _state({"wheat_farm": {"origin": [0, 64, 0]}})
+
+    for _ in range(7):
+        food_supply.run_food_cycle(object(), state)
+
+    assert len(set(attempted)) > 4
+    assert any(abs(x) > 32 or abs(z) > 32 for x, _y, z in attempted)
+
+
 def test_dead_state_fails_closed_before_self_feed_or_farm_travel(monkeypatch):
     _inventory(monkeypatch, {})
     monkeypatch.setattr(food_supply, "_survival_ready", lambda _client: False)
@@ -143,3 +175,11 @@ def test_dead_state_fails_closed_before_self_feed_or_farm_travel(monkeypatch):
     result = food_supply.run_food_cycle(object(), _state({}))
     assert not result.success
     assert "unsafe" in result.detail
+
+
+def test_missing_live_state_fails_closed():
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda *_args, **_kwargs: {})
+    )
+
+    assert not food_supply._survival_ready(client)

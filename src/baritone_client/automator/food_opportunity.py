@@ -56,7 +56,10 @@ def select_village_food_production_opportunity(
 
 
 def cooldown_ready(
-    runtime: Mapping[str, Any], kind: OpportunityKind, now: float, cooldowns: Mapping[OpportunityKind, float]
+    runtime: Mapping[str, Any],
+    kind: OpportunityKind,
+    now: float,
+    cooldowns: Mapping[OpportunityKind, float],
 ) -> bool:
     """Return whether an opportunity has waited out its recorded cooldown."""
     attempts = runtime.get("opportunities", {})
@@ -90,7 +93,11 @@ def _banked_total(cycle: Any, fallback: int) -> int:
     return fallback
 
 
-def run_village_food_production(client: Any, state: Any, runtime: Mapping[str, Any]) -> tuple[bool, str, int, int]:
+def run_village_food_production(
+    client: Any,
+    state: Any,
+    runtime: Mapping[str, Any],
+) -> tuple[bool, str, int, int]:
     """Run one public food-supply cycle and return durable banked totals.
 
     The import remains local while the core food-supply module lands, keeping

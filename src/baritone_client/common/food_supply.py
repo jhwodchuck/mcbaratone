@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import hypot
+from math import ceil, hypot, sqrt
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
 from .combat import eat_until_hunger
@@ -125,7 +125,40 @@ def _candidate(
             for plot in plots
         ):
             return candidate
+    # A farm can be surrounded by water, rock, or protected construction. If
+    # all four immediate legs fail, a frontier-only search would stop forever.
+    # The persisted cursor therefore also advances through an unbounded square
+    # grid around the durable anchor. Each invocation still tries only the
+    # bounded number of slots above plus this single fallback coordinate.
+    grid_x, grid_z = _grid_offset(cursor + len(offsets))
+    candidate = (
+        anchor[0] + grid_x * distance,
+        anchor[1],
+        anchor[2] + grid_z * distance,
+    )
+    if candidate not in rejected and all(
+        hypot(candidate[0] - plot[0], candidate[2] - plot[2]) >= distance
+        for plot in plots
+    ):
+        return candidate
     return None
+
+
+def _grid_offset(slot: int) -> Tuple[int, int]:
+    """Map a durable cursor to one unique non-origin square-grid coordinate."""
+    index = max(0, int(slot))
+    ring = max(1, ceil((sqrt(index + 2) - 1) / 2))
+    previous = (2 * ring - 1) ** 2 - 1
+    position = index - previous
+    perimeter = [
+        *((ring, z) for z in range(-ring, ring)),
+        *((x, ring) for x in range(ring, -ring, -1)),
+        *((-ring, z) for z in range(ring, -ring, -1)),
+        *((x, -ring) for x in range(-ring, ring)),
+    ]
+    east = perimeter.index((ring, 0))
+    perimeter = perimeter[east:] + perimeter[:east]
+    return perimeter[position % len(perimeter)]
 
 
 def _survival_ready(client: Any) -> bool:
@@ -134,9 +167,9 @@ def _survival_ready(client: Any) -> bool:
         state = client.transport.dispatch("get_state", {})
         data = state.get("data", state) if isinstance(state, Mapping) else {}
         return (
-            not data.get("is_dead")
-            and "overworld" in str(data.get("dimension", "minecraft:overworld"))
-            and float(data.get("health", 20) or 0) >= 12.0
+            not bool(data.get("is_dead", data.get("dead", False)))
+            and "overworld" in str(data.get("dimension", ""))
+            and float(data.get("health", 0) or 0) >= 12.0
         )
     except Exception:
         return False
@@ -166,7 +199,12 @@ def _flush(state: Any, client: Any) -> None:
             pass
 
 
-def _result(worker: Mapping[str, Any], success: bool, detail: str, **values: int) -> FoodCycleResult:
+def _result(
+    worker: Mapping[str, Any],
+    success: bool,
+    detail: str,
+    **values: int,
+) -> FoodCycleResult:
     return FoodCycleResult(
         success,
         detail,
@@ -219,7 +257,14 @@ def run_food_cycle(
     harvested = 0
     limit = max(1, int(max_plots_per_cycle))
     cursor = int(worker.get("plot_cursor", 0) or 0)
-    inspected = [known[(cursor + index) % len(known)] for index in range(min(limit, len(known)))] if known else []
+    inspected = (
+        [
+            known[(cursor + index) % len(known)]
+            for index in range(min(limit, len(known)))
+        ]
+        if known
+        else []
+    )
     for plot in inspected:
         plot_before = _count(get_inventory(client), WHEAT)
         harvest_wheat_farm(client, *plot, range_=max(1, int(farm_range)))
@@ -278,7 +323,14 @@ def run_food_cycle(
     chest = resolve_storage_location(client, state=state, verify=False)
     if chest is not None and _count(after_craft, BREAD) > max(0, int(personal_food_reserve)):
         deposited = deposit_excess_to_chest(
-            client, chest, deposit_items={BREAD}, retain_counts={BREAD: max(0, int(personal_food_reserve)), SEEDS: max(0, int(seed_reserve))}, state=state
+            client,
+            chest,
+            deposit_items={BREAD},
+            retain_counts={
+                BREAD: max(0, int(personal_food_reserve)),
+                SEEDS: max(0, int(seed_reserve)),
+            },
+            state=state,
         )
         if deposited >= 0:
             after_bank = get_inventory(client)
