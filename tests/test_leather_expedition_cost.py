@@ -230,3 +230,43 @@ def test_wool_gain_resets_its_own_streak():
     )
 
     assert state.custom_data[leather_supply.WOOL_NO_GAIN_KEY] == 0
+
+
+def test_refusing_the_hunt_also_triggers_a_rearm(monkeypatch):
+    """A gate that only refuses is a livelock, not a safety feature.
+
+    Bot17 stopped dying the moment the equipment gate landed -- and stopped
+    progressing with it, holding 10 unspent iron ingots because nothing in
+    ENCHANTING_PIPELINE ever equipped it. The refusal must drive the remedy.
+    """
+    from baritone_client.automator.phases import enchanting
+
+    handler = enchanting.EnchantingPipelineHandler()
+    state = SimpleNamespace(custom_data={})
+    client = ClientStub()
+
+    monkeypatch.setattr(enchanting, "count_item", lambda *_a, **_k: 0)
+    monkeypatch.setattr(handler, "_withdraw_at_home", lambda *_a, **_k: 0)
+    monkeypatch.setattr(
+        enchanting.leather_supply, "search_is_futile", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(
+        enchanting.leather_supply,
+        "escalate_ring_if_exhausted",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr(
+        enchanting.leather_supply,
+        "expedition_is_too_dangerous",
+        lambda *_a, **_k: True,
+    )
+
+    rearmed = []
+    monkeypatch.setattr(
+        enchanting.combat_readiness,
+        "ensure_combat_readiness",
+        lambda *_a, **_k: rearmed.append(True) or False,
+    )
+
+    assert handler._gather_leather(client, state) is False
+    assert rearmed, "gate refused the hunt without ever trying to rearm"

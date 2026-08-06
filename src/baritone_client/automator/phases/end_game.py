@@ -13,6 +13,7 @@ from ...common.inventory import (
 )
 from ...common.navigation import goto
 from ...common.enderman_hunt import hunt_endermen
+from . import combat_readiness
 from ...common.end import (
     acquire_elytra,
     acquire_shulker_boxes,
@@ -126,22 +127,12 @@ class WorldUnlockHandler(PhaseHandler):
     def _ensure_combat_readiness(client, state: StateManager) -> bool:
         """Restore armor, weapon, food, and health before hostile overworld work.
 
-        ``NETHER_AND_BLAZE`` already refuses to enter a fortress naked. The
+        ``NETHER_AND_BLAZE`` already refuses to enter a fortress naked; the
         same protection never existed for ``WORLD_UNLOCK``, so a bot that died
-        and respawned with 0/4 armor walked straight back into the cave
-        hostiles that had just killed it. Reuse the proven rearm rather than
-        writing a second one; its only Nether-specific branch is a no-op in
-        the Overworld.
+        and respawned with 0/4 armor walked back into the cave hostiles that
+        had just killed it.
         """
-        from .nether_prep import NetherAndBlazeHandler
-
-        try:
-            return bool(
-                NetherAndBlazeHandler()._ensure_nether_readiness(client, state)
-            )
-        except Exception as exc:  # pragma: no cover - defensive
-            print(f"  Combat readiness check failed: {exc}")
-            return False
+        return combat_readiness.ensure_combat_readiness(client, state)
 
     def _record_eyes_ready(
         self,

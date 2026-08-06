@@ -18,7 +18,7 @@ from ...common.inventory import (
 )
 from ...common.combat import eat_until_hunger, hunt_mobs, scan_for_threats
 from ...common.husbandry import visit_known_herd_for_loot
-from . import leather_supply
+from . import combat_readiness, leather_supply
 from ...common.navigation import find_nearby_block, goto
 from ...common.nether import enter_portal, find_nearest_portal
 from ...common.base import (
@@ -547,6 +547,10 @@ class EnchantingPipelineHandler(PhaseHandler):
         if leather_supply.search_is_futile(client, state):
             return False
         if leather_supply.expedition_is_too_dangerous(client):
+            # Refusing without rearming is a livelock, not a safety feature:
+            # Bot17 stopped dying and stopped progressing, holding 10 unspent
+            # iron ingots because nothing here ever equipped it.
+            combat_readiness.ensure_combat_readiness(client, state)
             return False
 
         if not self._wait_for_daylight(client, state):
