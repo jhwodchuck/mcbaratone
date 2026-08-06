@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .end_readiness import FleetRole, bot_name, default_fleet_role
+from .role_profile import load_role_profile
 
 
 FLEET_DIRECTORY_NAMES = {"aternos", "headlessmc"}
@@ -59,15 +60,56 @@ def _last_json_line(path: Path) -> dict[str, Any]:
 
 
 def _controller_role(controller: Path) -> FleetRole:
+    fallback = default_fleet_role(_controller_bot_name(controller))
     try:
-        configured = (controller / "fleet-role.txt").read_text(
-            encoding="utf-8"
-        ).strip().lower()
-        if configured:
-            return FleetRole(configured)
-    except (OSError, ValueError):
-        pass
-    return default_fleet_role(_controller_bot_name(controller))
+        profile = load_role_profile(
+            controller,
+            primary_role=fallback.value,
+            env={},
+        )
+        return FleetRole(profile.primary_role)
+    except ValueError:
+        try:
+            configured = (controller / "fleet-role.txt").read_text(
+                encoding="utf-8"
+            ).strip().lower()
+            if configured:
+                return FleetRole(configured)
+        except (OSError, ValueError):
+            pass
+    return fallback
+
+
+def _configured_controller_specialties(
+    controller: Path,
+    primary_role: FleetRole,
+) -> tuple[FleetRole, ...]:
+    """Return recognized recurring secondary roles from a durable profile."""
+    profile = load_role_profile(
+        controller,
+        primary_role=primary_role.value,
+        env={},
+    )
+    roles: list[FleetRole] = []
+    for name in profile.secondary_roles:
+        try:
+            role = FleetRole(name)
+        except ValueError:
+            continue
+        if role not in {FleetRole.BALANCED, primary_role} and role not in roles:
+            roles.append(role)
+    return tuple(roles)
+
+
+def configured_specialty_roles(
+    state: Any,
+    primary_role: FleetRole,
+) -> tuple[FleetRole, ...]:
+    """Return this controller's explicit recurring secondary specialties."""
+    checkpoint_dir = getattr(state, "checkpoint_dir", None)
+    if not checkpoint_dir:
+        return ()
+    return _configured_controller_specialties(Path(checkpoint_dir), primary_role)
 
 
 def _controller_is_active(
@@ -126,7 +168,7 @@ def borrowed_specialty_roles(
     if not current_name:
         return ()
     observed = time.time() if now is None else float(now)
-    active: list[tuple[str, FleetRole]] = []
+    active: list[tuple[str, FleetRole, tuple[FleetRole, ...]]] = []
     try:
         controllers = sorted(
             (
@@ -143,16 +185,33 @@ def borrowed_specialty_roles(
         return ()
     for controller in controllers:
         if _controller_is_active(controller, current=current, now=observed):
-            active.append((_controller_bot_name(controller), _controller_role(controller)))
+            controller_role = _controller_role(controller)
+            active.append(
+                (
+                    _controller_bot_name(controller),
+                    controller_role,
+                    _configured_controller_specialties(controller, controller_role),
+                )
+            )
 
     if not active:
-        active = [(current_name, primary_role)]
-    active_names = [name.lower() for name, _role in active]
+        active = [
+            (
+                current_name,
+                primary_role,
+                configured_specialty_roles(state, primary_role),
+            )
+        ]
+    active_names = [name.lower() for name, _role, _secondary in active]
     try:
         current_index = active_names.index(current_name.lower())
     except ValueError:
         return ()
-    staffed = {role for _name, role in active}
+    staffed = {
+        role
+        for _name, primary, secondary in active
+        for role in (primary, *secondary)
+    }
     missing = [role for role in SPECIALTY_ROLES if role not in staffed]
     assigned = [
         role
@@ -166,4 +225,5 @@ __all__ = [
     "ACTIVE_HEARTBEAT_SECONDS",
     "SPECIALTY_ROLES",
     "borrowed_specialty_roles",
+    "configured_specialty_roles",
 ]

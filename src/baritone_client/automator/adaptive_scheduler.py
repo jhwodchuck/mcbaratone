@@ -1,9 +1,8 @@
 """State-driven scheduling and bounded local farming opportunities.
 
 The objective graph remains the authority for progression dependencies.  This
-module supplies *preference*, never completion: live observations can choose a
-better runnable sibling or justify one small renewable-resource action, but a
-phase still has to pass its normal handler and verifier before it is DONE.
+module supplies *preference*, never completion: live observations can choose a better runnable
+sibling or justify one small renewable-resource action, but a phase still has to pass its normal handler and verifier before it is DONE.
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ from .end_readiness import (
     record_readiness,
     role_focused_candidates,
 )
-from .fleet_coverage import borrowed_specialty_roles
+from .fleet_coverage import borrowed_specialty_roles, configured_specialty_roles
 from . import food_opportunity
 from .common.role_opportunities import run_role_opportunity
 from .common.crop_opportunity import run_crop_opportunity
@@ -34,7 +33,7 @@ from .iron_scheduler import run_scheduled_iron_cycle
 from .local_opportunity import LocalOpportunity, OpportunityKind
 from .objective import Objective
 from .state_manager import Phase
-from .specialty_scheduler import select_specialty_opportunity
+from .specialty_scheduler import select_profile_specialty_opportunities, select_specialty_opportunity
 from .work_progress import productive_snapshot, record_productive_attempt
 
 
@@ -548,6 +547,13 @@ class AdaptiveScheduler:
         specialty_candidates = []
         if primary is not None:
             specialty_candidates.append(replace(primary, assigned_role=role.value))
+        specialty_candidates.extend(
+            select_profile_specialty_opportunities(
+                client=self.client, state=self.state, primary_role=role, signals=signals,
+                completed=completed, current_time=current_time,
+                cooldown_ready=self._cooldown_ready,
+            )
+        )
 
         runtime = self._runtime()
         last_borrowed = float(runtime.get("last_borrowed_specialty_at", 0) or 0)
@@ -730,6 +736,7 @@ class AdaptiveScheduler:
         if (
             opportunity.assigned_role
             and opportunity.assigned_role != fleet_role(self.state).value
+            and opportunity.assigned_role not in {role.value for role in configured_specialty_roles(self.state, fleet_role(self.state))}
         ):
             runtime = self._runtime()
             runtime["last_borrowed_specialty_at"] = time.time()

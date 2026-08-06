@@ -756,3 +756,34 @@ def test_quartermaster_result_records_verified_item_delta(monkeypatch):
     assert result.before == 0
     assert result.after == 10
     assert state.custom_data["adaptive_scheduler"]["quartermaster_items_moved"] == 10
+
+
+def test_profile_secondary_work_does_not_consume_borrowed_duty_cooldown(
+    tmp_path, monkeypatch
+):
+    controller = tmp_path / "runs" / "headlessmc" / "Bot07" / "controller"
+    controller.mkdir(parents=True)
+    (controller / "fleet-role-profile.json").write_text(
+        '{"primary_role":"end_runner","secondary_roles":["quartermaster"]}\n',
+        encoding="utf-8",
+    )
+    state = SimpleNamespace(custom_data={}, checkpoint_dir=controller)
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    monkeypatch.setattr(
+        adaptive,
+        "run_quartermaster_cycle",
+        lambda *_args: QuartermasterCycleResult(
+            True, "verified storage", total_items_moved=1
+        ),
+    )
+    opportunity = LocalOpportunity(
+        OpportunityKind.STORAGE_MAINTENANCE,
+        230,
+        "profile Quartermaster",
+        assigned_role="quartermaster",
+    )
+
+    result = scheduler.run_local_opportunity(opportunity)
+
+    assert result.success
+    assert "last_borrowed_specialty_at" not in state.custom_data["adaptive_scheduler"]

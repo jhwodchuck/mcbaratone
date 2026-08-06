@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from baritone_client.common import storage_organizer as organizer
 from baritone_client.common.storage_catalog import StorageCatalog
 from baritone_client.common.storage_organizer import (
@@ -17,10 +19,33 @@ def test_item_categories_are_broad_and_stable():
     assert category_for_item("minecraft:iron_pickaxe") == "tools"
     assert category_for_item("minecraft:leather") == "mob_drops"
     assert category_for_item("minecraft:cobblestone") == "building"
+    assert category_for_item("minecraft:shulker_shell") == "rare"
+
+
+def _register_verified_intake(catalog):
+    catalog.register_warehouse(
+        "warehouse_01",
+        dimension="minecraft:overworld",
+        anchor=(10, 64, 10),
+        facing="north",
+        expansion_direction="positive_local_x",
+        aisle_width=3,
+    )
+    catalog.reserve_slot(
+        "warehouse_01",
+        "intake",
+        "intake",
+        0,
+        paired_coordinates=((10, 64, 10), (11, 64, 10)),
+        canonical_coordinate=(10, 64, 10),
+        state="verified",
+        metadata={"row": 0},
+    )
 
 
 def test_planner_migrates_largest_category_to_managed_destination(tmp_path):
     catalog = StorageCatalog(Path(tmp_path) / "catalog.sqlite3", "world-a")
+    _register_verified_intake(catalog)
     source = (1, 64, 1)
     destination = (5, 64, 1)
     catalog.observe_inventory(
@@ -48,6 +73,89 @@ def test_planner_migrates_largest_category_to_managed_destination(tmp_path):
     assert job.source == source
     assert job.destination == destination
     assert job.category == "ores"
+    assert job.retire_source_when_empty
+
+
+def test_planner_establishes_warehouse_intake_before_migration(tmp_path):
+    catalog = StorageCatalog(Path(tmp_path) / "catalog.sqlite3", "world-a")
+    catalog.observe_inventory(
+        (1, 64, 1),
+        [{"slot": 0, "id": "minecraft:raw_iron", "count": 48}],
+        dimension="minecraft:overworld",
+        capacity_slots=27,
+        purpose="legacy_storage",
+    )
+
+    job = plan_storage_job(catalog)
+
+    assert job is not None
+    assert job.category == "intake"
+    assert job.capacity_only
+
+
+def test_category_storage_uses_and_verifies_deterministic_warehouse_slot(
+    tmp_path, monkeypatch
+):
+    catalog = StorageCatalog(Path(tmp_path) / "catalog.sqlite3", "world-a")
+    placed = []
+    monkeypatch.setattr(
+        organizer.harness_ops,
+        "find_double_chest_spot",
+        lambda _client, **_kwargs: ((0, 64, 0), (1, 64, 0)),
+    )
+    monkeypatch.setattr(
+        organizer.harness_ops,
+        "_block_at",
+        lambda _client, _x, y, _z: "minecraft:stone" if y == 63 else "minecraft:air",
+    )
+    monkeypatch.setattr(organizer, "count_item", lambda *_args: 2)
+    monkeypatch.setattr(
+        organizer,
+        "create_double_chest_at",
+        lambda _client, first, second, **_kwargs: placed.append((first, second))
+        or (first, second),
+    )
+    monkeypatch.setattr(
+        organizer,
+        "_open_snapshot",
+        lambda *_args: ({"slots": [], "total_slots": 90}, 54),
+    )
+    monkeypatch.setattr(organizer.harness_ops, "close_container", lambda *_args: None)
+
+    position = organizer._create_category_storage(
+        SimpleNamespace(), SimpleNamespace(), catalog, "ores", "minecraft:overworld"
+    )
+
+    assert position == (0, 64, -12)
+    assert placed == [((0, 64, -12), (1, 64, -12))]
+    reservation = catalog.get_slot_reservation(
+        "warehouse_01", "category", "ores", 0
+    )
+    assert reservation["state"] == "verified"
+    assert reservation["canonical_coordinate"] == position
+
+
+def test_each_dimension_gets_a_distinct_warehouse_identity(tmp_path, monkeypatch):
+    catalog = StorageCatalog(Path(tmp_path) / "catalog.sqlite3", "world-a")
+    catalog.register_warehouse(
+        "warehouse_01",
+        dimension="minecraft:overworld",
+        anchor=(0, 64, 0),
+        facing="north",
+        expansion_direction="positive_local_x",
+        aisle_width=3,
+    )
+    monkeypatch.setattr(
+        organizer.harness_ops,
+        "find_double_chest_spot",
+        lambda _client, **_kwargs: ((20, 64, 20), (21, 64, 20)),
+    )
+
+    warehouse, _layout = organizer.ensure_warehouse_layout(
+        SimpleNamespace(), catalog, "minecraft:the_nether"
+    )
+
+    assert warehouse["warehouse_id"] == "warehouse_01_the_nether"
 
 
 def test_planner_never_touches_player_owned_storage(tmp_path):
@@ -70,6 +178,21 @@ def test_planner_never_touches_player_owned_storage(tmp_path):
     assert plan_storage_job(catalog) is None
 
 
+def test_planner_never_routes_storage_coordinates_across_dimensions(tmp_path):
+    catalog = StorageCatalog(Path(tmp_path) / "catalog.sqlite3", "world-a")
+    catalog.observe_inventory(
+        (1, 64, 1),
+        [{"slot": 0, "id": "minecraft:quartz", "count": 32}],
+        dimension="minecraft:the_nether",
+        capacity_slots=27,
+        purpose="legacy_storage",
+    )
+
+    assert plan_storage_job(
+        catalog, dimension="minecraft:overworld"
+    ) is None
+
+
 def test_cycle_leases_creates_capacity_and_records_verified_transfer(monkeypatch):
     events = []
 
@@ -82,6 +205,12 @@ def test_cycle_leases_creates_capacity_and_records_verified_transfer(monkeypatch
             events.append(("release", key, owner))
             return True
 
+        def register_container(self, position, **kwargs):
+            events.append(("register", position, kwargs["status"]))
+
+        def record_event(self, position, event_type, **_kwargs):
+            events.append(("event", position, event_type))
+
     catalog = FakeCatalog()
     state = SimpleNamespace(custom_data={})
     job = StorageJob(
@@ -89,9 +218,12 @@ def test_cycle_leases_creates_capacity_and_records_verified_transfer(monkeypatch
         "ores",
         "legacy ores",
         source=(1, 64, 1),
+        retire_source_when_empty=True,
     )
     monkeypatch.setattr(organizer, "catalog_for", lambda *_args: catalog)
-    monkeypatch.setattr(organizer, "plan_storage_job", lambda _catalog: job)
+    monkeypatch.setattr(
+        organizer, "plan_storage_job", lambda _catalog, **_kwargs: job
+    )
     monkeypatch.setattr(
         organizer,
         "_create_category_storage",
@@ -103,7 +235,16 @@ def test_cycle_leases_creates_capacity_and_records_verified_transfer(monkeypatch
         lambda *_args: (48, 2, True),
     )
 
-    result = organizer.run_quartermaster_cycle(SimpleNamespace(), state)
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: (
+                {"dimension": "minecraft:overworld"}
+                if route == "get_state"
+                else {}
+            )
+        )
+    )
+    result = organizer.run_quartermaster_cycle(client, state)
 
     assert result.success
     assert result.items_moved == 48
@@ -120,3 +261,210 @@ def test_cycle_leases_creates_capacity_and_records_verified_transfer(monkeypatch
     }
     assert events[0][0] == "acquire"
     assert events[-1][0] == "release"
+    assert ("register", (1, 64, 1), "legacy_empty") in events
+
+
+def test_existing_chest_at_planned_slot_is_blocked_not_adopted(
+    tmp_path, monkeypatch
+):
+    catalog = StorageCatalog(Path(tmp_path) / "catalog.sqlite3", "world-a")
+    monkeypatch.setattr(
+        organizer.harness_ops,
+        "find_double_chest_spot",
+        lambda _client, **_kwargs: ((0, 64, 0), (1, 64, 0)),
+    )
+    monkeypatch.setattr(
+        organizer.harness_ops,
+        "_block_at",
+        lambda _client, _x, y, _z: (
+            "minecraft:chest" if y == 64 else "minecraft:stone"
+        ),
+    )
+    monkeypatch.setattr(organizer, "count_item", lambda *_args: 2)
+    monkeypatch.setattr(organizer, "create_double_chest_at", lambda *_args: None)
+
+    with pytest.raises(RuntimeError, match="planned warehouse"):
+        organizer._create_category_storage(
+            SimpleNamespace(), SimpleNamespace(), catalog, "ores", "minecraft:overworld"
+        )
+
+    reservation = catalog.get_slot_reservation(
+        "warehouse_01", "category", "ores", 0
+    )
+    assert reservation["state"] == "blocked"
+
+
+def test_partial_warehouse_placement_resumes_only_from_confirmed_evidence(
+    tmp_path, monkeypatch
+):
+    catalog = StorageCatalog(Path(tmp_path) / "catalog.sqlite3", "world-a")
+    present = set()
+    calls = []
+    monkeypatch.setattr(
+        organizer.harness_ops,
+        "find_double_chest_spot",
+        lambda _client, **_kwargs: ((0, 64, 0), (1, 64, 0)),
+    )
+    monkeypatch.setattr(
+        organizer.harness_ops,
+        "_block_at",
+        lambda _client, x, y, z: (
+            "minecraft:stone"
+            if y == 63
+            else "minecraft:chest"
+            if (x, y, z) in present
+            else "minecraft:air"
+        ),
+    )
+    monkeypatch.setattr(organizer, "count_item", lambda *_args: 2)
+
+    def place_pair(_client, first, second, *, allowed_existing, on_placed):
+        calls.append(set(allowed_existing))
+        if len(calls) == 1:
+            present.add(first)
+            on_placed(first)
+            return None
+        assert first in allowed_existing
+        present.add(second)
+        on_placed(second)
+        return first, second
+
+    monkeypatch.setattr(organizer, "create_double_chest_at", place_pair)
+    monkeypatch.setattr(
+        organizer,
+        "_open_snapshot",
+        lambda *_args: (
+            {"slots": [], "total_slots": 63 if len(present) == 1 else 90},
+            27 if len(present) == 1 else 54,
+        ),
+    )
+    monkeypatch.setattr(organizer.harness_ops, "close_container", lambda *_args: None)
+    worker_state = SimpleNamespace(checkpoint_dir="Bot04")
+
+    with pytest.raises(RuntimeError, match="place or resume"):
+        organizer._create_category_storage(
+            SimpleNamespace(), worker_state,
+            catalog, "ores", "minecraft:overworld"
+        )
+    partial = catalog.get_slot_reservation(
+        "warehouse_01", "category", "ores", 0
+    )
+    assert partial["state"] == "building"
+    assert partial["metadata"]["confirmed_coordinates"] == [[0, 64, -12]]
+
+    position = organizer._create_category_storage(
+        SimpleNamespace(), worker_state,
+        catalog, "ores", "minecraft:overworld"
+    )
+
+    assert position == (0, 64, -12)
+    assert calls == [set(), {(0, 64, -12)}]
+    verified = catalog.get_slot_reservation(
+        "warehouse_01", "category", "ores", 0
+    )
+    assert verified["state"] == "verified"
+    assert verified["metadata"]["confirmed_coordinates"] == [
+        [0, 64, -12], [1, 64, -12]
+    ]
+
+
+def test_confirmed_partial_chest_must_still_be_single_and_empty(
+    tmp_path, monkeypatch
+):
+    catalog = StorageCatalog(Path(tmp_path) / "catalog.sqlite3", "world-a")
+    catalog.register_warehouse(
+        "warehouse_01",
+        dimension="minecraft:overworld",
+        anchor=(0, 64, 0),
+        facing="north",
+        expansion_direction="positive_local_x",
+        aisle_width=3,
+    )
+    catalog.reserve_slot(
+        "warehouse_01",
+        "category",
+        "ores",
+        0,
+        paired_coordinates=((0, 64, -12), (1, 64, -12)),
+        canonical_coordinate=(0, 64, -12),
+        state="building",
+        metadata={
+            "row": 3,
+            "confirmed_coordinates": [[0, 64, -12]],
+        },
+    )
+    monkeypatch.setattr(
+        organizer.harness_ops,
+        "_block_at",
+        lambda _client, x, y, z: (
+            "minecraft:stone"
+            if y == 63
+            else "minecraft:chest"
+            if (x, y, z) == (0, 64, -12)
+            else "minecraft:air"
+        ),
+    )
+    monkeypatch.setattr(
+        organizer,
+        "_open_snapshot",
+        lambda *_args: (
+            {"slots": [{"slot": 0, "id": "minecraft:diamond", "count": 1}]},
+            27,
+        ),
+    )
+    monkeypatch.setattr(organizer.harness_ops, "close_container", lambda *_args: None)
+    worker_state = SimpleNamespace(
+        _warehouse_partial_coordinates={(0, 64, -12)}
+    )
+
+    with pytest.raises(RuntimeError, match="not empty"):
+        organizer._create_category_storage(
+            SimpleNamespace(), worker_state, catalog, "ores", "minecraft:overworld"
+        )
+
+    reservation = catalog.get_slot_reservation(
+        "warehouse_01", "category", "ores", 0
+    )
+    assert reservation["state"] == "blocked"
+    assert "replaced" in reservation["metadata"]["blocked_reason"]
+
+
+def test_restart_does_not_adopt_a_catalog_confirmed_partial_chest(
+    tmp_path, monkeypatch
+):
+    catalog = StorageCatalog(Path(tmp_path) / "catalog.sqlite3", "world-a")
+    catalog.register_warehouse(
+        "warehouse_01",
+        dimension="minecraft:overworld",
+        anchor=(0, 64, 0),
+        facing="north",
+        expansion_direction="positive_local_x",
+        aisle_width=3,
+    )
+    catalog.reserve_slot(
+        "warehouse_01", "category", "ores", 0,
+        paired_coordinates=((0, 64, -12), (1, 64, -12)),
+        canonical_coordinate=(0, 64, -12), state="building",
+        metadata={"row": 3, "confirmed_coordinates": [[0, 64, -12]]},
+    )
+    monkeypatch.setattr(
+        organizer.harness_ops,
+        "_block_at",
+        lambda _client, x, y, z: (
+            "minecraft:stone"
+            if y == 63
+            else "minecraft:chest"
+            if (x, y, z) == (0, 64, -12)
+            else "minecraft:air"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="planned warehouse"):
+        organizer._create_category_storage(
+            SimpleNamespace(), SimpleNamespace(), catalog, "ores", "minecraft:overworld"
+        )
+
+    reservation = catalog.get_slot_reservation(
+        "warehouse_01", "category", "ores", 0
+    )
+    assert reservation["state"] == "blocked"

@@ -619,7 +619,7 @@ def close_container(client) -> None:
         pass
 
 
-def find_double_chest_spot(client, radius: int = 8):
+def find_double_chest_spot(client, radius: int = 8, *, dry_only: bool = False):
     """Find an adjacent pair of coordinates that can hold a double chest.
 
     Searched from the player's current position rather than a stored home:
@@ -636,13 +636,15 @@ def find_double_chest_spot(client, radius: int = 8):
     for dx in range(-radius, radius + 1):
         for dz in range(-radius, radius + 1):
             first = (px + dx, py, pz + dz)
-            if not _is_placeable_target(_block_at(client, *first)):
+            first_block = _block_at(client, *first)
+            if (dry_only and "air" not in first_block) or not _is_placeable_target(first_block):
                 continue
             if not _is_solid_support_block(_block_at(client, first[0], first[1] - 1, first[2])):
                 continue
             for ox, oz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                 second = (first[0] + ox, first[1], first[2] + oz)
-                if not _is_placeable_target(_block_at(client, *second)):
+                second_block = _block_at(client, *second)
+                if (dry_only and "air" not in second_block) or not _is_placeable_target(second_block):
                     continue
                 if not _is_solid_support_block(_block_at(client, second[0], second[1] - 1, second[2])):
                     continue
@@ -683,42 +685,14 @@ def find_single_chest_spot(client, radius: int = 8):
 
 
 def create_double_chest(client):
-    """Place a merged double chest and return ``(first, second)``.
+    """Place a merged double chest at the nearest supported pair."""
+    from .warehouse_placement import create_double_chest_at
 
-    The second chest is placed from a position perpendicular to the pair.
-    Standing in line with them makes Minecraft resolve the placement against
-    the first chest's face, which yields two separate single chests instead
-    of one 54-slot double.
-    """
-    from .inventory import count_item
-
-    h = _load()
-    if h is None:
-        return None
-    if count_item(client, "minecraft:chest") < 2:
-        return None
     spot = find_double_chest_spot(client)
     if spot is None:
         print("  STORAGE: no room for a double chest nearby")
         return None
-    first, second = spot
-
-    if not move_near(client, *first, timeout=20.0):
-        return None
-    if not place_block_exact(client, first[0], first[1], first[2], "minecraft:chest"):
-        print(f"  STORAGE: failed to place first chest at {first}")
-        return None
-
-    dx = second[0] - first[0]
-    dz = second[2] - first[2]
-    perp = (first[0], first[1], first[2] + 1) if dx else (first[0] + 1, first[1], first[2])
-    move_near(client, *perp, timeout=10.0)
-
-    if not place_block_exact(client, second[0], second[1], second[2], "minecraft:chest"):
-        print(f"  STORAGE: failed to place second chest at {second}")
-        return None
-    print(f"  STORAGE: built double chest at {first}/{second}")
-    return first, second
+    return create_double_chest_at(client, *spot)
 
 
 def ensure_item_in_hotbar(client, item_id: str):

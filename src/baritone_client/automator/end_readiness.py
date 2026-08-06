@@ -15,6 +15,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from .role_profile import load_role_profile
 from .state_manager import Phase
 
 
@@ -101,14 +102,23 @@ def fleet_role(state: Any) -> FleetRole:
         pass
     checkpoint_dir = getattr(state, "checkpoint_dir", None)
     if checkpoint_dir:
+        fallback = default_fleet_role(bot_name(state))
         try:
-            configured = (Path(checkpoint_dir) / "fleet-role.txt").read_text(
-                encoding="utf-8"
-            ).strip().lower()
-            if configured:
-                return FleetRole(configured)
-        except (OSError, ValueError):
-            pass
+            profile = load_role_profile(
+                checkpoint_dir,
+                primary_role=fallback.value,
+                env={},
+            )
+            return FleetRole(profile.primary_role)
+        except ValueError:
+            try:
+                configured = (Path(checkpoint_dir) / "fleet-role.txt").read_text(
+                    encoding="utf-8"
+                ).strip().lower()
+                if configured:
+                    return FleetRole(configured)
+            except (OSError, ValueError):
+                pass
     name = bot_name(state)
     if not name:
         return FleetRole.BALANCED

@@ -11,6 +11,13 @@ from . import harness_ops
 from .inventory import count_item, craft, get_inventory
 from .storage_catalog import StorageCatalog, catalog_for
 from .storage_safety import storage_travel_safe
+from .warehouse_planner import (
+    ensure_warehouse_layout,
+    mark_slot_blocked,
+    planned_slot_is_obstructed,
+    reserve_category_slot,
+)
+from .warehouse_placement import create_double_chest_at
 
 
 Position = Tuple[int, int, int]
@@ -35,6 +42,8 @@ class StorageJob:
     source: Optional[Position] = None
     destination: Optional[Position] = None
     capacity_only: bool = False
+    retire_source_when_empty: bool = False
+    corrects_misfiled_items: bool = False
 
 
 @dataclass(frozen=True)
@@ -131,6 +140,24 @@ def category_for_item(item_id: str) -> str:
     if any(
         token in item
         for token in (
+            "nether_",
+            "end_",
+            "chorus",
+            "shulker",
+            "elytra",
+            "dragon_",
+            "ghast_",
+            "magma_cream",
+            "prismarine",
+            "heart_of_the_sea",
+            "nautilus",
+            "totem_of_undying",
+        )
+    ):
+        return "rare"
+    if any(
+        token in item
+        for token in (
             "cobblestone",
             "stone",
             "dirt",
@@ -199,9 +226,50 @@ def _free_slots(record: Mapping[str, Any]) -> int:
     return max(0, capacity - occupied)
 
 
-def plan_storage_job(catalog: StorageCatalog) -> Optional[StorageJob]:
+def plan_storage_job(
+    catalog: StorageCatalog,
+    *,
+    dimension: Optional[str] = None,
+) -> Optional[StorageJob]:
     """Choose the highest-value safe job from last-known catalog state."""
-    records = [record for record in catalog.list_containers() if _fleet_managed(record)]
+    records = [
+        record
+        for record in catalog.list_containers()
+        if _fleet_managed(record)
+        and (dimension is None or str(record["dimension"]) == str(dimension))
+    ]
+    warehouses = catalog.list_warehouses()
+    record_dimensions = tuple(dict.fromkeys(str(record["dimension"]) for record in records))
+    for dimension in record_dimensions:
+        matching_warehouses = [
+            warehouse
+            for warehouse in warehouses
+            if str(warehouse["dimension"]) == dimension
+        ]
+        if not matching_warehouses:
+            return StorageJob(
+                dimension,
+                "intake",
+                "fleet-managed storage exists but the warehouse intake is not established",
+                capacity_only=True,
+            )
+        warehouse = matching_warehouses[0]
+        intake = [
+            reservation
+            for reservation in catalog.list_slot_reservations(
+                str(warehouse["warehouse_id"])
+            )
+            if reservation["zone"] == "intake"
+            and reservation["category"] == "intake"
+            and reservation["slot_index"] == 0
+        ]
+        if not intake or intake[0]["state"] in {"planned", "building"}:
+            return StorageJob(
+                str(warehouse["dimension"]),
+                "intake",
+                "the warehouse intake pair is reserved but not yet verified",
+                capacity_only=True,
+            )
     destinations: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
     for record in records:
         category = _container_category(record)
@@ -262,6 +330,10 @@ def plan_storage_job(catalog: StorageCatalog) -> Optional[StorageJob]:
                     f"{movable[category]} {category} items are in {purpose or 'uncategorized fleet storage'}",
                     source=position,
                     destination=destination,
+                    retire_source_when_empty=purpose in {"legacy", "legacy_storage"},
+                    corrects_misfiled_items=bool(
+                        source_category and source_category != category
+                    ),
                 ),
             )
         )
@@ -271,7 +343,12 @@ def plan_storage_job(catalog: StorageCatalog) -> Optional[StorageJob]:
 def quartermaster_work_available(client: Any, state: Any) -> bool:
     """Return whether the shared catalog currently advertises useful work."""
     try:
-        return plan_storage_job(catalog_for(client, state)) is not None
+        live = client.transport.dispatch("get_state", {})
+        dimension = str(live.get("dimension") or "minecraft:overworld")
+        return plan_storage_job(
+            catalog_for(client, state),
+            dimension=dimension,
+        ) is not None
     except Exception:
         return False
 
@@ -337,21 +414,106 @@ def _create_category_storage(
     category: str,
     dimension: str,
 ) -> Position:
+    warehouse, layout = ensure_warehouse_layout(client, catalog, dimension)
+    reservation = reserve_category_slot(catalog, warehouse, layout, category)
+    first, second = tuple(reservation["paired_coordinates"])
+    reservation_metadata = dict(reservation["metadata"])
+    confirmed = {
+        tuple(position)
+        for position in reservation_metadata.get("confirmed_coordinates", ())
+        if isinstance(position, (list, tuple)) and len(position) == 3
+    }
+    runtime_confirmed = set(getattr(state, "_warehouse_partial_coordinates", ()))
+    confirmed &= runtime_confirmed
+    for position in sorted(confirmed):
+        if "chest" not in harness_ops._block_at(client, *position):
+            continue
+        data, container_slots = _open_snapshot(client, position)
+        contents = _totals(list(data.get("slots", [])), container_slots)
+        harness_ops.close_container(client)
+        if container_slots != 27 or contents:
+            mark_slot_blocked(
+                catalog, warehouse, reservation,
+                "confirmed partial chest was replaced, joined, or populated",
+                metadata=reservation_metadata,
+            )
+            raise RuntimeError("the confirmed partial warehouse chest is not empty")
+    if planned_slot_is_obstructed(
+        client, (first, second), allowed_existing=tuple(confirmed)
+    ):
+        mark_slot_blocked(
+            catalog, warehouse, reservation,
+            "obstructed or unsupported exact coordinates",
+            metadata=reservation_metadata,
+        )
+        raise RuntimeError("the planned warehouse double chest position is blocked")
+
+    def record_placed(position: Position) -> None:
+        confirmed.add(tuple(position))
+        runtime_confirmed.add(tuple(position))
+        setattr(state, "_warehouse_partial_coordinates", runtime_confirmed)
+        reservation_metadata.update(
+            {
+                "confirmed_coordinates": [list(value) for value in sorted(confirmed)],
+                "placement_owner": str(
+                    getattr(state, "checkpoint_dir", "quartermaster-controller")
+                ),
+            }
+        )
+        catalog.update_slot_reservation_state(
+            str(warehouse["warehouse_id"]),
+            str(reservation["zone"]),
+            category,
+            int(reservation["slot_index"]),
+            "building",
+            metadata=reservation_metadata,
+        )
+
+    required_chests = sum(
+        "chest" not in harness_ops._block_at(client, *position)
+        for position in (first, second)
+    )
     carried = count_item(client, "minecraft:chest")
-    if carried < 2 and not craft(client, "minecraft:chest", 2 - carried):
-        raise RuntimeError("could not craft two chests for warehouse expansion")
-    created = harness_ops.create_double_chest(client)
+    if carried < required_chests and not craft(
+        client, "minecraft:chest", required_chests - carried
+    ):
+        raise RuntimeError("could not craft the chests needed for warehouse expansion")
+    created = create_double_chest_at(
+        client,
+        first,
+        second,
+        allowed_existing=tuple(confirmed),
+        on_placed=record_placed,
+    )
     if not created:
-        raise RuntimeError("could not place warehouse double chest")
-    first, second = created
+        if planned_slot_is_obstructed(
+            client, (first, second), allowed_existing=tuple(confirmed)
+        ):
+            mark_slot_blocked(
+                catalog, warehouse, reservation,
+                "obstructed or unsupported exact coordinates",
+                metadata=reservation_metadata,
+            )
+        raise RuntimeError("could not place or resume the planned warehouse double chest")
     data, container_slots = _open_snapshot(client, first)
     if container_slots != 54:
         harness_ops.close_container(client)
+        mark_slot_blocked(
+            catalog, warehouse, reservation,
+            "placed pair did not open as 54 slots",
+            metadata=reservation_metadata,
+        )
         raise RuntimeError("placed chest pair did not verify as a 54-slot container")
-    logical_id = f"quartermaster:{category}:{first[0]}:{first[1]}:{first[2]}"
+    logical_id = (
+        f"{warehouse['warehouse_id']}:{category}:{reservation['slot_index']}"
+    )
     metadata = {
         "fleet_managed": True,
         "category": category,
+        "warehouse_id": str(warehouse["warehouse_id"]),
+        "warehouse_zone": str(reservation["zone"]),
+        "warehouse_row": int(reservation["metadata"]["row"]),
+        "warehouse_slot_index": int(reservation["slot_index"]),
         "logical_container_id": logical_id,
         "paired_coordinates": [list(first), list(second)],
         "canonical_coordinate": list(first),
@@ -370,6 +532,14 @@ def _create_category_storage(
         "storage_created",
         dimension=dimension,
         details={"category": category, "capacity_slots": 54, "paired": list(second)},
+    )
+    catalog.update_slot_reservation_state(
+        str(warehouse["warehouse_id"]),
+        str(reservation["zone"]),
+        category,
+        int(reservation["slot_index"]),
+        "verified",
+        metadata={**reservation_metadata, "logical_container_id": logical_id},
     )
     harness_ops.close_container(client)
     return first
@@ -514,6 +684,10 @@ def _add(metrics: Dict[str, int], key: str, amount: int = 1) -> None:
     metrics[key] = max(0, int(metrics.get(key, 0) or 0)) + max(0, int(amount))
 
 
+def _container_lease_key(dimension: str, position: Position) -> str:
+    return f"container:{dimension}:{position[0]}:{position[1]}:{position[2]}"
+
+
 def run_quartermaster_cycle(client: Any, state: Any) -> QuartermasterCycleResult:
     """Run one leased capacity or verified item-migration transaction."""
     from ..automator.end_readiness import bot_name
@@ -524,7 +698,9 @@ def run_quartermaster_cycle(client: Any, state: Any) -> QuartermasterCycleResult
         return QuartermasterCycleResult(False, "another controller owns the Quartermaster lease")
     metrics = _metrics(state)
     try:
-        job = plan_storage_job(catalog)
+        live = client.transport.dispatch("get_state", {})
+        dimension = str(live.get("dimension") or "minecraft:overworld")
+        job = plan_storage_job(catalog, dimension=dimension)
         if job is None:
             return QuartermasterCycleResult(False, "shared catalog has no actionable storage job")
         _add(metrics, "containers_audited")
@@ -550,14 +726,47 @@ def run_quartermaster_cycle(client: Any, state: Any) -> QuartermasterCycleResult
                 total_items_moved=int(metrics.get("items_moved", 0) or 0),
             )
 
-        items_moved, stacks_moved, emptied = _transfer_category_batch(
-            client, catalog, job, destination
+        positions = [position for position in (job.source, destination) if position]
+        lease_keys = sorted(
+            {_container_lease_key(job.dimension, position) for position in positions}
         )
+        acquired: list[str] = []
+        try:
+            for lease_key in lease_keys:
+                if not catalog.acquire_lease(lease_key, owner, ttl_seconds=180.0):
+                    raise RuntimeError(
+                        "source or destination storage is leased by another controller"
+                    )
+                acquired.append(lease_key)
+            items_moved, stacks_moved, emptied = _transfer_category_batch(
+                client, catalog, job, destination
+            )
+        finally:
+            for lease_key in reversed(acquired):
+                catalog.release_lease(lease_key, owner)
         _add(metrics, "cycles")
         _add(metrics, "items_moved", items_moved)
         _add(metrics, "stacks_moved", stacks_moved)
         _add(metrics, "catalog_entries_refreshed", 2)
-        if emptied:
+        if job.corrects_misfiled_items:
+            _add(metrics, "misfiled_items_corrected", items_moved)
+        if emptied and job.retire_source_when_empty and job.source is not None:
+            catalog.register_container(
+                job.source,
+                dimension=job.dimension,
+                status="legacy_empty",
+                metadata={
+                    "fleet_managed": True,
+                    "retired_by": owner,
+                    "retired_at": time.time(),
+                },
+            )
+            catalog.record_event(
+                job.source,
+                "legacy_empty",
+                dimension=job.dimension,
+                details={"destination": list(destination)},
+            )
             _add(metrics, "legacy_chests_emptied")
         return QuartermasterCycleResult(
             True,

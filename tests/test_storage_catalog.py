@@ -1,4 +1,5 @@
 import json
+import sqlite3
 
 from baritone_client.common.storage_catalog import (
     StorageCatalog,
@@ -316,3 +317,209 @@ def test_container_inventory_is_scoped_to_exact_container(tmp_path):
     assert catalog.container_inventory(
         (1, 64, 1), dimension="minecraft:overworld"
     ) == {"minecraft:iron_ingot": 12}
+
+
+def test_warehouse_and_reservation_survive_catalog_restart(tmp_path):
+    path = tmp_path / "catalog.sqlite3"
+    catalog = StorageCatalog(path, "world-a")
+    warehouse = catalog.register_warehouse(
+        "main", dimension="minecraft:overworld", anchor=(10, 65, -3),
+        facing="north", expansion_direction="west", aisle_width=3,
+        metadata={"owner": "quartermaster"}, updated_at=100.0,
+    )
+    reservation = catalog.reserve_slot(
+        "main", "bulk", "minecraft:cobblestone", 0,
+        paired_coordinates=((11, 65, -3), (12, 65, -3)),
+        canonical_coordinate=(11, 65, -3), metadata={"capacity": 54},
+        updated_at=101.0,
+    )
+
+    restarted = StorageCatalog(path, "world-a")
+    assert restarted.get_warehouse("main") == warehouse
+    assert restarted.get_slot_reservation(
+        "main", "bulk", "minecraft:cobblestone", 0
+    ) == reservation
+
+
+def test_warehouses_and_reservations_are_world_scoped(tmp_path):
+    path = tmp_path / "catalog.sqlite3"
+    first = StorageCatalog(path, "world-a")
+    second = StorageCatalog(path, "world-b")
+    first.register_warehouse(
+        "main", dimension="minecraft:overworld", anchor=(0, 64, 0),
+        facing="east", expansion_direction="south", aisle_width=3,
+    )
+    first.reserve_slot(
+        "main", "ores", "minecraft:iron_ingot", 1,
+        paired_coordinates=((1, 64, 0), (2, 64, 0)), canonical_coordinate=(1, 64, 0),
+    )
+
+    assert second.list_warehouses() == []
+    assert second.list_slot_reservations("main") == []
+
+
+def test_slot_reservation_is_idempotent_and_rejects_coordinate_conflicts(tmp_path):
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+    catalog.register_warehouse(
+        "main", dimension="minecraft:overworld", anchor=(0, 64, 0),
+        facing="south", expansion_direction="east", aisle_width=3,
+    )
+    first = catalog.reserve_slot(
+        "main", "bulk", "minecraft:stone", 0,
+        paired_coordinates=((2, 64, 0), (3, 64, 0)), canonical_coordinate=(2, 64, 0),
+    )
+    repeated = catalog.reserve_slot(
+        "main", "bulk", "minecraft:stone", 0,
+        paired_coordinates=((2, 64, 0), (3, 64, 0)), canonical_coordinate=(2, 64, 0),
+    )
+
+    assert repeated["created_at"] == first["created_at"]
+    assert len(catalog.list_slot_reservations("main")) == 1
+    import pytest
+
+    with pytest.raises(ValueError, match="already reserved"):
+        catalog.reserve_slot(
+            "main", "bulk", "minecraft:dirt", 1,
+            paired_coordinates=((3, 64, 0), (4, 64, 0)), canonical_coordinate=(3, 64, 0),
+        )
+
+
+def test_slot_reservation_state_can_be_updated_without_losing_coordinates(tmp_path):
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+    catalog.register_warehouse(
+        "main", dimension="minecraft:overworld", anchor=(0, 64, 0),
+        facing="west", expansion_direction="north", aisle_width=3,
+    )
+    catalog.reserve_slot(
+        "main", "ores", "minecraft:diamond", 0,
+        paired_coordinates=((4, 64, 0), (5, 64, 0)), canonical_coordinate=(4, 64, 0),
+    )
+
+    updated = catalog.update_slot_reservation_state(
+        "main", "ores", "minecraft:diamond", 0, "verified",
+        metadata={"checked_by": "Bot07"}, updated_at=200.0,
+    )
+
+    assert updated["state"] == "verified"
+    assert updated["paired_coordinates"] == ((4, 64, 0), (5, 64, 0))
+    assert updated["metadata"] == {"checked_by": "Bot07"}
+
+
+def test_pre_building_reservation_schema_is_upgraded_without_data_loss(tmp_path):
+    path = tmp_path / "catalog.sqlite3"
+    catalog = StorageCatalog(path, "world-a")
+    catalog.register_warehouse(
+        "main", dimension="minecraft:overworld", anchor=(0, 64, 0),
+        facing="north", expansion_direction="positive_local_x", aisle_width=3,
+    )
+    catalog.reserve_slot(
+        "main", "category", "ores", 0,
+        paired_coordinates=((0, 64, -12), (1, 64, -12)),
+        canonical_coordinate=(0, 64, -12),
+    )
+    with sqlite3.connect(path) as db:
+        db.execute("DROP INDEX idx_warehouse_slot_reservations_lookup")
+        db.execute(
+            "ALTER TABLE warehouse_slot_reservations "
+            "RENAME TO warehouse_slot_reservations_v3"
+        )
+        db.execute(
+            """CREATE TABLE warehouse_slot_reservations (
+                world_id TEXT NOT NULL, warehouse_id TEXT NOT NULL,
+                zone TEXT NOT NULL, category TEXT NOT NULL,
+                slot_index INTEGER NOT NULL,
+                first_x INTEGER NOT NULL, first_y INTEGER NOT NULL,
+                first_z INTEGER NOT NULL, second_x INTEGER NOT NULL,
+                second_y INTEGER NOT NULL, second_z INTEGER NOT NULL,
+                canonical_x INTEGER NOT NULL, canonical_y INTEGER NOT NULL,
+                canonical_z INTEGER NOT NULL,
+                state TEXT NOT NULL CHECK(
+                    state IN ('planned', 'verified', 'blocked', 'retired')
+                ),
+                created_at REAL NOT NULL, updated_at REAL NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY (world_id, warehouse_id, zone, category, slot_index)
+            )"""
+        )
+        db.execute(
+            "INSERT INTO warehouse_slot_reservations "
+            "SELECT * FROM warehouse_slot_reservations_v3"
+        )
+        db.execute("DROP TABLE warehouse_slot_reservations_v3")
+
+    upgraded = StorageCatalog(path, "world-a")
+    building = upgraded.update_slot_reservation_state(
+        "main", "category", "ores", 0, "building"
+    )
+
+    assert building["state"] == "building"
+    assert building["paired_coordinates"] == ((0, 64, -12), (1, 64, -12))
+
+
+def test_warehouse_and_slot_geometry_cannot_be_rewritten(tmp_path):
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+    catalog.register_warehouse(
+        "main", dimension="minecraft:overworld", anchor=(0, 64, 0),
+        facing="north", expansion_direction="positive_local_x", aisle_width=3,
+    )
+    catalog.reserve_slot(
+        "main", "category", "ores", 0,
+        paired_coordinates=((0, 64, -12), (1, 64, -12)),
+        canonical_coordinate=(0, 64, -12),
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="geometry is immutable"):
+        catalog.register_warehouse(
+            "main", dimension="minecraft:overworld", anchor=(8, 64, 0),
+            facing="north", expansion_direction="positive_local_x", aisle_width=3,
+        )
+    with pytest.raises(ValueError, match="slot coordinates are immutable"):
+        catalog.reserve_slot(
+            "main", "category", "ores", 0,
+            paired_coordinates=((3, 64, -12), (4, 64, -12)),
+            canonical_coordinate=(3, 64, -12),
+        )
+
+
+def test_same_coordinates_may_be_reserved_in_different_dimensions(tmp_path):
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+    for warehouse_id, dimension in (
+        ("overworld", "minecraft:overworld"),
+        ("nether", "minecraft:the_nether"),
+    ):
+        catalog.register_warehouse(
+            warehouse_id, dimension=dimension, anchor=(0, 64, 0),
+            facing="north", expansion_direction="positive_local_x", aisle_width=3,
+        )
+        catalog.reserve_slot(
+            warehouse_id, "intake", "intake", 0,
+            paired_coordinates=((0, 64, 0), (1, 64, 0)),
+            canonical_coordinate=(0, 64, 0),
+        )
+
+    assert len(catalog.list_warehouses()) == 2
+
+
+def test_slot_reservation_rejects_non_chest_pair_geometry(tmp_path):
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+    catalog.register_warehouse(
+        "main", dimension="minecraft:overworld", anchor=(0, 64, 0),
+        facing="north", expansion_direction="positive_local_x", aisle_width=3,
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="horizontally adjacent"):
+        catalog.reserve_slot(
+            "main", "category", "ores", 0,
+            paired_coordinates=((0, 64, -12), (0, 65, -12)),
+            canonical_coordinate=(0, 64, -12),
+        )
+    with pytest.raises(ValueError, match="canonical coordinate"):
+        catalog.reserve_slot(
+            "main", "category", "ores", 0,
+            paired_coordinates=((0, 64, -12), (1, 64, -12)),
+            canonical_coordinate=(2, 64, -12),
+        )

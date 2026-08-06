@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Callable, Optional, Sequence
 
 from ..common.storage_organizer import quartermaster_work_available
 from . import food_opportunity
 from .common.role_opportunities import select_role_opportunity
 from .end_readiness import FleetRole
+from .fleet_coverage import configured_specialty_roles
 from .iron_scheduler import iron_cycle_ready
 from .local_opportunity import LocalOpportunity, OpportunityKind
 from .state_manager import Phase
@@ -98,4 +100,35 @@ def select_specialty_opportunity(
     return None
 
 
-__all__ = ["select_specialty_opportunity"]
+def select_profile_specialty_opportunities(
+    *,
+    client: Any,
+    state: Any,
+    primary_role: FleetRole,
+    signals: Any,
+    completed: Sequence[Phase],
+    current_time: float,
+    cooldown_ready: CooldownReady,
+) -> list[LocalOpportunity]:
+    """Select bounded work from explicit recurring secondary roles."""
+    selected: list[LocalOpportunity] = []
+    for role in configured_specialty_roles(state, primary_role):
+        candidate = select_specialty_opportunity(
+            client=client,
+            state=state,
+            role=role,
+            signals=signals,
+            completed=completed,
+            current_time=current_time,
+            cooldown_ready=cooldown_ready,
+            allow_recovery=False,
+        )
+        if candidate is not None:
+            selected.append(replace(candidate, assigned_role=role.value))
+    return selected
+
+
+__all__ = [
+    "select_profile_specialty_opportunities",
+    "select_specialty_opportunity",
+]

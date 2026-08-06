@@ -15,8 +15,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence, Tuple
 
+from .warehouse_catalog import (
+    WAREHOUSE_SCHEMA,
+    WarehouseCatalogMixin,
+    migrate_warehouse_schema,
+)
 
-SCHEMA_VERSION = 2
+
+SCHEMA_VERSION = 3
 DEFAULT_CATALOG_NAME = "storage_catalog.sqlite3"
 SHARED_CATALOG_ENV = "MC_SHARED_STORAGE_CATALOG"
 FLEET_DIRECTORY_NAMES = {"aternos", "headlessmc"}
@@ -73,7 +79,7 @@ def _dimension(client) -> str:
         return "minecraft:overworld"
 
 
-class StorageCatalog:
+class StorageCatalog(WarehouseCatalogMixin):
     """SQLite-backed last-known-state catalog for world containers."""
 
     def __init__(self, path: Path, world_id: str):
@@ -181,6 +187,8 @@ class StorageCatalog:
                     ON resource_leases(world_id, expires_at);
                 """
             )
+            migrate_warehouse_schema(db)
+            db.executescript(WAREHOUSE_SCHEMA)
             db.execute(
                 "INSERT OR REPLACE INTO catalog_meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
