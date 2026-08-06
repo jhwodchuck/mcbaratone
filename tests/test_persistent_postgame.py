@@ -172,6 +172,7 @@ def test_scheduler_empty_falls_back_to_exactly_one_verified_city_district(monkey
 
     assert turn.did_work
     district.assert_called_once()
+    assert district.call_args.kwargs["flatten"] is True
     assert state.custom_data["city_progress"] == {
         "ring": 1, "ring_progress": {"next_index": 1, "total": 8}, "districts_completed": 1,
     }
@@ -185,9 +186,36 @@ def test_city_growth_resumes_final_district_then_advances_to_next_unbounded_ring
     monkeypatch.setattr(lifecycle_mod, "build_district", district)
 
     assert lifecycle.run_turn(MagicMock()).did_work
-    assert state.custom_data["city_progress"] == {"ring": 2, "ring_progress": {}, "districts_completed": 8}
+    assert state.custom_data["city_progress"] == {
+        "ring": 2,
+        "ring_progress": {},
+        "districts_completed": 8,
+        "rings_completed": 2,
+    }
     assert lifecycle.run_turn(MagicMock()).did_work
     assert district.call_args_list[1].args[3:5] == tuple(next(lifecycle_mod.district_ring_offsets(2)))
+
+
+def test_completed_ring_cursor_normalizes_and_builds_first_next_district(monkeypatch):
+    state, _, lifecycle = _growth_lifecycle(
+        {
+            "ring": 1,
+            "ring_progress": {"next_index": 8, "total": 8},
+            "districts_completed": 8,
+        }
+    )
+    district = MagicMock(return_value=SimpleNamespace(success=True, reason="built"))
+    monkeypatch.setattr(lifecycle_mod, "build_district", district)
+
+    turn = lifecycle.run_turn(MagicMock())
+
+    assert turn.did_work
+    assert district.call_args.args[3:5] == tuple(
+        next(lifecycle_mod.district_ring_offsets(2))
+    )
+    city = state.custom_data["city_progress"]
+    assert city["ring"] == 2
+    assert city["ring_progress"]["next_index"] == 1
 
 
 def test_failed_city_district_is_not_credited_and_records_no_progress(monkeypatch):

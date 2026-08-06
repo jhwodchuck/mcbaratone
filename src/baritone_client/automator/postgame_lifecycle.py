@@ -99,16 +99,21 @@ class PersistentPostgameLifecycle:
         offsets = list(district_ring_offsets(ring))
         index = max(0, int(progress.get("next_index", 0) or 0))
         if index >= len(offsets):
-            attempt = record_productive_attempt(
-                self.state, "postgame_city_district", productive_snapshot(self.state),
-                productive_snapshot(self.state), detail=f"ring {ring} cursor is unverified",
+            city["rings_completed"] = max(
+                int(city.get("rings_completed", 0) or 0),
+                ring + 1,
             )
-            return PostgameTurn(False, f"CITY GROWTH DEFERRED: unverified ring cursor (no-progress {attempt.no_progress_streak})", state_changed=True)
+            ring += 1
+            city["ring"] = ring
+            progress = {}
+            city["ring_progress"] = progress
+            offsets = list(district_ring_offsets(ring))
+            index = 0
 
         dcx, dcz = offsets[index]
         before = productive_snapshot(self.state)
         result = build_district(
-            self.client, center_x, center_z, dcx, dcz, target_y, flatten=False
+            self.client, center_x, center_z, dcx, dcz, target_y, flatten=True
         )
         if not result.success:
             attempt = record_productive_attempt(
@@ -126,6 +131,10 @@ class PersistentPostgameLifecycle:
         city["ring"] = ring
         city["districts_completed"] = int(city.get("districts_completed", 0) or 0) + 1
         if progress["next_index"] >= len(offsets):
+            city["rings_completed"] = max(
+                int(city.get("rings_completed", 0) or 0),
+                ring + 1,
+            )
             city["ring"] = ring + 1
             city["ring_progress"] = {}
         after = productive_snapshot(self.state)
