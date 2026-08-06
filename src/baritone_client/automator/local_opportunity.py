@@ -14,6 +14,7 @@ class OpportunityKind(str, Enum):
     CROP_FARM = "crop_farm"
     WOOD_FARM = "wood_farm"
     IRON_MINE = "iron_mine"
+    FOOD_RECOVERY = "food_recovery"
 
 
 @dataclass(frozen=True)

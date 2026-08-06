@@ -26,6 +26,7 @@ from .end_readiness import (
     record_readiness,
     role_focused_candidates,
 )
+from . import food_opportunity
 from .iron_scheduler import iron_cycle_ready, run_scheduled_iron_cycle
 from .local_opportunity import LocalOpportunity, OpportunityKind
 from .objective import Objective
@@ -430,6 +431,7 @@ class AdaptiveScheduler:
         OpportunityKind.CROP_FARM: 180.0,
         OpportunityKind.WOOD_FARM: 60.0,
         OpportunityKind.IRON_MINE: 120.0,
+        OpportunityKind.FOOD_RECOVERY: 60.0,
     }
 
     def __init__(self, client: Any, resources: Any, state: Any):
@@ -518,6 +520,7 @@ class AdaptiveScheduler:
         current_time = time.time() if now is None else float(now)
         role = FleetRole.BALANCED if role is None else role
         if role is FleetRole.IRON_SUPPLY:
+            if (recovery := food_opportunity.select_food_recovery_opportunity(signals.food, self._cooldown_ready(OpportunityKind.FOOD_RECOVERY, current_time))) is not None: return recovery
             if (
                 iron_cycle_ready(
                     signals,
@@ -635,6 +638,8 @@ class AdaptiveScheduler:
                     before_total,
                     after_total,
                 )
+            elif opportunity.kind is OpportunityKind.FOOD_RECOVERY:
+                result = OpportunityResult(opportunity, *food_opportunity.run_scheduled_food_recovery(self.client, self.state))
             else:
                 success, detail, before_total, after_total = run_scheduled_iron_cycle(
                     self.client, self.state, self._runtime()
