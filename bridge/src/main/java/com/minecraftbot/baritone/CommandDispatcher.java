@@ -80,7 +80,7 @@ public class CommandDispatcher {
         "goto", "mine", "build", "explore", "stop", "pause", "cancel",
         "goal", "path", "tunnel", "farm", "interact_block", "attack_entity",
         "use_item", "place_block", "break_block", "throw_item", "select_slot",
-        "equip", "inventory_click", "chat",
+        "equip", "inventory_click", "chat", "set_fast_break",
         "settings", "smelt_items", "craft", "auto_craft", "craft_advanced", "click_recipe",
         "place_fire", "respawn", "screenshot"
     );

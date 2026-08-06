@@ -136,6 +136,111 @@ def create_extended_suite_200() -> TestSuite:
         teardown=lambda ctx: teardown_test_world(ctx, bounds=get_test_state(suite_state, "T200").get("bounds"))
     ))
 
+    # T200F: Wurst-style fast breaking, measured against vanilla timing.
+    def t200f_setup(ctx: TestContext):
+        ax, ay, az = (50, 80, 200)
+        bounds = prepare_standard_block_test(
+            ctx,
+            "T200F",
+            (ax, ay, az),
+            state_dict=suite_state,
+        )
+        ctx.clear_inventory()
+        ctx.give_item("minecraft:stone_pickaxe", 1)
+        build_floor(ctx, ax - 6, ay - 1, az - 6, ax + 6, az + 6)
+        targets = {
+            "off": (ax + 2, ay + 1, az - 2),
+            "aggressive": (ax + 2, ay + 1, az + 2),
+        }
+        for target in targets.values():
+            ctx.set_block(*target, "minecraft:iron_block")
+        state = get_test_state(suite_state, "T200F")
+        state["bounds"] = bounds
+        state["stand"] = (ax, ay, az)
+        state["targets"] = targets
+
+    def _timed_manual_break(ctx: TestContext, mode: str) -> tuple[bool, float]:
+        state = get_test_state(suite_state, "T200F")
+        target = state["targets"][mode]
+        stand = state["stand"]
+        tp(ctx, stand[0], stand[1], target[2])
+        select_hotbar_item(ctx, "minecraft:stone_pickaxe")
+        mode_response = ctx.client.transport.dispatch(
+            "set_fast_break",
+            {"mode": mode},
+        )
+        mode_data = mode_response.get("data", mode_response)
+        if mode_data.get("mode") != mode:
+            return False, 0.0
+        started = time.perf_counter()
+        ctx.client.transport.dispatch(
+            "dig_block",
+            {
+                "x": target[0],
+                "y": target[1],
+                "z": target[2],
+                "face": "WEST",
+                "max_ticks": 240,
+            },
+        )
+        broken, _ = wait_for_block(
+            ctx,
+            target[0],
+            target[1],
+            target[2],
+            "minecraft:air",
+            timeout=12.0,
+        )
+        return broken, time.perf_counter() - started
+
+    def t200f_step_compare(ctx: TestContext) -> bool:
+        vanilla_ok, vanilla_seconds = _timed_manual_break(ctx, "off")
+        aggressive_ok, aggressive_seconds = _timed_manual_break(ctx, "aggressive")
+        state = get_test_state(suite_state, "T200F")
+        state["vanilla_seconds"] = vanilla_seconds
+        state["aggressive_seconds"] = aggressive_seconds
+        ctx.log_event(
+            "FastBreak timing: "
+            f"vanilla={vanilla_seconds:.3f}s, "
+            f"aggressive={aggressive_seconds:.3f}s"
+        )
+        return vanilla_ok and aggressive_ok
+
+    def t200f_assert_faster(ctx: TestContext):
+        state = get_test_state(suite_state, "T200F")
+        vanilla_seconds = float(state.get("vanilla_seconds", 0.0))
+        aggressive_seconds = float(state.get("aggressive_seconds", 0.0))
+        faster = (
+            vanilla_seconds > 0.0
+            and aggressive_seconds > 0.0
+            and aggressive_seconds < vanilla_seconds * 0.9
+        )
+        return (
+            faster,
+            "FastBreak timing "
+            f"{aggressive_seconds:.3f}s vs vanilla {vanilla_seconds:.3f}s",
+        )
+
+    def t200f_teardown(ctx: TestContext):
+        try:
+            ctx.client.transport.dispatch("set_fast_break", {"mode": "off"})
+        finally:
+            teardown_test_world(
+                ctx,
+                bounds=get_test_state(suite_state, "T200F").get("bounds"),
+            )
+
+    suite.add(TestCase(
+        id="T200F",
+        name="Verified Fast Breaking",
+        description="Compare server-verified aggressive and vanilla iron-block breaks",
+        timeout_seconds=35,
+        setup=t200f_setup,
+        steps=[t200f_step_compare],
+        assertions=[t200f_assert_faster],
+        teardown=t200f_teardown,
+    ))
+
     # T201: Block Placement
     def t201_setup(ctx: TestContext):
         ax, ay, az = anchors["T201"]

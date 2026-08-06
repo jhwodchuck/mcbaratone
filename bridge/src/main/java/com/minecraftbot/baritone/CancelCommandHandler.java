@@ -17,6 +17,7 @@ public class CancelCommandHandler implements CommandHandler {
         Runnable cancel = () -> {
             try {
                 baritone.getPathingBehavior().cancelEverything();
+                ManualMiningController.getInstance().stop();
                 JsonObject data = new JsonObject();
                 data.addProperty("cancelled", true);
                 result.complete(CommandResult.success(data));

@@ -160,7 +160,6 @@ class TcpTransport(Transport):
                     params = {}
 
         return {"command": mapped_route, "params": params}
-
     # Read-only routes are safe to re-send verbatim: a duplicated query cannot
     # mutate the world, unlike goto/mine/place/craft commands, which must
     # never be silently replayed. One transient bridge stall (server lag,
@@ -199,6 +198,7 @@ class TcpTransport(Transport):
             "command/cancel",
             "place_block",
             "break_block",
+            "set_fast_break",
             "craft",
             "smelt",
             "open_container",

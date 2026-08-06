@@ -40,6 +40,7 @@ from .wood_gathering import (
 )
 from .automation_utils import get_player_pos
 from ..core.exceptions import CommandError, TransportError
+from .mining_acceleration import with_mining_acceleration
 
 # Log block types (full IDs)
 LOG_BLOCKS = [
@@ -1133,8 +1134,9 @@ def gather_stone(client, count: int = 16, timeout: int = 180) -> bool:
         return False
 
 
+@with_mining_acceleration
 def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
-    """Gather specific ore type."""
+    """Gather ore with best-effort mining acceleration on supported bridges."""
     if ore_type not in ORES:
         print(f"Unknown ore type: {ore_type}")
         return False

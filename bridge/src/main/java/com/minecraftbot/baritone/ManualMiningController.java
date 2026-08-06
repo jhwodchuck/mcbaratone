@@ -1,8 +1,11 @@
 package com.minecraftbot.baritone;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientPacketListener;
+import net.minecraft.client.multiplayer.MultiPlayerGameMode;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
@@ -39,6 +42,7 @@ public final class ManualMiningController {
     private Direction face = Direction.UP;
     private int ticksRemaining;
     private boolean started;
+    private FastBreakMode fastBreakMode = FastBreakMode.OFF;
 
     private ManualMiningController() {
     }
@@ -57,12 +61,23 @@ public final class ManualMiningController {
         this.started = false;
     }
 
+    public synchronized void configureMode(FastBreakMode mode) {
+        this.fastBreakMode = mode == null ? FastBreakMode.OFF : mode;
+        LOGGER.info("Fast-break mode set to {}", this.fastBreakMode.wireName());
+    }
+
+    public synchronized FastBreakMode getMode() {
+        return fastBreakMode;
+    }
+
     public synchronized boolean isActive() {
         return target != null;
     }
 
     /** Advance the current break by one tick. Runs on the client thread. */
     public synchronized void tick(Minecraft client) {
+        applyFastBreak(client);
+
         if (target == null) {
             return;
         }
@@ -94,6 +109,52 @@ public final class ManualMiningController {
             client.gameMode.continueDestroyBlock(target, face);
         }
         client.player.swing(InteractionHand.MAIN_HAND);
+    }
+
+    /**
+     * Apply the two behaviours used by Wurst's FastBreak implementation.
+     * Legit mode only removes Minecraft's delay between consecutive blocks.
+     * Aggressive mode additionally asks the server to finish the active block
+     * before the normal client-side progress reaches one. The server remains
+     * authoritative, so callers must still verify that the block became air.
+     */
+    private void applyFastBreak(Minecraft client) {
+        if (fastBreakMode == FastBreakMode.OFF || client == null || client.gameMode == null) {
+            return;
+        }
+
+        MultiPlayerGameMode gameMode = client.gameMode;
+        gameMode.destroyDelay = 0;
+        if (
+            fastBreakMode != FastBreakMode.AGGRESSIVE
+                || !gameMode.isDestroying
+                || gameMode.destroyBlockPos == null
+                || gameMode.destroyProgress >= 1.0F
+                || client.level == null
+        ) {
+            return;
+        }
+
+        BlockPos breaking = gameMode.destroyBlockPos;
+        if (
+            client.level.getBlockState(breaking).isAir()
+                || client.level.getBlockState(breaking).getDestroySpeed(client.level, breaking) < 0.0F
+        ) {
+            return;
+        }
+
+        ClientPacketListener connection = client.getConnection();
+        if (connection == null) {
+            return;
+        }
+        Direction breakingFace = target != null && target.equals(breaking) ? face : Direction.UP;
+        connection.send(
+            new ServerboundPlayerActionPacket(
+                ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK,
+                breaking,
+                breakingFace
+            )
+        );
     }
 
     private void aimAt(Minecraft client, BlockPos pos) {

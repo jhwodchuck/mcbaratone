@@ -62,7 +62,9 @@ Central command routing component that:
 Handlers implement the `CommandHandler` interface and process specific command types:
 
 - **Movement**: `GotoCommandHandler`, navigation and pathfinding
-- **Mining**: `MineCommandHandler`, resource extraction
+- **Mining**: `MineCommandHandler`, `DigBlockCommandHandler`, and
+  `SetFastBreakCommandHandler` for resource extraction and verified client-side
+  mining acceleration
 - **Building**: `BuildCommandHandler`, schematic construction
 - **Inventory**: `InventoryCommandHandler`, item management
 - **State**: `StateCommandHandler`, game state queries
@@ -225,11 +227,11 @@ Open a terminal in the `bridge/` directory:
 ./gradlew build
 ```
 
-The built JAR will be in `build/libs/baritone-api-bridge-1.0.29.jar`
+The built JAR will be in `build/libs/baritone-api-bridge-1.0.31.jar`
 
 ## Installation
 
-1. Copy `baritone-api-bridge-1.0.29.jar` to your Minecraft `mods` folder
+1. Copy `baritone-api-bridge-1.0.31.jar` to your Minecraft `mods` folder
 2. Start Minecraft with Fabric loader
 3. Bridge automatically starts TCP server on port 5555
 

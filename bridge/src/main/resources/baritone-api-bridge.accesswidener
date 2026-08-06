@@ -1,3 +1,7 @@
 accessWidener	v1	official
 accessible	field	net/minecraft/world/entity/player/Inventory	items	Lnet/minecraft/core/NonNullList;
 accessible	field	net/minecraft/world/entity/player/Inventory	selected	I
+accessible	field	net/minecraft/client/multiplayer/MultiPlayerGameMode	destroyDelay	I
+accessible	field	net/minecraft/client/multiplayer/MultiPlayerGameMode	destroyBlockPos	Lnet/minecraft/core/BlockPos;
+accessible	field	net/minecraft/client/multiplayer/MultiPlayerGameMode	destroyProgress	F
+accessible	field	net/minecraft/client/multiplayer/MultiPlayerGameMode	isDestroying	Z
