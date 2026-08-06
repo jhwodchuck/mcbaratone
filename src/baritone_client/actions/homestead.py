@@ -801,7 +801,10 @@ class IncrementalHomestead:
         if not block_id:
             return False
         name = block_id.split(":")[-1]
-        if name in cls._UNSUPPORTIVE_NAMES:
+        # Java disallows standing torches on leaves.  Treat every leaf
+        # variant as non-supportive so a ring column continues down to the
+        # actual terrain instead of retrying the same rejected placement.
+        if name in cls._UNSUPPORTIVE_NAMES or name.endswith("_leaves"):
             return False
         return not (name.endswith("_sapling") or name.endswith("_sign"))
 

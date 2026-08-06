@@ -998,6 +998,23 @@ def test_ring_does_not_seat_a_torch_on_water():
     assert h._ground_adjusted_ring([(10, 106, 5)]) == []
 
 
+def test_ring_skips_leaves_and_reseats_on_ground_below():
+    """Leaves look like support to a naive block classifier but reject torches.
+
+    This mirrors Bot19's live failure: the nominal target was air above
+    spruce leaves, with grass several blocks below.  The ring must skip the
+    leaves and choose the first real ground position instead.
+    """
+    h = _ring_homestead(
+        {
+            (10, 108, 5): "minecraft:spruce_leaves",
+            (10, 105, 5): "minecraft:grass_block",
+        }
+    )
+
+    assert h._ground_adjusted_ring([(10, 109, 5)]) == [(10, 106, 5)]
+
+
 def test_grass_block_is_valid_torch_support():
     """Substring matching on "grass" rejected grass_block (solid ground) along
     with short_grass (a plant). Exact names only."""
@@ -1005,6 +1022,7 @@ def test_grass_block_is_valid_torch_support():
 
     assert H._is_supportive("minecraft:grass_block")
     assert H._is_supportive("minecraft:stone")
+    assert not H._is_supportive("minecraft:spruce_leaves")
     assert not H._is_supportive("minecraft:short_grass")
     assert not H._is_supportive("minecraft:air")
     assert not H._is_supportive("minecraft:water")
