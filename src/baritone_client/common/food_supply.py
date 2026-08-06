@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import ceil, hypot, sqrt
+import math
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
 from .combat import eat_until_hunger
@@ -218,6 +219,19 @@ def _result(
     )
 
 
+def _plot_distance(client: Any, plot: Sequence[int]) -> float:
+    """Straight-line distance to a plot, for reporting why a trip failed."""
+    try:
+        snapshot = client.transport.dispatch("get_state", {})
+        position = snapshot.get("block_position", snapshot.get("position", {})) or {}
+        return math.dist(
+            (float(position["x"]), float(position["y"]), float(position["z"])),
+            (float(plot[0]), float(plot[1]), float(plot[2])),
+        )
+    except Exception:
+        return float("nan")
+
+
 def run_food_cycle(
     client: Any,
     state: Any,
@@ -265,12 +279,31 @@ def run_food_cycle(
         if known
         else []
     )
+    unreachable = []
     for plot in inspected:
         plot_before = _count(get_inventory(client), WHEAT)
-        harvest_wheat_farm(client, *plot, range_=max(1, int(farm_range)))
+        # harvest_wheat_farm travels first and reports whether it arrived.
+        # Discarding that made "I never reached the farm" indistinguishable
+        # from "the farm had no ripe wheat", so a worker 461 blocks from its
+        # own plot reported "harvested 0 wheat" and then tried to solve it by
+        # building another farm it also could not reach.
+        if not harvest_wheat_farm(client, *plot, range_=max(1, int(farm_range))):
+            unreachable.append(plot)
+            continue
         harvested += max(0, _count(get_inventory(client), WHEAT) - plot_before)
     if known:
         worker["plot_cursor"] = (cursor + len(inspected)) % len(known)
+    if unreachable and harvested == 0:
+        # Establishing another plot near the same distant anchor would repeat
+        # the trip that just failed. Report the real obstacle instead.
+        worker["unreachable_plots"] = [list(plot) for plot in unreachable]
+        _flush(state, client)
+        return _result(
+            worker,
+            False,
+            f"could not reach {len(unreachable)} known farm plot(s); "
+            f"nearest is {_plot_distance(client, unreachable[0]):.0f} blocks away",
+        )
 
     new_plots = 0
     crop_tiles = 0
