@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from baritone_client.automator import adaptive_scheduler as adaptive
+from baritone_client.automator import aid_response
 from baritone_client.automator import specialty_scheduler as specialty
 from baritone_client.automator.adaptive_scheduler import (
     AdaptiveScheduler,
@@ -233,6 +234,42 @@ def test_crop_farm_is_selected_when_crop_patch_can_replenish_food():
     assert opportunity is not None
     assert opportunity.kind is OpportunityKind.CROP_FARM
     assert opportunity.location == (5, 64, 5)
+
+
+def test_clear_hostiles_aid_is_scored_alongside_balanced_local_work(monkeypatch):
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), _state())
+    aid = LocalOpportunity(
+        OpportunityKind.CLEAR_HOSTILES_AID, 250, "nearby bot needs a cleared area",
+        location=(8, 64, 8), aid_request_id="aid-1",
+    )
+    monkeypatch.setattr(
+        aid_response, "select_clear_hostiles_opportunity", lambda *_args, **_kwargs: aid
+    )
+
+    opportunity = scheduler.select_local_opportunity(
+        _signals(adult_animals={"cow": 2}, inventory={"minecraft:wheat": 2}),
+        [Phase.SPAWN_BOOTSTRAP], now=1000.0,
+    )
+
+    assert opportunity is aid
+
+
+def test_unproductive_aid_attempt_records_no_progress(monkeypatch):
+    state = _state()
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    opportunity = LocalOpportunity(
+        OpportunityKind.CLEAR_HOSTILES_AID, 250, "test aid", aid_request_id="aid-1"
+    )
+    monkeypatch.setattr(scheduler, "observe", lambda: _signals())
+    monkeypatch.setattr(
+        aid_response, "run_scheduled_clear_hostiles",
+        lambda *_args: (False, "hostiles did not fall", 0, 0),
+    )
+
+    result = scheduler.run_local_opportunity(opportunity)
+
+    assert not result.success
+    assert state.custom_data["productive_work"]["no_progress_streak"] == 1
 
 
 def test_wood_role_selects_forestry_only_after_safe_bootstrap():

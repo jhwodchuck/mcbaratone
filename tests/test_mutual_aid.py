@@ -4,6 +4,8 @@ from types import SimpleNamespace
 import pytest
 
 from baritone_client.automator.adaptive_scheduler import GameSignals
+from baritone_client.automator import aid_response
+from baritone_client.automator.end_readiness import FleetRole
 from baritone_client.automator.mutual_aid import (
     expire_stale,
     open_requests,
@@ -119,3 +121,187 @@ def test_expiry_is_idempotent_and_open_requests_reflect_inserts_updates_and_expi
     assert expire_stale(110.0, catalog=catalog) == 0
     assert [request["kind"] for request in open_requests(catalog=catalog)] == ["supply"]
     assert catalog.list_aid_requests(open_only=False)[0]["resolution"] == "expired"
+
+
+def _armed_responder(monkeypatch):
+    monkeypatch.setattr(aid_response, "expedition_is_too_dangerous", lambda _client: False)
+    monkeypatch.setattr(aid_response, "equip_best_weapon", lambda _client: True)
+    return SimpleNamespace()
+
+
+def _clear_hostiles_request(tmp_path, catalog, *, position=(0, 64, 0), ttl=200):
+    requester = _state(tmp_path, "Bot16")
+    return raise_request(
+        requester, "clear_hostiles", "4 hostile(s) near", 60, ttl,
+        now=100.0, catalog=catalog, position=position,
+    )
+
+
+def test_only_one_competing_responder_wins_the_aid_lease(tmp_path, monkeypatch):
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+    request = _clear_hostiles_request(tmp_path, catalog)
+    client = _armed_responder(monkeypatch)
+    signals = _signals(position=(10, 64, 0))
+    first = _state(tmp_path, "Bot17")
+    second = _state(tmp_path, "Bot18")
+    first_opportunity = aid_response.select_clear_hostiles_opportunity(
+        client, first, signals, role=FleetRole.BALANCED, now=110.0, catalog=catalog
+    )
+    second_opportunity = aid_response.select_clear_hostiles_opportunity(
+        client, second, signals, role=FleetRole.BALANCED, now=110.0, catalog=catalog
+    )
+
+    assert first_opportunity is not None and second_opportunity is not None
+    wins = [
+        aid_response.try_claim_clear_hostiles(
+            client, state, signals, opportunity, now=110.0, catalog=catalog
+        )
+        for state, opportunity in ((first, first_opportunity), (second, second_opportunity))
+    ]
+
+    assert sum(item is not None for item in wins) == 1
+    assert wins[0]["request_id"] == request["request_id"]
+
+
+@pytest.mark.parametrize("signals", [_signals(health=5.0), _signals(food=2)])
+def test_unfit_responder_never_claims_clear_hostiles(tmp_path, monkeypatch, signals):
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+    _clear_hostiles_request(tmp_path, catalog)
+    client = _armed_responder(monkeypatch)
+    responder = _state(tmp_path, "Bot17")
+
+    assert aid_response.select_clear_hostiles_opportunity(
+        client, responder, signals, role=FleetRole.BALANCED, now=110.0, catalog=catalog
+    ) is None
+
+
+def test_unarmed_responder_never_claims_clear_hostiles(tmp_path, monkeypatch):
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+    _clear_hostiles_request(tmp_path, catalog)
+    monkeypatch.setattr(aid_response, "expedition_is_too_dangerous", lambda _client: False)
+    monkeypatch.setattr(aid_response, "equip_best_weapon", lambda _client: False)
+
+    assert aid_response.select_clear_hostiles_opportunity(
+        SimpleNamespace(), _state(tmp_path, "Bot17"), _signals(), role=FleetRole.BALANCED,
+        now=110.0, catalog=catalog,
+    ) is None
+
+
+def test_lapsed_aid_lease_is_claimable_by_another_responder(tmp_path, monkeypatch):
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+    request = _clear_hostiles_request(tmp_path, catalog)
+    assert catalog.acquire_lease(f"aid:{request['request_id']}", "Bot17", ttl_seconds=10, now=100.0)
+    client = _armed_responder(monkeypatch)
+    responder = _state(tmp_path, "Bot18")
+    opportunity = aid_response.select_clear_hostiles_opportunity(
+        client, responder, _signals(position=(10, 64, 0)), role=FleetRole.BALANCED, now=111.0, catalog=catalog
+    )
+
+    assert opportunity is not None
+    assert aid_response.try_claim_clear_hostiles(
+        client, responder, _signals(position=(10, 64, 0)), opportunity, now=111.0, catalog=catalog
+    ) is not None
+
+
+def test_arrival_without_a_hostile_drop_is_not_fulfilled(tmp_path, monkeypatch):
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+    request = _clear_hostiles_request(tmp_path, catalog)
+    client = _armed_responder(monkeypatch)
+    responder = _state(tmp_path, "Bot17")
+    opportunity = aid_response.select_clear_hostiles_opportunity(
+        client, responder, _signals(position=(10, 64, 0)), role=FleetRole.BALANCED, now=110.0, catalog=catalog
+    )
+    hostile = {"id": 7, "type": "minecraft:zombie"}
+    monkeypatch.setattr(aid_response, "goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(aid_response, "defend_or_flee", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(aid_response, "safe_combat", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        aid_response, "scan_for_threats", lambda *_args, **_kwargs: [hostile] * 4
+    )
+
+    assert opportunity is not None
+    result = aid_response.run_clear_hostiles_response(
+        client, responder, _signals(position=(10, 64, 0)), opportunity, now=110.0, catalog=catalog
+    )
+
+    assert not result.fulfilled
+    stored = catalog.list_aid_requests(open_only=False)
+    assert stored[0]["resolution"] is None
+    assert catalog.acquire_lease(f"aid:{request['request_id']}", "Bot18", now=111.0)
+    with catalog._connect() as db:
+        events = [row["event_type"] for row in db.execute("SELECT event_type FROM storage_events")]
+    assert "aid_request_abandoned" in events
+
+
+def test_measured_hostile_drop_fulfils_the_request(tmp_path, monkeypatch):
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+    _clear_hostiles_request(tmp_path, catalog)
+    client = _armed_responder(monkeypatch)
+    responder = _state(tmp_path, "Bot17")
+    opportunity = aid_response.select_clear_hostiles_opportunity(
+        client, responder, _signals(position=(10, 64, 0)), role=FleetRole.BALANCED, now=110.0, catalog=catalog
+    )
+    hostile = {"id": 7, "type": "minecraft:zombie"}
+    observations = iter(([hostile] * 4, [hostile] * 4, [hostile]))
+    monkeypatch.setattr(aid_response, "goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(aid_response, "defend_or_flee", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(aid_response, "safe_combat", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        aid_response, "scan_for_threats", lambda *_args, **_kwargs: next(observations)
+    )
+
+    assert opportunity is not None
+    result = aid_response.run_clear_hostiles_response(
+        client, responder, _signals(position=(10, 64, 0)), opportunity, now=110.0, catalog=catalog
+    )
+
+    assert result.fulfilled
+    assert (result.before_hostiles, result.after_hostiles) == (4, 1)
+    assert catalog.list_aid_requests(open_only=False)[0]["resolution"] == "fulfilled"
+
+
+def test_distant_clear_hostiles_request_is_not_claimed(tmp_path, monkeypatch):
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+    _clear_hostiles_request(tmp_path, catalog, position=(129, 64, 0))
+
+    assert aid_response.select_clear_hostiles_opportunity(
+        _armed_responder(monkeypatch), _state(tmp_path, "Bot17"), _signals(),
+        role=FleetRole.BALANCED, now=110.0, catalog=catalog,
+    ) is None
+
+
+def test_role_hold_gets_the_responder_score_preference(tmp_path, monkeypatch):
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+    _clear_hostiles_request(tmp_path, catalog)
+    client = _armed_responder(monkeypatch)
+    responder = _state(tmp_path, "Bot17")
+    signals = _signals(position=(10, 64, 0))
+    ordinary = aid_response.select_clear_hostiles_opportunity(
+        client, responder, signals, FleetRole.VILLAGE_FOOD,
+        role_held=False, now=110.0, catalog=catalog,
+    )
+    held = aid_response.select_clear_hostiles_opportunity(
+        client, responder, signals, FleetRole.VILLAGE_FOOD,
+        role_held=True, now=110.0, catalog=catalog,
+    )
+
+    assert ordinary is not None and held is not None
+    assert held.score > ordinary.score
+
+
+def test_requester_keeps_publishing_recovery_state_without_waiting_for_a_responder(tmp_path, monkeypatch):
+    state = _state(tmp_path, "Bot16")
+    state.custom_data["camp_holds"] = {"streak": 6}
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+
+    first = publish_requests(state, _signals(nearby_hostiles=4), now=100.0, catalog=catalog)
+    second = publish_requests(state, _signals(nearby_hostiles=3), now=101.0, catalog=catalog)
+
+    assert [request["request_id"] for request in first] == [request["request_id"] for request in second]
+    assert catalog.list_aid_requests()[0]["detail"] == "3 hostile(s) near"
+    assert aid_response.select_clear_hostiles_opportunity(
+        _armed_responder(monkeypatch), state, _signals(nearby_hostiles=0),
+        FleetRole.BALANCED, now=101.0, catalog=catalog,
+    ) is None
+    with catalog._connect() as db:
+        assert db.execute("SELECT COUNT(*) AS count FROM resource_leases").fetchone()["count"] == 0
