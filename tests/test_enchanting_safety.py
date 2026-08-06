@@ -1349,3 +1349,37 @@ def test_unreachable_home_still_consults_the_catalog(monkeypatch):
 
     assert consulted, "unreachable home skipped shared storage entirely"
     assert result > 0
+
+
+def test_home_withdrawal_survives_a_catalog_miss(monkeypatch):
+    """A successful home withdrawal must not be masked by a catalog miss.
+
+    The first catalog-fallback implementation returned -1 whenever the
+    catalog found nothing reachable, discarding stacks the home chest had
+    already moved. Callers read -1 as "storage unreachable" and send the bot
+    out to gather -- immediately after it just resupplied. Surfaced live:
+    every cataloged container was beyond the 96m radius while the home chest
+    had served the request.
+    """
+    handler = enchanting.EnchantingPipelineHandler()
+    state = SimpleNamespace(custom_data={
+        "structures": {"starter_house": {"supply_chest": [-8, 79, -120]}}
+    })
+    client = SimpleNamespace(transport=SimpleNamespace(
+        dispatch=lambda *_a, **_k: {
+            "block_position": {"x": 200, "y": 70, "z": 200},
+            "world_time": 1000,
+        }
+    ))
+    monkeypatch.setattr(enchanting, "count_item", lambda *_a, **_k: 0)
+    monkeypatch.setattr(handler, "_return_home", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        enchanting, "withdraw_required_from_chest", lambda *_a, **_k: 2
+    )
+    monkeypatch.setattr(
+        enchanting, "withdraw_required_from_catalog", lambda *_a, **_k: -1
+    )
+
+    assert handler._withdraw_at_home(
+        client, state, {"minecraft:leather": 46}
+    ) == 2, "home withdrawal was discarded by an unreachable catalog"

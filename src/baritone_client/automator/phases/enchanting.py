@@ -782,11 +782,15 @@ class EnchantingPipelineHandler(PhaseHandler):
         )
         if catalog_result > 0:
             return max(home_result, 0) + catalog_result
-        if catalog_result < 0:
+        # A successful home withdrawal must survive a catalog miss. Reporting
+        # -1 here discarded real moved stacks and told the caller storage was
+        # unreachable, which sends a bot that just resupplied back out to
+        # gather anyway.
+        if home_result > 0:
+            return home_result
+        if catalog_result < 0 or home_result < 0:
             return -1
-        if home_result < 0:
-            return -1
-        return max(home_result, 0)
+        return 0
 
     def _wait_for_daylight(
         self,
