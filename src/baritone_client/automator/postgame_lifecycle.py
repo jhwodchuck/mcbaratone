@@ -9,9 +9,11 @@ the adaptive scheduler for its already bounded, evidence-producing work.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, Optional
 
 from ..common.city import build_district, district_ring_offsets
+from .objective_survival import recover_survival_before_objective
+from .pacing import wait_with_bridge_keepalive
 from .state_manager import Phase
 from .work_progress import productive_snapshot, record_productive_attempt
 
@@ -57,6 +59,84 @@ class PersistentPostgameLifecycle:
             return False
         data["completion_notified"] = True
         return True
+
+    def safety_gate(
+        self,
+        handle_death: Callable[[], bool],
+        save_checkpoint: Callable[[], None],
+    ) -> bool:
+        """Apply death and survival recovery before every postgame turn."""
+        if handle_death():
+            return False
+        if recover_survival_before_objective(self.client, self.state):
+            return True
+        save_checkpoint()
+        wait_with_bridge_keepalive(self.client, duration=5.0)
+        return False
+
+    def enter_controller(
+        self,
+        on_complete: Optional[Callable[[], None]],
+        persist_progress: Callable[[], None],
+        save_checkpoint: Callable[[], None],
+    ) -> None:
+        """Persist the terminal milestone and claim its callback exactly once."""
+        self.state.set_phase(Phase.COMPLETE)
+        entered = self.enter()
+        notify = on_complete is not None and self.claim_completion_notification()
+        persist_progress()
+        save_checkpoint()
+        if entered:
+            print("\n" + "=" * 60)
+            print("  Terminal city objective verified.")
+            print("  Persistent civilization mode is active.")
+            print("=" * 60 + "\n")
+        if notify and on_complete is not None:
+            on_complete()
+
+    def run_controller_turn(
+        self,
+        planner: Any,
+        persist_progress: Callable[[], None],
+        save_checkpoint: Callable[[], None],
+    ) -> None:
+        """Run, persist, and pace one productive or deferred postgame turn."""
+        turn = self.run_turn(planner)
+        if turn.did_work or turn.state_changed:
+            print(turn.reason)
+            persist_progress()
+            save_checkpoint()
+            if not turn.did_work:
+                wait_with_bridge_keepalive(self.client, duration=30.0)
+            return
+        print(f"PERSISTENT CIVILIZATION HOLD: {turn.reason}; retrying after cooldown.")
+        wait_with_bridge_keepalive(self.client, duration=30.0)
+
+    def run_completed_controller_turn(
+        self,
+        controller: Any,
+        iterations: int,
+        limit: Optional[int],
+    ) -> tuple[bool, int]:
+        """Coordinate one completed-campaign turn without bloating the main loop."""
+        if not self.safety_gate(
+            controller._handle_death_recovery,
+            controller._save_checkpoint,
+        ):
+            return False, iterations
+        self.enter_controller(
+            controller.on_complete,
+            controller._persist_objective_progress,
+            controller._save_checkpoint,
+        )
+        if limit is not None and iterations >= limit:
+            return True, iterations
+        self.run_controller_turn(
+            controller.planner,
+            controller._persist_objective_progress,
+            controller._save_checkpoint,
+        )
+        return False, iterations + 1
 
     def run_turn(self, planner: Any) -> PostgameTurn:
         """Ask the adaptive scheduler for one bounded productive action.

@@ -17,6 +17,27 @@ from .objective import ObjStatus, ObjectivePlanner
 OBJECTIVE_RUNTIME_REVISION = 39
 
 
+def report_stall(planner: ObjectivePlanner) -> None:
+    """Print the terminal-looking diagnostic for a genuinely exhausted graph."""
+    abandoned = [
+        objective.phase.name
+        for objective in planner.objectives
+        if objective.status is ObjStatus.ABANDONED
+    ]
+    pending = [
+        objective.phase.name
+        for objective in planner.objectives
+        if objective.status in {ObjStatus.PENDING, ObjStatus.BLOCKED}
+    ]
+    print("\n" + "=" * 60)
+    print("  Automation stalled: no runnable objective remains.")
+    if abandoned:
+        print(f"  Abandoned: {', '.join(abandoned)}")
+    if pending:
+        print(f"  Still pending (prerequisites unmet): {', '.join(pending)}")
+    print("=" * 60 + "\n")
+
+
 def rearm_abandoned_objectives(
     planner: ObjectivePlanner,
     custom_data: MutableMapping[str, Any],

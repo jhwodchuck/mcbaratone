@@ -258,6 +258,7 @@ class EndGameAutomator:
             maintain_stalled_survival,
             rearm_any_abandoned_objectives,
             rearm_recovered_survival_objectives,
+            report_stall,
         )
 
         reopened = rearm_recovered_survival_objectives(
@@ -313,7 +314,7 @@ class EndGameAutomator:
                 )
                 self._stall_reported = True
         elif not self._stall_reported:
-            self._report_stall()
+            report_stall(self.planner)
             self._stall_reported = True
         try:
             activity = maintain_stalled_survival(self.client)
@@ -387,13 +388,15 @@ class EndGameAutomator:
             postgame_iterations = 0
             while self._running:
                 if self.planner.is_complete():
-                    if not self._postgame_safety_gate():
-                        continue
-                    self._enter_persistent_postgame()
-                    if max_postgame_iterations is not None and postgame_iterations >= max_postgame_iterations:
+                    finished, postgame_iterations = (
+                        self.postgame.run_completed_controller_turn(
+                            self,
+                            postgame_iterations,
+                            max_postgame_iterations,
+                        )
+                    )
+                    if finished:
                         return True
-                    self._run_persistent_postgame_turn()
-                    postgame_iterations += 1
                     continue
 
                 # Check for death and handle recovery before choosing a goal.
@@ -520,65 +523,8 @@ class EndGameAutomator:
                     self._save_checkpoint()
 
             return False
-
         finally:
              self.stop()
-
-    def _run_persistent_postgame_turn(self) -> None:
-        """Run or safely defer one postgame scheduler turn."""
-        turn = self.postgame.run_turn(self.planner)
-        if turn.did_work or turn.state_changed:
-            print(turn.reason)
-            self._persist_objective_progress()
-            self._save_checkpoint()
-            if not turn.did_work:
-                wait_with_bridge_keepalive(self.client, duration=30.0)
-            return
-        print(f"PERSISTENT CIVILIZATION HOLD: {turn.reason}; retrying after cooldown.")
-        wait_with_bridge_keepalive(self.client, duration=30.0)
-
-    def _postgame_safety_gate(self) -> bool:
-        """Apply the normal death and survival gate before postgame work."""
-        if self._handle_death_recovery():
-            return False
-        if recover_survival_before_objective(self.client, self.state):
-            return True
-        self._save_checkpoint()
-        wait_with_bridge_keepalive(self.client, duration=5.0)
-        return False
-
-    def _enter_persistent_postgame(self) -> None:
-        """Persist the verified terminal milestone without ending the controller."""
-        self.state.set_phase(Phase.COMPLETE)
-        entered = self.postgame.enter()
-        notify = self.on_complete is not None and self.postgame.claim_completion_notification()
-        self._persist_objective_progress()
-        self._save_checkpoint()
-        if entered:
-            print("\n" + "=" * 60)
-            print("  Terminal city objective verified.")
-            print("  Persistent civilization mode is active.")
-            print("=" * 60 + "\n")
-        if notify:
-            self.on_complete()
-
-    def _report_stall(self) -> None:
-        """Print a diagnostic when the run stalls with no runnable objective."""
-        from .objective import ObjStatus
-
-        abandoned = [o.phase.name for o in self.planner.objectives
-                     if o.status is ObjStatus.ABANDONED]
-        pending = [o.phase.name for o in self.planner.objectives
-                   if o.status in (ObjStatus.PENDING, ObjStatus.BLOCKED)]
-        print("\n" + "="*60)
-        print("  Automation stalled: no runnable objective remains.")
-        if abandoned:
-            print(f"  Abandoned: {', '.join(abandoned)}")
-        if pending:
-            print(f"  Still pending (prerequisites unmet): {', '.join(pending)}")
-        print("="*60 + "\n")
-
-
     def run_suite(self, suite_name: str) -> bool:
         """
         Run a specific test suite/mission action.

@@ -69,7 +69,7 @@ def test_completed_campaign_keeps_checkpoint_and_runs_bounded_postgame_work():
     automator._handle_death_recovery = MagicMock(return_value=False)
 
     with patch(
-        "baritone_client.automator.automator.recover_survival_before_objective",
+        "baritone_client.automator.postgame_lifecycle.recover_survival_before_objective",
         return_value=True,
     ):
         assert automator.run(resume=False, max_postgame_iterations=1) is True
@@ -123,10 +123,12 @@ def test_postgame_checks_survival_before_scheduling_work():
     automator = _completed_automator()
     with (
         patch(
-            "baritone_client.automator.automator.recover_survival_before_objective",
+            "baritone_client.automator.postgame_lifecycle.recover_survival_before_objective",
             side_effect=[False, True],
         ),
-        patch("baritone_client.automator.automator.wait_with_bridge_keepalive") as wait,
+        patch(
+            "baritone_client.automator.postgame_lifecycle.wait_with_bridge_keepalive"
+        ) as wait,
     ):
         assert automator.run(resume=False, max_postgame_iterations=0) is True
 
@@ -151,7 +153,7 @@ def test_callback_failure_has_a_durable_notification_claim_before_reraising():
 
     with (
         patch(
-            "baritone_client.automator.automator.recover_survival_before_objective",
+            "baritone_client.automator.postgame_lifecycle.recover_survival_before_objective",
             return_value=True,
         ),
         pytest.raises(RuntimeError, match="callback failed"),
@@ -240,8 +242,14 @@ def test_automator_checkpoints_failed_city_growth_ledger(monkeypatch):
         "build_district",
         MagicMock(return_value=SimpleNamespace(success=False, reason="no output")),
     )
-    with patch("baritone_client.automator.automator.wait_with_bridge_keepalive") as wait:
-        automator._run_persistent_postgame_turn()
+    with patch(
+        "baritone_client.automator.postgame_lifecycle.wait_with_bridge_keepalive"
+    ) as wait:
+        automator.postgame.run_controller_turn(
+            automator.planner,
+            automator._persist_objective_progress,
+            automator._save_checkpoint,
+        )
 
     automator._save_checkpoint.assert_called_once_with()
     assert automator.state.custom_data["productive_work"]["no_progress_streak"] == 1
