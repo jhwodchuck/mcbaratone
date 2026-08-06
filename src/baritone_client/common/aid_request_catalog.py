@@ -150,3 +150,115 @@ class AidRequestCatalogMixin:
         with self._connect() as db:
             rows = db.execute(query, (self.world_id,)).fetchall()
         return [dict(row) for row in rows]
+
+    def note_aid_response(
+        self,
+        request_id: str,
+        responder: str,
+        event_type: str,
+        *,
+        now: Optional[float] = None,
+        evidence: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Append a lease-owner-stamped responder event for an open request.
+
+        A responder abandonment is intentionally an event, not a request
+        resolution: ``resolution='abandoned'`` would close the request and
+        prevent a second healthy bot from trying after the first gives up.
+        The owner check also keeps a stale controller from narrating an attempt
+        after its bounded lease has already been taken by another bot.
+        """
+        if event_type not in {"aid_request_claimed", "aid_request_abandoned"}:
+            raise ValueError(f"unsupported aid response event: {event_type}")
+        observed = time.time() if now is None else float(now)
+        lease_key = f"aid:{request_id}"
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            request = db.execute(
+                """SELECT dimension, x, y, z FROM aid_requests
+                   WHERE world_id=? AND request_id=? AND resolution IS NULL
+                     AND expires_at > ?""",
+                (self.world_id, str(request_id), observed),
+            ).fetchone()
+            lease = db.execute(
+                """SELECT 1 FROM resource_leases
+                   WHERE world_id=? AND lease_key=? AND owner=? AND expires_at > ?""",
+                (self.world_id, lease_key, str(responder), observed),
+            ).fetchone()
+            if request is None or lease is None:
+                return False
+            db.execute(
+                """INSERT INTO storage_events(
+                       world_id, dimension, x, y, z, event_type, event_time,
+                       details_json
+                   ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    self.world_id, request["dimension"], request["x"], request["y"],
+                    request["z"], event_type, observed,
+                    json.dumps(
+                        {
+                            "evidence": evidence or {}, "request_id": str(request_id),
+                            "responder": str(responder),
+                        },
+                        sort_keys=True,
+                    ),
+                ),
+            )
+        return True
+
+    def resolve_aid_request(
+        self,
+        request_id: str,
+        responder: str,
+        *,
+        before_hostiles: int,
+        after_hostiles: int,
+        now: Optional[float] = None,
+    ) -> bool:
+        """Fulfil a claimed request only with an observed hostile-count drop."""
+        if int(after_hostiles) >= int(before_hostiles):
+            return False
+        observed = time.time() if now is None else float(now)
+        lease_key = f"aid:{request_id}"
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            request = db.execute(
+                """SELECT dimension, x, y, z FROM aid_requests
+                   WHERE world_id=? AND request_id=? AND resolution IS NULL
+                     AND expires_at > ?""",
+                (self.world_id, str(request_id), observed),
+            ).fetchone()
+            lease = db.execute(
+                """SELECT 1 FROM resource_leases
+                   WHERE world_id=? AND lease_key=? AND owner=? AND expires_at > ?""",
+                (self.world_id, lease_key, str(responder), observed),
+            ).fetchone()
+            if request is None or lease is None:
+                return False
+            updated = db.execute(
+                """UPDATE aid_requests SET resolution='fulfilled', resolved_at=?
+                   WHERE world_id=? AND request_id=? AND resolution IS NULL""",
+                (observed, self.world_id, str(request_id)),
+            )
+            if not updated.rowcount:
+                return False
+            db.execute(
+                """INSERT INTO storage_events(
+                       world_id, dimension, x, y, z, event_type, event_time,
+                       details_json
+                   ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    self.world_id, request["dimension"], request["x"], request["y"],
+                    request["z"], "aid_request_fulfilled", observed,
+                    json.dumps(
+                        {
+                            "after_hostiles": int(after_hostiles),
+                            "before_hostiles": int(before_hostiles),
+                            "request_id": str(request_id),
+                            "responder": str(responder),
+                        },
+                        sort_keys=True,
+                    ),
+                ),
+            )
+        return True

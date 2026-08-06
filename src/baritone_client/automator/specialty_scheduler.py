@@ -109,6 +109,7 @@ def select_profile_specialty_opportunities(
     completed: Sequence[Phase],
     current_time: float,
     cooldown_ready: CooldownReady,
+    primary_has_work: bool = False,
 ) -> list[LocalOpportunity]:
     """Select bounded work from explicit recurring secondary roles."""
     selected: list[LocalOpportunity] = []
@@ -125,6 +126,15 @@ def select_profile_specialty_opportunities(
         )
         if candidate is not None:
             selected.append(replace(candidate, assigned_role=role.value))
+    from .aid_response import select_clear_hostiles_opportunity
+
+    aid = select_clear_hostiles_opportunity(
+        client, state, signals, primary_role,
+        role_held=primary_role is not FleetRole.BALANCED and not primary_has_work,
+        now=current_time,
+    )
+    if aid is not None:
+        selected.append(aid)
     return selected
 
 

@@ -48,6 +48,7 @@ _COUNTER_KEYS = {
     "stacks_moved",
     "free_slots_added",
     "legacy_chests_emptied",
+    "hostiles_cleared",
 }
 
 _PRODUCTIVE_OPPORTUNITIES = {
@@ -61,6 +62,7 @@ _PRODUCTIVE_OPPORTUNITIES = {
     "enchanting_xp",
     "enchanting_material",
     "storage_maintenance",
+    "clear_hostiles_aid",
 }
 
 

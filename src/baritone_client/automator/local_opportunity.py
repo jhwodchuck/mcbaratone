@@ -24,6 +24,7 @@ class OpportunityKind(str, Enum):
     END_FRONTIER = "end_frontier"
     END_CITY_ROUTE = "end_city_route"
     STORAGE_MAINTENANCE = "storage_maintenance"
+    CLEAR_HOSTILES_AID = "clear_hostiles_aid"
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class LocalOpportunity:
     location: Optional[Tuple[int, int, int]] = None
     target_item: str = ""
     assigned_role: str = ""
+    aid_request_id: str = ""
 
 
 def local_work_blockers(signals: object) -> Tuple[str, ...]:

@@ -26,7 +26,7 @@ from .end_readiness import (
     role_focused_candidates,
 )
 from .fleet_coverage import borrowed_specialty_roles, configured_specialty_roles
-from . import camp_breaker, food_opportunity, mutual_aid
+from . import aid_response, camp_breaker, food_opportunity, mutual_aid
 from .common.role_opportunities import run_role_opportunity
 from .common.crop_opportunity import run_crop_opportunity
 from .iron_scheduler import run_scheduled_iron_cycle
@@ -552,6 +552,7 @@ class AdaptiveScheduler:
                 client=self.client, state=self.state, primary_role=role, signals=signals,
                 completed=completed, current_time=current_time,
                 cooldown_ready=self._cooldown_ready,
+                primary_has_work=primary is not None,
             )
         )
 
@@ -575,14 +576,13 @@ class AdaptiveScheduler:
                     specialty_candidates.append(
                         replace(candidate, assigned_role=borrowed.value)
                     )
-        if specialty_candidates:
+        if specialty_candidates and role is not FleetRole.BALANCED:
             return max(specialty_candidates, key=lambda candidate: candidate.score)
         if role is not FleetRole.BALANCED:
             return None
         if not signals.safe_for_local_work:
             return None
-        candidates = []
-
+        candidates = specialty_candidates
         pairs = signals.animal_pairs()
         for family, pair_count in pairs.items():
             if signals.adult_animals.get(family, 0) >= 8:
@@ -597,7 +597,6 @@ class AdaptiveScheduler:
                         animal_type=family,
                     )
                 )
-
         crop_location = food_opportunity.reachable_farm_location(signals)
         crop_reserve = sum(signals.count(item) for item in CROP_ITEMS)
         plantable = sum(signals.count(item) for item in PLANTABLE_ITEMS)
@@ -616,7 +615,6 @@ class AdaptiveScheduler:
                     location=crop_location,
                 )
             )
-
         if not candidates:
             return None
         return max(candidates, key=lambda candidate: candidate.score)
@@ -703,6 +701,8 @@ class AdaptiveScheduler:
                     before_total,
                     after_total,
                 )
+            elif opportunity.kind is OpportunityKind.CLEAR_HOSTILES_AID:
+                result = OpportunityResult(opportunity, *aid_response.run_scheduled_clear_hostiles(self.client, self.state, self.observe(), opportunity))
             elif opportunity.kind in {
                 OpportunityKind.END_SUPPLY,
                 OpportunityKind.NETHER_SUPPLY,
