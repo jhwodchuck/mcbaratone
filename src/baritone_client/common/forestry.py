@@ -19,7 +19,8 @@ from .inventory import (
     get_inventory,
     resolve_storage_location,
 )
-from .resources import LOG_BLOCKS, PLANK_ITEMS, gather_wood
+from .navigation import goto
+from .resources import LOG_BLOCKS, PLANK_ITEMS, ensure_supplies, gather_wood
 
 
 SAPLING_ITEMS = (
@@ -213,9 +214,82 @@ def plant_carried_saplings(client: Any, state: Any, *, maximum: int = 8) -> int:
             or int(live.get("world_time", 0) or 0) % 24000 >= 11000
         ):
             break
-        if robust_place(client, x, y, z, item_id):
+        before_count = int(get_inventory(client).get(item_id, 0) or 0)
+        if robust_place(client, x, y, z, item_id) and int(
+            get_inventory(client).get(item_id, 0) or 0
+        ) < before_count:
             planted += 1
     return planted
+
+
+def _worker(state: Any) -> dict[str, Any]:
+    custom = getattr(state, "custom_data", None)
+    if not isinstance(custom, dict):
+        custom = {}
+        state.custom_data = custom
+    worker = custom.setdefault("wood_worker", {})
+    if not isinstance(worker, dict):
+        worker = {}
+        custom["wood_worker"] = worker
+    return worker
+
+
+def _tree_frontier(snapshot: Mapping[str, Any], cursor: int) -> tuple[int, int, int]:
+    """Return one bounded, changing surface-search waypoint per cursor."""
+    x, y, z = _position(snapshot)
+    # Every leg is deliberately local. Further exploration is earned only by
+    # a later cycle starting from a verified arrival, never by a growing goal.
+    radius = 32
+    dx, dz = ((radius, 0), (0, radius), (-radius, 0), (0, -radius))[cursor % 4]
+    return x + dx, y, z + dz
+
+
+def _recover_no_wood_progress(
+    client: Any, state: Any, snapshot: Mapping[str, Any]
+) -> tuple[str, int]:
+    """Advance one bounded recovery instead of replaying the same harvest."""
+    worker = _worker(state)
+    cursor = int(worker.get("escalation_cursor", 0) or 0)
+    worker["escalation_cursor"] = cursor + 1
+    action = cursor % 3
+    if action == 0:
+        ensure_supplies(client, {"minecraft:stone_axe": 1}, timeout=120)
+        # Tool repair is useful only when inventory proves it; this is not wood output.
+        has_axe = any(
+            "_axe" in item and int(count or 0) > 0
+            for item, count in get_inventory(client).items()
+        )
+        return (
+            "confirmed a usable axe after bounded repair"
+            if has_axe
+            else "attempted bounded axe repair",
+            0,
+        )
+    if action == 1:
+        before = sum(int(get_inventory(client).get(item, 0) or 0) for item in SAPLING_ITEMS)
+        ensure_supplies(client, {"minecraft:oak_sapling": 4}, timeout=120)
+        after = sum(int(get_inventory(client).get(item, 0) or 0) for item in SAPLING_ITEMS)
+        planted = plant_carried_saplings(client, state, maximum=4)
+        if planted:
+            worker["saplings_planted"] = int(worker.get("saplings_planted", 0) or 0) + planted
+            return f"expanded verified plantation by {planted} saplings", planted
+        return (
+            "attempted bounded sapling acquisition"
+            if after <= before
+            else "acquired saplings but no verified planting site",
+            0,
+        )
+    waypoint = _tree_frontier(snapshot, cursor)
+    reached = goto(
+        client, *waypoint, timeout=45, tolerance=3.0,
+        check_interval=1.0,
+    )
+    detail = (
+        f"reached bounded tree-search frontier at {waypoint}"
+        if reached
+        else f"attempted bounded tree-search frontier at {waypoint}"
+    )
+    return detail, 0
 
 
 def run_wood_cycle(
@@ -227,6 +301,8 @@ def run_wood_cycle(
 ) -> WoodCycleResult:
     """Harvest, replant, and bank one bounded batch of renewable wood."""
 
+    worker = _worker(state)
+    worker["attempts"] = int(worker.get("attempts", 0) or 0) + 1
     snapshot = _unwrap(client.transport.dispatch("get_state", {}))
     if (
         snapshot.get("is_dead")
@@ -252,9 +328,13 @@ def run_wood_cycle(
     after_harvest = get_inventory(client)
     harvested = max(0, _count_logs(after_harvest) - before_logs)
     if not gathered and harvested <= 0:
+        worker["no_progress"] = int(worker.get("no_progress", 0) or 0) + 1
+        recovery, planted = _recover_no_wood_progress(client, state, snapshot)
+        worker["last_no_progress_reason"] = "no logs harvested before bounded gather stopped"
         return WoodCycleResult(
-            False,
-            "no logs were harvested before the bounded gather stopped",
+            bool(planted),
+            f"no logs were harvested before the bounded gather stopped; {recovery}",
+            saplings_planted=planted,
         )
 
     planted = plant_carried_saplings(client, state, maximum=maximum_saplings)
@@ -282,14 +362,7 @@ def run_wood_cycle(
 
     after_storage = get_inventory(client)
     banked = max(0, _count_logs(after_harvest) - _count_logs(after_storage))
-    custom = getattr(state, "custom_data", None)
-    if not isinstance(custom, dict):
-        custom = {}
-        state.custom_data = custom
-    stats = custom.setdefault("wood_worker", {})
-    if not isinstance(stats, dict):
-        stats = {}
-        custom["wood_worker"] = stats
+    stats = worker
     stats["cycles"] = int(stats.get("cycles", 0) or 0) + 1
     stats["logs_harvested"] = int(stats.get("logs_harvested", 0) or 0) + harvested
     stats["saplings_planted"] = int(stats.get("saplings_planted", 0) or 0) + planted
@@ -298,8 +371,11 @@ def run_wood_cycle(
         f"harvested {harvested} logs, planted {planted} saplings, "
         f"banked {banked} logs"
     )
+    success = bool(harvested > 0 and banked > 0)
+    if success:
+        stats["no_progress"] = 0
     return WoodCycleResult(
-        bool(harvested > 0 and banked > 0),
+        success,
         detail,
         logs_harvested=harvested,
         saplings_planted=planted,

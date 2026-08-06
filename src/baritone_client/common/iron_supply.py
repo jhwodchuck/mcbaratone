@@ -16,7 +16,8 @@ from .inventory import (
     get_inventory,
     resolve_storage_location,
 )
-from .resources import _smelt_with_furnace, gather_ores
+from .navigation import goto
+from .resources import _smelt_with_furnace, ensure_supplies, gather_ores
 
 
 RAW_IRON = "minecraft:raw_iron"
@@ -51,6 +52,75 @@ def _count(inventory: Mapping[str, Any], item_id: str) -> int:
         return 0
 
 
+def _worker(state: Any) -> dict[str, Any]:
+    custom = getattr(state, "custom_data", None)
+    if not isinstance(custom, dict):
+        custom = {}
+        state.custom_data = custom
+    worker = custom.setdefault("iron_worker", {})
+    if not isinstance(worker, dict):
+        worker = {}
+        custom["iron_worker"] = worker
+    return worker
+
+
+def _mining_frontier(snapshot: Mapping[str, Any], cursor: int) -> tuple[int, int, int]:
+    raw = snapshot.get("block_position", snapshot.get("position", {}))
+    raw = raw if isinstance(raw, Mapping) else {}
+    x, y, z = (
+        int(float(raw.get(axis, default) or default))
+        for axis, default in (("x", 0), ("y", 64), ("z", 0))
+    )
+    # Do not turn repeated stalls into an ever-more-distant single route.
+    radius = 32
+    dx, dz = ((radius, 0), (0, radius), (-radius, 0), (0, -radius))[cursor % 4]
+    return x + dx, max(-48, min(48, y - 12)), z + dz
+
+
+def _recover_no_iron_progress(client: Any, state: Any, snapshot: Mapping[str, Any]) -> str:
+    """Persist and rotate bounded prerequisite/frontier recovery actions."""
+    worker = _worker(state)
+    cursor = int(worker.get("escalation_cursor", 0) or 0)
+    worker["escalation_cursor"] = cursor + 1
+    action = cursor % 3
+    if action == 0:
+        pickaxes = (
+            "minecraft:wooden_pickaxe", "minecraft:stone_pickaxe",
+            "minecraft:iron_pickaxe", "minecraft:diamond_pickaxe",
+            "minecraft:netherite_pickaxe",
+        )
+        before = sum(_count(get_inventory(client), item) for item in pickaxes)
+        ensure_supplies(client, {"minecraft:stone_pickaxe": 1}, timeout=120)
+        after = sum(_count(get_inventory(client), item) for item in pickaxes)
+        return (
+            "acquired a usable pickaxe"
+            if after > before
+            else "attempted bounded pickaxe repair"
+        )
+    if action == 1:
+        before = _count(get_inventory(client), "minecraft:coal") + _count(
+            get_inventory(client), "minecraft:charcoal"
+        )
+        ensure_supplies(client, {"minecraft:coal": 4}, timeout=120)
+        after = _count(get_inventory(client), "minecraft:coal") + _count(
+            get_inventory(client), "minecraft:charcoal"
+        )
+        chest = resolve_storage_location(client, state=state, verify=True)
+        if chest is not None:
+            return "verified durable storage while recovering fuel"
+        return "acquired bounded furnace fuel" if after > before else "attempted bounded fuel and storage recovery"
+    waypoint = _mining_frontier(snapshot, cursor)
+    reached = goto(
+        client, *waypoint, timeout=45, tolerance=3.0,
+        check_interval=1.0,
+    )
+    return (
+        f"reached bounded mining frontier at {waypoint}"
+        if reached
+        else f"attempted bounded mining frontier at {waypoint}"
+    )
+
+
 def run_iron_cycle(
     client: Any,
     state: Any,
@@ -64,6 +134,8 @@ def run_iron_cycle(
     the raw iron is still useful team supply and is banked instead.
     """
 
+    worker = _worker(state)
+    worker["attempts"] = int(worker.get("attempts", 0) or 0) + 1
     snapshot = _unwrap(client.transport.dispatch("get_state", {}))
     if (
         snapshot.get("is_dead")
@@ -80,9 +152,12 @@ def run_iron_cycle(
     after_mining = get_inventory(client)
     raw_mined = max(0, _count(after_mining, RAW_IRON) - before_raw)
     if not gathered and raw_mined <= 0:
+        worker["no_progress"] = int(worker.get("no_progress", 0) or 0) + 1
+        worker["last_no_progress_reason"] = "no raw iron mined before bounded gather stopped"
+        recovery = _recover_no_iron_progress(client, state, snapshot)
         return IronCycleResult(
             False,
-            "no raw iron was mined before the bounded gather stopped",
+            f"no raw iron was mined before the bounded gather stopped; {recovery}",
         )
 
     ingots_before_smelt = _count(after_mining, IRON_INGOT)
@@ -131,14 +206,7 @@ def run_iron_cycle(
     # newly mined units so telemetry cannot manufacture production progress.
     iron_banked = min(raw_mined, raw_banked + ingots_banked)
 
-    custom = getattr(state, "custom_data", None)
-    if not isinstance(custom, dict):
-        custom = {}
-        state.custom_data = custom
-    stats = custom.setdefault("iron_worker", {})
-    if not isinstance(stats, dict):
-        stats = {}
-        custom["iron_worker"] = stats
+    stats = worker
     stats["cycles"] = int(stats.get("cycles", 0) or 0) + 1
     stats["raw_iron_mined"] = (
         int(stats.get("raw_iron_mined", 0) or 0) + raw_mined
@@ -152,8 +220,11 @@ def run_iron_cycle(
         f"banked {raw_banked} raw and {ingots_banked} ingots "
         f"({iron_banked} newly mined units credited)"
     )
+    success = bool(raw_mined > 0 and iron_banked > 0)
+    if success:
+        stats["no_progress"] = 0
     return IronCycleResult(
-        bool(raw_mined > 0 and iron_banked > 0),
+        success,
         detail,
         raw_iron_mined=raw_mined,
         iron_ingots_smelted=ingots_smelted,

@@ -65,8 +65,42 @@ def test_run_wood_cycle_harvests_replants_and_banks(monkeypatch):
     assert result.saplings_planted == 5
     assert result.logs_banked == 24
     assert state.custom_data["wood_worker"] == {
+        "attempts": 1,
         "cycles": 1,
         "logs_harvested": 24,
         "saplings_planted": 5,
         "logs_banked": 24,
+        "no_progress": 0,
     }
+
+
+def test_wood_no_progress_rotates_recovery_and_expands_plantation(monkeypatch):
+    waypoints = []
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, payload=None: {
+                "health": 20, "food_level": 20, "world_time": 1000,
+                "dimension": "minecraft:overworld", "position": {"x": 0, "y": 64, "z": 0},
+            }
+        )
+    )
+    state = SimpleNamespace(custom_data={"wood_worker": {"escalation_cursor": 1}})
+    monkeypatch.setattr(forestry, "get_inventory", lambda _client: {})
+    monkeypatch.setattr(forestry, "gather_wood", lambda *_a, **_k: False)
+    monkeypatch.setattr(forestry, "ensure_supplies", lambda *_a, **_k: False)
+    monkeypatch.setattr(forestry, "plant_carried_saplings", lambda *_a, **_k: 2)
+    monkeypatch.setattr(
+        forestry,
+        "goto",
+        lambda _client, x, y, z, **kwargs: waypoints.append((x, y, z, kwargs)) or False,
+    )
+
+    expanded = forestry.run_wood_cycle(client, state)
+    frontier = forestry.run_wood_cycle(client, state)
+
+    assert expanded.success and expanded.saplings_planted == 2
+    assert "expanded verified plantation" in expanded.detail
+    assert "attempted bounded tree-search frontier" in frontier.detail
+    assert waypoints and (waypoints[0][0] ** 2 + waypoints[0][2] ** 2) ** 0.5 <= 64
+    assert waypoints[0][3]["timeout"] == 45
+    assert state.custom_data["wood_worker"]["no_progress"] == 2
