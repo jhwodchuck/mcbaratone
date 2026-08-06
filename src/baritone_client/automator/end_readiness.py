@@ -27,6 +27,7 @@ class FleetRole(str, Enum):
     ENCHANTING = "enchanting"
     VILLAGE_FOOD = "village_food"
     WOOD_SUPPLY = "wood_supply"
+    IRON_SUPPLY = "iron_supply"
 
 
 _ROLE_BY_REMAINDER = {
@@ -122,6 +123,8 @@ def role_focused_candidates(
     available = list(candidates)
     if role is FleetRole.WOOD_SUPPLY and Phase.BOOT_SEQUENCE in completed_set:
         return [], "fleet role wood_supply is assigned to renewable forestry", True
+    if role is FleetRole.IRON_SUPPLY and Phase.BOOT_SEQUENCE in completed_set:
+        return [], "fleet role iron_supply is assigned to bounded team mining", True
     if Phase.FOOD_AND_IRON not in completed_set or role is FleetRole.BALANCED:
         return available, "", False
 
@@ -146,6 +149,7 @@ def allows_local_work(role: FleetRole) -> bool:
         FleetRole.ENCHANTING,
         FleetRole.VILLAGE_FOOD,
         FleetRole.WOOD_SUPPLY,
+        FleetRole.IRON_SUPPLY,
     }
 
 

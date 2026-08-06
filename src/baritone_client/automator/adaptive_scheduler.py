@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from enum import Enum
 from math import hypot
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
@@ -27,6 +26,8 @@ from .end_readiness import (
     record_readiness,
     role_focused_candidates,
 )
+from .iron_scheduler import iron_cycle_ready, run_scheduled_iron_cycle
+from .local_opportunity import LocalOpportunity, OpportunityKind
 from .objective import Objective
 from .state_manager import Phase
 
@@ -57,14 +58,6 @@ LEATHER_ANIMALS = {
     "mule",
     "llama",
 }
-
-
-class OpportunityKind(str, Enum):
-    """Small recurring work that may run between progression objectives."""
-
-    ANIMAL_FARM = "animal_farm"
-    CROP_FARM = "crop_farm"
-    WOOD_FARM = "wood_farm"
 
 
 @dataclass(frozen=True)
@@ -119,24 +112,12 @@ class GameSignals:
             and self.world_time % 24000 < 12000
         )
 
-
 @dataclass(frozen=True)
 class PhaseScore:
     """Explainable signal contribution to one runnable phase."""
 
     value: float
     reasons: Tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class LocalOpportunity:
-    """One bounded renewable-resource action selected from live signals."""
-
-    kind: OpportunityKind
-    score: float
-    reason: str
-    animal_type: str = ""
-    location: Optional[Tuple[int, int, int]] = None
 
 
 @dataclass(frozen=True)
@@ -448,6 +429,7 @@ class AdaptiveScheduler:
         OpportunityKind.ANIMAL_FARM: 300.0,
         OpportunityKind.CROP_FARM: 180.0,
         OpportunityKind.WOOD_FARM: 60.0,
+        OpportunityKind.IRON_MINE: 120.0,
     }
 
     def __init__(self, client: Any, resources: Any, state: Any):
@@ -531,10 +513,25 @@ class AdaptiveScheduler:
         role: Optional[FleetRole] = None,
     ) -> Optional[LocalOpportunity]:
         """Choose one safe renewable-resource action, if any is useful now."""
-        if Phase.SPAWN_BOOTSTRAP not in set(completed) or not signals.safe_for_local_work:
+        if Phase.SPAWN_BOOTSTRAP not in set(completed):
             return None
         current_time = time.time() if now is None else float(now)
         role = FleetRole.BALANCED if role is None else role
+        if role is FleetRole.IRON_SUPPLY:
+            if (
+                iron_cycle_ready(
+                    signals, boot_completed=Phase.BOOT_SEQUENCE in set(completed)
+                )
+                and self._cooldown_ready(OpportunityKind.IRON_MINE, current_time)
+            ):
+                return LocalOpportunity(
+                    OpportunityKind.IRON_MINE,
+                    200,
+                    "the dedicated iron supplier can mine, smelt, and bank a bounded batch",
+                )
+            return None
+        if not signals.safe_for_local_work:
+            return None
         if role is FleetRole.WOOD_SUPPLY:
             if (
                 Phase.BOOT_SEQUENCE in set(completed)
@@ -623,7 +620,7 @@ class AdaptiveScheduler:
                 )
             elif opportunity.kind is OpportunityKind.CROP_FARM:
                 result = self._run_crop_opportunity(opportunity, crop_timeout)
-            else:
+            elif opportunity.kind is OpportunityKind.WOOD_FARM:
                 before_total = int(
                     self._runtime().get("wood_logs_banked", 0) or 0
                 )
@@ -634,6 +631,17 @@ class AdaptiveScheduler:
                     opportunity,
                     cycle.success,
                     cycle.detail,
+                    before_total,
+                    after_total,
+                )
+            else:
+                success, detail, before_total, after_total = run_scheduled_iron_cycle(
+                    self.client, self.state, self._runtime()
+                )
+                result = OpportunityResult(
+                    opportunity,
+                    success,
+                    detail,
                     before_total,
                     after_total,
                 )

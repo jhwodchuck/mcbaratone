@@ -46,6 +46,15 @@ def test_checkpoint_role_file_persists_manual_wood_assignment(tmp_path, monkeypa
     assert fleet_role(SimpleNamespace(checkpoint_dir=controller)) is FleetRole.WOOD_SUPPLY
 
 
+def test_checkpoint_role_file_persists_manual_iron_assignment(tmp_path, monkeypatch):
+    monkeypatch.delenv("MC_FLEET_ROLE", raising=False)
+    controller = tmp_path / "Bot15" / "controller"
+    controller.mkdir(parents=True)
+    (controller / "fleet-role.txt").write_text("iron_supply\n", encoding="utf-8")
+
+    assert fleet_role(SimpleNamespace(checkpoint_dir=controller)) is FleetRole.IRON_SUPPLY
+
+
 def test_end_runner_stays_on_nether_and_does_not_rotate_when_abandoned():
     planner = _post_food_planner()
     candidates, reason, complete = role_focused_candidates(
@@ -130,6 +139,21 @@ def test_wood_supplier_does_not_skip_bootstrap_dependencies():
     assert candidates
     assert reason == ""
     assert complete is False
+
+
+def test_iron_supplier_holds_for_bounded_mining_after_safe_bootstrap():
+    planner = _post_food_planner()
+
+    candidates, reason, complete = role_focused_candidates(
+        planner.runnable(),
+        planner.objectives,
+        planner.completed_phases(),
+        FleetRole.IRON_SUPPLY,
+    )
+
+    assert candidates == []
+    assert "bounded team mining" in reason
+    assert complete is True
 
 
 def test_readiness_requires_eye_path_and_complete_launch_loadout():

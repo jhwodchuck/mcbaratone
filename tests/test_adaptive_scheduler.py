@@ -217,6 +217,27 @@ def test_wood_role_selects_forestry_only_after_safe_bootstrap():
     assert opportunity.kind is OpportunityKind.WOOD_FARM
 
 
+def test_iron_role_selects_bounded_mining_after_boot_even_at_night():
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), _state())
+    signals = _signals(world_time=18000)
+
+    assert scheduler.select_local_opportunity(
+        signals,
+        [Phase.SPAWN_BOOTSTRAP],
+        now=1000.0,
+        role=FleetRole.IRON_SUPPLY,
+    ) is None
+    opportunity = scheduler.select_local_opportunity(
+        signals,
+        [Phase.SPAWN_BOOTSTRAP, Phase.BOOT_SEQUENCE],
+        now=1000.0,
+        role=FleetRole.IRON_SUPPLY,
+    )
+
+    assert opportunity is not None
+    assert opportunity.kind is OpportunityKind.IRON_MINE
+
+
 def test_local_farming_is_skipped_when_hostile_or_before_boot():
     scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), _state())
     signals = _signals(
@@ -424,6 +445,33 @@ def test_wood_opportunity_records_banked_log_progress(monkeypatch):
     assert result.before == 0
     assert result.after == 24
     assert "planted 5 saplings" in result.detail
+
+
+def test_iron_opportunity_records_banked_team_supply(monkeypatch):
+    state = _state()
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    monkeypatch.setattr(
+        adaptive,
+        "run_scheduled_iron_cycle",
+        lambda *_args, **_kwargs: (
+            True,
+            "mined 24 raw iron, smelted 24 ingots, banked 24",
+            0,
+            24,
+        ),
+    )
+    opportunity = LocalOpportunity(
+        OpportunityKind.IRON_MINE,
+        200,
+        "test iron mining",
+    )
+
+    result = scheduler.run_local_opportunity(opportunity)
+
+    assert result.success
+    assert result.before == 0
+    assert result.after == 24
+    assert "smelted 24 ingots" in result.detail
 
 
 def test_recorded_phase_decision_is_explainable():
