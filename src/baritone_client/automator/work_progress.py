@@ -54,6 +54,7 @@ _PRODUCTIVE_OPPORTUNITIES = {
     "end_supply",
     "nether_supply",
     "enchanting_xp",
+    "enchanting_material",
 }
 
 
@@ -103,7 +104,10 @@ def productive_snapshot(state: Any) -> dict[str, int]:
     opportunities = scheduler.get("opportunities", {})
     if isinstance(opportunities, Mapping):
         for kind, raw in opportunities.items():
-            if str(kind) not in _PRODUCTIVE_OPPORTUNITIES or not isinstance(raw, Mapping):
+            if (
+                str(kind) not in _PRODUCTIVE_OPPORTUNITIES
+                or not isinstance(raw, Mapping)
+            ):
                 continue
             for key in ("successful_cycles", "verified_delta_total"):
                 number = _number(raw.get(key))

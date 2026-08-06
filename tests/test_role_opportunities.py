@@ -55,19 +55,25 @@ def test_enchanting_uses_persisted_verified_xp_engine_and_only_xp_delta(monkeypa
     assert (before, after) == (21, 22)
 
 
-def test_enchanting_without_xp_engine_crafts_bounded_book_delta(monkeypatch):
+def test_enchanting_without_xp_engine_acquires_bounded_book_delta(monkeypatch):
     state = SimpleNamespace(custom_data={})
     chosen = role_opportunities.select_role_opportunity(
         FleetRole.ENCHANTING,
-        _signals(dimension="minecraft:overworld", inventory={"minecraft:paper": 3, "minecraft:leather": 1}),
+        _signals(dimension="minecraft:overworld", inventory={}),
         state,
         cooldown_ready=True,
     )
     assert chosen and chosen.kind is OpportunityKind.ENCHANTING_MATERIAL
     counts = iter((2, 3))
     monkeypatch.setattr(role_opportunities, "count_item", lambda *_args: next(counts))
-    monkeypatch.setattr(role_opportunities, "craft", lambda *_args: True)
+    requested = []
+    monkeypatch.setattr(
+        role_opportunities,
+        "ensure_supplies",
+        lambda _client, supplies, **_kwargs: requested.append(supplies),
+    )
     assert role_opportunities.run_role_opportunity(SimpleNamespace(), state, chosen)[0] is True
+    assert requested == [{"minecraft:book": 3}]
 
 
 def test_enchanting_material_uses_its_own_cooldown_in_overworld():
@@ -130,6 +136,30 @@ def test_nether_cycle_does_not_count_movement_without_rod_delta(monkeypatch):
     assert (before, after) == (4, 4)
 
 
+def test_failed_end_supply_requires_a_different_city_frontier(monkeypatch):
+    state = SimpleNamespace(custom_data={})
+    opportunity = LocalOpportunity(
+        OpportunityKind.END_SUPPLY,
+        1,
+        "test",
+        target_item="minecraft:shulker_box",
+    )
+    counts = iter((5, 5))
+    monkeypatch.setattr(role_opportunities, "count_item", lambda *_args: next(counts))
+    monkeypatch.setattr(
+        role_opportunities,
+        "acquire_shulker_boxes",
+        lambda *_args, **_kwargs: False,
+    )
+
+    result = role_opportunities.run_role_opportunity(
+        SimpleNamespace(), state, opportunity
+    )
+
+    assert result[0] is False
+    assert state.custom_data["end_worker"]["frontier_required"] is True
+
+
 def test_end_frontier_replaces_only_a_newly_verified_city(monkeypatch):
     state = SimpleNamespace(
         custom_data={
@@ -141,12 +171,28 @@ def test_end_frontier_replaces_only_a_newly_verified_city(monkeypatch):
         FleetRole.END_RUNNER, _signals(dimension="minecraft:the_end"), state, cooldown_ready=True
     )
     assert chosen and chosen.kind is OpportunityKind.END_FRONTIER
+    waypoints = []
+    monkeypatch.setattr(
+        role_opportunities,
+        "goto",
+        lambda _client, *coords, **_kwargs: waypoints.append(coords) or True,
+    )
     monkeypatch.setattr(role_opportunities, "find_end_city", lambda *_args, **_kwargs: (200, 70, 200))
     success, detail, before, after = role_opportunities.run_role_opportunity(SimpleNamespace(), state, chosen)
     assert success is False
     assert "new End city verified" in detail
     assert (before, after) == (0, 0)
     assert state.custom_data["end_city"]["location"] == [200, 70, 200]
+    assert state.custom_data["end_worker"]["frontier_required"] is False
+    assert waypoints == [(193, 70, 1)]
+
+    next_cycle = role_opportunities.select_role_opportunity(
+        FleetRole.END_RUNNER,
+        _signals(dimension="minecraft:the_end", position=(200, 70, 200)),
+        state,
+        cooldown_ready=True,
+    )
+    assert next_cycle and next_cycle.kind is OpportunityKind.END_SUPPLY
 
 
 def test_end_runner_on_central_island_routes_before_supply(monkeypatch):
