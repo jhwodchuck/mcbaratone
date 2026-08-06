@@ -71,6 +71,24 @@ def test_no_live_signal_preserves_stable_nether_priority():
     assert selected.phase is Phase.NETHER_AND_BLAZE
 
 
+def test_observe_publishes_m1_need_without_changing_the_signal(monkeypatch):
+    state = _state()
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    signals = _signals(food=0)
+    published = []
+    monkeypatch.setattr(adaptive, "collect_game_signals", lambda *_args: signals)
+    monkeypatch.setattr(
+        adaptive.mutual_aid,
+        "publish_requests",
+        lambda received_state, received_signals: published.append(
+            (received_state, received_signals)
+        ),
+    )
+
+    assert scheduler.observe() is signals
+    assert published == [(state, signals)]
+
+
 def test_breedable_leather_animals_prioritize_enchanting_sibling():
     planner = _post_food_planner()
     signals = _signals(

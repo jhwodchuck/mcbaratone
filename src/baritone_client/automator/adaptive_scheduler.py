@@ -26,7 +26,7 @@ from .end_readiness import (
     role_focused_candidates,
 )
 from .fleet_coverage import borrowed_specialty_roles, configured_specialty_roles
-from . import camp_breaker, food_opportunity
+from . import camp_breaker, food_opportunity, mutual_aid
 from .common.role_opportunities import run_role_opportunity
 from .common.crop_opportunity import run_crop_opportunity
 from .iron_scheduler import run_scheduled_iron_cycle
@@ -35,8 +35,6 @@ from .objective import Objective
 from .state_manager import Phase
 from .specialty_scheduler import select_profile_specialty_opportunities, select_specialty_opportunity
 from .work_progress import productive_snapshot, record_productive_attempt
-
-
 CROP_BLOCKS = (
     "minecraft:wheat",
     "minecraft:carrots",
@@ -450,7 +448,9 @@ class AdaptiveScheduler:
         self.state = state
 
     def observe(self) -> GameSignals:
-        return collect_game_signals(self.client, self.resources, self.state)
+        signals = collect_game_signals(self.client, self.resources, self.state)
+        mutual_aid.publish_requests(self.state, signals)
+        return signals
 
     def next_step(self, planner: Any) -> SchedulingDecision:
         """Observe once, run useful local work, or choose a runnable objective."""

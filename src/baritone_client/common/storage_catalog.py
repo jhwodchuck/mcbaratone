@@ -20,9 +20,10 @@ from .warehouse_catalog import (
     WarehouseCatalogMixin,
     migrate_warehouse_schema,
 )
+from .aid_request_catalog import AidRequestCatalogMixin
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DEFAULT_CATALOG_NAME = "storage_catalog.sqlite3"
 SHARED_CATALOG_ENV = "MC_SHARED_STORAGE_CATALOG"
 FLEET_DIRECTORY_NAMES = {"aternos", "headlessmc"}
@@ -79,7 +80,7 @@ def _dimension(client) -> str:
         return "minecraft:overworld"
 
 
-class StorageCatalog(WarehouseCatalogMixin):
+class StorageCatalog(WarehouseCatalogMixin, AidRequestCatalogMixin):
     """SQLite-backed last-known-state catalog for world containers."""
 
     def __init__(self, path: Path, world_id: str):
@@ -185,6 +186,30 @@ class StorageCatalog(WarehouseCatalogMixin):
                 );
                 CREATE INDEX IF NOT EXISTS idx_resource_leases_expiry
                     ON resource_leases(world_id, expires_at);
+                CREATE TABLE IF NOT EXISTS aid_requests (
+                    world_id TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    requester TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    detail TEXT NOT NULL,
+                    dimension TEXT NOT NULL,
+                    x INTEGER,
+                    y INTEGER,
+                    z INTEGER,
+                    urgency INTEGER NOT NULL,
+                    created_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    claimed_by TEXT,
+                    claimed_at REAL,
+                    resolution TEXT,
+                    resolved_at REAL,
+                    PRIMARY KEY (world_id, request_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_aid_requests_expiry
+                    ON aid_requests(world_id, expires_at);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_aid_requests_one_open_per_kind
+                    ON aid_requests(world_id, requester, kind)
+                    WHERE resolution IS NULL;
                 """
             )
             migrate_warehouse_schema(db)
@@ -570,7 +595,6 @@ class StorageCatalog(WarehouseCatalogMixin):
         with self._connect() as db:
             rows = db.execute(query, params).fetchall()
         return [dict(row) for row in rows]
-
 
 def catalog_for(client, state=None) -> StorageCatalog:
     # Unit-test doubles and ad-hoc clients without an isolated run directory or

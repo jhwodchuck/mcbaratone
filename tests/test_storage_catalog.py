@@ -2,6 +2,7 @@ import json
 import sqlite3
 
 from baritone_client.common.storage_catalog import (
+    SCHEMA_VERSION,
     StorageCatalog,
     catalog_for,
     observe_open_container,
@@ -523,3 +524,65 @@ def test_slot_reservation_rejects_non_chest_pair_geometry(tmp_path):
             paired_coordinates=((0, 64, -12), (1, 64, -12)),
             canonical_coordinate=(2, 64, -12),
         )
+
+
+def test_aid_migration_is_repeatable_without_losing_populated_catalog_rows(tmp_path):
+    path = tmp_path / "storage_catalog.sqlite3"
+    catalog = StorageCatalog(path, "world-a")
+    with catalog._connect() as db:
+        db.execute("DROP TABLE aid_requests")
+        db.execute(
+            "UPDATE catalog_meta SET value='3' WHERE key='schema_version'"
+        )
+        db.executemany(
+            """INSERT INTO containers(
+                   world_id, dimension, x, y, z, container_type, last_seen,
+                   status, metadata_json
+               ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                ("world-a", "minecraft:overworld", index, 64, 0,
+                 "minecraft:chest", 100.0, "verified", "{}")
+                for index in range(234)
+            ],
+        )
+        db.executemany(
+            """INSERT INTO container_items(
+                   world_id, dimension, x, y, z, slot, item_id, count, observed_at
+               ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                ("world-a", "minecraft:overworld", index % 234, 64, 0,
+                 index // 234, "minecraft:cobblestone", 1, 100.0)
+                for index in range(895)
+            ],
+        )
+        db.executemany(
+            """INSERT INTO storage_events(
+                   world_id, dimension, x, y, z, event_type, event_time, details_json
+               ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                ("world-a", "minecraft:overworld", 0, 64, 0,
+                 "inventory_observed", 100.0, "{}")
+                for _ in range(5359)
+            ],
+        )
+
+    migrated = StorageCatalog(path, "world-a")
+    restarted = StorageCatalog(path, "world-a")
+    with restarted._connect() as db:
+        columns = [row["name"] for row in db.execute("PRAGMA table_info(aid_requests)")]
+        version = db.execute(
+            "SELECT value FROM catalog_meta WHERE key='schema_version'"
+        ).fetchone()["value"]
+        counts = {
+            table: db.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"]
+            for table in ("containers", "container_items", "storage_events")
+        }
+
+    assert migrated.list_aid_requests() == []
+    assert version == str(SCHEMA_VERSION)
+    assert columns == [
+        "world_id", "request_id", "requester", "kind", "detail", "dimension",
+        "x", "y", "z", "urgency", "created_at", "expires_at", "claimed_by",
+        "claimed_at", "resolution", "resolved_at",
+    ]
+    assert counts == {"containers": 234, "container_items": 895, "storage_events": 5359}
