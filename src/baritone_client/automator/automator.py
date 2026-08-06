@@ -10,6 +10,7 @@ from .phase_executor import PhaseExecutor, PhaseHandler
 from .phase_verifier import PhaseVerifier
 from .objective import ObjectivePlanner, default_objectives
 from .adaptive_scheduler import AdaptiveScheduler
+from .postgame_lifecycle import PersistentPostgameLifecycle
 from .objective_survival import recover_survival_before_objective
 from .pacing import wait_with_bridge_keepalive
 from .progress_control import progression_fingerprint
@@ -95,6 +96,7 @@ class EndGameAutomator:
         # from the checkpoint in run().
         self.planner = ObjectivePlanner(default_objectives())
         self.scheduler = AdaptiveScheduler(client, self.resources, self.state)
+        self.postgame = PersistentPostgameLifecycle(self.state, self.scheduler)
 
         self.auto_checkpoint = auto_checkpoint
         self.checkpoint_interval = checkpoint_interval
@@ -323,7 +325,7 @@ class EndGameAutomator:
         time.sleep(5.0)
 
 
-    def run(self, resume: bool = True) -> bool:
+    def run(self, resume: bool = True, *, max_postgame_iterations: Optional[int] = None) -> bool:
         """
         Run the automation loop.
         
@@ -331,7 +333,9 @@ class EndGameAutomator:
             resume: Whether to attempt checkpoint resumption
             
         Returns:
-            True if the terminal city objective is verified, False if stopped/failed
+            True if the terminal city objective is verified, False if stopped/failed.
+            ``max_postgame_iterations`` is a test/one-shot seam; normal runs
+            remain in postgame until ``stop()`` is called externally.
         """
         self._running = True
         
@@ -380,7 +384,18 @@ class EndGameAutomator:
         print(f"{'#'*60}\n")
         
         try:
-            while self._running and not self.planner.is_complete():
+            postgame_iterations = 0
+            while self._running:
+                if self.planner.is_complete():
+                    if not self._postgame_safety_gate():
+                        continue
+                    self._enter_persistent_postgame()
+                    if max_postgame_iterations is not None and postgame_iterations >= max_postgame_iterations:
+                        return True
+                    self._run_persistent_postgame_turn()
+                    postgame_iterations += 1
+                    continue
+
                 # Check for death and handle recovery before choosing a goal.
                 if self._handle_death_recovery():
                     continue
@@ -504,23 +519,46 @@ class EndGameAutomator:
                     self._persist_objective_progress()
                     self._save_checkpoint()
 
-            if self.planner.is_complete():
-                self.state.set_phase(Phase.COMPLETE)
-                print("\n" + "="*60)
-                print("  Terminal city objective verified.")
-                print("  Endgame and bounded postgame automation complete.")
-                print("="*60 + "\n")
-
-                if self.on_complete:
-                    self.on_complete()
-
-                self.state.clear_checkpoint()
-                return True
-
             return False
 
         finally:
              self.stop()
+
+    def _run_persistent_postgame_turn(self) -> None:
+        """Run or safely defer one postgame scheduler turn."""
+        turn = self.postgame.run_turn(self.planner)
+        if turn.did_work:
+            print(turn.reason)
+            self._persist_objective_progress()
+            self._save_checkpoint()
+            return
+        print(f"PERSISTENT CIVILIZATION HOLD: {turn.reason}; retrying after cooldown.")
+        wait_with_bridge_keepalive(self.client, duration=30.0)
+
+    def _postgame_safety_gate(self) -> bool:
+        """Apply the normal death and survival gate before postgame work."""
+        if self._handle_death_recovery():
+            return False
+        if recover_survival_before_objective(self.client, self.state):
+            return True
+        self._save_checkpoint()
+        wait_with_bridge_keepalive(self.client, duration=5.0)
+        return False
+
+    def _enter_persistent_postgame(self) -> None:
+        """Persist the verified terminal milestone without ending the controller."""
+        self.state.set_phase(Phase.COMPLETE)
+        entered = self.postgame.enter()
+        notify = self.on_complete is not None and self.postgame.claim_completion_notification()
+        self._persist_objective_progress()
+        self._save_checkpoint()
+        if entered:
+            print("\n" + "=" * 60)
+            print("  Terminal city objective verified.")
+            print("  Persistent civilization mode is active.")
+            print("=" * 60 + "\n")
+        if notify:
+            self.on_complete()
 
     def _report_stall(self) -> None:
         """Print a diagnostic when the run stalls with no runnable objective."""
