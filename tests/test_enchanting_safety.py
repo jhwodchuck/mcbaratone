@@ -1,8 +1,26 @@
 from types import SimpleNamespace
 
+import pytest
+
 from baritone_client.automator.phases import enchanting, leather_supply
 from baritone_client.automator.state_manager import Phase, StateManager
 from baritone_client.common.tasks import TaskResult
+
+
+@pytest.fixture(autouse=True)
+def equipped_for_expedition(monkeypatch):
+    """Treat the bot as combat-ready unless a test says otherwise.
+
+    Leather expeditions are now refused below 3/4 armor, because the live
+    worker was hunting in the open at 1/4 armor while dying repeatedly. These
+    tests exercise hunt routing and cost control, not equipment, and their
+    stubs report no armor at all -- without this they would all defer and
+    assert nothing. Equipment itself is covered by
+    ``tests/test_leather_expedition_cost.py``.
+    """
+    monkeypatch.setattr(
+        leather_supply, "expedition_is_too_dangerous", lambda *_a, **_k: False
+    )
 
 
 def test_leather_objective_withdraws_bank_then_hunts_only_cattle_and_returns(monkeypatch):

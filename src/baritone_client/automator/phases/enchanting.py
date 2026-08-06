@@ -402,6 +402,12 @@ class EnchantingPipelineHandler(PhaseHandler):
             if not self._leave_starter_house(client, state):
                 return False
 
+            leather_supply.escalate_ring_if_exhausted(
+                state,
+                ring_key=leather_supply.WOOL_RING_KEY,
+                streak_key=leather_supply.WOOL_NO_GAIN_KEY,
+                label="wool",
+            )
             origin = house.get("origin") or state.custom_data.get("base_location")
             exploration_center = None
             if isinstance(origin, (list, tuple)) and len(origin) == 3:
@@ -423,11 +429,18 @@ class EnchantingPipelineHandler(PhaseHandler):
                     heal_threshold=10.0,
                     abort_on_other_hostiles=True,
                     latest_world_time=9000,
-                    max_distance_from_origin=160.0,
+                    max_distance_from_origin=leather_supply.expedition_distance(
+                        state, ring_key=leather_supply.WOOL_RING_KEY
+                    ),
                     exploration_center=exploration_center,
                 )
             finally:
                 client.transport.dispatch("cancel", {})
+                leather_supply.record_attempt(
+                    state,
+                    gained=bool(hunted and hunted.success),
+                    streak_key=leather_supply.WOOL_NO_GAIN_KEY,
+                )
                 returned = self._return_home(client, state)
             if not hunted or not hunted.success or not returned:
                 if attempt_count >= 2:
@@ -510,7 +523,13 @@ class EnchantingPipelineHandler(PhaseHandler):
         index = int(expedition_state.get("bed_sector_index", 0))
         expedition_state["bed_sector_index"] = index + 1
         dx, dz = offsets[index % len(offsets)]
-        return int(origin[0]) + 3 + dx, int(origin[2]) + dz
+        scale = leather_supply.sector_scale(
+            state, ring_key=leather_supply.WOOL_RING_KEY
+        )
+        return (
+            int(origin[0]) + 3 + int(dx * scale),
+            int(origin[2]) + int(dz * scale),
+        )
 
     def _gather_leather(self, client, state: StateManager) -> bool:
         """Safely collect leather for 46 books, including banked supplies."""
@@ -524,7 +543,10 @@ class EnchantingPipelineHandler(PhaseHandler):
             print("  Already have 46 leather.")
             return True
 
+        leather_supply.escalate_ring_if_exhausted(state)
         if leather_supply.search_is_futile(client, state):
+            return False
+        if leather_supply.expedition_is_too_dangerous(client):
             return False
 
         if not self._wait_for_daylight(client, state):
@@ -587,7 +609,7 @@ class EnchantingPipelineHandler(PhaseHandler):
                 heal_threshold=10.0,
                 abort_on_other_hostiles=True,
                 latest_world_time=9000,
-                max_distance_from_origin=160.0,
+                max_distance_from_origin=leather_supply.expedition_distance(state),
                 exploration_center=exploration_center,
             )
         finally:
@@ -682,7 +704,14 @@ class EnchantingPipelineHandler(PhaseHandler):
             expedition_state["leather_sector_index"] = expedition_index + 1
         self._leather_expedition_index = expedition_index + 1
         dx, dz = offsets[expedition_index % len(offsets)]
-        return int(origin[0]) + 3 + dx, int(origin[2]) + dz
+        # Every offset is within +/-128, so raising the distance cap alone
+        # would still re-sweep the same exhausted box. Scale the rotation with
+        # the ring so escalation actually reaches unhunted chunks.
+        scale = leather_supply.sector_scale(state) if state is not None else 1.0
+        return (
+            int(origin[0]) + 3 + int(dx * scale),
+            int(origin[2]) + int(dz * scale),
+        )
 
     def _withdraw_at_home(self, client, state: StateManager, requirements) -> int:
         house = state.custom_data.get("structures", {}).get("starter_house", {})
