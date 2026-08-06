@@ -145,18 +145,20 @@ def role_focused_candidates(
         focused = [candidate for candidate in available if candidate.phase is phase]
         return focused, f"fleet role {role.value} is locked to {phase.name}", False
     if focus:
-        return [], f"fleet role {role.value} has completed its assignment", True
+        return [], f"fleet role {role.value} is waiting for a safe recurring supply cycle", True
     return available, "", False
 
 
 def allows_local_work(role: FleetRole) -> bool:
-    """Resource roles may farm locally; critical-path roles stay on mission."""
+    """Roles may run bounded work once their graph assignment is complete."""
     return role in {
         FleetRole.BALANCED,
         FleetRole.ENCHANTING,
         FleetRole.VILLAGE_FOOD,
         FleetRole.WOOD_SUPPLY,
         FleetRole.IRON_SUPPLY,
+        FleetRole.END_RUNNER,
+        FleetRole.NETHER_SUPPLY,
     }
 
 

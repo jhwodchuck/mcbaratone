@@ -132,7 +132,7 @@ def test_same_runnable_frontier_produces_different_work_per_bot_state():
     assert choose(nether_bot) is Phase.NETHER_AND_BLAZE
 
 
-def test_completed_nether_supplier_returns_a_role_hold(tmp_path, monkeypatch):
+def test_completed_nether_supplier_runs_recurring_supply_when_safe(tmp_path, monkeypatch):
     planner = _post_food_planner()
     planner._by_phase[Phase.NETHER_AND_BLAZE].status = ObjStatus.DONE
     state = SimpleNamespace(
@@ -140,13 +140,32 @@ def test_completed_nether_supplier_returns_a_role_hold(tmp_path, monkeypatch):
         checkpoint_dir=tmp_path / "Bot16" / "controller",
     )
     scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
-    monkeypatch.setattr(scheduler, "observe", lambda: _signals())
+    monkeypatch.setattr(
+        scheduler,
+        "observe",
+        lambda: _signals(dimension="minecraft:the_nether"),
+    )
+    opportunity = scheduler.select_local_opportunity(
+        _signals(dimension="minecraft:the_nether"),
+        tuple(planner.completed_phases()), now=1000, role=FleetRole.NETHER_SUPPLY,
+    )
+
+    assert opportunity is not None
+    assert opportunity.kind is OpportunityKind.NETHER_SUPPLY
+
+
+def test_completed_nether_supplier_safety_holds_without_graph_churn(tmp_path, monkeypatch):
+    planner = _post_food_planner()
+    planner._by_phase[Phase.NETHER_AND_BLAZE].status = ObjStatus.DONE
+    state = SimpleNamespace(custom_data={}, checkpoint_dir=tmp_path / "Bot16" / "controller")
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    monkeypatch.setattr(scheduler, "observe", lambda: _signals(dimension="minecraft:the_nether", health=8))
 
     decision = scheduler.next_step(planner)
 
     assert decision.objective is None
     assert decision.role_hold is True
-    assert "completed its assignment" in decision.summary
+    assert "recurring supply cycle" in decision.summary
 
 
 def test_live_signal_never_bypasses_graph_prerequisites():

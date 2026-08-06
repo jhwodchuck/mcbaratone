@@ -26,6 +26,8 @@ from .end_readiness import (
     role_focused_candidates,
 )
 from . import food_opportunity
+from .common.role_opportunities import run_role_opportunity, select_role_opportunity
+from .common.crop_opportunity import run_crop_opportunity
 from .iron_scheduler import iron_cycle_ready, run_scheduled_iron_cycle
 from .local_opportunity import LocalOpportunity, OpportunityKind
 from .objective import Objective
@@ -432,6 +434,10 @@ class AdaptiveScheduler:
         OpportunityKind.IRON_MINE: 120.0,
         OpportunityKind.FOOD_RECOVERY: 60.0,
         OpportunityKind.FOOD_PRODUCTION: 120.0,
+        OpportunityKind.END_SUPPLY: 600.0,
+        OpportunityKind.NETHER_SUPPLY: 300.0,
+        OpportunityKind.ENCHANTING_XP: 300.0,
+        OpportunityKind.DIMENSION_ENTRY: 120.0,
     }
 
     def __init__(self, client: Any, resources: Any, state: Any):
@@ -519,6 +525,27 @@ class AdaptiveScheduler:
             return None
         current_time = time.time() if now is None else float(now)
         role = FleetRole.BALANCED if role is None else role
+        # Recovery always wins over post-assignment supply work.  It does not
+        # require the normal local-work safety predicate because it exists to
+        # restore the food side of that predicate.
+        if role in {FleetRole.END_RUNNER, FleetRole.NETHER_SUPPLY, FleetRole.ENCHANTING}:
+            recovery = food_opportunity.select_food_recovery_opportunity(
+                signals.food,
+                self._cooldown_ready(OpportunityKind.FOOD_RECOVERY, current_time),
+            )
+            if recovery is not None:
+                return recovery
+            return select_role_opportunity(
+                role, signals, self.state,
+                cooldown_ready=self._cooldown_ready(
+                    {
+                        FleetRole.END_RUNNER: OpportunityKind.END_SUPPLY,
+                        FleetRole.NETHER_SUPPLY: OpportunityKind.NETHER_SUPPLY,
+                        FleetRole.ENCHANTING: OpportunityKind.ENCHANTING_XP,
+                    }[role] if "overworld" not in signals.dimension else OpportunityKind.DIMENSION_ENTRY,
+                    current_time,
+                ),
+            )
         if role is FleetRole.IRON_SUPPLY:
             if (recovery := food_opportunity.select_food_recovery_opportunity(signals.food, self._cooldown_ready(OpportunityKind.FOOD_RECOVERY, current_time))) is not None: return recovery
             if (
@@ -637,7 +664,13 @@ class AdaptiveScheduler:
                     after,
                 )
             elif opportunity.kind is OpportunityKind.CROP_FARM:
-                result = self._run_crop_opportunity(opportunity, crop_timeout)
+                result = OpportunityResult(
+                    opportunity, *run_crop_opportunity(
+                        self.client, opportunity, crop_timeout,
+                        inventory_reader=get_inventory, traveler=goto,
+                        block_finder=find_nearby_block, sleeper=time.sleep,
+                    )
+                )
             elif opportunity.kind is OpportunityKind.WOOD_FARM:
                 before_total = int(
                     self._runtime().get("wood_logs_banked", 0) or 0
@@ -662,6 +695,15 @@ class AdaptiveScheduler:
                     ),
                 )
                 self._runtime()["food_banked"] = result.after
+            elif opportunity.kind in {
+                OpportunityKind.END_SUPPLY,
+                OpportunityKind.NETHER_SUPPLY,
+                OpportunityKind.ENCHANTING_XP,
+                OpportunityKind.DIMENSION_ENTRY,
+            }:
+                result = OpportunityResult(
+                    opportunity, *run_role_opportunity(self.client, self.state, opportunity)
+                )
             else:
                 success, detail, before_total, after_total = run_scheduled_iron_cycle(
                     self.client, self.state, self._runtime()
@@ -682,82 +724,6 @@ class AdaptiveScheduler:
         self._record_opportunity_result(result)
         return result
 
-    def _run_crop_opportunity(
-        self,
-        opportunity: LocalOpportunity,
-        timeout: float,
-    ) -> OpportunityResult:
-        location = opportunity.location
-        if location is None or not goto(
-            self.client,
-            *location,
-            timeout=90,
-            tolerance=5.0,
-        ):
-            return OpportunityResult(opportunity, False, "crop patch was unreachable")
-
-        before_inventory = get_inventory(self.client)
-        before_produce = sum(int(before_inventory.get(item, 0) or 0) for item in CROP_ITEMS)
-        before_plantable = sum(
-            int(before_inventory.get(item, 0) or 0) for item in PLANTABLE_ITEMS
-        )
-        self.client.transport.dispatch(
-            "farm",
-            {
-                "range": 8,
-                "x": location[0],
-                "y": location[1],
-                "z": location[2],
-                "replant": True,
-            },
-        )
-
-        deadline = time.monotonic() + max(1.0, float(timeout))
-        after_produce = before_produce
-        after_plantable = before_plantable
-        try:
-            while time.monotonic() < deadline:
-                time.sleep(min(2.0, max(0.05, float(timeout))))
-                current = get_inventory(self.client)
-                after_produce = sum(
-                    int(current.get(item, 0) or 0) for item in CROP_ITEMS
-                )
-                after_plantable = sum(
-                    int(current.get(item, 0) or 0) for item in PLANTABLE_ITEMS
-                )
-                if after_produce > before_produce:
-                    return OpportunityResult(
-                        opportunity,
-                        True,
-                        "crop produce increased",
-                        before_produce,
-                        after_produce,
-                    )
-                if after_plantable < before_plantable and find_nearby_block(
-                    self.client,
-                    list(CROP_BLOCKS),
-                    radius=12,
-                ):
-                    return OpportunityResult(
-                        opportunity,
-                        True,
-                        "planting was verified in the world",
-                        before_plantable,
-                        after_plantable,
-                    )
-        finally:
-            try:
-                self.client.transport.dispatch("cancel", {})
-            except Exception:
-                pass
-        return OpportunityResult(
-            opportunity,
-            False,
-            "no harvest or planting change was observed",
-            before_produce,
-            after_produce,
-        )
-
     def _runtime(self) -> Dict[str, Any]:
         custom = getattr(self.state, "custom_data", None)
         if not isinstance(custom, dict):
@@ -776,14 +742,22 @@ class AdaptiveScheduler:
         if not isinstance(opportunities, dict):
             opportunities = {}
             runtime["opportunities"] = opportunities
+        prior = opportunities.get(result.opportunity.kind.value, {})
+        prior = prior if isinstance(prior, Mapping) else {}
+        delta = max(0, int(result.after) - int(result.before))
         opportunities[result.opportunity.kind.value] = {
             "last_attempt": time.time(),
             "success": result.success,
             "detail": result.detail,
             "before": result.before,
             "after": result.after,
-            "target": result.opportunity.animal_type
+            "target": result.opportunity.target_item or result.opportunity.animal_type
             or list(result.opportunity.location or ()),
+            "attempts": int(prior.get("attempts", 0) or 0) + 1,
+            "successful_cycles": int(prior.get("successful_cycles", 0) or 0)
+            + int(result.success),
+            "verified_delta_total": int(prior.get("verified_delta_total", 0) or 0)
+            + delta,
         }
 
 

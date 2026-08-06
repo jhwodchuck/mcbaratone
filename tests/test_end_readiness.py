@@ -94,7 +94,7 @@ def test_end_runner_advances_to_world_unlock_after_verified_nether():
     assert complete is False
 
 
-def test_completed_nether_supplier_holds_instead_of_taking_sibling_work():
+def test_completed_nether_supplier_waits_for_recurring_cycle_without_graph_churn():
     planner = _post_food_planner()
     planner._by_phase[Phase.NETHER_AND_BLAZE].status = ObjStatus.DONE
 
@@ -106,7 +106,7 @@ def test_completed_nether_supplier_holds_instead_of_taking_sibling_work():
     )
 
     assert candidates == []
-    assert "completed its assignment" in reason
+    assert "recurring supply cycle" in reason
     assert complete is True
 
 
