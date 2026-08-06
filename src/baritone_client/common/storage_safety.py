@@ -10,6 +10,7 @@ MIN_STORAGE_TRAVEL_HEALTH = 18.0
 MIN_STORAGE_TRAVEL_FOOD = 18
 MAX_STORAGE_TRAVEL_DISTANCE = 96.0
 MAX_STORAGE_TOUR_STOPS = 4
+STORAGE_CHUNK_LOAD_RADIUS = 4.5
 UNREACHABLE_STORAGE_COOLDOWN = 300.0
 OVERFLOW_BULK_ITEMS = {
     "minecraft:basalt",
@@ -135,7 +136,7 @@ def load_storage_chunk(client, target: Tuple[int, int, int], goto) -> bool:
     """Reach a persisted container using bounded, survival-guarded path legs."""
     cx, cy, cz = target
     remaining = storage_distance(client.transport.dispatch("get_state", {}), target)
-    reached = remaining <= 3.0
+    reached = remaining <= STORAGE_CHUNK_LOAD_RADIUS
     for leg in range(1, 9):
         if reached:
             break
@@ -147,7 +148,7 @@ def load_storage_chunk(client, target: Tuple[int, int, int], goto) -> bool:
             cz,
             timeout=leg_timeout,
             check_interval=0.5,
-            tolerance=3.0,
+            tolerance=STORAGE_CHUNK_LOAD_RADIUS,
             on_tick=partial(cancel_unsafe_storage_travel, client),
         )
         if getattr(client, "_storage_survival_abort", False):
@@ -165,7 +166,7 @@ def load_storage_chunk(client, target: Tuple[int, int, int], goto) -> bool:
             f"STORAGE: chest return leg {leg} moved {progress:.1f} blocks; "
             f"{next_remaining:.1f} remain"
         )
-        if next_remaining <= 3.0:
+        if next_remaining <= STORAGE_CHUNK_LOAD_RADIUS:
             reached = True
             break
         if progress < 4.0:
