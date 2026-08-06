@@ -132,6 +132,9 @@ def role_focused_candidates(
     if Phase.FOOD_AND_IRON not in completed_set or role is FleetRole.BALANCED:
         return available, "", False
 
+    if role is FleetRole.VILLAGE_FOOD:
+        return [], "fleet role village_food is waiting for recurring food production", True
+
     by_phase = {objective.phase: objective for objective in objectives}
     focus = _ROLE_FOCUS.get(role, ())
     for phase in focus:

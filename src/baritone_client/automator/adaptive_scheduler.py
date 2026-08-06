@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from math import hypot
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from ..common.combat import get_nearby_entities
@@ -432,6 +431,7 @@ class AdaptiveScheduler:
         OpportunityKind.WOOD_FARM: 60.0,
         OpportunityKind.IRON_MINE: 120.0,
         OpportunityKind.FOOD_RECOVERY: 60.0,
+        OpportunityKind.FOOD_PRODUCTION: 120.0,
     }
 
     def __init__(self, client: Any, resources: Any, state: Any):
@@ -534,6 +534,20 @@ class AdaptiveScheduler:
                     "the dedicated iron supplier can mine, smelt, and bank a bounded batch",
                 )
             return None
+        if role is FleetRole.VILLAGE_FOOD:
+            recovery = food_opportunity.select_food_recovery_opportunity(
+                signals.food,
+                self._cooldown_ready(OpportunityKind.FOOD_RECOVERY, current_time),
+            )
+            if recovery is not None:
+                return recovery
+            if not signals.safe_for_local_work:
+                return None
+            return food_opportunity.select_village_food_production_opportunity(
+                signals.food,
+                completed,
+                self._cooldown_ready(OpportunityKind.FOOD_PRODUCTION, current_time),
+            )
         if not signals.safe_for_local_work:
             return None
         if role is FleetRole.WOOD_SUPPLY:
@@ -564,7 +578,7 @@ class AdaptiveScheduler:
                     )
                 )
 
-        crop_location = self._reachable_farm_location(signals)
+        crop_location = food_opportunity.reachable_farm_location(signals)
         crop_reserve = sum(signals.count(item) for item in CROP_ITEMS)
         plantable = sum(signals.count(item) for item in PLANTABLE_ITEMS)
         crop_useful = crop_reserve < 32 or signals.count("minecraft:wheat") < 18
@@ -640,6 +654,14 @@ class AdaptiveScheduler:
                 )
             elif opportunity.kind is OpportunityKind.FOOD_RECOVERY:
                 result = OpportunityResult(opportunity, *food_opportunity.run_scheduled_food_recovery(self.client, self.state))
+            elif opportunity.kind is OpportunityKind.FOOD_PRODUCTION:
+                result = OpportunityResult(
+                    opportunity,
+                    *food_opportunity.run_village_food_production(
+                        self.client, self.state, self._runtime()
+                    ),
+                )
+                self._runtime()["food_banked"] = result.after
             else:
                 success, detail, before_total, after_total = run_scheduled_iron_cycle(
                     self.client, self.state, self._runtime()
@@ -736,18 +758,6 @@ class AdaptiveScheduler:
             after_produce,
         )
 
-    def _reachable_farm_location(
-        self, signals: GameSignals
-    ) -> Optional[Tuple[int, int, int]]:
-        if signals.crop_location is not None:
-            return signals.crop_location
-        known = signals.known_farm_location
-        if known is None:
-            return None
-        if hypot(known[0] - signals.position[0], known[2] - signals.position[2]) > 64:
-            return None
-        return known
-
     def _runtime(self) -> Dict[str, Any]:
         custom = getattr(self.state, "custom_data", None)
         if not isinstance(custom, dict):
@@ -758,17 +768,7 @@ class AdaptiveScheduler:
             runtime = {}
             custom["adaptive_scheduler"] = runtime
         return runtime
-
-    def _cooldown_ready(self, kind: OpportunityKind, now: float) -> bool:
-        attempts = self._runtime().get("opportunities", {})
-        attempts = attempts if isinstance(attempts, Mapping) else {}
-        record = attempts.get(kind.value, {})
-        record = record if isinstance(record, Mapping) else {}
-        try:
-            last_attempt = float(record.get("last_attempt", 0) or 0)
-        except (TypeError, ValueError):
-            last_attempt = 0.0
-        return now - last_attempt >= self._COOLDOWNS[kind]
+    def _cooldown_ready(self, kind: OpportunityKind, now: float) -> bool: return food_opportunity.cooldown_ready(self._runtime(), kind, now, self._COOLDOWNS)
 
     def _record_opportunity_result(self, result: OpportunityResult) -> None:
         runtime = self._runtime()

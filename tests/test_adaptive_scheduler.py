@@ -251,6 +251,34 @@ def test_iron_role_selects_food_recovery_before_holding_when_hungry():
     assert opportunity.kind is OpportunityKind.FOOD_RECOVERY
 
 
+def test_village_food_role_recovers_hunger_before_production():
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), _state())
+
+    opportunity = scheduler.select_local_opportunity(
+        _signals(food=10),
+        [Phase.SPAWN_BOOTSTRAP, Phase.INITIAL_GATHERING, Phase.BOOT_SEQUENCE],
+        now=1000.0,
+        role=FleetRole.VILLAGE_FOOD,
+    )
+
+    assert opportunity is not None
+    assert opportunity.kind is OpportunityKind.FOOD_RECOVERY
+
+
+def test_village_food_role_selects_recurring_production_after_infrastructure():
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), _state())
+
+    opportunity = scheduler.select_local_opportunity(
+        _signals(),
+        [Phase.SPAWN_BOOTSTRAP, Phase.INITIAL_GATHERING, Phase.BOOT_SEQUENCE],
+        now=1000.0,
+        role=FleetRole.VILLAGE_FOOD,
+    )
+
+    assert opportunity is not None
+    assert opportunity.kind is OpportunityKind.FOOD_PRODUCTION
+
+
 def test_local_farming_is_skipped_when_hostile_or_before_boot():
     scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), _state())
     signals = _signals(
@@ -511,6 +539,76 @@ def test_food_recovery_opportunity_records_hunger_progress(monkeypatch):
     assert result.success
     assert result.before == 10
     assert result.after == 16
+
+
+def test_food_production_records_banked_food_progress(monkeypatch):
+    state = _state()
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    monkeypatch.setattr(
+        adaptive.food_opportunity,
+        "run_village_food_production",
+        lambda *_args, **_kwargs: (True, "banked 24 bread", 0, 24),
+    )
+    opportunity = LocalOpportunity(
+        OpportunityKind.FOOD_PRODUCTION,
+        210,
+        "test village production",
+    )
+
+    result = scheduler.run_local_opportunity(opportunity)
+
+    assert result.success
+    assert result.after == 24
+    assert state.custom_data["adaptive_scheduler"]["food_banked"] == 24
+
+
+def test_ready_village_food_role_runs_production_instead_of_reopening_infra(
+    monkeypatch, tmp_path
+):
+    planner = _post_food_planner()
+    state = SimpleNamespace(
+        custom_data={}, checkpoint_dir=tmp_path / "Bot18" / "controller"
+    )
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    opportunity = LocalOpportunity(
+        OpportunityKind.FOOD_PRODUCTION, 210, "test village production"
+    )
+    result = OpportunityResult(opportunity, True, "banked 24 bread", 0, 24)
+    monkeypatch.setattr(scheduler, "observe", lambda: _signals())
+    monkeypatch.setattr(
+        scheduler, "select_local_opportunity", lambda *_args, **_kwargs: opportunity
+    )
+    monkeypatch.setattr(scheduler, "run_local_opportunity", lambda *_args: result)
+
+    decision = scheduler.next_step(planner)
+
+    assert decision.local_work
+    assert decision.objective is None
+
+
+def test_village_food_cooldown_holds_without_rearming_villager_infra(
+    monkeypatch, tmp_path
+):
+    planner = _post_food_planner()
+    state = SimpleNamespace(
+        custom_data={
+            "adaptive_scheduler": {
+                "opportunities": {
+                    "food_production": {"last_attempt": 950.0, "success": True}
+                }
+            }
+        },
+        checkpoint_dir=tmp_path / "Bot18" / "controller",
+    )
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    monkeypatch.setattr(adaptive.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(scheduler, "observe", lambda: _signals())
+
+    decision = scheduler.next_step(planner)
+
+    assert decision.objective is None
+    assert decision.role_hold
+    assert "waiting for recurring food production" in decision.summary
 
 
 def test_recorded_phase_decision_is_explainable():
