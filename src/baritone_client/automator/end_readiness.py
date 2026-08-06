@@ -123,7 +123,11 @@ def role_focused_candidates(
     available = list(candidates)
     if role is FleetRole.WOOD_SUPPLY and Phase.BOOT_SEQUENCE in completed_set:
         return [], "fleet role wood_supply is assigned to renewable forestry", True
-    if role is FleetRole.IRON_SUPPLY and Phase.BOOT_SEQUENCE in completed_set:
+    iron_worker_ready = {
+        Phase.SPAWN_BOOTSTRAP,
+        Phase.INITIAL_GATHERING,
+    }.issubset(completed_set)
+    if role is FleetRole.IRON_SUPPLY and iron_worker_ready:
         return [], "fleet role iron_supply is assigned to bounded team mining", True
     if Phase.FOOD_AND_IRON not in completed_set or role is FleetRole.BALANCED:
         return available, "", False

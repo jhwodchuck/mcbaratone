@@ -141,8 +141,11 @@ def test_wood_supplier_does_not_skip_bootstrap_dependencies():
     assert complete is False
 
 
-def test_iron_supplier_holds_for_bounded_mining_after_safe_bootstrap():
-    planner = _post_food_planner()
+def test_iron_supplier_holds_for_bounded_mining_after_initial_setup():
+    planner = ObjectivePlanner(default_objectives())
+    planner.restore(
+        [Phase.BRIDGE_CHECK, Phase.SPAWN_BOOTSTRAP, Phase.INITIAL_GATHERING]
+    )
 
     candidates, reason, complete = role_focused_candidates(
         planner.runnable(),
@@ -154,6 +157,22 @@ def test_iron_supplier_holds_for_bounded_mining_after_safe_bootstrap():
     assert candidates == []
     assert "bounded team mining" in reason
     assert complete is True
+
+
+def test_iron_supplier_does_not_skip_initial_gathering():
+    planner = ObjectivePlanner(default_objectives())
+    planner.restore([Phase.BRIDGE_CHECK, Phase.SPAWN_BOOTSTRAP])
+
+    candidates, reason, complete = role_focused_candidates(
+        planner.runnable(),
+        planner.objectives,
+        planner.completed_phases(),
+        FleetRole.IRON_SUPPLY,
+    )
+
+    assert candidates
+    assert reason == ""
+    assert complete is False
 
 
 def test_readiness_requires_eye_path_and_complete_launch_loadout():
