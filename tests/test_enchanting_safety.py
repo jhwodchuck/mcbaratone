@@ -672,6 +672,112 @@ def test_storage_withdrawal_routes_interrupted_expedition_home(monkeypatch):
     ]
 
 
+def test_storage_withdrawal_prefers_adjacent_home_chest(monkeypatch):
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                return {"world_time": 4000, "block_position": {"x": -8, "y": 79, "z": -120}}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    state = SimpleNamespace(
+        custom_data={"structures": {"starter_house": {"supply_chest": [-8, 79, -120]}}}
+    )
+    handler = enchanting.EnchantingPipelineHandler()
+    calls = []
+
+    def withdraw_chest(_client, chest, requirements):
+        calls.append(("chest", tuple(chest), requirements))
+        return 2
+
+    def withdraw_catalog(*_args, **_kwargs):
+        calls.append(("catalog",))
+        return 4
+
+    monkeypatch.setattr(handler, "_return_home", lambda *_args: (_ for _ in ()).throw(
+        AssertionError("_return_home must not run when chest is already adjacent")
+    ))
+    monkeypatch.setattr(enchanting, "withdraw_required_from_chest", withdraw_chest)
+    monkeypatch.setattr(enchanting, "withdraw_required_from_catalog", withdraw_catalog)
+    monkeypatch.setattr(
+        enchanting,
+        "count_item",
+        lambda _client, item: 0,
+    )
+
+    assert handler._withdraw_at_home(client, state, {"minecraft:leather": 12}) == 2
+    assert calls == [
+        ("chest", (-8, 79, -120), {"minecraft:leather": 12}),
+    ]
+
+
+def test_storage_withdrawal_falls_back_to_catalog_when_home_storage_unavailable(monkeypatch):
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda route, _payload: {"world_time": 4000})
+    )
+    state = SimpleNamespace(custom_data={"structures": {"starter_house": {}}})
+    handler = enchanting.EnchantingPipelineHandler()
+    catalog_calls = []
+
+    monkeypatch.setattr(
+        enchanting,
+        "count_item",
+        lambda _client, item: 0,
+    )
+    monkeypatch.setattr(
+        enchanting,
+        "withdraw_required_from_chest",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("home chest should not be used when unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        enchanting,
+        "withdraw_required_from_catalog",
+        lambda *args, **kwargs: catalog_calls.append((args, kwargs)) or 4,
+    )
+
+    assert handler._withdraw_at_home(
+        client,
+        state,
+        {"minecraft:paper": 138},
+    ) == 4
+    assert len(catalog_calls) == 1
+    _, kwargs = catalog_calls[0]
+    assert kwargs["state"] is state
+    assert kwargs["max_travel_distance"] == 96.0
+    assert kwargs["max_vertical_distance"] == 32.0
+
+
+def test_storage_withdrawal_reports_unreachable_catalog_as_minus_one(monkeypatch):
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: {"world_time": 1000, "block_position": {"x": 10, "y": 64, "z": 10}}
+            if route == "get_state"
+            else {}
+        )
+    )
+    state = SimpleNamespace(custom_data={"structures": {"starter_house": {}}})
+    handler = enchanting.EnchantingPipelineHandler()
+
+    monkeypatch.setattr(
+        enchanting,
+        "count_item",
+        lambda _client, item: 0,
+    )
+    monkeypatch.setattr(
+        enchanting,
+        "withdraw_required_from_catalog",
+        lambda *_, **__: -1,
+    )
+
+    assert handler._withdraw_at_home(
+        client,
+        state,
+        {"minecraft:bread": 8},
+    ) == -1
+
+
 def test_leather_expeditions_rotate_without_centering_south_of_house():
     handler = enchanting.EnchantingPipelineHandler()
     origin = (-9, 78, -122)
@@ -1204,3 +1310,42 @@ def test_survey_leather_sources_ignores_undead_horses(monkeypatch):
 
     counts = husbandry.survey_leather_sources(SimpleNamespace(), radius=64)
     assert counts == {"cow": 1, "horse": 1, "llama": 1}
+
+
+def test_unreachable_home_still_consults_the_catalog(monkeypatch):
+    """Bot17's actual live failure, which the first repair did not cover.
+
+    Its log reads "Home route is unavailable; starting a bounded leather
+    expedition from the live position" -- ``_return_home`` genuinely fails for
+    it. The original catalog fallback returned -1 on that path, so 1,804
+    expeditions ran while 432 leather sat in cataloged chests roughly 30
+    blocks away. An unreachable home is a reason to use shared storage, not a
+    reason to skip it.
+    """
+    handler = enchanting.EnchantingPipelineHandler()
+    state = SimpleNamespace(custom_data={
+        "structures": {"starter_house": {"supply_chest": [-183, 94, -372]}}
+    })
+    client = SimpleNamespace(transport=SimpleNamespace(
+        dispatch=lambda *_a, **_k: {
+            "block_position": {"x": -160, "y": 104, "z": -386},
+            "world_time": 1000,
+        }
+    ))
+    monkeypatch.setattr(enchanting, "count_item", lambda *_a, **_k: 0)
+    monkeypatch.setattr(handler, "_return_home", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        enchanting, "withdraw_required_from_chest", lambda *_a, **_k: 0
+    )
+
+    consulted = []
+    monkeypatch.setattr(
+        enchanting,
+        "withdraw_required_from_catalog",
+        lambda *_a, **_k: consulted.append(True) or 3,
+    )
+
+    result = handler._withdraw_at_home(client, state, {"minecraft:leather": 46})
+
+    assert consulted, "unreachable home skipped shared storage entirely"
+    assert result > 0

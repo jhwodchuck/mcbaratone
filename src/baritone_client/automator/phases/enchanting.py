@@ -14,6 +14,7 @@ from ...common.inventory import (
     count_item,
     deposit_excess_to_chest,
     get_inventory,
+    withdraw_required_from_catalog,
     withdraw_required_from_chest,
 )
 from ...common.combat import eat_until_hunger, hunt_mobs, scan_for_threats
@@ -718,28 +719,74 @@ class EnchantingPipelineHandler(PhaseHandler):
         )
 
     def _withdraw_at_home(self, client, state: StateManager, requirements) -> int:
+        def _missing_items() -> dict:
+            return {
+                item_id: max(0, int(required) - count_item(client, item_id))
+                for item_id, required in requirements.items()
+            }
+
         house = state.custom_data.get("structures", {}).get("starter_house", {})
         chest = house.get("supply_chest")
-        if not isinstance(chest, (list, tuple)) or len(chest) != 3:
-            return 0
-        live_state = client.transport.dispatch("get_state", {})
-        position = live_state.get("block_position", live_state.get("position", {}))
-        if all(axis in position for axis in ("x", "y", "z")):
-            distance = sum(
-                (float(position[axis]) - float(chest[index])) ** 2
-                for index, axis in enumerate(("x", "y", "z"))
-            ) ** 0.5
-            if distance > 4.5:
-                # A resumed phase can start at an interrupted expedition
-                # location.  Owned storage must be reached through the
-                # checkpointed doorway, never opened remotely or via a direct
-                # goal to the chest block.
-                if int(live_state.get("world_time", 0)) % 24000 >= 12000:
-                    if not wait_for_safe_daylight(client, max_wait=720.0):
-                        return -1
-                if not self._return_home(client, state):
-                    return -1
-        return withdraw_required_from_chest(client, tuple(chest), requirements)
+        home_result = 0
+        checked_home_distance = False
+        # An unreachable home must fall through to the catalog, never return
+        # early. Bot17 logged "Home route is unavailable; starting a bounded
+        # leather expedition from the live position" 1,804 times while 432
+        # leather sat in cataloged chests, because the unreachable-home path
+        # gave up before any shared storage was consulted.
+        home_unreachable = False
+        if isinstance(chest, (list, tuple)) and len(chest) == 3:
+            live_state = client.transport.dispatch("get_state", {})
+            position = live_state.get("block_position", live_state.get("position", {}))
+            distance = None
+            if all(axis in position for axis in ("x", "y", "z")):
+                checked_home_distance = True
+                distance = sum(
+                    (float(position[axis]) - float(chest[index])) ** 2
+                    for index, axis in enumerate(("x", "y", "z"))
+                ) ** 0.5
+                if distance > 4.5:
+                    # A resumed phase can start at an interrupted expedition
+                    # location.  Owned storage must be reached through the
+                    # checkpointed doorway, never opened remotely or via a
+                    # direct goal to the chest block.
+                    if int(live_state.get("world_time", 0)) % 24000 >= 12000:
+                        if not wait_for_safe_daylight(client, max_wait=720.0):
+                            home_unreachable = True
+                    if not home_unreachable and not self._return_home(client, state):
+                        home_unreachable = True
+            if not home_unreachable:
+                if not any(_missing_items().values()):
+                    return 0
+                home_result = withdraw_required_from_chest(
+                    client,
+                    tuple(chest),
+                    requirements,
+                )
+                if (
+                    not checked_home_distance
+                    or distance is not None
+                    and distance <= 4.5
+                ):
+                    return max(home_result, 0) if home_result >= 0 else -1
+
+        if not any(_missing_items().values()):
+            return max(home_result, 0)
+
+        catalog_result = withdraw_required_from_catalog(
+            client,
+            requirements,
+            state=state,
+            max_travel_distance=96.0,
+            max_vertical_distance=32.0,
+        )
+        if catalog_result > 0:
+            return max(home_result, 0) + catalog_result
+        if catalog_result < 0:
+            return -1
+        if home_result < 0:
+            return -1
+        return max(home_result, 0)
 
     def _wait_for_daylight(
         self,
