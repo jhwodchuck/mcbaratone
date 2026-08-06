@@ -16,6 +16,8 @@ from baritone_client.automator.objective import (
     default_objectives,
 )
 from baritone_client.automator.state_manager import Phase
+from baritone_client.automator.end_readiness import FleetRole
+from baritone_client.common.forestry import WoodCycleResult
 
 
 def _state(custom_data=None):
@@ -192,6 +194,27 @@ def test_crop_farm_is_selected_when_crop_patch_can_replenish_food():
     assert opportunity is not None
     assert opportunity.kind is OpportunityKind.CROP_FARM
     assert opportunity.location == (5, 64, 5)
+
+
+def test_wood_role_selects_forestry_only_after_safe_bootstrap():
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), _state())
+    signals = _signals()
+
+    assert scheduler.select_local_opportunity(
+        signals,
+        [Phase.SPAWN_BOOTSTRAP],
+        now=1000.0,
+        role=FleetRole.WOOD_SUPPLY,
+    ) is None
+    opportunity = scheduler.select_local_opportunity(
+        signals,
+        [Phase.SPAWN_BOOTSTRAP, Phase.BOOT_SEQUENCE],
+        now=1000.0,
+        role=FleetRole.WOOD_SUPPLY,
+    )
+
+    assert opportunity is not None
+    assert opportunity.kind is OpportunityKind.WOOD_FARM
 
 
 def test_local_farming_is_skipped_when_hostile_or_before_boot():
@@ -372,6 +395,35 @@ def test_crop_opportunity_verifies_produce_increase(monkeypatch):
         },
     ) in calls
     assert ("cancel", {}) in calls
+
+
+def test_wood_opportunity_records_banked_log_progress(monkeypatch):
+    state = _state()
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    monkeypatch.setattr(
+        adaptive,
+        "run_wood_cycle",
+        lambda *_args, **_kwargs: WoodCycleResult(
+            True,
+            "harvested 24 logs, planted 5 saplings, banked 24 logs",
+            logs_harvested=24,
+            saplings_planted=5,
+            logs_banked=24,
+            total_logs_banked=24,
+        ),
+    )
+    opportunity = LocalOpportunity(
+        OpportunityKind.WOOD_FARM,
+        200,
+        "test forestry",
+    )
+
+    result = scheduler.run_local_opportunity(opportunity)
+
+    assert result.success
+    assert result.before == 0
+    assert result.after == 24
+    assert "planted 5 saplings" in result.detail
 
 
 def test_recorded_phase_decision_is_explainable():

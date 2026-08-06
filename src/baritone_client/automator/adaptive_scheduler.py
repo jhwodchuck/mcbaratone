@@ -17,9 +17,11 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 from ..common.combat import get_nearby_entities
 from ..common.defense import assess_threats
 from ..common.husbandry import BREEDING_FOOD, breed_pair
+from ..common.forestry import run_wood_cycle
 from ..common.inventory import get_inventory
 from ..common.navigation import find_nearby_block, goto
 from .end_readiness import (
+    FleetRole,
     allows_local_work,
     fleet_role,
     record_readiness,
@@ -62,6 +64,7 @@ class OpportunityKind(str, Enum):
 
     ANIMAL_FARM = "animal_farm"
     CROP_FARM = "crop_farm"
+    WOOD_FARM = "wood_farm"
 
 
 @dataclass(frozen=True)
@@ -444,6 +447,7 @@ class AdaptiveScheduler:
     _COOLDOWNS = {
         OpportunityKind.ANIMAL_FARM: 300.0,
         OpportunityKind.CROP_FARM: 180.0,
+        OpportunityKind.WOOD_FARM: 60.0,
     }
 
     def __init__(self, client: Any, resources: Any, state: Any):
@@ -468,7 +472,11 @@ class AdaptiveScheduler:
             )
         opportunity = None
         if allows_local_work(role):
-            opportunity = self.select_local_opportunity(signals, completed)
+            opportunity = self.select_local_opportunity(
+                signals,
+                completed,
+                role=role,
+            )
         if opportunity is not None:
             return SchedulingDecision(
                 opportunity_result=self.run_local_opportunity(opportunity)
@@ -520,11 +528,24 @@ class AdaptiveScheduler:
         completed: Sequence[Phase],
         *,
         now: Optional[float] = None,
+        role: Optional[FleetRole] = None,
     ) -> Optional[LocalOpportunity]:
         """Choose one safe renewable-resource action, if any is useful now."""
         if Phase.SPAWN_BOOTSTRAP not in set(completed) or not signals.safe_for_local_work:
             return None
         current_time = time.time() if now is None else float(now)
+        role = FleetRole.BALANCED if role is None else role
+        if role is FleetRole.WOOD_SUPPLY:
+            if (
+                Phase.BOOT_SEQUENCE in set(completed)
+                and self._cooldown_ready(OpportunityKind.WOOD_FARM, current_time)
+            ):
+                return LocalOpportunity(
+                    OpportunityKind.WOOD_FARM,
+                    200,
+                    "the dedicated wood supplier can harvest, replant, and bank a bounded batch",
+                )
+            return None
         candidates = []
 
         pairs = signals.animal_pairs()
@@ -600,8 +621,22 @@ class AdaptiveScheduler:
                     before,
                     after,
                 )
-            else:
+            elif opportunity.kind is OpportunityKind.CROP_FARM:
                 result = self._run_crop_opportunity(opportunity, crop_timeout)
+            else:
+                before_total = int(
+                    self._runtime().get("wood_logs_banked", 0) or 0
+                )
+                cycle = run_wood_cycle(self.client, self.state)
+                after_total = max(before_total, int(cycle.total_logs_banked or 0))
+                self._runtime()["wood_logs_banked"] = after_total
+                result = OpportunityResult(
+                    opportunity,
+                    cycle.success,
+                    cycle.detail,
+                    before_total,
+                    after_total,
+                )
         except Exception as exc:
             result = OpportunityResult(
                 opportunity,

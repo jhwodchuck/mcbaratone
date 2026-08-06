@@ -19,13 +19,14 @@ from .state_manager import Phase
 
 
 class FleetRole(str, Enum):
-    """Stable post-iron work assignments for a four-bot fleet."""
+    """Stable post-iron work assignments for the active fleet."""
 
     BALANCED = "balanced"
     END_RUNNER = "end_runner"
     NETHER_SUPPLY = "nether_supply"
     ENCHANTING = "enchanting"
     VILLAGE_FOOD = "village_food"
+    WOOD_SUPPLY = "wood_supply"
 
 
 _ROLE_BY_REMAINDER = {
@@ -89,6 +90,16 @@ def fleet_role(state: Any) -> FleetRole:
             return FleetRole(explicit)
     except ValueError:
         pass
+    checkpoint_dir = getattr(state, "checkpoint_dir", None)
+    if checkpoint_dir:
+        try:
+            configured = (Path(checkpoint_dir) / "fleet-role.txt").read_text(
+                encoding="utf-8"
+            ).strip().lower()
+            if configured:
+                return FleetRole(configured)
+        except (OSError, ValueError):
+            pass
     name = bot_name(state)
     if not name:
         return FleetRole.BALANCED
@@ -109,6 +120,8 @@ def role_focused_candidates(
     """
     completed_set = set(completed)
     available = list(candidates)
+    if role is FleetRole.WOOD_SUPPLY and Phase.BOOT_SEQUENCE in completed_set:
+        return [], "fleet role wood_supply is assigned to renewable forestry", True
     if Phase.FOOD_AND_IRON not in completed_set or role is FleetRole.BALANCED:
         return available, "", False
 
@@ -132,6 +145,7 @@ def allows_local_work(role: FleetRole) -> bool:
         FleetRole.BALANCED,
         FleetRole.ENCHANTING,
         FleetRole.VILLAGE_FOOD,
+        FleetRole.WOOD_SUPPLY,
     }
 
 
