@@ -4,12 +4,21 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from baritone_client.automator.automator import EndGameAutomator
+from baritone_client.automator import postgame_lifecycle as lifecycle_mod
 from baritone_client.automator.postgame_lifecycle import PersistentPostgameLifecycle
 from baritone_client.automator.state_manager import Phase
 
 
 def _decision(*, local_work: bool, summary: str):
     return SimpleNamespace(local_work=local_work, summary=summary)
+
+
+def _growth_lifecycle(city_progress=None):
+    state = SimpleNamespace(custom_data={"city_progress": city_progress or {}})
+    state.get_phase_payload = lambda phase: {"center": [10, 20], "target_y": 72}
+    scheduler = MagicMock()
+    scheduler.next_step.return_value = _decision(local_work=False, summary="idle")
+    return state, scheduler, PersistentPostgameLifecycle(state, scheduler, client=MagicMock())
 
 
 def test_lifecycle_records_terminal_entry_once_and_runs_scheduler_work():
@@ -99,7 +108,7 @@ def _completed_automator():
     automator.scheduler.next_step.return_value = _decision(
         local_work=True, summary="ADAPTIVE WORK: animal farm verified"
     )
-    automator.postgame = PersistentPostgameLifecycle(automator.state, automator.scheduler)
+    automator.postgame = PersistentPostgameLifecycle(automator.state, automator.scheduler, automator.client)
     automator.resources = MagicMock()
     automator.systems = []
     automator.on_complete = MagicMock()
@@ -152,3 +161,60 @@ def test_callback_failure_has_a_durable_notification_claim_before_reraising():
     assert automator.state.custom_data["persistent_postgame"]["completion_notified"] is True
     assert saved_states
     automator.stop.assert_called_once_with()
+
+
+def test_scheduler_empty_falls_back_to_exactly_one_verified_city_district(monkeypatch):
+    state, scheduler, lifecycle = _growth_lifecycle()
+    district = MagicMock(return_value=SimpleNamespace(success=True, reason="built"))
+    monkeypatch.setattr(lifecycle_mod, "build_district", district)
+
+    turn = lifecycle.run_turn(MagicMock())
+
+    assert turn.did_work
+    district.assert_called_once()
+    assert state.custom_data["city_progress"] == {
+        "ring": 1, "ring_progress": {"next_index": 1, "total": 8}, "districts_completed": 1,
+    }
+
+
+def test_city_growth_resumes_final_district_then_advances_to_next_unbounded_ring(monkeypatch):
+    state, _, lifecycle = _growth_lifecycle(
+        {"ring": 1, "ring_progress": {"next_index": 7, "total": 8}, "districts_completed": 7}
+    )
+    district = MagicMock(return_value=SimpleNamespace(success=True, reason="built"))
+    monkeypatch.setattr(lifecycle_mod, "build_district", district)
+
+    assert lifecycle.run_turn(MagicMock()).did_work
+    assert state.custom_data["city_progress"] == {"ring": 2, "ring_progress": {}, "districts_completed": 8}
+    assert lifecycle.run_turn(MagicMock()).did_work
+    assert district.call_args_list[1].args[3:5] == tuple(next(lifecycle_mod.district_ring_offsets(2)))
+
+
+def test_failed_city_district_is_not_credited_and_records_no_progress(monkeypatch):
+    state, _, lifecycle = _growth_lifecycle()
+    state.custom_data["last_position"] = [999, 70, 999]
+    monkeypatch.setattr(lifecycle_mod, "build_district", MagicMock(return_value=SimpleNamespace(success=False, reason="no blocks placed")))
+
+    turn = lifecycle.run_turn(MagicMock())
+
+    assert not turn.did_work and turn.state_changed
+    assert state.custom_data["city_progress"] == {"ring_progress": {}}
+    assert state.custom_data["productive_work"]["no_progress_streak"] == 1
+    assert "last_position" not in lifecycle_mod.productive_snapshot(state)
+
+
+def test_automator_checkpoints_failed_city_growth_ledger(monkeypatch):
+    automator = _completed_automator()
+    automator.scheduler.next_step.return_value = _decision(local_work=False, summary="idle")
+    automator.state.get_phase_payload.return_value = {"center": [0, 0], "target_y": 64}
+    monkeypatch.setattr(
+        lifecycle_mod,
+        "build_district",
+        MagicMock(return_value=SimpleNamespace(success=False, reason="no output")),
+    )
+    with patch("baritone_client.automator.automator.wait_with_bridge_keepalive") as wait:
+        automator._run_persistent_postgame_turn()
+
+    automator._save_checkpoint.assert_called_once_with()
+    assert automator.state.custom_data["productive_work"]["no_progress_streak"] == 1
+    wait.assert_called_once_with(automator.client, duration=30.0)

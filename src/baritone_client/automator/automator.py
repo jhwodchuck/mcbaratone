@@ -96,7 +96,7 @@ class EndGameAutomator:
         # from the checkpoint in run().
         self.planner = ObjectivePlanner(default_objectives())
         self.scheduler = AdaptiveScheduler(client, self.resources, self.state)
-        self.postgame = PersistentPostgameLifecycle(self.state, self.scheduler)
+        self.postgame = PersistentPostgameLifecycle(self.state, self.scheduler, client)
 
         self.auto_checkpoint = auto_checkpoint
         self.checkpoint_interval = checkpoint_interval
@@ -527,10 +527,12 @@ class EndGameAutomator:
     def _run_persistent_postgame_turn(self) -> None:
         """Run or safely defer one postgame scheduler turn."""
         turn = self.postgame.run_turn(self.planner)
-        if turn.did_work:
+        if turn.did_work or turn.state_changed:
             print(turn.reason)
             self._persist_objective_progress()
             self._save_checkpoint()
+            if not turn.did_work:
+                wait_with_bridge_keepalive(self.client, duration=30.0)
             return
         print(f"PERSISTENT CIVILIZATION HOLD: {turn.reason}; retrying after cooldown.")
         wait_with_bridge_keepalive(self.client, duration=30.0)
