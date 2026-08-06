@@ -55,6 +55,8 @@ def _stub_environment(monkeypatch):
     # Without this the unreachable branch runs a real 300s goto against a stub
     # and the suite hangs. Tests that assert on the walk-home re-patch it.
     monkeypatch.setattr(food_supply, "_return_to_anchor", lambda *_a, **_k: True)
+    # Same reason: the real gatherer polls for its full timeout against a stub.
+    monkeypatch.setattr(food_supply, "_stock_seeds", lambda *_a, **_k: 0)
 
 
 def test_an_unreachable_farm_is_reported_as_unreachable(monkeypatch):
@@ -215,3 +217,62 @@ def test_a_good_plot_is_kept_and_the_worker_walks_home_instead(monkeypatch):
     ], "a healthy farm must not be retired because the worker strayed"
     assert walked == [(-166, 105, -417)], walked
     assert "walked back toward base" in result.detail, result.detail
+
+
+def test_a_cycle_stocks_seeds_before_trying_to_plant(monkeypatch):
+    """Every bot in the fleet carried zero seeds, and seeds bootstrap everything.
+
+    Grass breaking already existed but only ran inside establish_wheat_farm --
+    after travel and after irrigation -- so a site that failed earlier meant no
+    seeds were ever collected and the next attempt started empty again.
+    """
+    monkeypatch.setattr(food_supply, "harvest_wheat_farm", lambda *_a, **_k: True)
+    monkeypatch.setattr(food_supply, "establish_wheat_farm", lambda *_a, **_k: None)
+    stocked = []
+    monkeypatch.setattr(
+        food_supply, "_stock_seeds",
+        lambda _c, target: stocked.append(target) or 12,
+    )
+    client = _Client(position=(-183, 104, -404))  # standing on its plot
+
+    result = food_supply.run_food_cycle(client, _state())
+
+    assert stocked, "cycle never tried to gather seeds"
+    assert "gathered 12 seeds" in result.detail, result.detail
+
+
+def test_gathering_seeds_counts_as_progress():
+    """A cycle that stocks the bootstrap resource has not done nothing."""
+    import baritone_client.common.food_supply as module
+    original_harvest = module.harvest_wheat_farm
+    original_establish = module.establish_wheat_farm
+    original_stock = module._stock_seeds
+    module.harvest_wheat_farm = lambda *_a, **_k: True
+    module.establish_wheat_farm = lambda *_a, **_k: None
+    module._stock_seeds = lambda _c, _t: 8
+    try:
+        result = module.run_food_cycle(
+            _Client(position=(-183, 104, -404)), _state()
+        )
+    finally:
+        module.harvest_wheat_farm = original_harvest
+        module.establish_wheat_farm = original_establish
+        module._stock_seeds = original_stock
+
+    assert result.success is True, result.detail
+
+
+def test_seed_stocking_failure_never_aborts_the_cycle(monkeypatch):
+    """No grass nearby is a bad day, not a reason to stop farming."""
+    import baritone_client.common.farming as farming
+    import baritone_client.common.food_supply as module
+
+    def boom(*_a, **_k):
+        raise RuntimeError("no grass in range")
+
+    monkeypatch.setattr(farming, "_gather_seeds", boom)
+
+    class Broken:
+        transport = None
+
+    assert module._stock_seeds(Broken(), 8) == 0

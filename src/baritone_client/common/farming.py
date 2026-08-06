@@ -126,8 +126,11 @@ def _gather_seeds(client, needed: int, timeout: int = 180) -> bool:
             "mine",
             {"blocks": ["minecraft:short_grass", "minecraft:tall_grass"], "quantity": needed * 3},
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        # Waiting out the full timeout for a mine that never started is pure
+        # dead time, and this runs on every food cycle now.
+        print(f"  Seed gathering could not start: {exc}")
+        return False
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if count_item(client, "minecraft:wheat_seeds") >= needed:

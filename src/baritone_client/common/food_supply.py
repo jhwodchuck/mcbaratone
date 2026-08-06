@@ -34,6 +34,9 @@ UNREACHED_PLOT_DISTANCE = 24.0
 #: purpose: this blocks one scheduling tick, and partial progress still counts
 #: because the next cycle starts closer than the last.
 RETURN_HOME_TIMEOUT = 150
+#: Seed top-up runs every cycle, so it gets a short leash; partial stock is
+#: still progress and the next cycle tries again.
+SEED_STOCK_TIMEOUT = 45
 
 
 @dataclass(frozen=True)
@@ -245,6 +248,30 @@ def _return_to_anchor(client: Any, anchor: Optional[Tuple[int, int, int]]) -> bo
         return False
 
 
+def _stock_seeds(client: Any, target: int) -> int:
+    """Break grass until a seed reserve exists. Returns seeds gained.
+
+    Bounded and best effort: failing to find grass is not a reason to abort a
+    cycle, and partial stock still makes the next planting attempt cheaper.
+    """
+    wanted = max(0, int(target))
+    if wanted <= 0:
+        return 0
+    try:
+        from .farming import _gather_seeds
+
+        before = _count(get_inventory(client), SEEDS)
+        if before >= wanted:
+            return 0
+        # Bounded well under the primitive's 180s default: this now runs every
+        # cycle, and a worker standing where no grass grows must not spend
+        # three minutes discovering that each time.
+        _gather_seeds(client, wanted, timeout=SEED_STOCK_TIMEOUT)
+        return max(0, _count(get_inventory(client), SEEDS) - before)
+    except Exception:
+        return 0
+
+
 def _survival_ready(client: Any) -> bool:
     """Refuse farm travel from dead, wrong-dimension, or critically hurt state."""
     try:
@@ -411,8 +438,18 @@ def run_food_cycle(
     new_plots = 0
     crop_tiles = 0
     replanted = 0
+    seeds_gathered = 0
     if harvested == 0:
         anchor = _anchor(state, known)
+        # Seeds are the bootstrap for the whole food economy and every bot in
+        # the fleet carried zero. Grass breaking already existed, but only
+        # inside establish_wheat_farm -- after travel and after irrigation --
+        # so any site that failed earlier meant no seeds were ever collected
+        # and the next attempt started empty again. The 29 seeds in storage
+        # are no help: they sit as ones and twos across thirteen chests.
+        # Stock up first; seeds keep, and a reserve makes every later attempt
+        # cheaper.
+        seeds_gathered = _stock_seeds(client, seed_reserve)
         if anchor is not None:
             rejected = [_position(site) for site in worker["failed_plot_sites"]]
             rejected = [site for site in rejected if site]
@@ -472,7 +509,9 @@ def run_food_cycle(
             after_bank = get_inventory(client)
             banked = max(0, _count(after_craft, BREAD) - _count(after_bank, BREAD))
 
-    success = bool(harvested or new_plots or bread_crafted or banked)
+    # Gathering seeds is real progress: it is the bootstrap the whole food
+    # economy waits on, and a cycle that stocks them has not done nothing.
+    success = bool(harvested or new_plots or bread_crafted or banked or seeds_gathered)
     values = {
         "cycles": int(success),
         "plots": new_plots,
@@ -488,6 +527,7 @@ def run_food_cycle(
     detail = (
         f"harvested {harvested} wheat, established {new_plots} plot, "
         f"crafted {bread_crafted} bread, banked {banked} prepared food"
+        + (f", gathered {seeds_gathered} seeds" if seeds_gathered else "")
     )
     return _result(worker, success, detail, **values)
 
