@@ -26,7 +26,7 @@ from .end_readiness import (
     role_focused_candidates,
 )
 from .fleet_coverage import borrowed_specialty_roles, configured_specialty_roles
-from . import food_opportunity
+from . import camp_breaker, food_opportunity
 from .common.role_opportunities import run_role_opportunity
 from .common.crop_opportunity import run_crop_opportunity
 from .iron_scheduler import run_scheduled_iron_cycle
@@ -487,10 +487,12 @@ class AdaptiveScheduler:
             utility=lambda candidate: self.objective_score(candidate, signals),
         )
         if objective is None:
-            reasons = (focus_reason,) if focus_reason else ()
-            # A hold means the bot chose to do nothing; say why.
-            reasons = (*reasons, local_work_hold_reason(signals))
+            # A hold is a decision to do nothing; say why, and bound repeats.
+            hold_reason = local_work_hold_reason(signals)
+            reasons = ((focus_reason,) if focus_reason else ()) + (hold_reason,)
+            camp_breaker.note_hold(self.client, self.state, hold_reason)
             return SchedulingDecision(reasons=reasons, role_hold=role_complete)
+        camp_breaker.clear_holds(self.state)
         self.record_decision(objective, signals)
         contribution = score_phase(objective.phase, signals)
         reasons = contribution.reasons or ("stable graph fallback",)
