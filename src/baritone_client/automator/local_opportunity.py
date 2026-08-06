@@ -20,6 +20,9 @@ class OpportunityKind(str, Enum):
     NETHER_SUPPLY = "nether_supply"
     ENCHANTING_XP = "enchanting_xp"
     DIMENSION_ENTRY = "dimension_entry"
+    ENCHANTING_MATERIAL = "enchanting_material"
+    END_FRONTIER = "end_frontier"
+    END_CITY_ROUTE = "end_city_route"
 
 
 @dataclass(frozen=True)

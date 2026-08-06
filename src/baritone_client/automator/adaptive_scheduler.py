@@ -439,6 +439,9 @@ class AdaptiveScheduler:
         OpportunityKind.NETHER_SUPPLY: 300.0,
         OpportunityKind.ENCHANTING_XP: 300.0,
         OpportunityKind.DIMENSION_ENTRY: 120.0,
+        OpportunityKind.ENCHANTING_MATERIAL: 180.0,
+        OpportunityKind.END_FRONTIER: 600.0,
+        OpportunityKind.END_CITY_ROUTE: 300.0,
     }
 
     def __init__(self, client: Any, resources: Any, state: Any):
@@ -536,17 +539,10 @@ class AdaptiveScheduler:
             )
             if recovery is not None:
                 return recovery
-            return select_role_opportunity(
-                role, signals, self.state,
-                cooldown_ready=self._cooldown_ready(
-                    {
-                        FleetRole.END_RUNNER: OpportunityKind.END_SUPPLY,
-                        FleetRole.NETHER_SUPPLY: OpportunityKind.NETHER_SUPPLY,
-                        FleetRole.ENCHANTING: OpportunityKind.ENCHANTING_XP,
-                    }[role] if "overworld" not in signals.dimension else OpportunityKind.DIMENSION_ENTRY,
-                    current_time,
-                ),
-            )
+            candidate = select_role_opportunity(role, signals, self.state, cooldown_ready=True)
+            if candidate and self._cooldown_ready(candidate.kind, current_time):
+                return candidate
+            return None
         if role is FleetRole.IRON_SUPPLY:
             if (recovery := food_opportunity.select_food_recovery_opportunity(signals.food, self._cooldown_ready(OpportunityKind.FOOD_RECOVERY, current_time))) is not None: return recovery
             if (
@@ -702,6 +698,9 @@ class AdaptiveScheduler:
                 OpportunityKind.NETHER_SUPPLY,
                 OpportunityKind.ENCHANTING_XP,
                 OpportunityKind.DIMENSION_ENTRY,
+                OpportunityKind.ENCHANTING_MATERIAL,
+                OpportunityKind.END_FRONTIER,
+                OpportunityKind.END_CITY_ROUTE,
             }:
                 result = OpportunityResult(
                     opportunity, *run_role_opportunity(self.client, self.state, opportunity)

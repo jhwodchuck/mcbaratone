@@ -4,10 +4,17 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional, Tuple
 
-from ...common.end import acquire_elytra, acquire_shulker_boxes, enter_end_portal
-from ...common.inventory import count_item
+from ...common.end import (
+    acquire_elytra,
+    acquire_shulker_boxes,
+    enter_end_portal,
+    find_end_city,
+    traverse_end_gateway,
+)
+from ...common.inventory import count_item, craft
 from ...common.mob_farm import grind_xp_at_location
 from ...common.nether import enter_nether_portal, hunt_blazes
+from ...common.navigation import goto
 from ..end_readiness import FleetRole
 from ..local_opportunity import LocalOpportunity, OpportunityKind
 
@@ -84,6 +91,34 @@ def _safe(signals: Any) -> bool:
     )
 
 
+def _last_end_supply_failed(state: Any) -> bool:
+    runtime = (getattr(state, "custom_data", {}) or {}).get("adaptive_scheduler", {})
+    opportunities = runtime.get("opportunities", {}) if isinstance(runtime, Mapping) else {}
+    last = opportunities.get(OpportunityKind.END_SUPPLY.value, {}) if isinstance(opportunities, Mapping) else {}
+    return isinstance(last, Mapping) and last.get("success") is False
+
+
+def _same_city(first: Tuple[int, int, int], second: Tuple[int, int, int]) -> bool:
+    return sum((first[index] - second[index]) ** 2 for index in range(3)) <= 64 ** 2
+
+
+def _near(location: Tuple[int, int, int], target: Tuple[int, int, int]) -> bool:
+    return sum((location[index] - target[index]) ** 2 for index in range(3)) <= 96 ** 2
+
+
+def _persist_end_city(state: Any, location: Tuple[int, int, int]) -> None:
+    custom = getattr(state, "custom_data", None)
+    if not isinstance(custom, dict):
+        custom = {}
+        state.custom_data = custom
+    custom["end_city"] = {"location": list(location), "verified": True}
+    locations = custom.setdefault("locations", {})
+    if isinstance(locations, dict):
+        cities = locations.setdefault("end_city", [])
+        if isinstance(cities, list):
+            cities.append({"x": location[0], "y": location[1], "z": location[2], "tags": ["verified"]})
+
+
 def select_role_opportunity(
     role: FleetRole, signals: Any, state: Any, *, cooldown_ready: bool
 ) -> Optional[LocalOpportunity]:
@@ -118,8 +153,22 @@ def select_role_opportunity(
                     "verified End portal and End-city checkpoints can restore the supply route",
                     location=portal, target_item="minecraft:the_end",
                 )
-        if "end" not in dimension or not _checkpoint_location(state, "end_city"):
+        city = _checkpoint_location(state, "end_city")
+        if "end" not in dimension or not city:
             return None
+        position = tuple(getattr(signals, "position", (0, 64, 0)))
+        if not _near(position, city):
+            return LocalOpportunity(
+                OpportunityKind.END_CITY_ROUTE, 250,
+                "saved End city is not locally reachable; traverse a verified gateway first",
+                location=city,
+            )
+        if _last_end_supply_failed(state):
+            return LocalOpportunity(
+                OpportunityKind.END_FRONTIER, 245,
+                "previous End-city supply produced no item delta; search a bounded new frontier",
+                location=city,
+            )
         if int(inventory.get("minecraft:elytra", 0) or 0) < 1:
             return LocalOpportunity(
                 OpportunityKind.END_SUPPLY, 240,
@@ -133,14 +182,13 @@ def select_role_opportunity(
         )
     if role is FleetRole.ENCHANTING:
         location = _xp_engine_location(state)
-        if "overworld" not in dimension or location is None:
+        if "overworld" not in dimension:
             return None
-        return LocalOpportunity(
-            OpportunityKind.ENCHANTING_XP, 210,
-            "verified spawner checkpoint can produce a bounded XP delta",
-            location=location,
-            target_item="experience_total",
-        )
+        if location is not None:
+            return LocalOpportunity(OpportunityKind.ENCHANTING_XP, 210, "verified spawner checkpoint can produce a bounded XP delta", location=location, target_item="experience_total")
+        if int(inventory.get("minecraft:paper", 0) or 0) >= 3 and int(inventory.get("minecraft:leather", 0) or 0) >= 1:
+            return LocalOpportunity(OpportunityKind.ENCHANTING_MATERIAL, 180, "carried paper and leather can craft one bounded book batch", target_item="minecraft:book")
+        return None
     return None
 
 
@@ -170,6 +218,22 @@ def run_role_opportunity(client: Any, state: Any, opportunity: LocalOpportunity)
             acquire_shulker_boxes(client, target=before + 1, timeout=600)
         after = count_item(client, item)
         return after > before, f"{item} increased" if after > before else f"no {item} delta observed", before, after
+    if opportunity.kind is OpportunityKind.END_CITY_ROUTE and opportunity.location:
+        landing = traverse_end_gateway(client, timeout=90)
+        if landing is not None and goto(client, *opportunity.location, timeout=180, tolerance=16.0):
+            return False, "outer-island route verified; awaiting productive cycle", 0, 0
+        return False, "verified gateway/city route could not be established", 0, 0
+    if opportunity.kind is OpportunityKind.END_FRONTIER and opportunity.location:
+        discovered = find_end_city(client, timeout=300, max_distance=1024.0)
+        if discovered is not None and not _same_city(opportunity.location, discovered):
+            _persist_end_city(state, discovered)
+            return False, "new End city verified; awaiting productive cycle", 0, 0
+        return False, "no newly verified End city beyond the exhausted frontier", 0, 0
+    if opportunity.kind is OpportunityKind.ENCHANTING_MATERIAL:
+        before = count_item(client, "minecraft:book")
+        craft(client, "minecraft:book", 1)
+        after = count_item(client, "minecraft:book")
+        return after > before, "book batch increased" if after > before else "no book delta observed", before, after
     if opportunity.kind is OpportunityKind.ENCHANTING_XP and opportunity.location:
         result = grind_xp_at_location(
             client, *opportunity.location, target_level=30, timeout=300

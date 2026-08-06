@@ -8,6 +8,7 @@ from baritone_client.automator.adaptive_scheduler import (
 from baritone_client.automator.common import role_opportunities
 from baritone_client.automator.end_readiness import FleetRole
 from baritone_client.automator.local_opportunity import LocalOpportunity, OpportunityKind
+from baritone_client.automator.state_manager import Phase
 
 
 def _signals(**overrides):
@@ -54,6 +55,43 @@ def test_enchanting_uses_persisted_verified_xp_engine_and_only_xp_delta(monkeypa
     assert (before, after) == (21, 22)
 
 
+def test_enchanting_without_xp_engine_crafts_bounded_book_delta(monkeypatch):
+    state = SimpleNamespace(custom_data={})
+    chosen = role_opportunities.select_role_opportunity(
+        FleetRole.ENCHANTING,
+        _signals(dimension="minecraft:overworld", inventory={"minecraft:paper": 3, "minecraft:leather": 1}),
+        state,
+        cooldown_ready=True,
+    )
+    assert chosen and chosen.kind is OpportunityKind.ENCHANTING_MATERIAL
+    counts = iter((2, 3))
+    monkeypatch.setattr(role_opportunities, "count_item", lambda *_args: next(counts))
+    monkeypatch.setattr(role_opportunities, "craft", lambda *_args: True)
+    assert role_opportunities.run_role_opportunity(SimpleNamespace(), state, chosen)[0] is True
+
+
+def test_enchanting_material_uses_its_own_cooldown_in_overworld():
+    state = SimpleNamespace(
+        custom_data={
+            "adaptive_scheduler": {
+                "opportunities": {"enchanting_material": {"last_attempt": 1000.0}}
+            }
+        }
+    )
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    signals = _signals(
+        dimension="minecraft:overworld",
+        inventory={"minecraft:paper": 3, "minecraft:leather": 1},
+    )
+    assert scheduler.select_local_opportunity(
+        signals, [Phase.SPAWN_BOOTSTRAP], now=1100, role=FleetRole.ENCHANTING
+    ) is None
+    chosen = scheduler.select_local_opportunity(
+        signals, [Phase.SPAWN_BOOTSTRAP], now=1181, role=FleetRole.ENCHANTING
+    )
+    assert chosen and chosen.kind is OpportunityKind.ENCHANTING_MATERIAL
+
+
 def test_overworld_roles_select_checkpoint_backed_dimension_entry(monkeypatch):
     state = SimpleNamespace(
         custom_data={
@@ -90,6 +128,42 @@ def test_nether_cycle_does_not_count_movement_without_rod_delta(monkeypatch):
     assert success is False
     assert "no blaze-rod delta" in detail
     assert (before, after) == (4, 4)
+
+
+def test_end_frontier_replaces_only_a_newly_verified_city(monkeypatch):
+    state = SimpleNamespace(
+        custom_data={
+            "end_city": [1, 70, 1],
+            "adaptive_scheduler": {"opportunities": {"end_supply": {"success": False}}},
+        }
+    )
+    chosen = role_opportunities.select_role_opportunity(
+        FleetRole.END_RUNNER, _signals(dimension="minecraft:the_end"), state, cooldown_ready=True
+    )
+    assert chosen and chosen.kind is OpportunityKind.END_FRONTIER
+    monkeypatch.setattr(role_opportunities, "find_end_city", lambda *_args, **_kwargs: (200, 70, 200))
+    success, detail, before, after = role_opportunities.run_role_opportunity(SimpleNamespace(), state, chosen)
+    assert success is False
+    assert "new End city verified" in detail
+    assert (before, after) == (0, 0)
+    assert state.custom_data["end_city"]["location"] == [200, 70, 200]
+
+
+def test_end_runner_on_central_island_routes_before_supply(monkeypatch):
+    state = SimpleNamespace(custom_data={"end_city": [900, 70, 900]})
+    chosen = role_opportunities.select_role_opportunity(
+        FleetRole.END_RUNNER,
+        _signals(dimension="minecraft:the_end", position=(0, 70, 0)),
+        state,
+        cooldown_ready=True,
+    )
+    assert chosen and chosen.kind is OpportunityKind.END_CITY_ROUTE
+    monkeypatch.setattr(role_opportunities, "traverse_end_gateway", lambda *_args, **_kwargs: (700, 70, 700))
+    monkeypatch.setattr(role_opportunities, "goto", lambda *_args, **_kwargs: True)
+    success, detail, before, after = role_opportunities.run_role_opportunity(SimpleNamespace(), state, chosen)
+    assert success is False
+    assert "awaiting productive cycle" in detail
+    assert (before, after) == (0, 0)
 
 
 def test_durable_role_counter_accumulates_only_verified_deltas():
