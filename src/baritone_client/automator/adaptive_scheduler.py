@@ -30,7 +30,7 @@ from . import food_opportunity
 from .common.role_opportunities import run_role_opportunity
 from .common.crop_opportunity import run_crop_opportunity
 from .iron_scheduler import run_scheduled_iron_cycle
-from .local_opportunity import LocalOpportunity, OpportunityKind
+from .local_opportunity import LocalOpportunity, OpportunityKind, local_work_blockers, local_work_hold_reason
 from .objective import Objective
 from .state_manager import Phase
 from .specialty_scheduler import select_profile_specialty_opportunities, select_specialty_opportunity
@@ -104,18 +104,14 @@ class GameSignals:
                 pairs[family] = int(count) // 2
         return pairs
 
+    def local_work_blockers(self) -> Tuple[str, ...]:
+        """Name every condition currently preventing local side work."""
+        return local_work_blockers(self)
+
     @property
     def safe_for_local_work(self) -> bool:
         """Local side work is allowed only with a comfortable safety margin."""
-        return (
-            self.observed
-            and self.entities_observed
-            and "overworld" in self.dimension
-            and self.health >= 16.0
-            and self.food >= 14
-            and self.nearby_hostiles == 0
-            and self.world_time % 24000 < 12000
-        )
+        return not self.local_work_blockers()
 
 @dataclass(frozen=True)
 class PhaseScore:
@@ -492,6 +488,8 @@ class AdaptiveScheduler:
         )
         if objective is None:
             reasons = (focus_reason,) if focus_reason else ()
+            # A hold means the bot chose to do nothing; say why.
+            reasons = (*reasons, local_work_hold_reason(signals))
             return SchedulingDecision(reasons=reasons, role_hold=role_complete)
         self.record_decision(objective, signals)
         contribution = score_phase(objective.phase, signals)
