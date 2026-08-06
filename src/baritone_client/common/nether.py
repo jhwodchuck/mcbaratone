@@ -16,9 +16,18 @@ from .blaze_spawners import (
     publish_blaze_spawner as _publish_blaze_spawner,
     shared_blaze_spawners as _shared_blaze_spawners,
 )
-from .combat import hunt_mobs, find_entity_by_type
+from .combat import (
+    defend_or_flee,
+    eat_until_hunger,
+    ensure_alive,
+    find_entity_by_type,
+    heal_if_needed,
+    hunt_mobs,
+    safe_combat,
+)
 from .inventory import count_item, find_item_slot
 from .surface_egress import try_lower_surface_egress
+from .tasks import PlayerDeathDetected
 
 logger = logging.getLogger(__name__)
 
@@ -1041,195 +1050,6 @@ def hunt_blazes(
     except Exception as exc:
         logger.error("Blaze hunt failed: %s", exc)
         return count_item(client, "minecraft:blaze_rod")
-
-
-def hunt_endermen(client, target_count: int = 12, timeout: int = 900) -> int:
-    """
-    Enhanced Enderman hunting with optimal spawn location detection and mob luring tactics.
-
-    Key optimizations:
-    - Finds dark areas with high ceilings (≥3 blocks) for optimal Enderman spawning
-    - Uses systematic area scanning to locate Enderman-rich zones
-    - Implements mob luring by looking at Endermen to provoke them
-    - Continuously monitors collection progress and adjusts strategy
-    """
-    try:
-        logger.info("Starting enhanced Enderman hunt for %d pearls", target_count)
-        start_time = time.time()
-        pearls_start = count_item(client, "minecraft:ender_pearl")
-
-        # Configuration for optimal Enderman farming
-        scan_radius = 50  # Radius to scan for potential spawn locations
-        min_ceiling_height = 3  # Minimum blocks of open space above spawn surface
-        max_light_level = 7  # Maximum light level for Enderman spawning
-        lure_timeout = 30  # Time to spend luring Endermen in an area before moving
-
-        # Track explored areas and found spawn locations
-        explored_positions = set()
-        optimal_spawn_locations = []
-
-        while time.time() - start_time < timeout:
-            current_time = time.time()
-            elapsed = current_time - start_time
-
-            # Check if we have enough pearls
-            current_pearls = count_item(client, "minecraft:ender_pearl")
-            collected = current_pearls - pearls_start
-            if current_pearls >= target_count:
-                logger.info("Pearl inventory target reached: %d/%d", current_pearls, target_count)
-                break
-
-            # Get current position
-            state = client.transport.dispatch("get_state", {})
-            pos = state.get("block_position", state.get("position", {}))
-            current_x = int(pos.get("x", 0))
-            current_y = int(pos.get("y", 64))
-            current_z = int(pos.get("z", 0))
-
-            # Periodic scanning for optimal spawn locations
-            position_key = (current_x // 20, current_z // 20)  # Grid-based exploration
-            if position_key not in explored_positions:
-                explored_positions.add(position_key)
-                logger.debug("Scanning for optimal Enderman spawn locations from (%d, %d)", current_x, current_z)
-
-                # Scan area for potential spawn locations
-                blocks = _found_blocks(
-                    client.transport.dispatch(
-                        "find_blocks",
-                        {
-                            "blocks": [
-                                "minecraft:stone",
-                                "minecraft:dirt",
-                                "minecraft:grass_block",
-                            ],
-                            "radius": min(scan_radius, 32),
-                            "limit": 256,
-                        },
-                    )
-                )
-
-                if blocks:
-                    potential_spawns = []
-
-                    for block in blocks:
-                        bx, by, bz = block.get("x", 0), block.get("y", 0), block.get("z", 0)
-
-                        # Check for high ceiling (open space above)
-                        ceiling_height = 0
-                        for height in range(1, min_ceiling_height + 2):  # Check a few blocks up
-                            check_response = client.transport.dispatch(
-                                "get_block",
-                                {"x": bx, "y": by + height, "z": bz},
-                            )
-                            block_type = _block_id(check_response)
-                            if block_type in ["minecraft:air", "minecraft:cave_air"]:
-                                ceiling_height += 1
-                            else:
-                                break
-
-                        if ceiling_height >= min_ceiling_height:
-                            # Check light level (would need light level API, for now assume we need to be in dark areas)
-                            # Since we don't have direct light level access, we'll prioritize underground/cave areas
-                            if by < 60:  # Likely underground
-                                potential_spawns.append((bx, by, bz, ceiling_height))
-
-                    # Sort by ceiling height (higher ceilings are better for Enderman spawning)
-                    potential_spawns.sort(key=lambda x: x[3], reverse=True)
-                    optimal_spawn_locations.extend(potential_spawns[:5])  # Keep top 5 locations
-
-            # If we have potential spawn locations, visit them systematically
-            if optimal_spawn_locations:
-                # Visit the best spawn location
-                target_x, target_y, target_z, ceiling = optimal_spawn_locations.pop(0)
-
-                logger.info("Moving to optimal spawn location (%d, %d, %d) with ceiling height %d",
-                          target_x, target_y, target_z, ceiling)
-
-                # Navigate to location
-                client.transport.dispatch("goto", {"x": target_x, "y": target_y + 1, "z": target_z})
-                time.sleep(3)  # Wait for navigation
-
-                # Spend time in this area luring Endermen
-                lure_start = time.time()
-                endermen_found = 0
-
-                while time.time() - lure_start < lure_timeout and time.time() - start_time < timeout:
-                    # Look for nearby Endermen
-                    entities_response = client.transport.dispatch("get_entities", {
-                        "radius": 32,
-                        "types": ["enderman"]
-                    })
-
-                    entities = _entities(entities_response)
-
-                    if entities:
-                        for entity in entities:
-                            entity_id = entity.get("id")
-                            entity_pos = entity.get("position", {})
-
-                            # Look at the Enderman to provoke it (this lures it to attack)
-                            # Bridge look_at requires coordinates, not entity_id
-                            if entity_pos.get("x") is not None:
-                                client.transport.dispatch("look_at", {
-                                    "x": entity_pos.get("x", 0),
-                                    "y": entity_pos.get("y", 0) + 1.5,
-                                    "z": entity_pos.get("z", 0),
-                                })
-                            time.sleep(0.5)  # Brief pause between looks
-
-                            endermen_found += 1
-                            logger.debug("Provoked Enderman at (%s)", entity_pos)
-
-                            # After provoking, the Enderman should attack and potentially drop pearls when killed
-                            # The combat system should handle the actual fighting
-
-                    time.sleep(2)  # Scan for entities every 2 seconds
-
-                logger.debug("Spent %.1f seconds luring in area, found %d Endermen",
-                           time.time() - lure_start, endermen_found)
-
-            else:
-                # No optimal locations found yet, do general exploration
-                # Random walk to find new areas
-                offset_x = (time.time() * 1000 % 200) - 100  # Random offset -100 to 100
-                offset_z = (time.time() * 1000 % 200) - 100
-
-                explore_x = current_x + int(offset_x)
-                explore_z = current_z + int(offset_z)
-                explore_y = current_y
-
-                logger.debug("Exploring new area at (%d, %d)", explore_x, explore_z)
-                client.transport.dispatch("goto", {"x": explore_x, "y": explore_y, "z": explore_z})
-                time.sleep(5)  # Wait for exploration
-
-            # Check progress periodically
-            if elapsed > 60 and elapsed % 60 < 2:  # Every minute
-                current_pearls = count_item(client, "minecraft:ender_pearl")
-                collected = current_pearls - pearls_start
-                logger.info("Progress: %d/%d pearls collected (%.1f%%), %.1f minutes elapsed",
-                          collected, target_count, (collected / target_count) * 100, elapsed / 60)
-
-        # Final count
-        final_pearls = count_item(client, "minecraft:ender_pearl")
-        collected = final_pearls - pearls_start
-        logger.info("Enderman hunt completed. Collected %d/%d pearls in %.1f minutes",
-                  collected, target_count, (time.time() - start_time) / 60)
-
-        return final_pearls
-
-    except Exception as exc:
-        logger.error("Enhanced Enderman hunt failed: %s", exc)
-        # Fallback to basic hunt_mobs
-        logger.info("Falling back to basic Enderman hunting")
-        result = hunt_mobs(
-            client,
-            mob_types=["enderman"],
-            required_loot={"minecraft:ender_pearl": target_count},
-            search_radius=72,
-            timeout=timeout,
-            heal_threshold=12.0,
-        )
-        return count_item(client, "minecraft:ender_pearl")
 
 
 def craft_eyes_of_ender(client, required: int = 12) -> bool:

@@ -340,7 +340,12 @@ def test_nether_rearm_provisions_and_equips_armor_incrementally(monkeypatch, tmp
     monkeypatch.setattr(nether_prep, "ensure_supplies", supplies)
 
     assert handler._ensure_nether_readiness(client, state) is True
-    assert events[:4] == ["eat", "recover", "equip_armor", "equip_weapon"]
+    # Armor now comes first: equipping is free and crafting spends only iron
+    # already carried, so neither may sit behind the hunger gate. A fleet at
+    # zero food otherwise never gets armored at all (2026-08-06 deadlock).
+    assert events[:2] == ["equip_armor", "equip_weapon"]
+    assert events.index("equip_armor") < events.index("eat")
+    assert "eat" in events and "recover" in events
     assert calls[:6] == [
         {"minecraft:iron_ingot": 4},
         {"minecraft:iron_boots": 1},
@@ -1589,3 +1594,53 @@ def test_portal_approach_does_not_detour_when_already_on_land(monkeypatch):
     nether._approach_and_relocate(client, (-156, 64, -278))
 
     assert not called, "a bot on dry land must head straight for the portal"
+
+
+def test_armor_is_equipped_and_crafted_before_the_hunger_gate(monkeypatch):
+    """A starving bot must still get its armor on.
+
+    On 2026-08-06 all six bots sat at zero food. The hunger gate ran before
+    any armor step, so three bots carrying unequipped armor and two holding
+    40-66 iron ingots never reached the equip/craft code at all, and kept
+    dying to ordinary hostiles at "only 0/4 armor pieces".
+    """
+    from baritone_client.automator.phases import nether_prep as np_mod
+
+    order = []
+
+    monkeypatch.setattr(
+        np_mod, "equip_best_armor", lambda _c: order.append("equip_armor")
+    )
+    monkeypatch.setattr(
+        np_mod, "equip_best_weapon", lambda _c: order.append("equip_weapon") or True
+    )
+    monkeypatch.setattr(
+        np_mod.NetherAndBlazeHandler,
+        "_craft_armor_from_carried_iron",
+        staticmethod(lambda _c: order.append("craft_from_carried") or 0),
+    )
+
+    def hungry(*_a, **_k):
+        order.append("hunger_gate")
+        return False
+
+    monkeypatch.setattr(np_mod, "eat_until_hunger", hungry)
+    monkeypatch.setattr(np_mod, "acquire_emergency_food", lambda *_a, **_k: False)
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda *_a, **_k: {"dimension": "minecraft:overworld"}
+        )
+    )
+    handler = np_mod.NetherAndBlazeHandler()
+    monkeypatch.setattr(
+        handler, "_nether_loadout_ready", lambda *_a, **_k: False
+    )
+
+    assert handler._ensure_nether_readiness(client, None) is False
+
+    assert "equip_armor" in order, "starving bot never equipped carried armor"
+    assert order.index("equip_armor") < order.index("hunger_gate"), (
+        "armor was gated behind hunger; that is the fleet-wide deadlock"
+    )
+    assert order.index("craft_from_carried") < order.index("hunger_gate")

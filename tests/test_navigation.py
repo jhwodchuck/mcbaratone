@@ -26,8 +26,11 @@ def test_goto_fails_fast_when_goal_is_rejected_without_movement(monkeypatch):
     assert not navigation.goto(client, -160, 104, -388, timeout=300)
 
     state_reads = [call for call in transport.calls if call[0] == "get_state"]
-    # Three route observations plus one fresh state sample per defense tick.
-    assert len(state_reads) == 6
+    # Three route observations plus one fresh state sample per defense tick,
+    # plus one pre-flight read for the critical-health travel gate. The gate
+    # must decide before any movement starts, so it cannot reuse the loop's
+    # first sample.
+    assert len(state_reads) == 7
     assert transport.calls[-1][0] == "cancel"
 
 

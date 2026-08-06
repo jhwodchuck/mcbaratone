@@ -36,12 +36,12 @@ from .nether import (
     find_nearest_portal,
     find_nether_fortress,
     hunt_blazes,
-    hunt_endermen,
     craft_eyes_of_ender,
     mine_nether_gold,
     barter_with_piglins,
 
 )
+from .enderman_hunt import hunt_endermen
 from .end import (
     triangulate_stronghold,
     spiral_stronghold_search,

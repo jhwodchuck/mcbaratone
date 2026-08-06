@@ -553,6 +553,34 @@ PROGRESSION_GATES: Tuple[ProgressionGate, ...] = (
             GateCheck("beacon observed or verified", lambda e: e.observed_count("minecraft:beacon") >= 1 or bool(e.custom("structures", "beacon", "verified"))),
         ),
     ),
+    ProgressionGate(
+        "T1214",
+        "Ender Pearls Survivably Acquired",
+        (
+            "The Enderman hunt yields pearls and survives doing it. Added after "
+            "Bot07 died three times in one session (shot by skeletons sharing "
+            "its cave) while the hunt sat at 0/12 pearls, which T1208's "
+            "finished-Eyes check could not distinguish from simply not having "
+            "started yet."
+        ),
+        "WORLD_UNLOCK",
+        (
+            GateCheck(
+                "at least one Ender pearl observed",
+                lambda e: e.observed_count("minecraft:ender_pearl") >= 1
+                or e.observed_count("minecraft:ender_eye") >= 1,
+            ),
+            GateCheck(
+                "the bot is alive and above the hunt's health floor",
+                lambda e: float(e.state.get("health", 0) or 0) >= 12.0
+                and not bool(e.state.get("is_dead", False)),
+            ),
+            GateCheck(
+                "food supports natural regeneration during the hunt",
+                lambda e: int(e.state.get("food", 0) or 0) >= 18,
+            ),
+        ),
+    ),
 )
 
 

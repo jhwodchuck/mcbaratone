@@ -310,6 +310,22 @@ class NetherAndBlazeHandler(PhaseHandler):
             # portal travel and a potentially long rearm operation in one run.
             return False
 
+        # Armor first, hunger second. Both of the steps below are free or paid
+        # for with iron already in the bag, neither needs food, and an armored
+        # bot is far likelier to survive the foraging the hunger gate demands.
+        #
+        # The old order deadlocked the entire fleet on 2026-08-06: all six bots
+        # sat at zero food, so none of them ever reached this code. Three were
+        # carrying unequipped armor and two were holding 40 and 66 iron ingots
+        # they could not spend, while the defense supervisor kept reporting
+        # "only 0/4 armor pieces" and they died to ordinary hostiles.
+        #
+        # Grave recovery returns equipment to ordinary inventory slots, so
+        # equipping is often all that is needed.
+        equip_best_armor(client)
+        equip_best_weapon(client)
+        self._craft_armor_from_carried_iron(client)
+
         if not eat_until_hunger(client, minimum_food=18):
             if not acquire_emergency_food(
                 client,
@@ -324,9 +340,6 @@ class NetherAndBlazeHandler(PhaseHandler):
             print("  Nether rearm paused until health can be stabilized.")
             return False
 
-        # Grave recovery returns equipment to ordinary inventory slots. Equip
-        # it before calculating any shortfall so a bot carrying three pieces
-        # does not mine while the defense supervisor still sees it as naked.
         equip_best_armor(client)
         equip_best_weapon(client)
 
@@ -392,6 +405,36 @@ class NetherAndBlazeHandler(PhaseHandler):
                 "6 food, 18 health/hunger required)."
             )
         return verified
+
+    @staticmethod
+    def _craft_armor_from_carried_iron(client) -> int:
+        """Craft missing armor from iron already carried. Best effort.
+
+        Deliberately never gathers and never fails the caller: this runs ahead
+        of the hunger gate purely to convert iron the bot is already holding
+        into protection it can wear right now. The strict, gathering
+        provisioning pass still runs afterwards and still decides readiness.
+        """
+        equipped = 0
+        for item_id, iron_cost in (
+            ("minecraft:iron_boots", 4),
+            ("minecraft:iron_helmet", 5),
+            ("minecraft:iron_leggings", 7),
+            ("minecraft:iron_chestplate", 8),
+        ):
+            try:
+                if count_item(client, item_id) >= 1:
+                    continue
+                if count_item(client, "minecraft:iron_ingot") < iron_cost:
+                    continue
+                if ensure_supplies(client, {item_id: 1}, timeout=120).success:
+                    equipped += 1
+                    equip_best_armor(client)
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"  Early armor craft for {item_id} skipped: {exc}")
+        if equipped:
+            print(f"  Crafted {equipped} armor piece(s) from carried iron.")
+        return equipped
 
     @staticmethod
     def _provision_iron_gear(

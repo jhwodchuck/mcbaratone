@@ -43,7 +43,7 @@ def write_checkpoint(tmp_path, payload):
 
 def test_progression_gate_ids_are_unique_and_ordered():
     ids = [gate.id for gate in PROGRESSION_GATES]
-    assert ids == [f"T{number}" for number in range(1200, 1214)]
+    assert ids == [f"T{number}" for number in range(1200, 1215)]
     assert len(ids) == len(set(ids))
     assert all(gate.checks for gate in PROGRESSION_GATES)
 

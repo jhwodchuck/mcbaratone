@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from baritone_client.automator.phases import end_game
 from baritone_client.automator.state_manager import Phase, StateManager
-from baritone_client.common import end, nether
+from baritone_client.common import end, enderman_hunt, nether
 
 
 def _frames():
@@ -153,6 +153,13 @@ def test_world_unlock_acquires_missing_pearls_before_crafting_eyes(monkeypatch, 
         "withdraw_required_from_catalog",
         lambda *_args, **_kwargs: 0,
     )
+    # This test predates the naked-rearm gate and asserts pearl acquisition,
+    # not equipment. Declare the bot already combat-ready.
+    monkeypatch.setattr(
+        end_game.WorldUnlockHandler,
+        "_ensure_combat_readiness",
+        staticmethod(lambda *_a, **_k: True),
+    )
 
     def hunt(_client, target_count, timeout):
         calls.append(("hunt", target_count, timeout))
@@ -217,9 +224,9 @@ def test_enderman_hunt_target_is_total_inventory_not_additional(monkeypatch):
             )
         )
     )
-    monkeypatch.setattr(nether, "count_item", lambda *_args: 12)
+    monkeypatch.setattr(enderman_hunt, "count_item", lambda *_args: 12)
 
-    assert nether.hunt_endermen(client, target_count=12, timeout=1) == 12
+    assert enderman_hunt.hunt_endermen(client, target_count=12, timeout=1) == 12
 
 
 def test_gateway_traversal_requires_verified_displacement(monkeypatch):
@@ -300,3 +307,36 @@ def test_elytra_acquisition_attacks_exact_item_frame(monkeypatch):
     monkeypatch.setattr(end.time, "sleep", lambda _seconds: None)
     assert end.acquire_elytra(client, timeout=1)
     assert ("attack_entity", {"entity_id": 44}) in calls
+
+
+def test_naked_bot_rearms_before_hunting_instead_of_stalling(monkeypatch, tmp_path):
+    """The armor gate must trigger a rearm, not silently stall the phase.
+
+    Blocking a naked bot from hunting is only half the repair: without an
+    explicit rearm the phase would refuse forever and sit at 0/12 pearls,
+    which is the livelock that historically follows every death fix here.
+    """
+    state = StateManager(tmp_path)
+    handler = end_game.WorldUnlockHandler()
+
+    monkeypatch.setattr(end_game, "count_item", lambda *_a, **_k: 0)
+    monkeypatch.setattr(
+        end_game, "withdraw_required_from_catalog", lambda *_a, **_k: None
+    )
+
+    hunted = []
+    monkeypatch.setattr(
+        end_game, "hunt_endermen", lambda *_a, **_k: hunted.append(True) or 0
+    )
+
+    rearmed = []
+
+    def fake_readiness(_client, _state):
+        rearmed.append(True)
+        return False
+
+    monkeypatch.setattr(handler, "_ensure_combat_readiness", fake_readiness)
+
+    assert handler._craft_eyes(SimpleNamespace(), state, SimpleNamespace()) is False
+    assert rearmed, "phase never attempted a rearm for a naked bot"
+    assert not hunted, "phase hunted anyway despite failing the readiness gate"

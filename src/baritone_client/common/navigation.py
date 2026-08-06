@@ -14,6 +14,52 @@ DefenseCallback = Callable[[], bool]
 _DEFENSE_GUARD = "_navigation_defense_callback_active"
 _RECOVERY_DEPTH = "_safe_recovery_navigation_depth"
 
+# Below food 18 Minecraft grants no natural regeneration, so a critically
+# injured bot cannot heal a single point no matter how long it walks. Bot07
+# died crossing ~300 blocks pinned at 2.1 health with food 5: every block was
+# unrecoverable damage exposure. Long journeys are refused in that state;
+# recovery movement is exempt because that is the path that fetches the food.
+_CRITICAL_TRAVEL_HEALTH = 6.0
+_REGEN_FOOD_FLOOR = 18
+_MAX_CRITICAL_TRAVEL_DISTANCE = 48.0
+
+
+def _refuse_critical_long_travel(client, x: int, y: int, z: int) -> bool:
+    """Return True when a long route must not start at critical health."""
+    if int(getattr(client, _RECOVERY_DEPTH, 0) or 0) > 0:
+        return False
+    try:
+        state = client.transport.dispatch("get_state", {})
+    except Exception:
+        return False
+    if not isinstance(state, dict):
+        return False
+    # Missing telemetry must not block navigation; assume healthy.
+    health = float(state.get("health", 20) or 20)
+    food = int(state.get("food", 20) or 20)
+    if health >= _CRITICAL_TRAVEL_HEALTH or food >= _REGEN_FOOD_FLOOR:
+        return False
+
+    position = state.get("block_position", state.get("position", {}))
+    if not isinstance(position, dict):
+        return False
+    try:
+        distance = math.dist(
+            (float(position.get("x", x)), float(position.get("z", z))),
+            (float(x), float(z)),
+        )
+    except (TypeError, ValueError):
+        return False
+    if distance <= _MAX_CRITICAL_TRAVEL_DISTANCE:
+        return False
+
+    print(
+        f"NAVIGATION: refusing {distance:.0f}-block route at health "
+        f"{health:.1f} food {food}; below food {_REGEN_FOOD_FLOOR} there is no "
+        "regeneration, so recover locally before travelling"
+    )
+    return True
+
 
 def allow_recovery_navigation(function):
     """Mark nested routes as intentional food/health recovery movement."""
@@ -99,6 +145,8 @@ def goto(
 
     try:
         client._last_navigation_survival_abort = False
+        if _refuse_critical_long_travel(client, x, y, z):
+            return False
         client.transport.dispatch("goto", {"x": x, "y": y, "z": z})
         
         start = time.time()

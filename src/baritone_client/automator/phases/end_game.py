@@ -12,7 +12,7 @@ from ...common.inventory import (
     withdraw_required_from_catalog,
 )
 from ...common.navigation import goto
-from ...common.nether import hunt_endermen
+from ...common.enderman_hunt import hunt_endermen
 from ...common.end import (
     acquire_elytra,
     acquire_shulker_boxes,
@@ -83,6 +83,17 @@ class WorldUnlockHandler(PhaseHandler):
         )
         pearls = count_item(client, "minecraft:ender_pearl")
         if pearls < needed:
+            # Rearm BEFORE hunting, never after dying. A completed earlier
+            # phase proves historical progress, not the gear the bot is
+            # actually wearing after a death, and the hunt itself now refuses
+            # to provoke an Enderman while naked. Without this the refusal
+            # would simply stall the phase at 0 pearls forever.
+            if not self._ensure_combat_readiness(client, state):
+                print(
+                    "  Pearl hunting deferred until armor, food, and health "
+                    "are restored."
+                )
+                return False
             print(f"  Acquiring Ender pearls for Eyes ({pearls}/{needed}).")
             pearls = hunt_endermen(client, target_count=needed, timeout=1200)
         if pearls < needed:
@@ -110,6 +121,27 @@ class WorldUnlockHandler(PhaseHandler):
         ).success:
             return False
         return self._record_eyes_ready(state, resources, 12)
+
+    @staticmethod
+    def _ensure_combat_readiness(client, state: StateManager) -> bool:
+        """Restore armor, weapon, food, and health before hostile overworld work.
+
+        ``NETHER_AND_BLAZE`` already refuses to enter a fortress naked. The
+        same protection never existed for ``WORLD_UNLOCK``, so a bot that died
+        and respawned with 0/4 armor walked straight back into the cave
+        hostiles that had just killed it. Reuse the proven rearm rather than
+        writing a second one; its only Nether-specific branch is a no-op in
+        the Overworld.
+        """
+        from .nether_prep import NetherAndBlazeHandler
+
+        try:
+            return bool(
+                NetherAndBlazeHandler()._ensure_nether_readiness(client, state)
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"  Combat readiness check failed: {exc}")
+            return False
 
     def _record_eyes_ready(
         self,
