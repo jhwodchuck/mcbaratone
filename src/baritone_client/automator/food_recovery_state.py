@@ -20,6 +20,14 @@ _STORED_FOOD_TARGETS = {
     "minecraft:cooked_rabbit": 8,
     "minecraft:cooked_salmon": 8,
     "minecraft:golden_carrot": 8,
+    # Last resort, and deliberately included. The fleet had 199 rotten flesh
+    # banked while bots starved at food 0, because withdrawal only ever asked
+    # for good food. Eating it is already safe and already last in
+    # EMERGENCY_FOOD_ITEMS, so a bot only reaches for it once nothing better
+    # is carried; the Hunger effect is far better than starving beside a full
+    # chest. Spider eyes are excluded on purpose: they poison, which can kill
+    # the wounded bot most likely to be reaching for them.
+    "minecraft:rotten_flesh": 16,
 }
 MAX_FOOD_SEARCH_ANCHOR_DRIFT = 96.0
 
