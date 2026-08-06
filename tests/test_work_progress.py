@@ -29,6 +29,34 @@ def test_snapshot_ignores_movement_and_attempt_cursors():
     }
 
 
+def test_snapshot_accepts_only_verified_productive_scheduler_outcomes():
+    state = _state(
+        {
+            "adaptive_scheduler": {
+                "opportunities": {
+                    "crop_farm": {
+                        "attempts": 8,
+                        "successful_cycles": 3,
+                        "verified_delta_total": 12,
+                    },
+                    "food_recovery": {
+                        "successful_cycles": 7,
+                        "verified_delta_total": 9,
+                    },
+                    "end_dimension_entry": {
+                        "successful_cycles": 2,
+                    },
+                }
+            }
+        }
+    )
+
+    assert productive_snapshot(state) == {
+        "adaptive_scheduler.crop_farm.successful_cycles": 3,
+        "adaptive_scheduler.crop_farm.verified_delta_total": 12,
+    }
+
+
 def test_unchanged_attempts_raise_durable_escalation_level():
     state = _state()
     before = {"wood_worker.logs_banked": 8}

@@ -45,6 +45,17 @@ _COUNTER_KEYS = {
     "rings_completed",
 }
 
+_PRODUCTIVE_OPPORTUNITIES = {
+    "animal_farm",
+    "crop_farm",
+    "wood_farm",
+    "iron_mine",
+    "food_production",
+    "end_supply",
+    "nether_supply",
+    "enchanting_xp",
+}
+
 
 @dataclass(frozen=True)
 class ProductiveAttempt:
@@ -86,6 +97,18 @@ def productive_snapshot(state: Any) -> dict[str, int]:
     verified = custom.get("verified_objective_completions")
     if isinstance(verified, Mapping):
         snapshot["objectives.verified"] = len(verified)
+
+    scheduler = custom.get("adaptive_scheduler")
+    scheduler = scheduler if isinstance(scheduler, Mapping) else {}
+    opportunities = scheduler.get("opportunities", {})
+    if isinstance(opportunities, Mapping):
+        for kind, raw in opportunities.items():
+            if str(kind) not in _PRODUCTIVE_OPPORTUNITIES or not isinstance(raw, Mapping):
+                continue
+            for key in ("successful_cycles", "verified_delta_total"):
+                number = _number(raw.get(key))
+                if number is not None:
+                    snapshot[f"adaptive_scheduler.{kind}.{key}"] = number
     return snapshot
 
 

@@ -433,6 +433,9 @@ def test_animal_opportunity_records_verified_herd_growth(monkeypatch):
         "animal_farm"
     ]
     assert record["success"] is True
+    ledger = state.custom_data["productive_work"]
+    assert ledger["progress_events"] == 1
+    assert ledger["no_progress_streak"] == 0
 
 
 def test_crop_opportunity_verifies_produce_increase(monkeypatch):
@@ -558,6 +561,9 @@ def test_food_recovery_opportunity_records_hunger_progress(monkeypatch):
     assert result.success
     assert result.before == 10
     assert result.after == 16
+    ledger = state.custom_data["productive_work"]
+    assert ledger.get("progress_events", 0) == 0
+    assert ledger["no_progress_streak"] == 1
 
 
 def test_food_production_records_banked_food_progress(monkeypatch):

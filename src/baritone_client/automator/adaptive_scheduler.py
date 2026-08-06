@@ -32,6 +32,7 @@ from .iron_scheduler import iron_cycle_ready, run_scheduled_iron_cycle
 from .local_opportunity import LocalOpportunity, OpportunityKind
 from .objective import Objective
 from .state_manager import Phase
+from .work_progress import productive_snapshot, record_productive_attempt
 
 
 CROP_BLOCKS = (
@@ -635,6 +636,7 @@ class AdaptiveScheduler:
         crop_timeout: float = 45.0,
     ) -> OpportunityResult:
         """Execute and record exactly one bounded local opportunity."""
+        productive_before = productive_snapshot(self.state)
         try:
             if opportunity.kind is OpportunityKind.ANIMAL_FARM:
                 before_signals = self.observe()
@@ -722,6 +724,13 @@ class AdaptiveScheduler:
                 f"{type(exc).__name__}: {exc}",
             )
         self._record_opportunity_result(result)
+        record_productive_attempt(
+            self.state,
+            opportunity.kind.value,
+            productive_before,
+            productive_snapshot(self.state),
+            detail=result.detail,
+        )
         return result
 
     def _runtime(self) -> Dict[str, Any]:
