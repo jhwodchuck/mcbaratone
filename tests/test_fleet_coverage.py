@@ -80,3 +80,15 @@ def test_unsafe_dedicated_worker_does_not_count_as_specialty_coverage(tmp_path):
     )
 
     assert FleetRole.QUARTERMASTER in borrowed
+
+
+def test_legacy_aternos_layout_also_borrows_missing_specialties(tmp_path):
+    current = tmp_path / "runs" / "aternos" / "Bot07"
+    (current / "monitor").mkdir(parents=True)
+    state = SimpleNamespace(checkpoint_dir=current)
+
+    borrowed = borrowed_specialty_roles(
+        state, FleetRole.END_RUNNER, now=1000.0
+    )
+
+    assert FleetRole.QUARTERMASTER in borrowed

@@ -30,6 +30,14 @@ SPECIALTY_ROLES = (
 )
 
 
+def _controller_bot_name(controller: Path) -> str:
+    return (
+        controller.parent.name
+        if controller.name.lower() == "controller"
+        else controller.name
+    )
+
+
 def _last_json_line(path: Path) -> dict[str, Any]:
     try:
         with path.open("rb") as stream:
@@ -59,7 +67,7 @@ def _controller_role(controller: Path) -> FleetRole:
             return FleetRole(configured)
     except (OSError, ValueError):
         pass
-    return default_fleet_role(controller.parent.name)
+    return default_fleet_role(_controller_bot_name(controller))
 
 
 def _controller_is_active(
@@ -105,9 +113,12 @@ def borrowed_specialty_roles(
     if not checkpoint_dir:
         return ()
     current = Path(checkpoint_dir).resolve()
-    if current.name.lower() != "controller":
+    if current.name.lower() == "controller":
+        fleet_root = current.parent.parent
+    elif re.fullmatch(r"Bot\d{2}", current.name, re.IGNORECASE):
+        fleet_root = current.parent
+    else:
         return ()
-    fleet_root = current.parent.parent
     if fleet_root.name.lower() not in FLEET_DIRECTORY_NAMES:
         return ()
 
@@ -120,18 +131,19 @@ def borrowed_specialty_roles(
         controllers = sorted(
             (
                 bot_dir / "controller"
+                if (bot_dir / "controller").is_dir()
+                else bot_dir
                 for bot_dir in fleet_root.iterdir()
                 if bot_dir.is_dir()
                 and re.fullmatch(r"Bot\d{2}", bot_dir.name, re.IGNORECASE)
-                and (bot_dir / "controller").is_dir()
             ),
-            key=lambda path: path.parent.name.lower(),
+            key=lambda path: _controller_bot_name(path).lower(),
         )
     except OSError:
         return ()
     for controller in controllers:
         if _controller_is_active(controller, current=current, now=observed):
-            active.append((controller.parent.name, _controller_role(controller)))
+            active.append((_controller_bot_name(controller), _controller_role(controller)))
 
     if not active:
         active = [(current_name, primary_role)]
