@@ -126,6 +126,10 @@ def _near(location: Tuple[int, int, int], target: Tuple[int, int, int]) -> bool:
     return sum((location[index] - target[index]) ** 2 for index in range(3)) <= 96 ** 2
 
 
+def _central_end_island(location: Tuple[int, int, int]) -> bool:
+    return location[0] ** 2 + location[2] ** 2 <= 512 ** 2
+
+
 def _persist_end_city(state: Any, location: Tuple[int, int, int]) -> None:
     custom = getattr(state, "custom_data", None)
     if not isinstance(custom, dict):
@@ -178,10 +182,12 @@ def select_role_opportunity(
             return None
         position = tuple(getattr(signals, "position", (0, 64, 0)))
         if not _near(position, city):
+            route = "gateway_then_city" if _central_end_island(position) else "city"
             return LocalOpportunity(
                 OpportunityKind.END_CITY_ROUTE, 250,
-                "saved End city is not locally reachable; traverse a verified gateway first",
+                "saved End city requires one bounded, verified route leg",
                 location=city,
+                target_item=route,
             )
         if _end_frontier_required(state):
             return LocalOpportunity(
@@ -243,8 +249,15 @@ def run_role_opportunity(client: Any, state: Any, opportunity: LocalOpportunity)
         _end_worker(state)["frontier_required"] = after <= before
         return after > before, f"{item} increased" if after > before else f"no {item} delta observed", before, after
     if opportunity.kind is OpportunityKind.END_CITY_ROUTE and opportunity.location:
-        landing = traverse_end_gateway(client, timeout=90)
-        if landing is not None and goto(client, *opportunity.location, timeout=180, tolerance=16.0):
+        route_ready = True
+        if opportunity.target_item == "gateway_then_city":
+            route_ready = traverse_end_gateway(client, timeout=90) is not None
+        if route_ready and goto(
+            client,
+            *opportunity.location,
+            timeout=180,
+            tolerance=16.0,
+        ):
             return False, "outer-island route verified; awaiting productive cycle", 0, 0
         return False, "verified gateway/city route could not be established", 0, 0
     if opportunity.kind is OpportunityKind.END_FRONTIER and opportunity.location:

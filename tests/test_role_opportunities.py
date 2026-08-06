@@ -204,12 +204,39 @@ def test_end_runner_on_central_island_routes_before_supply(monkeypatch):
         cooldown_ready=True,
     )
     assert chosen and chosen.kind is OpportunityKind.END_CITY_ROUTE
+    assert chosen.target_item == "gateway_then_city"
     monkeypatch.setattr(role_opportunities, "traverse_end_gateway", lambda *_args, **_kwargs: (700, 70, 700))
     monkeypatch.setattr(role_opportunities, "goto", lambda *_args, **_kwargs: True)
     success, detail, before, after = role_opportunities.run_role_opportunity(SimpleNamespace(), state, chosen)
     assert success is False
     assert "awaiting productive cycle" in detail
     assert (before, after) == (0, 0)
+
+
+def test_end_runner_already_on_outer_islands_does_not_take_return_gateway(monkeypatch):
+    state = SimpleNamespace(custom_data={"end_city": [1200, 70, 1200]})
+    chosen = role_opportunities.select_role_opportunity(
+        FleetRole.END_RUNNER,
+        _signals(dimension="minecraft:the_end", position=(900, 70, 900)),
+        state,
+        cooldown_ready=True,
+    )
+    assert chosen and chosen.kind is OpportunityKind.END_CITY_ROUTE
+    assert chosen.target_item == "city"
+    gateway = []
+    monkeypatch.setattr(
+        role_opportunities,
+        "traverse_end_gateway",
+        lambda *_args, **_kwargs: gateway.append(True),
+    )
+    monkeypatch.setattr(role_opportunities, "goto", lambda *_args, **_kwargs: True)
+
+    result = role_opportunities.run_role_opportunity(
+        SimpleNamespace(), state, chosen
+    )
+
+    assert result[0] is False
+    assert gateway == []
 
 
 def test_durable_role_counter_accumulates_only_verified_deltas():
