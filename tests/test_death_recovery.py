@@ -379,7 +379,12 @@ def test_death_recovery_fails_when_critical_inventory_is_still_missing(monkeypat
     )
     inventories = iter(
         (
+            # Pre-death: establishes what must come back.
             {"minecraft:diamond": 5, "minecraft:iron_pickaxe": 2},
+            # Pre-travel: a diamond is genuinely missing, so the grave trip
+            # must NOT be skipped as a no-loss death.
+            {"minecraft:diamond": 4, "minecraft:iron_pickaxe": 2},
+            # Post-sweep: still missing, so recovery fails as before.
             {"minecraft:diamond": 4, "minecraft:iron_pickaxe": 2},
         )
     )
@@ -1357,3 +1362,63 @@ def test_corpse_position_wins_when_the_bridge_has_no_death_location(monkeypatch)
     assert context.state.custom_data["last_abandoned_death_recovery"][
         "location"
     ] == [-315, 44, 187], "must circuit-break on the current corpse location"
+
+
+def test_keep_inventory_death_skips_the_grave_trip(monkeypatch):
+    """With keepInventory on there is nothing at the grave to fetch.
+
+    The shortfall was only checked *after* arriving, so a bot that lost
+    nothing still made the round trip. That trip stranded the fleet: Bot18
+    died 255 blocks from base on 2026-08-06, respawned beside its farm, and
+    was walked straight back out -- then reported "could not reach 1 known
+    farm plot(s); nearest is 452 blocks away" while its wheat sat 21 blocks
+    from its own anchor.
+    """
+    context = _context(
+        {"x": -70, "y": 62, "z": -120, "dimension": "minecraft:overworld"}
+    )
+    travelled = []
+    monkeypatch.setattr(
+        death_recovery_action, "goto",
+        lambda *_a, **_k: travelled.append(True) or True,
+    )
+    monkeypatch.setattr(
+        death_recovery_action, "secure_recovery_area", lambda _client: True
+    )
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _s: None)
+    # keepInventory: everything the bot expected to recover is still carried.
+    monkeypatch.setattr(
+        death_recovery_action, "get_inventory",
+        lambda _client: {"minecraft:iron_pickaxe": 4, "minecraft:bread": 40},
+    )
+
+    result = DeathRecoveryAction().execute(context)
+
+    assert result.success
+    assert result.data.get("skipped_grave") is True
+    assert not travelled, "walked to a grave holding nothing it was missing"
+    assert "death_recovery" not in context.state.custom_data
+
+
+def test_a_real_loss_still_sends_the_bot_to_its_grave(monkeypatch):
+    """The skip must key on actual shortfall, not on assuming keepInventory."""
+    context = _context(
+        {"x": -70, "y": 62, "z": -120, "dimension": "minecraft:overworld"}
+    )
+    travelled = []
+    monkeypatch.setattr(
+        death_recovery_action, "goto",
+        lambda *_a, **_k: travelled.append(True) or True,
+    )
+    monkeypatch.setattr(
+        death_recovery_action, "secure_recovery_area", lambda _client: True
+    )
+    monkeypatch.setattr(death_recovery_action.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        death_recovery_action, "get_inventory", lambda _client: {}
+    )
+
+    result = DeathRecoveryAction().execute(context)
+
+    assert travelled, "a bot that actually lost its kit must go and get it"
+    assert result.data.get("skipped_grave") is not True

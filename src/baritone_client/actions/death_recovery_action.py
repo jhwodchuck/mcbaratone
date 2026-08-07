@@ -781,6 +781,33 @@ class DeathRecoveryAction(BaseAction):
                     expected_critical,
                 )
                 print(f"Death location: ({death_x}, {death_y}, {death_z}) in {death_dim}")
+
+                # Nothing missing means nothing to fetch. The shortfall was
+                # only ever checked *after* arriving at the grave, so a bot
+                # that lost nothing still made the round trip -- and with
+                # keepInventory enabled it loses nothing, ever. That trip is
+                # what stranded the fleet: Bot18 died 255 blocks from base,
+                # respawned beside its farm, and was immediately walked back
+                # out; it then reported "could not reach 1 known farm plot(s);
+                # nearest is 452 blocks away" while its wheat sat 21 blocks
+                # from its own anchor. Asking what is actually missing keeps
+                # this correct whether or not the gamerule is on.
+                # An empty expectation means "we do not know what was carried",
+                # not "nothing is missing", so it must not trigger the skip.
+                if expected_critical and not _recovery_shortfall(
+                    context.client, expected_critical
+                ):
+                    _clear_unsafe_recovery(context.state)
+                    print(
+                        "RECOVERY: inventory survived the death; "
+                        "skipping the grave trip and staying put"
+                    )
+                    return ActionResult.ok(
+                        "Death cost no critical items; no grave recovery needed",
+                        recovered=True,
+                        skipped_grave=True,
+                    )
+
                 current_phase = context.state.get_current_phase()
 
                 if "nether" in death_dim:
