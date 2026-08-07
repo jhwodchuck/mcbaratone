@@ -241,7 +241,26 @@ def goto_xz(
 
     try:
         client._last_navigation_survival_abort = False
-        client.transport.dispatch("chat", {"message": f"#goto {x} {z}"})
+        try:
+            client.transport.dispatch("chat", {"message": f"#goto {x} {z}"})
+        except Exception as exc:
+            # `#goto` is fire-and-forget: Baritone begins pathing when the
+            # message arrives, and the reply carries no information. Treating a
+            # slow reply as a navigation failure cost real work -- on
+            # 2026-08-07 Bot17's farmer crash-looped on it, because a single
+            # "Timeout waiting for bridge response (route: chat)" became
+            # goto_xz -> False -> RuntimeError("crop farm is unreachable") ->
+            # worker exit, twice in a row, on a farm 14 blocks away that was
+            # perfectly reachable.
+            #
+            # Poll for movement instead. If the command really was lost the
+            # idle-unpathing check below still returns False a few seconds
+            # later, which callers already handle -- but a command that landed
+            # now completes normally.
+            print(
+                f"Navigation: '#goto {x} {z}' reply timed out ({exc}); "
+                "polling for movement instead of failing"
+            )
         start = time.time()
         last_position = None
         idle_unpathing_checks = 0

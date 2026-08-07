@@ -174,3 +174,41 @@ def test_staged_goto_falls_back_to_y_agnostic_column(monkeypatch):
     )
     assert horizontal == [(32, 0)]
     assert destinations[0] == (32, 70, 0)
+
+
+def test_goto_xz_survives_a_slow_chat_reply(monkeypatch):
+    """A slow '#goto' reply must not read as an unreachable destination.
+
+    `#goto` is fire-and-forget: Baritone paths on receipt and the reply says
+    nothing. On 2026-08-07 Bot17's farmer crash-looped because one
+    "Timeout waiting for bridge response (route: chat)" became
+    goto_xz -> False -> RuntimeError("crop farm is unreachable") -> worker
+    exit. The farm was 14 blocks away and perfectly reachable; the same
+    message had earlier been read as a real terrain problem.
+    """
+    from baritone_client.common import navigation
+
+    positions = iter([
+        {"x": 0.0, "y": 64.0, "z": 0.0},
+        {"x": 5.0, "y": 64.0, "z": 5.0},
+        {"x": 10.0, "y": 64.0, "z": 10.0},
+    ])
+    last = {"x": 10.0, "y": 64.0, "z": 10.0}
+
+    class SlowChatTransport:
+        def dispatch(self, route, _payload=None):
+            if route == "chat":
+                raise TimeoutError("Timeout waiting for bridge response (route: chat)")
+            if route == "get_state":
+                return {"block_position": next(positions, last), "is_pathing": True}
+            return {}
+
+    client = SimpleNamespace(transport=SlowChatTransport())
+    monkeypatch.setattr(navigation.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        "baritone_client.common.combat.survival_tick", lambda *_a, **_k: False
+    )
+
+    arrived = navigation.goto_xz(client, 10, 10, timeout=30, tolerance=4.0)
+
+    assert arrived is True, "a slow chat reply must not fail an otherwise fine walk"
