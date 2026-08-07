@@ -1970,7 +1970,17 @@ def withdraw_required_from_catalog(
     candidates = []
     seen = set()
 
-    def add_candidate(entry) -> None:
+    def _player_distance(position) -> float:
+        """Straight-line distance from the bot, or 0.0 if position is unknown."""
+        if not all(axis in current_position for axis in ("x", "y", "z")):
+            return 0.0
+        return (
+            (float(current_position["x"]) - position[0]) ** 2
+            + (float(current_position["y"]) - position[1]) ** 2
+            + (float(current_position["z"]) - position[2]) ** 2
+        ) ** 0.5
+
+    def add_candidate(entry, tier: int = 0) -> None:
         if str(entry.get("dimension", current_dimension)) != current_dimension:
             return
         try:
@@ -1985,7 +1995,7 @@ def withdraw_required_from_catalog(
             return
         if position not in seen:
             seen.add(position)
-            candidates.append(position)
+            candidates.append((tier, _player_distance(position), position))
 
     # Prefer containers last observed with a requested item.  A single chest
     # may satisfy several items, hence the de-duplication above.
@@ -2004,11 +2014,22 @@ def withdraw_required_from_catalog(
                     continue
             except (TypeError, ValueError):
                 pass
-        add_candidate(entry)
+        add_candidate(entry, tier=1)
 
     if not candidates:
         print("STORAGE: fresh catalog snapshots contain none of the requested items")
         return 0
+
+    # Nearest first, within each tier. Without this the list stays in catalog
+    # order and the `[:max_containers]` slice below keeps an arbitrary eight of
+    # however many containers the fleet has catalogued. With 325 of them, the
+    # useful chest almost never made the cut: Bot15 stood 19.5m from a chest
+    # while logging the same distant ones hundreds of times over
+    # ("305 x 217.1m exceeds the 96.0m recovery radius"), and banked 25 loads
+    # all day. The tier is preserved so containers known to hold a requested
+    # item still outrank speculative unscanned ones.
+    candidates.sort(key=lambda candidate: (candidate[0], candidate[1]))
+    candidates = [position for _tier, _distance, position in candidates]
 
     moved_total = 0
     opened_any = False
