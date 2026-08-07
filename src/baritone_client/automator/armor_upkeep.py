@@ -140,12 +140,15 @@ def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
     """
     from ..common.inventory import equip_best_armor
     from ..common.resources import ensure_supplies
+    from ..common.tasks import PlayerDeathDetected, SurvivalRecoveryRequired
 
     before = equipped_pieces(client)
 
     # Free first: grave recovery and looting leave armour in ordinary slots.
     try:
         equip_best_armor(client)
+    except (PlayerDeathDetected, SurvivalRecoveryRequired):
+        raise
     except Exception:
         pass
     if equipped_pieces(client) >= TARGET_ARMOR_PIECES:
@@ -162,6 +165,13 @@ def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
                 crafted.append(piece.split(":")[1])
                 budget -= cost
                 equip_best_armor(client)
+        except (PlayerDeathDetected, SurvivalRecoveryRequired):
+            # These are control flow, not errors: they mean "stop and let the
+            # top level recover". Swallowing them left Bot15 crafting while
+            # dead -- it walked to an unreachable table at y=70 and tried to
+            # build a crafting table, all after the harness logged
+            # "Move aborted: player is dead".
+            raise
         except Exception:
             continue
 

@@ -195,3 +195,59 @@ def test_unreadable_equipment_never_loops_the_scheduler(monkeypatch):
     assert armor_upkeep.select_armor_opportunity(
         _Client(iron=94), _signals(), True
     ) is None
+
+
+def test_death_during_crafting_is_not_swallowed(monkeypatch):
+    """PlayerDeathDetected is control flow, not an error.
+
+    Its docstring says "phase execution must yield to top-level death
+    recovery". The first version caught it in a bare `except Exception:
+    continue`, and Bot15 went on crafting while dead -- the harness logged
+    "Move aborted: player is dead", then walked to an unreachable table at
+    y=70 and tried to build a crafting table from planks it did not have.
+    """
+    import baritone_client.common.inventory as inv
+    import baritone_client.common.resources as res
+    from baritone_client.common.tasks import PlayerDeathDetected
+
+    def die(*_a, **_k):
+        raise PlayerDeathDetected("Player died during combat or health recovery")
+
+    monkeypatch.setattr(inv, "equip_best_armor", lambda _c: None)
+    monkeypatch.setattr(res, "ensure_supplies", die)
+
+    with pytest.raises(PlayerDeathDetected):
+        armor_upkeep.run_armor_upkeep(_Client(iron=94, worn=0), SimpleNamespace())
+
+
+def test_survival_recovery_signal_is_not_swallowed_either(monkeypatch):
+    import baritone_client.common.inventory as inv
+    import baritone_client.common.resources as res
+    from baritone_client.common.tasks import SurvivalRecoveryRequired
+
+    def bail(_c):
+        raise SurvivalRecoveryRequired("needs recovery")
+
+    monkeypatch.setattr(inv, "equip_best_armor", bail)
+    monkeypatch.setattr(res, "ensure_supplies", lambda *_a, **_k: None)
+
+    with pytest.raises(SurvivalRecoveryRequired):
+        armor_upkeep.run_armor_upkeep(_Client(iron=94, worn=0), SimpleNamespace())
+
+
+def test_ordinary_crafting_failures_are_still_tolerated(monkeypatch):
+    """Only control-flow signals escape; a broken recipe must not crash a tick."""
+    import baritone_client.common.inventory as inv
+    import baritone_client.common.resources as res
+
+    monkeypatch.setattr(inv, "equip_best_armor", lambda _c: None)
+    monkeypatch.setattr(
+        res, "ensure_supplies",
+        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("no recipe")),
+    )
+
+    ok, detail, _before, _after = armor_upkeep.run_armor_upkeep(
+        _Client(iron=94, worn=0), SimpleNamespace()
+    )
+
+    assert ok is False and "unchanged" in detail
