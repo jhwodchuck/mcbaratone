@@ -6,8 +6,27 @@ import time
 from typing import Any, Dict, Iterable, Tuple
 
 
-MIN_STORAGE_TRAVEL_HEALTH = 18.0
-MIN_STORAGE_TRAVEL_FOOD = 18
+# Starting a bounded (<=96m) trip to bank what the bot is already carrying.
+#
+# These were 18.0/18 -- effectively "must be at full health and full regen
+# capability". Any bot that had recently been hit by anything failed the check,
+# so on 2026-08-06 Bot19 stood 14 blocks from home holding 547 logs it had cut
+# and could not bank them; it had completed 5 deposits all day against Bot07's
+# 4,249. Depositing is the risk-*reducing* move for cargo: a wounded bot that
+# dies mid-trip loses what it was already going to lose, while a successful
+# trip banks it permanently. The trip is distance-capped and aborts on tick, so
+# the floor only needs to exclude bots that must eat or flee first.
+MIN_STORAGE_TRAVEL_HEALTH = 10.0
+MIN_STORAGE_TRAVEL_FOOD = 6
+# Abandoning a trip already in progress. Deliberately below the start floor:
+# with one shared threshold a bot that set out at exactly the limit aborted on
+# the first point of damage, healed back, set out again, and flapped. Hysteresis
+# means an in-flight deposit is only abandoned when the bot is genuinely in
+# danger rather than merely scuffed.
+ABORT_STORAGE_TRAVEL_HEALTH = 6.0
+ABORT_STORAGE_TRAVEL_FOOD = 3
+# Eat back up to this when restoring a margin; comfort, not a precondition.
+COMFORTABLE_STORAGE_TRAVEL_FOOD = 18
 MAX_STORAGE_TRAVEL_DISTANCE = 96.0
 MAX_STORAGE_TOUR_STOPS = 4
 STORAGE_CHUNK_LOAD_RADIUS = 4.5
@@ -46,6 +65,17 @@ def storage_travel_safe(snapshot: Dict[str, Any]) -> bool:
     )
 
 
+def storage_travel_must_abort(snapshot: Dict[str, Any]) -> bool:
+    """Return whether an in-flight storage trip has to be given up now."""
+    health = float(snapshot.get("health", 20) or 0)
+    food = int(snapshot.get("food_level", snapshot.get("food", 20)) or 0)
+    return (
+        bool(snapshot.get("is_dead", False))
+        or health < ABORT_STORAGE_TRAVEL_HEALTH
+        or food < ABORT_STORAGE_TRAVEL_FOOD
+    )
+
+
 def storage_distance(snapshot: Dict[str, Any], target: Tuple[int, int, int]) -> float:
     """Measure three-dimensional distance from a bridge snapshot to a target."""
     position = snapshot.get("block_position", snapshot.get("position", {}))
@@ -60,7 +90,7 @@ def storage_distance(snapshot: Dict[str, Any], target: Tuple[int, int, int]) -> 
 def cancel_unsafe_storage_travel(client) -> None:
     """Cancel an active storage path once its survival margin is exhausted."""
     snapshot = client.transport.dispatch("get_state", {})
-    if storage_travel_safe(snapshot):
+    if not storage_travel_must_abort(snapshot):
         return
     client._storage_survival_abort = True
     client.transport.dispatch("cancel", {})
@@ -78,7 +108,9 @@ def restore_storage_travel_margin(client) -> bool:
         return False
     if storage_travel_safe(snapshot):
         return True
-    eat_until_hunger(client, minimum_food=MIN_STORAGE_TRAVEL_FOOD)
+    # Eat to comfort, but only require the travel floor: insisting on a full
+    # regen margin here is what burned 45s and then refused the trip anyway.
+    eat_until_hunger(client, minimum_food=COMFORTABLE_STORAGE_TRAVEL_FOOD)
     recover_health(
         client,
         minimum_health=MIN_STORAGE_TRAVEL_HEALTH,

@@ -965,7 +965,11 @@ def test_deposit_aborts_chest_travel_when_health_drops(monkeypatch):
     client = DummyClient(transport)
 
     def unsafe_goto(_client, _x, _y, _z, *, on_tick, **_kwargs):
-        transport.health = 12.0
+        # Genuine danger, not a scratch. This was 12.0 when starting and
+        # aborting a trip shared one threshold of 18 health; the two are now
+        # separate so a deposit is not abandoned over a single hit. See
+        # tests/test_storage_travel_margin.py for the hysteresis itself.
+        transport.health = 3.0
         on_tick()
         return False
 
@@ -973,6 +977,42 @@ def test_deposit_aborts_chest_travel_when_health_drops(monkeypatch):
 
     assert inventory.deposit_excess_to_chest(client, (80, 65, 0)) == -1
     assert client._storage_survival_abort is True
+
+
+def test_deposit_keeps_travelling_after_losing_a_little_health(monkeypatch):
+    """The other half of the rule above: a scuffed bot still banks its cargo."""
+    class ScuffedTravelTransport:
+        def __init__(self):
+            self.health = 20.0
+            self.cancelled = False
+
+        def dispatch(self, route, _payload):
+            if route == "cancel":
+                self.cancelled = True
+            if route == "get_block":
+                return {"id": "minecraft:void_air"}
+            if route == "get_state":
+                return {
+                    "health": self.health,
+                    "food_level": 20,
+                    "block_position": {"x": 0, "y": 65, "z": 0},
+                }
+            return {}
+
+    transport = ScuffedTravelTransport()
+    client = DummyClient(transport)
+
+    def scuffed_goto(_client, _x, _y, _z, *, on_tick, **_kwargs):
+        transport.health = 12.0  # hit once en route; keep going
+        on_tick()
+        return False
+
+    monkeypatch.setattr("baritone_client.common.navigation.goto", scuffed_goto)
+
+    inventory.deposit_excess_to_chest(client, (80, 65, 0))
+
+    assert transport.cancelled is False, "abandoned a deposit over one hit"
+    assert getattr(client, "_storage_survival_abort", False) is False
 
 
 def test_storage_location_resolves_from_production_checkpoint_state(monkeypatch, tmp_path):
