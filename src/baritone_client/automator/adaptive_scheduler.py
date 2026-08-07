@@ -26,7 +26,7 @@ from .end_readiness import (
     role_focused_candidates,
 )
 from .fleet_coverage import borrowed_specialty_roles, configured_specialty_roles
-from . import aid_response, camp_breaker, food_opportunity, mutual_aid
+from . import aid_response, armor_upkeep, camp_breaker, food_opportunity, mutual_aid
 from .common.role_opportunities import run_role_opportunity
 from .common.crop_opportunity import run_crop_opportunity
 from .iron_scheduler import run_scheduled_iron_cycle
@@ -53,13 +53,14 @@ PLANTABLE_ITEMS = (
     "minecraft:potato",
     "minecraft:beetroot_seeds",
 )
+_ROLE_OPPORTUNITY_KINDS = frozenset({
+    OpportunityKind.END_SUPPLY, OpportunityKind.NETHER_SUPPLY,
+    OpportunityKind.ENCHANTING_XP, OpportunityKind.DIMENSION_ENTRY,
+    OpportunityKind.ENCHANTING_MATERIAL, OpportunityKind.END_FRONTIER,
+    OpportunityKind.END_CITY_ROUTE,
+})
 LEATHER_ANIMALS = {
-    "cow",
-    "mooshroom",
-    "horse",
-    "donkey",
-    "mule",
-    "llama",
+    "cow", "mooshroom", "horse", "donkey", "mule", "llama",
 }
 
 
@@ -439,6 +440,7 @@ class AdaptiveScheduler:
         OpportunityKind.END_FRONTIER: 600.0,
         OpportunityKind.END_CITY_ROUTE: 300.0,
         OpportunityKind.STORAGE_MAINTENANCE: 120.0,
+        OpportunityKind.ARMOR_UPKEEP: 120.0,
     }
     _BORROWED_SPECIALTY_COOLDOWN = 300.0
 
@@ -576,6 +578,9 @@ class AdaptiveScheduler:
                     specialty_candidates.append(
                         replace(candidate, assigned_role=borrowed.value)
                     )
+        # Armour is survival work, offered in every role and phase.
+        if (armor := armor_upkeep.select_armor_opportunity(self.client, signals, self._cooldown_ready(OpportunityKind.ARMOR_UPKEEP, current_time))) is not None:
+            specialty_candidates.append(armor)
         if specialty_candidates and role is not FleetRole.BALANCED:
             return max(specialty_candidates, key=lambda candidate: candidate.score)
         if role is not FleetRole.BALANCED:
@@ -701,20 +706,12 @@ class AdaptiveScheduler:
                     before_total,
                     after_total,
                 )
+            elif opportunity.kind is OpportunityKind.ARMOR_UPKEEP:
+                result = OpportunityResult(opportunity, *armor_upkeep.run_armor_upkeep(self.client, self.state))
             elif opportunity.kind is OpportunityKind.CLEAR_HOSTILES_AID:
                 result = OpportunityResult(opportunity, *aid_response.run_scheduled_clear_hostiles(self.client, self.state, self.observe(), opportunity))
-            elif opportunity.kind in {
-                OpportunityKind.END_SUPPLY,
-                OpportunityKind.NETHER_SUPPLY,
-                OpportunityKind.ENCHANTING_XP,
-                OpportunityKind.DIMENSION_ENTRY,
-                OpportunityKind.ENCHANTING_MATERIAL,
-                OpportunityKind.END_FRONTIER,
-                OpportunityKind.END_CITY_ROUTE,
-            }:
-                result = OpportunityResult(
-                    opportunity, *run_role_opportunity(self.client, self.state, opportunity)
-                )
+            elif opportunity.kind in _ROLE_OPPORTUNITY_KINDS:
+                result = OpportunityResult(opportunity, *run_role_opportunity(self.client, self.state, opportunity))
             else:
                 success, detail, before_total, after_total = run_scheduled_iron_cycle(
                     self.client, self.state, self._runtime()
