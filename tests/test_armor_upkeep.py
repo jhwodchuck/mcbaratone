@@ -41,8 +41,12 @@ def _stub(monkeypatch):
     )
 
 
-def _signals(safe=True):
-    return SimpleNamespace(safe_for_local_work=safe)
+def _signals(health=20.0, hostiles=0):
+    """Armour uses a health floor only -- see armor_work_allowed."""
+    return SimpleNamespace(
+        health=health, nearby_hostiles=hostiles, food=20,
+        safe_for_local_work=(health >= 16 and not hostiles),
+    )
 
 
 def test_bot15s_exact_state_produces_an_opportunity():
@@ -61,11 +65,36 @@ def test_a_fully_armoured_bot_is_never_offered_the_work():
     ) is None
 
 
-def test_an_unsafe_bot_does_not_stop_to_get_dressed():
-    """At 1.5 health mid-siege the right move is escaping, not tailoring."""
+def test_a_dying_bot_does_not_stop_to_get_dressed():
+    """Below the health floor, fleeing and eating come first."""
     assert armor_upkeep.select_armor_opportunity(
-        _Client(iron=94, worn=0), _signals(safe=False), True
+        _Client(iron=94, worn=0), _signals(health=1.5), True
     ) is None
+
+
+def test_the_live_deadlock_condition_now_produces_work():
+    """THE regression test for this module.
+
+    The first version gated armour on `safe_for_local_work`, which demands
+    health >= 16 and zero nearby hostiles. Measured across the live fleet, the
+    standing blocker was "health 14.0<16, 2 hostile(s) near" -- the symptoms of
+    having no armour. So the fix could never fire on the bots that needed it.
+    A bot at 14 health with zombies on it and 94 iron in its pack is the single
+    clearest case for putting boots on.
+    """
+    signals = _signals(health=14.0, hostiles=2)
+    assert signals.safe_for_local_work is False, "precondition: comfort gate shut"
+
+    assert armor_upkeep.select_armor_opportunity(
+        _Client(iron=94, raw=19, worn=0), signals, True
+    ) is not None
+
+
+def test_hostiles_alone_never_block_armour():
+    """Night with mobs about is when armour matters most."""
+    assert armor_upkeep.select_armor_opportunity(
+        _Client(iron=94, worn=0), _signals(health=20.0, hostiles=5), True
+    ) is not None
 
 
 def test_a_bot_without_iron_is_not_offered_the_work():

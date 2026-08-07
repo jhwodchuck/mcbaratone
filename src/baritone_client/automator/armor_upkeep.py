@@ -11,11 +11,13 @@ That is not a combat-code failure. The defence system evaluates threats, tries
 to flee, and fights when cornered; it simply cannot save a bot taking full
 damage. Armour is a survival concern, not an expedition prerequisite.
 
-Two bounds matter. Self-equipping is capped at one set, because a bot's carried
-iron is notionally the fleet's supply for tools and rails and a single worker
-must not consume the reserve. And it only runs when local work is already
-considered safe -- crafting needs a table, and a bot at 1.5 health in the
-middle of a siege should be escaping, not tailoring.
+Self-equipping is capped at one set, because a bot's carried iron is notionally
+the fleet's supply for tools and rails and a single worker must not consume the
+reserve.
+
+The safety gate is deliberately *not* the scheduler's `safe_for_local_work` --
+see `armor_work_allowed` for why that choice made the first version of this
+module a no-op on every bot it was written for.
 """
 
 from __future__ import annotations
@@ -37,6 +39,10 @@ FULL_SET_IRON = sum(cost for _piece, cost in ARMOR_PLAN)
 MIN_IRON_TO_EQUIP = 4
 #: The defence runtime's own comfort threshold.
 TARGET_ARMOR_PIECES = 4
+#: Health floor for armour work. Above the emergency threshold, so a dying bot
+#: still flees and eats first -- but deliberately far below the comfort gate's
+#: 16, because a bot under fire is exactly the one that needs armour.
+ARMOR_MIN_HEALTH = 8.0
 
 
 def _count(client: Any, item_id: str) -> int:
@@ -81,11 +87,31 @@ def needs_armor(client: Any) -> bool:
     return carried_iron(client) >= MIN_IRON_TO_EQUIP
 
 
+def armor_work_allowed(signals: Any) -> bool:
+    """Armour uses its own gate, deliberately not `safe_for_local_work`.
+
+    The comfort gate demands health >= 16, food >= 14, daylight and *zero*
+    nearby hostiles. Measured across the fleet, the blocker is almost always
+    "1-2 hostile(s) near", sometimes with "health 14.0<16" -- which are the
+    symptoms of having no armour. Gating armour on that is circular: a bot
+    must be safe before it may become safe, so at night the opportunity never
+    fires at all. That circularity is what the first version of this module
+    shipped with, and it made the fix a no-op.
+
+    A bot under fire is taking those hits either way. Spending a short crafting
+    detour to cut all future damage is right even mid-fight; waiting for calm
+    is what produced 143 zombie deaths in a day. So the only gate is a health
+    floor above the emergency threshold: below it, fleeing and eating come
+    first and armour can wait.
+    """
+    return float(getattr(signals, "health", 0.0) or 0.0) >= ARMOR_MIN_HEALTH
+
+
 def select_armor_opportunity(client: Any, signals: Any, cooldown_ready: bool):
     """Offer one bounded armour upkeep action, if it is worth taking."""
     from .local_opportunity import LocalOpportunity, OpportunityKind
 
-    if not cooldown_ready or not getattr(signals, "safe_for_local_work", False):
+    if not cooldown_ready or not armor_work_allowed(signals):
         return None
     worn = equipped_pieces(client)
     if worn >= TARGET_ARMOR_PIECES:
@@ -152,10 +178,12 @@ def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
 
 
 __all__ = [
+    "ARMOR_MIN_HEALTH",
     "ARMOR_PLAN",
     "FULL_SET_IRON",
     "MIN_IRON_TO_EQUIP",
     "TARGET_ARMOR_PIECES",
+    "armor_work_allowed",
     "carried_iron",
     "equipped_pieces",
     "missing_pieces",
