@@ -70,11 +70,38 @@ def carried_iron(client: Any) -> int:
 
 
 def missing_pieces(client: Any) -> list[Tuple[str, int]]:
-    """Armour this bot can afford and is not already carrying."""
+    """Pieces the bot neither carries nor wears, so crafting is warranted.
+
+    Affordability is applied later, against the run's iron budget.
+    """
     return [
         (piece, cost)
         for piece, cost in ARMOR_PLAN
         if _count(client, piece) < 1
+    ]
+
+
+def unworn_carried_pieces(client: Any) -> list[str]:
+    """Armour sitting in ordinary slots that is not already being worn.
+
+    `get_inventory` folds the bridge's `armor` section into its counts, so
+    `count_item("minecraft:iron_helmet")` returns 1 for a helmet that is *on
+    the bot's head*. Testing `count > 0` therefore means "carried or worn",
+    which is why Bot16 offered this opportunity every cooldown for an hour
+    while holding 2 iron and having nothing it could do -- seven identical
+    "armour unchanged at 1/4 with 2 iron carried" runs. A piece only counts as
+    unworn when there is one more of it than the bot is wearing.
+    """
+    from ..common.inventory import get_equipped_armor
+
+    try:
+        worn = set(get_equipped_armor(client).values())
+    except Exception:
+        worn = set()
+    return [
+        piece
+        for piece, _cost in ARMOR_PLAN
+        if _count(client, piece) > (1 if piece in worn else 0)
     ]
 
 
@@ -118,9 +145,9 @@ def select_armor_opportunity(client: Any, signals: Any, cooldown_ready: bool):
         return None
     # Carrying an unworn piece is worth a tick even with no iron at all:
     # equipping it is free, and grave recovery routinely leaves armour in
-    # ordinary inventory slots.
-    carrying_unworn = any(_count(client, piece) > 0 for piece, _cost in ARMOR_PLAN)
-    if not carrying_unworn and not needs_armor(client):
+    # ordinary inventory slots. Anything else needs iron we can actually spend,
+    # otherwise this offers work it has no way to complete.
+    if not unworn_carried_pieces(client) and not needs_armor(client):
         return None
     # An unarmoured bot with iron is the single cheapest survival win
     # available, so it outscores routine farming without displacing recovery.
@@ -198,6 +225,7 @@ __all__ = [
     "equipped_pieces",
     "missing_pieces",
     "needs_armor",
+    "unworn_carried_pieces",
     "run_armor_upkeep",
     "select_armor_opportunity",
 ]

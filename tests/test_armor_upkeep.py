@@ -251,3 +251,49 @@ def test_ordinary_crafting_failures_are_still_tolerated(monkeypatch):
     )
 
     assert ok is False and "unchanged" in detail
+
+
+def test_worn_armour_is_not_mistaken_for_a_spare(monkeypatch):
+    """THE Bot16 livelock.
+
+    `get_inventory` folds the bridge's `armor` section into its counts, so
+    count_item() reports 1 for a helmet the bot is wearing. Treating count > 0
+    as "carrying a spare" meant any bot wearing one piece was offered this
+    work every cooldown forever. Bot16 logged seven identical runs of
+    "armour unchanged at 1/4 with 2 iron carried" -- 2 iron cannot buy the
+    cheapest piece, so there was never anything it could do.
+    """
+    import baritone_client.common.inventory as inv
+
+    client = _Client(iron=2, raw=0, worn=1, carried=["minecraft:iron_helmet"])
+    monkeypatch.setattr(
+        inv, "get_equipped_armor", lambda _c: {"head": "minecraft:iron_helmet"}
+    )
+
+    assert armor_upkeep.unworn_carried_pieces(client) == []
+    assert armor_upkeep.select_armor_opportunity(client, _signals(), True) is None
+
+
+def test_a_genuine_spare_is_still_detected(monkeypatch):
+    """Wearing one helmet while carrying a second is real, equippable work."""
+    import baritone_client.common.inventory as inv
+
+    client = _Client(iron=0, worn=1)
+    monkeypatch.setattr(inv, "count_item", lambda _c, item: 2 if "helmet" in item else 0)
+    monkeypatch.setattr(
+        inv, "get_equipped_armor", lambda _c: {"head": "minecraft:iron_helmet"}
+    )
+
+    assert armor_upkeep.unworn_carried_pieces(client) == ["minecraft:iron_helmet"]
+    assert armor_upkeep.select_armor_opportunity(client, _signals(), True) is not None
+
+
+def test_no_iron_and_no_spare_is_never_offered(monkeypatch):
+    """The general form of the livelock: never offer unaffordable work."""
+    import baritone_client.common.inventory as inv
+
+    monkeypatch.setattr(inv, "get_equipped_armor", lambda c: {"head": "x"} if c.worn else {})
+
+    assert armor_upkeep.select_armor_opportunity(
+        _Client(iron=3, raw=0, worn=1), _signals(), True
+    ) is None, "3 iron cannot buy the cheapest piece (boots cost 4)"
