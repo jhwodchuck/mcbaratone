@@ -63,6 +63,7 @@ _PRODUCTIVE_OPPORTUNITIES = {
     "enchanting_material",
     "storage_maintenance",
     "clear_hostiles_aid",
+    "self_defense",
 }
 
 

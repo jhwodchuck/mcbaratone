@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, Mapping, Sequence, Tuple
 
 from . import harness_ops
@@ -36,6 +37,94 @@ def _facing_for_pair(first: Position, second: Position) -> str:
         raise RuntimeError("warehouse anchor pair is not horizontally adjacent") from error
 
 
+def _active_warehouse(record: Mapping[str, Any]) -> bool:
+    return str(dict(record.get("metadata", {})).get("lifecycle", "active")) != "retired"
+
+
+def _replacement_warehouse_id(
+    catalog: StorageCatalog,
+    dimension: str,
+) -> str:
+    """Return a new immutable identity without reusing the failed layout."""
+    base = _warehouse_id_for_dimension(dimension)
+    existing = {str(record["warehouse_id"]) for record in catalog.list_warehouses()}
+    index = 1
+    while f"{base}_rehome_{index}" in existing:
+        index += 1
+    return f"{base}_rehome_{index}"
+
+
+def _pair_is_unplaced_and_unsupported(client: Any, coordinates: Sequence[Position]) -> bool:
+    """Prove this planned chest pair was never placed on usable ground.
+
+    This is intentionally stricter than a failed placement check: a normal
+    empty pair above solid ground is a valid unfinished warehouse and must not
+    be retired.  Both target blocks must still be placeable air and both
+    supports must be absent/non-solid, as happens for an unloaded or void
+    anchor.  A chest, any other block, or a solid support leaves the immutable
+    layout in place for an operator to investigate.
+    """
+    for position in coordinates:
+        target = harness_ops._block_at(client, *position)
+        support = harness_ops._block_at(client, position[0], position[1] - 1, position[2])
+        if "air" not in target or harness_ops._is_solid_support_block(support):
+            return False
+    return True
+
+
+def rehome_abandoned_warehouse(
+    client: Any,
+    catalog: StorageCatalog,
+    warehouse: Mapping[str, Any],
+    dimension: str,
+) -> Mapping[str, Any] | None:
+    """Safely replace an unplaced warehouse whose full footprint is void.
+
+    No database-only recovery is permitted.  The old layout stays immutable
+    and is retired only after exact live block evidence proves every reserved
+    chest pair (including intake) has neither a chest nor solid support.  A
+    supported replacement pair is found *before* mutating the catalog.
+    """
+    reservations = catalog.list_slot_reservations(str(warehouse["warehouse_id"]))
+    if any(item["state"] in {"building", "verified"} for item in reservations):
+        return None
+    layout = WarehouseLayout(
+        tuple(warehouse["anchor"]), str(warehouse["facing"]),
+        aisle_width=int(warehouse["aisle_width"]),
+    )
+    pairs = [layout.slot("intake", 0).coordinates]
+    pairs.extend(item["paired_coordinates"] for item in reservations)
+    if not all(_pair_is_unplaced_and_unsupported(client, pair) for pair in pairs):
+        return None
+    spot = harness_ops.find_double_chest_spot(client, dry_only=True)
+    if spot is None:
+        return None
+    first, second = spot
+    replacement_id = _replacement_warehouse_id(catalog, dimension)
+    observed = time.time()
+    catalog.retire_warehouse(
+        str(warehouse["warehouse_id"]),
+        reason="all planned chest pairs were unplaced and unsupported",
+        replaced_by=replacement_id,
+        updated_at=observed,
+    )
+    return catalog.register_warehouse(
+        replacement_id,
+        dimension=dimension,
+        anchor=first,
+        facing=_facing_for_pair(first, second),
+        expansion_direction=WAREHOUSE_EXPANSION_DIRECTION,
+        aisle_width=WAREHOUSE_AISLE_WIDTH,
+        metadata={
+            "floor": 0,
+            "layout_version": 1,
+            "lifecycle": "active",
+            "replaces": str(warehouse["warehouse_id"]),
+        },
+        updated_at=observed,
+    )
+
+
 def ensure_warehouse_layout(
     client: Any,
     catalog: StorageCatalog,
@@ -45,10 +134,13 @@ def ensure_warehouse_layout(
     matching = [
         record
         for record in catalog.list_warehouses()
-        if str(record["dimension"]) == str(dimension)
+        if str(record["dimension"]) == str(dimension) and _active_warehouse(record)
     ]
     if matching:
         record = matching[0]
+        replacement = rehome_abandoned_warehouse(client, catalog, record, dimension)
+        if replacement is not None:
+            record = replacement
     else:
         spot = harness_ops.find_double_chest_spot(client, dry_only=True)
         if spot is None:
@@ -165,5 +257,6 @@ __all__ = [
     "ensure_warehouse_layout",
     "mark_slot_blocked",
     "planned_slot_is_obstructed",
+    "rehome_abandoned_warehouse",
     "reserve_category_slot",
 ]

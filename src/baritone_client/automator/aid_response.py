@@ -83,6 +83,24 @@ def _combat_ready(client: Any) -> bool:
         return False
 
 
+def _safe_to_respond(signals: Any) -> bool:
+    """Keep responders fit without rejecting an otherwise safe night patrol.
+
+    The normal local-work gate rejects nighttime activity, but a bot standing
+    safely at night is exactly the available responder when a nearby worker is
+    pinned by hostiles.  It must still have fresh observations, survival
+    margin, be in the same Overworld, and have no local threat of its own.
+    """
+    return bool(
+        getattr(signals, "observed", False)
+        and getattr(signals, "entities_observed", False)
+        and "overworld" in str(getattr(signals, "dimension", "") or "")
+        and float(getattr(signals, "health", 0.0) or 0.0) >= 16.0
+        and int(getattr(signals, "food", 0) or 0) >= 14
+        and int(getattr(signals, "nearby_hostiles", 0) or 0) == 0
+    )
+
+
 def select_clear_hostiles_opportunity(
     client: Any,
     state: Any,
@@ -95,7 +113,7 @@ def select_clear_hostiles_opportunity(
 ) -> Optional[LocalOpportunity]:
     """Offer the best nearby fight without claiming it or blocking the requester."""
     observed = time.time() if now is None else float(now)
-    if not bool(getattr(signals, "safe_for_local_work", False)) or not _combat_ready(client):
+    if not _safe_to_respond(signals) or not _combat_ready(client):
         return None
     try:
         owner = _owner(state)
@@ -139,7 +157,7 @@ def try_claim_clear_hostiles(
     observed = time.time() if now is None else float(now)
     if opportunity.kind is not OpportunityKind.CLEAR_HOSTILES_AID:
         return None
-    if not bool(getattr(signals, "safe_for_local_work", False)) or not _combat_ready(client):
+    if not _safe_to_respond(signals) or not _combat_ready(client):
         return None
     try:
         owner = _owner(state)

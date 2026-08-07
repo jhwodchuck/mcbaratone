@@ -158,6 +158,66 @@ def test_each_dimension_gets_a_distinct_warehouse_identity(tmp_path, monkeypatch
     assert warehouse["warehouse_id"] == "warehouse_01_the_nether"
 
 
+def test_void_backed_unplaced_warehouse_is_rehomed_without_rewriting_history(
+    tmp_path, monkeypatch
+):
+    """A stale floating anchor must not permanently block Quartermaster work."""
+    catalog = StorageCatalog(Path(tmp_path) / "catalog.sqlite3", "world-a")
+    catalog.register_warehouse(
+        "warehouse_01",
+        dimension="minecraft:overworld",
+        anchor=(-28, 80, -1),
+        facing="north",
+        expansion_direction="positive_local_x",
+        aisle_width=3,
+    )
+    catalog.reserve_slot(
+        "warehouse_01", "intake", "intake", 0,
+        paired_coordinates=((-28, 80, -1), (-27, 80, -1)),
+        canonical_coordinate=(-28, 80, -1), state="blocked",
+    )
+    catalog.reserve_slot(
+        "warehouse_01", "category", "building", 0,
+        paired_coordinates=((-28, 80, -5), (-27, 80, -5)),
+        canonical_coordinate=(-28, 80, -5), state="blocked",
+    )
+    monkeypatch.setattr(organizer.harness_ops, "_block_at", lambda *_args: "minecraft:void_air")
+    monkeypatch.setattr(
+        organizer.harness_ops, "find_double_chest_spot",
+        lambda _client, **_kwargs: ((10, 64, 10), (11, 64, 10)),
+    )
+
+    replacement, _layout = organizer.ensure_warehouse_layout(
+        SimpleNamespace(), catalog, "minecraft:overworld"
+    )
+
+    retired = catalog.get_warehouse("warehouse_01")
+    assert replacement["warehouse_id"] == "warehouse_01_rehome_1"
+    assert replacement["anchor"] == (10, 64, 10)
+    assert replacement["metadata"]["replaces"] == "warehouse_01"
+    assert retired["anchor"] == (-28, 80, -1)
+    assert retired["metadata"]["lifecycle"] == "retired"
+    assert retired["metadata"]["replaced_by"] == replacement["warehouse_id"]
+    assert catalog.get_slot_reservation("warehouse_01", "intake", "intake", 0)["state"] == "blocked"
+
+
+def test_supported_or_verified_warehouse_is_never_automatically_rehomed(tmp_path, monkeypatch):
+    catalog = StorageCatalog(Path(tmp_path) / "catalog.sqlite3", "world-a")
+    _register_verified_intake(catalog)
+    monkeypatch.setattr(organizer.harness_ops, "_block_at", lambda *_args: "minecraft:void_air")
+    monkeypatch.setattr(
+        organizer.harness_ops, "find_double_chest_spot",
+        lambda *_args, **_kwargs: pytest.fail("must not replace a verified warehouse"),
+    )
+
+    warehouse, _layout = organizer.ensure_warehouse_layout(
+        SimpleNamespace(), catalog, "minecraft:overworld"
+    )
+
+    assert warehouse["warehouse_id"] == "warehouse_01"
+    assert warehouse["metadata"].get("lifecycle") is None
+
+
 def test_planner_never_touches_player_owned_storage(tmp_path):
     catalog = StorageCatalog(Path(tmp_path) / "catalog.sqlite3", "world-a")
     position = (1, 64, 1)

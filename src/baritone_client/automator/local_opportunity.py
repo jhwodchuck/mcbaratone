@@ -26,6 +26,7 @@ class OpportunityKind(str, Enum):
     STORAGE_MAINTENANCE = "storage_maintenance"
     ARMOR_UPKEEP = "armor_upkeep"
     CLEAR_HOSTILES_AID = "clear_hostiles_aid"
+    SELF_DEFENSE = "self_defense"
 
 
 @dataclass(frozen=True)

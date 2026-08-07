@@ -31,6 +31,7 @@ from .common.role_opportunities import run_role_opportunity
 from .common.crop_opportunity import run_crop_opportunity
 from .iron_scheduler import run_scheduled_iron_cycle
 from .local_opportunity import LocalOpportunity, OpportunityKind, local_work_blockers, local_work_hold_reason
+from .safety_recovery import run_self_defense
 from .objective import Objective
 from .state_manager import Phase
 from .specialty_scheduler import select_profile_specialty_opportunities, select_specialty_opportunity
@@ -62,8 +63,6 @@ _ROLE_OPPORTUNITY_KINDS = frozenset({
 LEATHER_ANIMALS = {
     "cow", "mooshroom", "horse", "donkey", "mule", "llama",
 }
-
-
 @dataclass(frozen=True)
 class GameSignals:
     """One best-effort snapshot used for a single scheduling decision."""
@@ -547,6 +546,8 @@ class AdaptiveScheduler:
             allow_recovery=True,
         )
         specialty_candidates = []
+        if primary is not None and primary.kind is OpportunityKind.SELF_DEFENSE:
+            return primary
         if primary is not None:
             specialty_candidates.append(replace(primary, assigned_role=role.value))
         specialty_candidates.extend(
@@ -708,6 +709,8 @@ class AdaptiveScheduler:
                 )
             elif opportunity.kind is OpportunityKind.ARMOR_UPKEEP:
                 result = OpportunityResult(opportunity, *armor_upkeep.run_armor_upkeep(self.client, self.state))
+            elif opportunity.kind is OpportunityKind.SELF_DEFENSE:
+                result = OpportunityResult(opportunity, *run_self_defense(self.client, self.observe))
             elif opportunity.kind is OpportunityKind.CLEAR_HOSTILES_AID:
                 result = OpportunityResult(opportunity, *aid_response.run_scheduled_clear_hostiles(self.client, self.state, self.observe(), opportunity))
             elif opportunity.kind in _ROLE_OPPORTUNITY_KINDS:

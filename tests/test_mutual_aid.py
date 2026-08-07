@@ -187,6 +187,22 @@ def test_unarmed_responder_never_claims_clear_hostiles(tmp_path, monkeypatch):
     ) is None
 
 
+def test_safe_night_responder_can_claim_hostile_aid(tmp_path, monkeypatch):
+    catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
+    _clear_hostiles_request(tmp_path, catalog)
+
+    opportunity = aid_response.select_clear_hostiles_opportunity(
+        _armed_responder(monkeypatch),
+        _state(tmp_path, "Bot17"),
+        _signals(position=(10, 64, 0), world_time=18000),
+        role=FleetRole.BALANCED,
+        now=110.0,
+        catalog=catalog,
+    )
+
+    assert opportunity is not None
+
+
 def test_lapsed_aid_lease_is_claimable_by_another_responder(tmp_path, monkeypatch):
     catalog = StorageCatalog(tmp_path / "catalog.sqlite3", "world-a")
     request = _clear_hostiles_request(tmp_path, catalog)

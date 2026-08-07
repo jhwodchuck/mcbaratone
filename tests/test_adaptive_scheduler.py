@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from baritone_client.automator import adaptive_scheduler as adaptive
 from baritone_client.automator import aid_response
+from baritone_client.automator import safety_recovery
 from baritone_client.automator import specialty_scheduler as specialty
 from baritone_client.automator.adaptive_scheduler import (
     AdaptiveScheduler,
@@ -293,6 +294,37 @@ def test_wood_role_selects_forestry_only_after_safe_bootstrap():
     assert opportunity.kind is OpportunityKind.WOOD_FARM
 
 
+def test_hostile_specialist_runs_defensive_recovery_before_a_role_hold():
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), _state())
+
+    opportunity = scheduler.select_local_opportunity(
+        _signals(nearby_hostiles=2, health=11.0),
+        [Phase.SPAWN_BOOTSTRAP, Phase.BOOT_SEQUENCE],
+        now=1000.0,
+        role=FleetRole.WOOD_SUPPLY,
+    )
+
+    assert opportunity is not None
+    assert opportunity.kind is OpportunityKind.SELF_DEFENSE
+
+
+def test_defensive_recovery_requires_a_measured_hostile_reduction(monkeypatch):
+    state = _state()
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    opportunity = LocalOpportunity(
+        OpportunityKind.SELF_DEFENSE, 320, "two nearby hostiles"
+    )
+    observations = iter((_signals(nearby_hostiles=2), _signals(nearby_hostiles=0)))
+    monkeypatch.setattr(scheduler, "observe", lambda: next(observations))
+    monkeypatch.setattr(safety_recovery, "defend_or_flee", lambda *_args, **_kwargs: True)
+
+    result = scheduler.run_local_opportunity(opportunity)
+
+    assert result.success
+    assert (result.before, result.after) == (2, 0)
+    assert state.custom_data["productive_work"]["no_progress_streak"] == 0
+
+
 def test_iron_role_selects_bounded_mining_after_initial_setup_even_at_night():
     scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), _state())
     signals = _signals(world_time=18000)
@@ -363,9 +395,11 @@ def test_local_farming_is_skipped_when_hostile_or_before_boot():
         inventory={"minecraft:wheat": 2},
     )
 
-    assert scheduler.select_local_opportunity(
+    defensive = scheduler.select_local_opportunity(
         signals, [Phase.SPAWN_BOOTSTRAP], now=1000.0
-    ) is None
+    )
+    assert defensive is not None
+    assert defensive.kind is OpportunityKind.SELF_DEFENSE
     assert scheduler.select_local_opportunity(
         _signals(
             adult_animals={"cow": 2},

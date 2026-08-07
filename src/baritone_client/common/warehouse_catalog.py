@@ -237,6 +237,45 @@ class WarehouseCatalogMixin:
             ).fetchall()
         return [self._warehouse_row(row) for row in rows]
 
+    def retire_warehouse(
+        self,
+        warehouse_id: str,
+        *,
+        reason: str,
+        replaced_by: str,
+        updated_at: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Retire a warehouse without rewriting its immutable geometry.
+
+        A replacement must have a distinct identity.  Keeping the original
+        record and its reservations lets operators audit why it was abandoned,
+        while keeping ``register_warehouse``'s geometry guarantee intact.
+        Callers must establish that no placed or populated storage exists
+        before using this lifecycle transition.
+        """
+        warehouse = self.get_warehouse(warehouse_id)
+        if warehouse is None:
+            raise KeyError("warehouse is not registered in this world")
+        metadata = dict(warehouse["metadata"])
+        metadata.update(
+            {
+                "lifecycle": "retired",
+                "retired_reason": str(reason),
+                "replaced_by": str(replaced_by),
+                "retired_at": float(updated_at or time.time()),
+            }
+        )
+        return self.register_warehouse(
+            str(warehouse["warehouse_id"]),
+            dimension=str(warehouse["dimension"]),
+            anchor=tuple(warehouse["anchor"]),
+            facing=str(warehouse["facing"]),
+            expansion_direction=str(warehouse["expansion_direction"]),
+            aisle_width=int(warehouse["aisle_width"]),
+            metadata=metadata,
+            updated_at=updated_at,
+        )
+
     def reserve_slot(
         self,
         warehouse_id: str,

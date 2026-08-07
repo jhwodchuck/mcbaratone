@@ -12,6 +12,7 @@ from .end_readiness import FleetRole
 from .fleet_coverage import configured_specialty_roles
 from .iron_scheduler import iron_cycle_ready
 from .local_opportunity import LocalOpportunity, OpportunityKind
+from .safety_recovery import select_self_defense
 from .state_manager import Phase
 
 
@@ -30,6 +31,8 @@ def select_specialty_opportunity(
     allow_recovery: bool,
 ) -> Optional[LocalOpportunity]:
     """Select work for one primary or temporarily borrowed specialty."""
+    if recovery := select_self_defense(signals):
+        return recovery
     completed_set = set(completed)
     if role is FleetRole.BALANCED:
         return None
