@@ -21,6 +21,7 @@ from ...common.inventory import count_item, craft, select_item
 from ...common.base import setup_base
 from ...common.combat import hunt_passive_mobs
 from ...common.runtime_artifacts import append_world_map_entry
+from ...actions import homestead_site
 from ...actions.homestead import IncrementalHomestead
 
 from ...actions import (
@@ -177,6 +178,24 @@ class BootSequenceHandler(PhaseHandler):
             state.custom_data = {}
         self._homestead = IncrementalHomestead(client, state, self._plant_crops)
 
+        # A normal spawn-to-dragon run gains a chest during INITIAL_GATHERING
+        # and a furnace/table during base construction.  Once those landmarks
+        # exist, use them to get the same minimal armor and torch safety floor
+        # as an industrial worker.  A fresh spawn simply defers this work.
+        # Imported lazily: baritone_client.operations.__init__ pulls in
+        # commissioning, which imports Client/TcpTransport from the package
+        # root, so a module-level import here forms a cycle that makes the
+        # whole package unimportable. Same reason harness_ops defers its
+        # imports.
+        from ...operations.survival_provisioning import (
+            provision_checkpointed_survival_kit,
+        )
+
+        kit_ready, kit_detail = provision_checkpointed_survival_kit(client, state)
+        print(f"BOOT: {kit_detail}")
+        if not kit_ready:
+            print("BOOT: continuing without a complete safety kit; provisioning will retry next run")
+
         try:
             homestead = self._homestead.load()
             self._homestead.invalidate_stale(homestead)
@@ -207,8 +226,23 @@ class BootSequenceHandler(PhaseHandler):
                 raise RuntimeError(f"Unknown BOOT step: {step_name}")
 
             if changed:
+                # Progress clears the stall history: a step that got there in
+                # the end was never evidence against the site.
+                homestead_site.clear_step_stall(homestead, step_name)
                 self._homestead.record(homestead)
                 raise IncrementalProgressRequired(f"boot step complete: {step_name}")
+
+            # A step that cannot progress at a reachable anchor is usually
+            # describing the terrain. After MAX_SITE_STEP_FAILURES identical
+            # stalls, abandon the site and re-anchor rather than retrying a
+            # search the ground cannot satisfy.
+            if homestead_site.note_step_stalled(
+                homestead, step_name
+            ) and homestead_site.relocate_homestead(
+                client, homestead, step_name, self._homestead
+            ):
+                self._homestead.record(homestead)
+                raise IncrementalProgressRequired(f"relocated after {step_name} stalled")
 
             # Persist on the no-progress path too. A step that fails to reach
             # its goal can still have recorded essential bookkeeping, and

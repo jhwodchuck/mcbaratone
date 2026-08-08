@@ -40,6 +40,7 @@ ANCHOR_UNREACHABLE = "anchor_unreachable"
 # Upper bound on re-home attempts for one checkpoint. Guard against an
 # infinite reselect loop if every candidate anchor is also unreachable.
 MAX_ANCHOR_REHOME_ATTEMPTS = 2
+from .homestead_site import carry_site_state  # noqa: E402
 LOG_ITEMS = (
     "minecraft:oak_log",
     "minecraft:birch_log",
@@ -111,6 +112,10 @@ class IncrementalHomestead:
         rehome_attempts = raw.get("rehome_attempts")
         if rehome_attempts:
             progress["rehome_attempts"] = int(rehome_attempts)
+        # Same carry-through requirement as the re-home state above: load()
+        # rebuilds from a fixed key list, so unnamed keys are silently dropped
+        # and the stall counter could never reach its threshold.
+        carry_site_state(progress, raw)
         for name in ORDERED_HOMESTEAD_STEPS:
             record = existing.get(name, {})
             record = record if isinstance(record, Mapping) else {}
@@ -162,6 +167,10 @@ class IncrementalHomestead:
             record = {}
             steps[name] = record
         return record
+
+    def ordered_steps(self) -> tuple[str, ...]:
+        """The canonical step order, for collaborators that re-open steps."""
+        return ORDERED_HOMESTEAD_STEPS
 
     def record(self, homestead: dict[str, Any]) -> None:
         """Persist one normalized snapshot after verified improvement."""
