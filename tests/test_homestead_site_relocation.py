@@ -146,6 +146,37 @@ def test_a_failed_search_keeps_the_old_site(monkeypatch):
     ) is False
     assert progress["anchor"] == (0, 64, 0)
     assert progress["steps"]["wood_reserve"]["verified"] is True
+    # The attempt still spends budget -- see the barren-region test below for
+    # why an outcome-gated counter never bounds anything.
+    assert progress[SITE_RELOCATIONS] == 1
+
+
+def test_a_barren_region_eventually_stops_retrying(monkeypatch):
+    """Live on the A1 server 2026-08-08: a bot stuck on bare mountain at
+
+    Y=140 relocated on "move 1/3" every single cycle forever, because the
+    relocation counter only advanced when a search actually found somewhere
+    better. Nothing in this test's search radius is ever better, so the
+    counter must still climb to the budget and then stop.
+    """
+    helper = _homestead_helper()
+    progress = _progress()
+
+    monkeypatch.setattr(
+        "baritone_client.common.build_site_recovery.relocate_build_site_search",
+        lambda *_a, **_k: False,
+    )
+
+    for _ in range(MAX_SITE_RELOCATIONS):
+        assert homestead_site.relocate_homestead(
+            SimpleNamespace(), progress, "micro_farm", helper
+        ) is False
+    assert progress[SITE_RELOCATIONS] == MAX_SITE_RELOCATIONS
+
+    # Budget spent: note_step_stalled must stop authorising further attempts.
+    for _ in range(MAX_SITE_STEP_FAILURES):
+        result = homestead_site.note_step_stalled(progress, "micro_farm")
+    assert result is False
 
 
 def test_relocation_refuses_non_dry_ground(monkeypatch):

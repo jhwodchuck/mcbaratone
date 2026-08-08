@@ -182,24 +182,20 @@ class BootSequenceHandler(PhaseHandler):
         # and a furnace/table during base construction.  Once those landmarks
         # exist, use them to get the same minimal armor and torch safety floor
         # as an industrial worker.  A fresh spawn simply defers this work.
-        # Imported lazily and defensively: baritone_client.operations.__init__
-        # pulls in commissioning, which imports Client/TcpTransport from the
-        # package root, so a module-level import here forms a cycle that makes
-        # the whole package unimportable (same reason harness_ops defers its
-        # imports) -- and the operations package itself is still in-progress
-        # work on some checkouts, so its absence must not break BOOT_SEQUENCE.
+        # Imported lazily and defensively: a module-level import here forms a
+        # package-init cycle (same reason harness_ops defers its imports), and
+        # operations/ is still in-progress work on some checkouts, so its
+        # absence must not break BOOT_SEQUENCE.
         try:
             from ...operations.survival_provisioning import (
                 provision_checkpointed_survival_kit,
             )
-        except ImportError:
-            provision_checkpointed_survival_kit = None
-
-        if provision_checkpointed_survival_kit is not None:
             kit_ready, kit_detail = provision_checkpointed_survival_kit(client, state)
             print(f"BOOT: {kit_detail}")
             if not kit_ready:
                 print("BOOT: continuing without a complete safety kit; provisioning will retry next run")
+        except ImportError:
+            pass
 
         try:
             homestead = self._homestead.load()

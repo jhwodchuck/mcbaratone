@@ -105,6 +105,14 @@ def relocate_homestead(
     from ..common.build_site_recovery import relocate_build_site_search
 
     relocations = int(homestead.get(SITE_RELOCATIONS, 0) or 0) + 1
+    # Persisted up front, against the attempt rather than the outcome. A
+    # search that finds nowhere better still spends budget -- otherwise a
+    # genuinely barren region (nothing better within the search radius, not a
+    # transient failure) retries every stall forever, exactly the unbounded
+    # walk this module exists to prevent. Live on the A1 server 2026-08-08:
+    # a bot stuck at Y=140 on bare mountain relocated on "move 1/3" every
+    # single cycle because the counter only advanced on success.
+    homestead[SITE_RELOCATIONS] = relocations
     print(
         f"  Site unsuitable for {step_name} after {MAX_SITE_STEP_FAILURES} "
         f"stalled attempts; relocating the homestead "
@@ -125,7 +133,6 @@ def relocate_homestead(
         return False
 
     homestead["anchor"] = new_anchor
-    homestead[SITE_RELOCATIONS] = relocations
     homestead[SITE_STEP_FAILURES] = {}
     homestead.pop("anchor_unreachable", None)
     homestead.pop("anchor_unreachable_at", None)
