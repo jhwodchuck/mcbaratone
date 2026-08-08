@@ -31,6 +31,15 @@ ORDERED_HOMESTEAD_STEPS = (
     "light_perimeter",
 )
 SAFE_RADIUS = 24.0
+# When enforce_anchor() cannot path back to the homestead (e.g. the bot
+# respawned at world origin far below a cliff-side base Baritone cannot
+# re-ascend), we flag the old anchor as unreachable so run_dry_anchor()
+# abandons it and re-homes to a reachable spot instead of holding forever
+# on "could not complete bounded return to the homestead".
+ANCHOR_UNREACHABLE = "anchor_unreachable"
+# Upper bound on re-home attempts for one checkpoint. Guard against an
+# infinite reselect loop if every candidate anchor is also unreachable.
+MAX_ANCHOR_REHOME_ATTEMPTS = 2
 LOG_ITEMS = (
     "minecraft:oak_log",
     "minecraft:birch_log",
@@ -90,6 +99,18 @@ class IncrementalHomestead:
             "ordered_steps": list(ORDERED_HOMESTEAD_STEPS),
             "steps": {},
         }
+        # Carry the reachability/re-home state through reloads so an anchor
+        # flagged unreachable by enforce_anchor() (see ANCHOR_UNREACHABLE)
+        # survives the load() rebuild instead of being discarded and re-pinning
+        # the phase to an unpathable home forever.
+        if raw.get(ANCHOR_UNREACHABLE):
+            progress[ANCHOR_UNREACHABLE] = True
+            progress["anchor_unreachable_at"] = self._coordinate(
+                raw.get("anchor_unreachable_at")
+            )
+        rehome_attempts = raw.get("rehome_attempts")
+        if rehome_attempts:
+            progress["rehome_attempts"] = int(rehome_attempts)
         for name in ORDERED_HOMESTEAD_STEPS:
             record = existing.get(name, {})
             record = record if isinstance(record, Mapping) else {}
@@ -211,16 +232,92 @@ class IncrementalHomestead:
             check_interval=1.0,
             tolerance=4.0,
         ):
-            raise ProgressRecoveryRequired(
-                "could not complete bounded return to the homestead"
+            # The route to the current anchor cannot be completed -- very commonly
+            # because the bot respawned away from a cliff-side base and Baritone
+            # cannot path up the face. Rather than flag-and-raise (which the caller
+            # may swallow and never re-run dry_anchor, since dry_anchor is already
+            # verified and next_step() moves past it), re-home here in place: adopt
+            # the bot's current reachable position as the new dry anchor. This is
+            # the choke point every homestead step funnels through, so re-homing
+            # here covers all steps and breaks the "bounded return" deadlock.
+            rehome_attempts = int(homestead.get("rehome_attempts", 0) or 0)
+            if rehome_attempts >= MAX_ANCHOR_REHOME_ATTEMPTS:
+                raise ProgressRecoveryRequired(
+                    "re-home exhausted after "
+                    f"{rehome_attempts} attempt(s); no reachable dry anchor found"
+                )
+            current = self.current_position()
+            if not self._dry_ground(current):
+                # Standing on non-dry ground (water/lava), cannot re-home here.
+                homestead[ANCHOR_UNREACHABLE] = True
+                homestead["anchor_unreachable_at"] = current
+                self._persist_anchor_unreachable(homestead, anchor)
+                raise ProgressRecoveryRequired(
+                    "cannot re-home onto non-dry ground at current position"
+                )
+            homestead["rehome_attempts"] = rehome_attempts + 1
+            homestead.pop(ANCHOR_UNREACHABLE, None)
+            homestead.pop("anchor_unreachable_at", None)
+            homestead["anchor"] = current
+            self.state.custom_data["homestead_anchor"] = current
+            stored = getattr(self.state, "custom_data", {}).get("homestead")
+            if isinstance(stored, dict):
+                stored["anchor"] = list(current)
+                stored.pop(ANCHOR_UNREACHABLE, None)
+                stored.pop("anchor_unreachable_at", None)
+            self.step(homestead, "dry_anchor").update(
+                verified=True, evidence="rehomed_dry_anchor"
             )
+            print(f"Re-homed homestead to reachable anchor {current} "
+                  f"(attempt {rehome_attempts + 1})")
+            return True
         arrived = self.current_position()
         if self._distance(arrived, anchor) > SAFE_RADIUS:
+            # Route claims arrival but we are still outside the envelope --
+            # treat as unreachable too so we re-home instead of deadlocking.
+            homestead[ANCHOR_UNREACHABLE] = True
+            homestead["anchor_unreachable_at"] = arrived
+            self._persist_anchor_unreachable(homestead, anchor)
             raise ProgressRecoveryRequired(
                 "return route ended outside the homestead envelope"
             )
+        # Reached the anchor; clear any earlier unreachable mark (in-memory
+        # and durable) so a later legitimate return home is not misread.
+        homestead.pop(ANCHOR_UNREACHABLE, None)
+        homestead.pop("anchor_unreachable_at", None)
+        stored = getattr(self.state, "custom_data", {}).get("homestead")
+        if isinstance(stored, dict):
+            stored.pop(ANCHOR_UNREACHABLE, None)
+            stored.pop("anchor_unreachable_at", None)
         homestead["last_return_home"] = arrived
         return True
+
+    def _persist_anchor_unreachable(
+        self,
+        homestead: dict[str, Any],
+        anchor: Optional[list[int]],
+    ) -> None:
+        """Write the unreachable-anchor flag to the durable store directly.
+
+        enforce_anchor() raises ProgressRecoveryRequired right after marking
+        the anchor unreachable, which aborts the phase before the caller's
+        record() persists the in-memory homestead. Without this, the flag is
+        dropped on every phase re-entry (load() rebuilds from custom_data) and
+        the re-home never fires. Writing through here guarantees it survives.
+        """
+        try:
+            stored = getattr(self.state, "custom_data", {}).get("homestead")
+            if not isinstance(stored, dict):
+                stored = {}
+                try:
+                    self.state.custom_data["homestead"] = stored
+                except Exception:
+                    return
+            stored[ANCHOR_UNREACHABLE] = True
+            if anchor is not None:
+                stored["anchor_unreachable_at"] = list(anchor)
+        except Exception as exc:  # defensive; must not break navigation
+            print(f"re-home: could not persist unreachable flag: {exc}")
 
     def require_construction_pacing(self) -> None:
         """Only build during a strong, daylight survival window."""
@@ -271,7 +368,15 @@ class IncrementalHomestead:
         """Select or live-revalidate a dry local anchor."""
         record = self.step(homestead, "dry_anchor")
         anchor = self._coordinate(homestead.get("anchor"))
-        if anchor is not None and self._dry_ground(anchor):
+        # A previously-verified anchor is only reusable while it is BOTH dry
+        # ground AND still reachable. Once enforce_anchor() flagged it
+        # unreachable (see ANCHOR_UNREACHABLE), reusing it just deadlocks the
+        # phase on an unpathable return -- fall through to re-home instead.
+        if (
+            anchor is not None
+            and self._dry_ground(anchor)
+            and not homestead.get(ANCHOR_UNREACHABLE)
+        ):
             changed = not bool(record.get("verified"))
             record.update(verified=True, evidence="live_dry_anchor")
             homestead["anchor"] = anchor
@@ -282,6 +387,37 @@ class IncrementalHomestead:
             raise SurvivalRecoveryRequired("dry anchor requires overworld")
         if int(state.get("world_time", 0)) % 24000 >= 12000:
             raise SurvivalRecoveryRequired("wait for daylight before selecting anchor")
+
+        # Re-home when the old anchor is unreachable: adopt the bot's current
+        # reachable position as the new dry anchor. This is how the bot
+        # survives a spawn away from a cliff-side base instead of pinning to a
+        # spot it can never return to. Bound the attempts to avoid reselecting
+        # forever when every candidate is unreachable.
+        unreachable = bool(homestead.get(ANCHOR_UNREACHABLE))
+        rehome_attempts = int(homestead.get("rehome_attempts", 0) or 0)
+        if unreachable:
+            if rehome_attempts >= MAX_ANCHOR_REHOME_ATTEMPTS:
+                raise ProgressRecoveryRequired(
+                    "re-home exhausted after "
+                    f"{rehome_attempts} attempt(s); no reachable dry anchor found"
+                )
+            current = self.current_position()
+            if not self._dry_ground(current):
+                raise ProgressRecoveryRequired(
+                    "cannot re-home onto non-dry ground at current position"
+                )
+            homestead["rehome_attempts"] = rehome_attempts + 1
+            homestead.pop(ANCHOR_UNREACHABLE, None)
+            homestead.pop("anchor_unreachable_at", None)
+            homestead["anchor"] = current
+            self.state.custom_data["homestead_anchor"] = current
+            record.update(verified=True, evidence="rehomed_dry_anchor")
+            print(
+                f"Re-homed homestead to reachable anchor {current} "
+                f"(attempt {rehome_attempts + 1})"
+            )
+            return True
+
         anchor = self._initial_homestead_anchor(homestead)
         if not self._dry_ground(anchor):
             record["verified"] = False
