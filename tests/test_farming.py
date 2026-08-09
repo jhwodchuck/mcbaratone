@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from baritone_client.common import farming
+from baritone_client.common import inventory
 
 
 def _client(blocks=None, dispatch_extra=None):
@@ -81,6 +82,31 @@ def test_ensure_farm_water_fails_with_no_source_and_no_bucket(monkeypatch):
     monkeypatch.setattr(farming, "count_item", lambda *_a: 0)
     monkeypatch.setattr(farming, "find_nearby_block", lambda *_a, **_k: None)
     assert farming.ensure_farm_water(client, 0, 64, 0) is False
+
+
+def test_farm_bucket_is_recovered_from_checkpointed_storage(monkeypatch):
+    client, _calls, _ = _client()
+    carried = {"minecraft:bucket": 0}
+    requests = []
+
+    monkeypatch.setattr(
+        farming,
+        "count_item",
+        lambda _client, item: carried.get(item, 0),
+    )
+
+    def withdraw(_client, requirements, **kwargs):
+        requests.append((requirements, kwargs))
+        carried["minecraft:bucket"] = 1
+        return 1
+
+    monkeypatch.setattr(inventory, "withdraw_required_from_catalog", withdraw)
+    state = SimpleNamespace(checkpoint_dir="checkpoint")
+
+    assert farming._ensure_farm_bucket(client, state) is True
+    assert requests[0][0] == {"minecraft:bucket": 1}
+    assert requests[0][1]["max_containers"] == 12
+    assert requests[0][1]["allow_recovery_access"] is True
 
 
 def test_establish_wheat_farm_returns_none_when_water_fails(monkeypatch):

@@ -512,7 +512,7 @@ def run_food_cycle(
             worker["expansion_cursor"] = expansion_cursor + 1
             established = (
                 establish_wheat_farm(
-                    client, *candidate, size=max(3, int(plot_size) | 1)
+                    client, *candidate, size=max(3, int(plot_size) | 1), state=state
                 )
                 if candidate is not None
                 else None

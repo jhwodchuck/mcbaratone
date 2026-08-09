@@ -94,7 +94,44 @@ def _block_id(client, x: int, y: int, z: int) -> str:
         return ""
 
 
-def ensure_farm_water(client, x: int, y: int, z: int) -> bool:
+def _ensure_farm_bucket(client, state=None) -> bool:
+    """Recover or craft the empty bucket needed to irrigate a new farm."""
+    if count_item(client, "minecraft:bucket") >= 1:
+        return True
+
+    if state is not None and getattr(state, "checkpoint_dir", None):
+        from .inventory import withdraw_required_from_catalog
+
+        withdraw_required_from_catalog(
+            client,
+            {"minecraft:bucket": 1},
+            state=state,
+            max_containers=12,
+            max_travel_distance=96.0,
+            allow_recovery_access=True,
+        )
+        if count_item(client, "minecraft:bucket") >= 1:
+            return True
+
+        # A catalog may have no finished bucket while still holding the three
+        # ingots needed for one. Recover only that bounded prerequisite; the
+        # crafting helper prepares a table and converts carried logs to planks.
+        withdraw_required_from_catalog(
+            client,
+            {"minecraft:iron_ingot": 3},
+            state=state,
+            max_containers=12,
+            max_travel_distance=96.0,
+            allow_recovery_access=True,
+        )
+        from .resources import _craft_with_table
+
+        return bool(_craft_with_table(client, "minecraft:bucket", 1))
+
+    return bool(craft(client, "minecraft:bucket", 1))
+
+
+def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
     """Ensure a water source sits at the farm center, placing one if needed.
 
     Farmland only stays hydrated (and crops grow at a reasonable speed)
@@ -112,8 +149,8 @@ def ensure_farm_water(client, x: int, y: int, z: int) -> bool:
         if source is None:
             print("  No water source nearby to fill a bucket for the farm.")
             return False
-        if count_item(client, "minecraft:bucket") < 1 and not craft(
-            client, "minecraft:bucket", 1
+        if count_item(client, "minecraft:bucket") < 1 and not _ensure_farm_bucket(
+            client, state
         ):
             print("  No bucket available/craftable to carry water to the farm.")
             return False
@@ -211,7 +248,7 @@ def _gather_seeds(client, needed: int, timeout: int = 180) -> bool:
 
 
 def establish_wheat_farm(
-    client, x: int, y: int, z: int, size: int = 5
+    client, x: int, y: int, z: int, size: int = 5, state=None
 ) -> Optional[Tuple[int, int, int]]:
     """Till, irrigate, and plant a size x size wheat patch centered at (x,y,z).
 
@@ -219,7 +256,7 @@ def establish_wheat_farm(
     or None if it could not be established. Safe to call repeatedly -- tiles
     that are already farmland/planted are left alone.
     """
-    if not ensure_farm_water(client, x, y, z):
+    if not ensure_farm_water(client, x, y, z, state=state):
         return None
 
     half = size // 2
