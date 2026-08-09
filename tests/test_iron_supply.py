@@ -40,10 +40,11 @@ def test_run_iron_cycle_mines_smelts_banks_and_credits_only_new_iron(monkeypatch
         "_smelt_with_furnace",
         lambda *_args, **_kwargs: True,
     )
+    storage_requests = []
     monkeypatch.setattr(
         iron_supply,
         "resolve_storage_location",
-        lambda *_args, **_kwargs: (4, 64, 4),
+        lambda *_args, **kwargs: storage_requests.append(kwargs) or (4, 64, 4),
     )
     monkeypatch.setattr(
         iron_supply,
@@ -58,6 +59,7 @@ def test_run_iron_cycle_mines_smelts_banks_and_credits_only_new_iron(monkeypatch
     assert result.iron_ingots_smelted == 24
     assert result.iron_ingots_banked == 26
     assert result.iron_banked == 24
+    assert storage_requests == [{"state": state, "verify": True}]
     assert state.custom_data["iron_worker"] == {
         "attempts": 1,
         "cycles": 1,

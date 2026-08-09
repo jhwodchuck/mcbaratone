@@ -170,7 +170,11 @@ def run_iron_cycle(
         max(0, _count(after_processing, IRON_INGOT) - ingots_before_smelt),
     )
 
-    chest = resolve_storage_location(client, state=state, verify=False)
+    # Iron batches are expensive and can fill most of the carried inventory.
+    # Resolve past stale loaded landmarks before beginning deposit travel;
+    # otherwise the worker repeatedly selects the same known-air coordinate
+    # and never reaches a real chest later in the checkpoint.
+    chest = resolve_storage_location(client, state=state, verify=True)
     if chest is None:
         return IronCycleResult(
             False,
