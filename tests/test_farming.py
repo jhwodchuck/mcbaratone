@@ -39,7 +39,7 @@ def test_find_farm_surface_near_drops_from_platform_height():
     client, _calls, _ = _client(
         blocks={
             (546, 70, -272): "minecraft:grass_block",
-            (546, 71, -272): "minecraft:air",
+            (546, 71, -272): "minecraft:short_grass",
         }
     )
 

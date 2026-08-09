@@ -18,6 +18,18 @@ from .navigation import find_nearby_block, goto
 
 _UNSUPPORTIVE_GROUND = {"minecraft:air", "minecraft:cave_air", "minecraft:water", "minecraft:lava"}
 _FARM_SOIL_ITEMS = ("minecraft:dirt", "minecraft:coarse_dirt", "minecraft:grass_block")
+_FARM_REPLACEABLE = {
+    "minecraft:air",
+    "minecraft:cave_air",
+    "minecraft:short_grass",
+    "minecraft:tall_grass",
+    "minecraft:fern",
+    "minecraft:large_fern",
+    "minecraft:dead_bush",
+    "minecraft:snow",
+    "minecraft:wildflowers",
+    "minecraft:leaf_litter",
+}
 
 
 def surface_soil(block_id, candidate, max_rise: int = 6):
@@ -26,12 +38,11 @@ def surface_soil(block_id, candidate, max_rise: int = 6):
         return None
     x, y, z = (int(value) for value in candidate)
     tillable = {"minecraft:farmland", "minecraft:dirt", "minecraft:grass_block"}
-    air = {"minecraft:air", "minecraft:cave_air"}
     for rise in range(max_rise + 1):
         surface_y = y + rise
         if (
             block_id(x, surface_y, z) in tillable
-            and block_id(x, surface_y + 1, z) in air
+            and block_id(x, surface_y + 1, z) in _FARM_REPLACEABLE
         ):
             return (x, surface_y, z)
     return None
@@ -113,12 +124,12 @@ def find_farm_surface_near(
         if max(abs(dx), abs(dz)) == radius
     ]
     tillable = {"minecraft:dirt", "minecraft:grass_block", "minecraft:farmland"}
-    air = {"minecraft:air", "minecraft:cave_air"}
     for dx, dz in offsets:
         for surface_y in range(y + max_rise, y - max_drop - 1, -1):
             if (
                 _block_id(client, x + dx, surface_y, z + dz) in tillable
-                and _block_id(client, x + dx, surface_y + 1, z + dz) in air
+                and _block_id(client, x + dx, surface_y + 1, z + dz)
+                in _FARM_REPLACEABLE
             ):
                 return (x + dx, surface_y, z + dz)
     return None
@@ -221,6 +232,12 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
 
 def _till_and_plant_tile(client, x: int, y: int, z: int) -> bool:
     """Till one ground tile and plant a wheat seed on it, if not already done."""
+    above = _block_id(client, x, y + 1, z)
+    if above not in {"minecraft:air", "minecraft:cave_air"}:
+        if above not in _FARM_REPLACEABLE:
+            return False
+        client.transport.dispatch("attack_block", {"x": x, "y": y + 1, "z": z})
+        time.sleep(0.15)
     surface = _block_id(client, x, y, z)
     if surface == "minecraft:farmland":
         pass
