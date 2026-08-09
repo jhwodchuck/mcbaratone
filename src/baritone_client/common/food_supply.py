@@ -346,11 +346,27 @@ def _establish_candidate(client: Any, state: Any, candidate, size: int):
         return None
     surface = None
     if getattr(state, "checkpoint_dir", None) and not _plots(state):
-        natural, used_water = find_natural_crop_center(
-            client, lambda x, y, z: _block_id(client, x, y, z)
-        )
-        if natural is not None and not used_water:
-            surface = natural
+        try:
+            snapshot = client.transport.dispatch("get_state", {})
+            position = snapshot.get("block_position", snapshot.get("position", {}))
+            local = (
+                int(float(position["x"])),
+                int(float(position["y"])),
+                int(float(position["z"])),
+            )
+            anchor = _base_anchor(state)
+            if anchor is not None and _within_reach(
+                local, anchor, MAX_ANCHOR_RADIUS
+            ):
+                surface = find_farm_surface_near(client, *local)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pass
+        if surface is None:
+            natural, used_water = find_natural_crop_center(
+                client, lambda x, y, z: _block_id(client, x, y, z)
+            )
+            if natural is not None and not used_water:
+                surface = natural
     if surface is None:
         surface = find_farm_surface_near(client, *candidate)
     if surface is None:
