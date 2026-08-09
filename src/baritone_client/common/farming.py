@@ -50,13 +50,16 @@ def surface_soil(block_id, candidate, max_rise: int = 6):
 
 def find_natural_crop_center(client, block_id):
     """Search for existing tillable soil, falling back to a water source."""
-    soil = find_nearby_block(
-        client,
-        ["minecraft:farmland", "minecraft:dirt", "minecraft:grass_block"],
-        radius=20,
-    )
-    if (soil := surface_soil(block_id, soil)) is not None:
-        return tuple(int(value) for value in soil), False
+    # Search exposed grass before generic dirt. A combined nearest-block query
+    # returns buried foundation dirt under an industrial platform and masks a
+    # usable grass surface only a few blocks farther away.
+    for block_ids in (
+        ["minecraft:farmland", "minecraft:grass_block"],
+        ["minecraft:dirt"],
+    ):
+        soil = find_nearby_block(client, block_ids, radius=20)
+        if (soil := surface_soil(block_id, soil)) is not None:
+            return tuple(int(value) for value in soil), False
     water = find_nearby_block(client, ["minecraft:water"], radius=16)
     if water is not None:
         return tuple(int(value) for value in water), True

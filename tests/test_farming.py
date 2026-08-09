@@ -280,6 +280,30 @@ def test_find_natural_crop_center_prefers_soil_over_water(monkeypatch):
     assert irrigated is False
 
 
+def test_find_natural_crop_center_does_not_let_buried_dirt_mask_grass(monkeypatch):
+    client, _calls, _ = _client()
+    searches = []
+
+    def find(_client, blocks, radius):
+        searches.append(tuple(blocks))
+        return (553, 73, -268) if "minecraft:grass_block" in blocks else None
+
+    monkeypatch.setattr(farming, "find_nearby_block", find)
+    monkeypatch.setattr(
+        farming,
+        "surface_soil",
+        lambda _block_id, candidate, max_rise=6: candidate,
+    )
+
+    center, irrigated = farming.find_natural_crop_center(
+        client, lambda *_args: "minecraft:air"
+    )
+
+    assert center == (553, 73, -268)
+    assert searches[0] == ("minecraft:farmland", "minecraft:grass_block")
+    assert irrigated is False
+
+
 def test_find_natural_crop_center_falls_back_to_water(monkeypatch):
     client, _calls, _ = _client(blocks={(9, 63, 9): "minecraft:water"})
     monkeypatch.setattr(
