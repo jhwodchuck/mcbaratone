@@ -46,6 +46,38 @@ def test_peaceful_hostile_roles_choose_renewable_work_or_leave_nether(monkeypatc
     assert calls[0]["target_dimension"] == "minecraft:overworld"
 
 
+def test_peaceful_nether_exit_uses_portal_from_current_dimension():
+    state = SimpleNamespace(
+        custom_data={
+            "locations": {
+                "nether_portal": [
+                    {
+                        "x": -156,
+                        "y": 64,
+                        "z": -278,
+                        "dimension": "minecraft:overworld",
+                    },
+                    {
+                        "x": -19,
+                        "y": 85,
+                        "z": -35,
+                        "dimension": "minecraft:the_nether",
+                    },
+                ]
+            }
+        }
+    )
+
+    chosen = role_opportunities.select_role_opportunity(
+        FleetRole.NETHER_SUPPLY,
+        _signals(difficulty="peaceful"),
+        state,
+        cooldown_ready=True,
+    )
+
+    assert chosen and chosen.location == (-19, 85, -35)
+
+
 def test_end_runner_requires_end_city_checkpoint_and_safe_end():
     state = SimpleNamespace(custom_data={"end_city": {"location": [1, 70, 1]}})
     chosen = role_opportunities.select_role_opportunity(

@@ -51,7 +51,13 @@ def _location_entry(value: Any, *, verified: bool = False) -> Optional[Tuple[int
     return _coordinate(value)
 
 
-def _saved_location(state: Any, key: str, *, verified: bool = False) -> Optional[Tuple[int, int, int]]:
+def _saved_location(
+    state: Any,
+    key: str,
+    *,
+    verified: bool = False,
+    dimension: str = "",
+) -> Optional[Tuple[int, int, int]]:
     custom = getattr(state, "custom_data", {}) or {}
     direct = _location_entry(custom.get(key), verified=verified)
     if direct is not None:
@@ -59,6 +65,12 @@ def _saved_location(state: Any, key: str, *, verified: bool = False) -> Optional
     locations = custom.get("locations", {})
     if isinstance(locations, Mapping):
         for candidate in locations.get(key, []) if isinstance(locations.get(key), list) else []:
+            if dimension and isinstance(candidate, Mapping):
+                saved_dimension = str(candidate.get("dimension", ""))
+                if saved_dimension and saved_dimension.removeprefix(
+                    "minecraft:"
+                ) != dimension.removeprefix("minecraft:"):
+                    continue
             location = _location_entry(candidate, verified=verified)
             if location is not None:
                 return location
@@ -155,7 +167,9 @@ def select_role_opportunity(
     if role is FleetRole.NETHER_SUPPLY:
         if difficulty == "peaceful":
             if "nether" in dimension:
-                portal = _saved_location(state, "nether_portal")
+                portal = _saved_location(
+                    state, "nether_portal", dimension=dimension
+                )
                 if portal is not None:
                     return LocalOpportunity(
                         OpportunityKind.DIMENSION_ENTRY,
@@ -172,7 +186,9 @@ def select_role_opportunity(
                     "Peaceful disables blaze production; bank renewable wood until hostile work resumes",
                 )
         if "overworld" in dimension:
-            portal = _saved_location(state, "nether_portal")
+            portal = _saved_location(
+                state, "nether_portal", dimension=dimension
+            )
             if portal is not None:
                 return LocalOpportunity(
                     OpportunityKind.DIMENSION_ENTRY, 190,
