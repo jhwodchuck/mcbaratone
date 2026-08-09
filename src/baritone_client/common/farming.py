@@ -359,7 +359,16 @@ def establish_wheat_farm(
         if not (dx == 0 and dz == 0)  # center tile holds the water
     ]
 
-    if not _gather_seeds(client, len(tiles)):
+    carried_seeds = count_item(client, "minecraft:wheat_seeds")
+    # A partial first planting is intentionally productive: those crops yield
+    # more seeds on the next harvest. Once a useful starter batch is carried,
+    # do not spend the full gathering timeout chasing a perfect 24/24 plot.
+    seed_target = (
+        len(tiles)
+        if carried_seeds < min(8, len(tiles))
+        else min(carried_seeds, len(tiles))
+    )
+    if not _gather_seeds(client, seed_target):
         print("  Could not gather enough wheat seeds to plant the farm.")
         # Continue anyway -- partial planting with whatever seeds exist is
         # still better than nothing, and count_item is rechecked per tile.

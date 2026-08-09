@@ -230,6 +230,26 @@ def test_establish_wheat_farm_tills_and_plants_tiles(monkeypatch):
     assert any(b == "minecraft:wheat" for b in blocks.values())
 
 
+def test_establish_wheat_farm_uses_carried_starter_seed_batch(monkeypatch):
+    client, _calls, _blocks = _client()
+    targets = []
+    monkeypatch.setattr(farming, "ensure_farm_water", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        farming,
+        "count_item",
+        lambda _client, item: 20 if item == "minecraft:wheat_seeds" else 0,
+    )
+    monkeypatch.setattr(
+        farming,
+        "_gather_seeds",
+        lambda _client, needed: targets.append(needed) or True,
+    )
+    monkeypatch.setattr(farming, "goto", lambda *_a, **_k: False)
+
+    assert farming.establish_wheat_farm(client, 0, 64, 0, size=5) is None
+    assert targets == [20]
+
+
 def test_harvest_wheat_farm_confirms_via_wheat_increase(monkeypatch):
     client, calls, _ = _client()
     monkeypatch.setattr(farming, "goto", lambda *_a, **_k: True)
