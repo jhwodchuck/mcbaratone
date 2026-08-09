@@ -302,6 +302,38 @@ def _stock_seeds(client: Any, target: int) -> int:
         return 0
 
 
+def _next_plot_candidate(
+    anchor: Tuple[int, int, int],
+    known: Sequence[Tuple[int, int, int]],
+    worker: dict,
+    distance: int,
+    maximum_slots: int,
+) -> Optional[Tuple[int, int, int]]:
+    """Choose a site, reopening one exhausted frontier per durable anchor."""
+    rejected = [_position(site) for site in worker["failed_plot_sites"]]
+    rejected = [site for site in rejected if site]
+    cursor = int(worker.get("expansion_cursor", 0) or 0)
+    candidate = _candidate(
+        anchor, known, rejected, distance, cursor, maximum_slots
+    )
+    worker["expansion_cursor"] = cursor + 1
+    anchor_key = list(anchor)
+    if (
+        candidate is None
+        and not known
+        and rejected
+        and worker.get("failed_site_reset_anchor") != anchor_key
+    ):
+        # Setup failures (notably a missing bucket) used to blacklist every
+        # nearby coordinate. With no farm left, that made the bounded search
+        # permanently return None even after the prerequisite was repaired.
+        worker["failed_plot_sites"] = []
+        worker["failed_site_reset_anchor"] = anchor_key
+        worker["expansion_cursor"] = 1
+        candidate = _candidate(anchor, known, [], distance, 0, maximum_slots)
+    return candidate
+
+
 def _survival_ready(client: Any) -> bool:
     """Refuse farm travel from dead, wrong-dimension, or critically hurt state."""
     try:
@@ -498,18 +530,13 @@ def run_food_cycle(
         # cheaper.
         seeds_gathered = _stock_seeds(client, seed_reserve)
         if anchor is not None:
-            rejected = [_position(site) for site in worker["failed_plot_sites"]]
-            rejected = [site for site in rejected if site]
-            expansion_cursor = int(worker.get("expansion_cursor", 0) or 0)
-            candidate = _candidate(
+            candidate = _next_plot_candidate(
                 anchor,
                 known,
-                rejected,
+                worker,
                 max(8, int(max_plot_distance)),
-                expansion_cursor,
                 max_candidate_slots,
             )
-            worker["expansion_cursor"] = expansion_cursor + 1
             established = (
                 establish_wheat_farm(
                     client, *candidate, size=max(3, int(plot_size) | 1), state=state

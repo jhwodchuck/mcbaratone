@@ -226,6 +226,28 @@ def test_expansion_moves_beyond_four_rejected_cardinal_sites(monkeypatch):
     ), attempted
 
 
+def test_exhausted_empty_frontier_is_reopened_once_after_setup_repair():
+    anchor = (546, 79, -304)
+    rejected = [
+        [578, 79, -304],
+        [546, 79, -272],
+        [514, 79, -304],
+        [546, 79, -336],
+    ]
+    worker = {
+        "failed_plot_sites": rejected,
+        "expansion_cursor": 114,
+    }
+
+    candidate = food_supply._next_plot_candidate(
+        anchor, [], worker, 32, 3
+    )
+
+    assert candidate == (578, 79, -304)
+    assert worker["failed_plot_sites"] == []
+    assert worker["failed_site_reset_anchor"] == list(anchor)
+
+
 def test_dead_state_fails_closed_before_self_feed_or_farm_travel(monkeypatch):
     _inventory(monkeypatch, {})
     monkeypatch.setattr(food_supply, "_survival_ready", lambda _client: False)
