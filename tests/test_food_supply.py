@@ -306,7 +306,7 @@ def test_first_plot_probes_current_column_inside_base_radius(monkeypatch):
     )
 
     assert food_supply._establish_candidate(
-        client, state, (546, 79, -272), 5
+        client, state, None, 5
     ) == (559, 73, -284)
 
 

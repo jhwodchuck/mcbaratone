@@ -342,8 +342,6 @@ def _next_plot_candidate(
 
 def _establish_candidate(client: Any, state: Any, candidate, size: int):
     """Resolve a planned X/Z coordinate to terrain and establish one plot."""
-    if candidate is None:
-        return None
     surface = None
     if getattr(state, "checkpoint_dir", None) and not _plots(state):
         try:
@@ -370,6 +368,8 @@ def _establish_candidate(client: Any, state: Any, candidate, size: int):
             if natural is not None and not used_water:
                 surface = natural
     if surface is None:
+        if candidate is None:
+            return None
         surface = find_farm_surface_near(client, *candidate)
     if surface is None:
         return None
