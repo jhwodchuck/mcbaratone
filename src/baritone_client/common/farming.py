@@ -230,7 +230,7 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
         if not goto(client, source[0], source[1], source[2], timeout=120, tolerance=2):
             print("  Could not reach a water source to fill a bucket.")
             return False
-        if not select_item(client, "minecraft:bucket"):
+        if not select_item(client, "minecraft:bucket", allow_swap=True):
             return False
         client.transport.dispatch(
             "look_at",
@@ -246,7 +246,7 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
     if not goto(client, x, y, z, timeout=120, tolerance=3):
         print("  Could not reach the farm center to place water.")
         return False
-    if not select_item(client, "minecraft:water_bucket"):
+    if not select_item(client, "minecraft:water_bucket", allow_swap=True):
         return False
     try:
         result = client.transport.dispatch(

@@ -101,11 +101,17 @@ def test_ensure_farm_water_fills_bucket_first_when_needed(monkeypatch):
             return filled["n"]
         return 0
     monkeypatch.setattr(farming, "count_item", count_item)
-    monkeypatch.setattr(farming, "select_item", lambda *_a, **_k: True)
+    selections = []
+    monkeypatch.setattr(
+        farming,
+        "select_item",
+        lambda _client, item, **kwargs: selections.append((item, kwargs)) or True,
+    )
     monkeypatch.setattr(farming, "goto", lambda *_a, **_k: True)
     monkeypatch.setattr(farming.time, "sleep", lambda _s: filled.__setitem__("n", 1))
 
     assert farming.ensure_farm_water(client, 0, 64, 0) is True
+    assert all(options.get("allow_swap") is True for _item, options in selections)
 
 
 def test_ensure_farm_water_fails_with_no_source_and_no_bucket(monkeypatch):
