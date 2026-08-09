@@ -156,4 +156,108 @@ def test_harvest_wheat_farm_fails_if_cannot_reach(monkeypatch):
         farming, "count_item",
         lambda *_a: (_ for _ in ()).throw(AssertionError("must not harvest if never reached")),
     )
+
+
+def _block_id_reader(client):
+    def block_id(x, y, z):
+        return client.transport.dispatch("get_block", {"x": x, "y": y, "z": z}).get("id", "")
+
+    return block_id
+
+
+def test_place_farm_soil_converts_bare_rock_using_carried_dirt(monkeypatch):
+    """The live A1 failure: 31 carried dirt, bare mountain, never once tried."""
+    blocks = {
+        # Bot stands at (10, 65, 10) on solid, untillable stone -- no
+        # farmland/dirt/grass_block anywhere nearby for find_nearby_block to
+        # match. One neighboring column has open air over stone, ready to
+        # receive a placed dirt block.
+        (10, 64, 10): "minecraft:stone",
+        (11, 64, 11): "minecraft:stone",
+        (11, 65, 11): "minecraft:air",
+    }
+
+    def extra(route, payload, _blocks):
+        if route == "get_state":
+            return {"block_position": {"x": 10, "y": 65, "z": 10}}
+        return None
+
+    client, _calls, blocks = _client(blocks=blocks, dispatch_extra=extra)
+    monkeypatch.setattr(
+        farming, "count_item",
+        lambda _c, item: 31 if item == "minecraft:dirt" else 0,
+    )
+    placed = []
+    monkeypatch.setattr(
+        farming, "robust_place",
+        lambda _c, x, y, z, item_id: (
+            placed.append((x, y, z, item_id))
+            or blocks.__setitem__((x, y, z), "minecraft:dirt")
+            or True
+        ),
+    )
+
+    result = farming.place_farm_soil(client, _block_id_reader(client))
+
+    assert result == (11, 65, 11)
+    assert placed == [(11, 65, 11, "minecraft:dirt")]
+
+
+def test_place_farm_soil_gives_up_without_carried_soil(monkeypatch):
+    """No dirt, coarse dirt, or grass block carried -- nothing to place."""
+
+    def extra(route, payload, _blocks):
+        if route == "get_state":
+            return {"block_position": {"x": 10, "y": 65, "z": 10}}
+        return None
+
+    client, _calls, _ = _client(
+        blocks={(11, 64, 11): "minecraft:stone", (11, 65, 11): "minecraft:air"},
+        dispatch_extra=extra,
+    )
+    monkeypatch.setattr(farming, "count_item", lambda *_a: 0)
+
+    result = farming.place_farm_soil(client, _block_id_reader(client))
+
+    assert result is None
+
+
+def test_find_natural_crop_center_prefers_soil_over_water(monkeypatch):
+    client, _calls, _ = _client()
+    monkeypatch.setattr(
+        farming, "find_nearby_block",
+        lambda _c, blocks, radius: (5, 63, 5) if "minecraft:water" not in blocks else (9, 63, 9),
+    )
+    monkeypatch.setattr(
+        farming, "surface_soil",
+        lambda _block_id, candidate, max_rise=6: candidate,
+    )
+
+    center, irrigated = farming.find_natural_crop_center(client, lambda *_a: "minecraft:air")
+
+    assert center == (5, 63, 5)
+    assert irrigated is False
+
+
+def test_find_natural_crop_center_falls_back_to_water(monkeypatch):
+    client, _calls, _ = _client(blocks={(9, 63, 9): "minecraft:water"})
+    monkeypatch.setattr(
+        farming, "find_nearby_block",
+        lambda _c, blocks, radius: (9, 63, 9) if "minecraft:water" in blocks else None,
+    )
+
+    center, irrigated = farming.find_natural_crop_center(client, _block_id_reader(client))
+
+    assert center == (9, 63, 9)
+    assert irrigated is True
+
+
+def test_find_natural_crop_center_returns_none_when_nothing_found(monkeypatch):
+    client, _calls, _ = _client()
+    monkeypatch.setattr(farming, "find_nearby_block", lambda *_a, **_k: None)
+
+    center, irrigated = farming.find_natural_crop_center(client, lambda *_a: "minecraft:air")
+
+    assert center is None
+    assert irrigated is False
     assert farming.harvest_wheat_farm(client, 0, 64, 0) is False

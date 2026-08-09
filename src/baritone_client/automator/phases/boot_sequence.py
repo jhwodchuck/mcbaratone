@@ -20,6 +20,7 @@ from ...common.resources import gather_wood, gather_stone, gather_ores, ensure_s
 from ...common.inventory import count_item, craft, select_item
 from ...common.base import setup_base
 from ...common.combat import hunt_passive_mobs
+from ...common.farming import find_natural_crop_center, place_farm_soil
 from ...common.runtime_artifacts import append_world_map_entry
 from ...actions import homestead_site
 from ...actions.homestead import IncrementalHomestead
@@ -41,23 +42,6 @@ from ...actions import (
     StorageOrganizationAction,
     FinalSleepAction,
 )
-
-
-def _surface_soil(block_id, candidate, max_rise: int = 6):
-    """Promote a buried soil search hit to tillable soil with air above it."""
-    if candidate is None:
-        return None
-    x, y, z = (int(value) for value in candidate)
-    tillable = {"minecraft:farmland", "minecraft:dirt", "minecraft:grass_block"}
-    air = {"minecraft:air", "minecraft:cave_air"}
-    for rise in range(max_rise + 1):
-        surface_y = y + rise
-        if (
-            block_id(x, surface_y, z) in tillable
-            and block_id(x, surface_y + 1, z) in air
-        ):
-            return (x, surface_y, z)
-    return None
 
 
 class BootSequenceHandler(PhaseHandler):
@@ -577,7 +561,7 @@ class BootSequenceHandler(PhaseHandler):
         the bootstrap cannot route down a bank or into deep natural water; a
         compact irrigated plot remains the fallback when no soil is found.
         """
-        from ...common.navigation import find_nearby_block, goto
+        from ...common.navigation import goto
 
         crop_items = (
             ("minecraft:wheat_seeds", "minecraft:wheat"),
@@ -621,18 +605,10 @@ class BootSequenceHandler(PhaseHandler):
                 center = None
 
         if center is None:
-            soil = find_nearby_block(
-                client,
-                ["minecraft:farmland", "minecraft:dirt", "minecraft:grass_block"],
-                radius=20,
-            )
-            if (soil := _surface_soil(block_id, soil)) is not None:
-                center = tuple(int(value) for value in soil)
-            else:
-                water = find_nearby_block(client, ["minecraft:water"], radius=16)
-                if water is not None:
-                    center = tuple(int(value) for value in water)
-                    irrigated = True
+            center, irrigated = find_natural_crop_center(client, block_id)
+
+        if center is None:
+            center = place_farm_soil(client, block_id)
 
         if center is None:
             print("  Crop farm deferred: no reachable soil or water found")

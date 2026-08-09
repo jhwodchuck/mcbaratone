@@ -12,8 +12,77 @@ makes that route worth calling at all.
 import time
 from typing import Optional, Tuple
 
+from .base import robust_place
 from .inventory import count_item, craft, select_item
 from .navigation import find_nearby_block, goto
+
+_UNSUPPORTIVE_GROUND = {"minecraft:air", "minecraft:cave_air", "minecraft:water", "minecraft:lava"}
+_FARM_SOIL_ITEMS = ("minecraft:dirt", "minecraft:coarse_dirt", "minecraft:grass_block")
+
+
+def surface_soil(block_id, candidate, max_rise: int = 6):
+    """Promote a buried soil search hit to tillable soil with air above it."""
+    if candidate is None:
+        return None
+    x, y, z = (int(value) for value in candidate)
+    tillable = {"minecraft:farmland", "minecraft:dirt", "minecraft:grass_block"}
+    air = {"minecraft:air", "minecraft:cave_air"}
+    for rise in range(max_rise + 1):
+        surface_y = y + rise
+        if (
+            block_id(x, surface_y, z) in tillable
+            and block_id(x, surface_y + 1, z) in air
+        ):
+            return (x, surface_y, z)
+    return None
+
+
+def find_natural_crop_center(client, block_id):
+    """Search for existing tillable soil, falling back to a water source."""
+    soil = find_nearby_block(
+        client,
+        ["minecraft:farmland", "minecraft:dirt", "minecraft:grass_block"],
+        radius=20,
+    )
+    if (soil := surface_soil(block_id, soil)) is not None:
+        return tuple(int(value) for value in soil), False
+    water = find_nearby_block(client, ["minecraft:water"], radius=16)
+    if water is not None:
+        return tuple(int(value) for value in water), True
+    return None, False
+
+
+def place_farm_soil(client, block_id) -> Optional[Tuple[int, int, int]]:
+    """Place carried dirt to create a plot center when no natural soil exists.
+
+    A bare, rocky homestead site (e.g. a re-homed mountaintop anchor) has
+    nothing for find_nearby_block to match, even though the bot may be
+    carrying dirt from its own reserves -- 2026-08-08, Y=140, "no reachable
+    soil or water found" on every cycle with 31 dirt in the inventory the
+    whole time. Converts one open column adjacent to the bot, sitting over
+    solid ground, into farmable soil instead of giving up.
+    """
+    soil_item = next(
+        (item for item in _FARM_SOIL_ITEMS if count_item(client, item) > 0),
+        None,
+    )
+    if soil_item is None:
+        return None
+
+    position = client.transport.dispatch("get_state", {}).get("block_position", {})
+    bx, by, bz = int(position.get("x", 0)), int(position.get("y", 64)), int(position.get("z", 0))
+    for dx in (-1, 0, 1):
+        for dz in (-1, 0, 1):
+            if dx == 0 and dz == 0:
+                continue
+            cx, cz = bx + dx, bz + dz
+            if block_id(cx, by - 1, cz) in _UNSUPPORTIVE_GROUND:
+                continue
+            if block_id(cx, by, cz) not in {"minecraft:air", "minecraft:cave_air"}:
+                continue
+            if robust_place(client, cx, by, cz, soil_item):
+                return (cx, by, cz)
+    return None
 
 
 def _block_id(client, x: int, y: int, z: int) -> str:
