@@ -253,6 +253,30 @@ def test_exhausted_empty_frontier_is_reopened_once_after_setup_repair():
     assert worker["failed_site_reset_anchor"] == list(anchor)
 
 
+def test_first_checkpointed_plot_prefers_observed_natural_soil(monkeypatch):
+    state = _state({"food_worker": {"farm_plots": []}})
+    state.checkpoint_dir = "checkpoint"
+    monkeypatch.setattr(
+        food_supply,
+        "find_natural_crop_center",
+        lambda *_args: ((559, 74, -284), False),
+    )
+    established = []
+    monkeypatch.setattr(
+        food_supply,
+        "establish_wheat_farm",
+        lambda _client, *position, **_kwargs: established.append(position)
+        or position,
+    )
+
+    result = food_supply._establish_candidate(
+        object(), state, (546, 79, -272), 5
+    )
+
+    assert result == (559, 74, -284)
+    assert established == [(559, 74, -284)]
+
+
 def test_dead_state_fails_closed_before_self_feed_or_farm_travel(monkeypatch):
     _inventory(monkeypatch, {})
     monkeypatch.setattr(food_supply, "_survival_ready", lambda _client: False)

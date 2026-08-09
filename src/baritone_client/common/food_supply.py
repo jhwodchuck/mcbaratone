@@ -8,7 +8,13 @@ import math
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
 from .combat import eat_until_hunger
-from .farming import establish_wheat_farm, find_farm_surface_near, harvest_wheat_farm
+from .farming import (
+    _block_id,
+    establish_wheat_farm,
+    find_farm_surface_near,
+    find_natural_crop_center,
+    harvest_wheat_farm,
+)
 from .inventory import (
     craft,
     deposit_excess_to_chest,
@@ -338,7 +344,15 @@ def _establish_candidate(client: Any, state: Any, candidate, size: int):
     """Resolve a planned X/Z coordinate to terrain and establish one plot."""
     if candidate is None:
         return None
-    surface = find_farm_surface_near(client, *candidate)
+    surface = None
+    if getattr(state, "checkpoint_dir", None) and not _plots(state):
+        natural, used_water = find_natural_crop_center(
+            client, lambda x, y, z: _block_id(client, x, y, z)
+        )
+        if natural is not None and not used_water:
+            surface = natural
+    if surface is None:
+        surface = find_farm_surface_near(client, *candidate)
     if surface is None:
         return None
     return establish_wheat_farm(client, *surface, size=size, state=state)
