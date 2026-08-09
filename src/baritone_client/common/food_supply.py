@@ -8,7 +8,7 @@ import math
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
 from .combat import eat_until_hunger
-from .farming import establish_wheat_farm, harvest_wheat_farm
+from .farming import establish_wheat_farm, find_farm_surface_near, harvest_wheat_farm
 from .inventory import (
     craft,
     deposit_excess_to_chest,
@@ -334,6 +334,16 @@ def _next_plot_candidate(
     return candidate
 
 
+def _establish_candidate(client: Any, state: Any, candidate, size: int):
+    """Resolve a planned X/Z coordinate to terrain and establish one plot."""
+    if candidate is None:
+        return None
+    surface = find_farm_surface_near(client, *candidate)
+    if surface is None:
+        return None
+    return establish_wheat_farm(client, *surface, size=size, state=state)
+
+
 def _survival_ready(client: Any) -> bool:
     """Refuse farm travel from dead, wrong-dimension, or critically hurt state."""
     try:
@@ -537,12 +547,8 @@ def run_food_cycle(
                 max(8, int(max_plot_distance)),
                 max_candidate_slots,
             )
-            established = (
-                establish_wheat_farm(
-                    client, *candidate, size=max(3, int(plot_size) | 1), state=state
-                )
-                if candidate is not None
-                else None
+            established = _establish_candidate(
+                client, state, candidate, max(3, int(plot_size) | 1)
             )
             if established:
                 # The primitive verifies irrigation and at least one planted tile.

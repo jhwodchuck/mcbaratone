@@ -94,6 +94,36 @@ def _block_id(client, x: int, y: int, z: int) -> str:
         return ""
 
 
+def find_farm_surface_near(
+    client,
+    x: int,
+    y: int,
+    z: int,
+    *,
+    horizontal_radius: int = 2,
+    max_rise: int = 6,
+    max_drop: int = 20,
+) -> Optional[Tuple[int, int, int]]:
+    """Resolve a planned X/Z site onto nearby exposed tillable terrain."""
+    offsets = [(0, 0)] + [
+        (dx, dz)
+        for radius in range(1, max(0, int(horizontal_radius)) + 1)
+        for dx in range(-radius, radius + 1)
+        for dz in range(-radius, radius + 1)
+        if max(abs(dx), abs(dz)) == radius
+    ]
+    tillable = {"minecraft:dirt", "minecraft:grass_block", "minecraft:farmland"}
+    air = {"minecraft:air", "minecraft:cave_air"}
+    for dx, dz in offsets:
+        for surface_y in range(y + max_rise, y - max_drop - 1, -1):
+            if (
+                _block_id(client, x + dx, surface_y, z + dz) in tillable
+                and _block_id(client, x + dx, surface_y + 1, z + dz) in air
+            ):
+                return (x + dx, surface_y, z + dz)
+    return None
+
+
 def _ensure_farm_bucket(client, state=None) -> bool:
     """Recover or craft the empty bucket needed to irrigate a new farm."""
     if count_item(client, "minecraft:bucket") >= 1:

@@ -98,6 +98,11 @@ def test_a_reachable_but_barren_farm_still_tries_to_expand(monkeypatch):
         return True
 
     monkeypatch.setattr(food_supply, "harvest_wheat_farm", arrive)
+    monkeypatch.setattr(
+        food_supply,
+        "find_farm_surface_near",
+        lambda _client, x, y, z: (x, y, z),
+    )
     established = []
     monkeypatch.setattr(
         food_supply, "establish_wheat_farm",

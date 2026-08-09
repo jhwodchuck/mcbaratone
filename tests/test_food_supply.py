@@ -10,6 +10,11 @@ def _state(data):
 def _inventory(monkeypatch, counts):
     monkeypatch.setattr(food_supply, "get_inventory", lambda _client: dict(counts))
     monkeypatch.setattr(food_supply, "_survival_ready", lambda _client: True)
+    monkeypatch.setattr(
+        food_supply,
+        "find_farm_surface_near",
+        lambda _client, x, y, z: (x, y, z),
+    )
 
 
 def test_after_existing_plots_are_immature_expand_another_plot(monkeypatch):

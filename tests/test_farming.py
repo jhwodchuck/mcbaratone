@@ -35,6 +35,21 @@ def test_ensure_farm_water_returns_true_when_already_present(monkeypatch):
     assert not any(r == "place_block" for r, _ in calls)
 
 
+def test_find_farm_surface_near_drops_from_platform_height():
+    client, _calls, _ = _client(
+        blocks={
+            (546, 70, -272): "minecraft:grass_block",
+            (546, 71, -272): "minecraft:air",
+        }
+    )
+
+    assert farming.find_farm_surface_near(client, 546, 79, -272) == (
+        546,
+        70,
+        -272,
+    )
+
+
 def test_ensure_farm_water_places_bucket_when_already_carried(monkeypatch):
     blocks = {}
     def extra(route, payload, blocks_map):
