@@ -155,6 +155,12 @@ def test_distant_plot_is_retired_even_when_worker_reached_it(monkeypatch):
             AssertionError("distant plot must retire before harvest")
         ),
     )
+    returned = []
+    monkeypatch.setattr(
+        food_supply,
+        "_return_to_anchor",
+        lambda _client, anchor: returned.append(anchor) or True,
+    )
     state = _state(
         {
             "base_location": [500, 70, 500],
@@ -167,6 +173,8 @@ def test_distant_plot_is_retired_even_when_worker_reached_it(monkeypatch):
 
     assert not result.success
     assert "retired 1 farm plot" in result.detail
+    assert "returned to base" in result.detail
+    assert returned == [(500, 70, 500)]
     assert "wheat_farm" not in state.custom_data
 
 

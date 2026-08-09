@@ -410,12 +410,18 @@ def run_food_cycle(
     anchor = _base_anchor(state)
     retired = _retire_distant_plots(state, worker, anchor)
     if retired:
+        went_home = _return_to_anchor(client, anchor)
         _flush(state, client)
         return _result(
             worker,
             False,
             f"retired {len(retired)} farm plot(s) beyond the "
-            f"{MAX_ANCHOR_RADIUS}-block siting radius; will resite near base",
+            f"{MAX_ANCHOR_RADIUS}-block siting radius; "
+            + (
+                "returned to base for resiting"
+                if went_home
+                else "started bounded return to base for resiting"
+            ),
         )
     known = _plots(state)
     worker["farm_plots"] = [{"origin": list(plot)} for plot in known]
