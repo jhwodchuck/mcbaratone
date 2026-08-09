@@ -277,6 +277,36 @@ def test_first_checkpointed_plot_prefers_observed_natural_soil(monkeypatch):
     assert established == [(559, 74, -284)]
 
 
+def test_first_checkpointed_plot_reuses_existing_irrigation(monkeypatch):
+    state = _state({"food_worker": {"farm_plots": []}})
+    state.checkpoint_dir = "checkpoint"
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
+    monkeypatch.setattr(
+        food_supply,
+        "find_nearby_block",
+        lambda *_args, **_kwargs: (555, 72, -264),
+    )
+    monkeypatch.setattr(
+        food_supply,
+        "_block_id",
+        lambda _client, x, y, z: "minecraft:grass_block"
+        if (x, y, z) == (555, 71, -264)
+        else "minecraft:air",
+    )
+    established = []
+    monkeypatch.setattr(
+        food_supply,
+        "establish_wheat_farm",
+        lambda _client, *position, **_kwargs: established.append(position)
+        or position,
+    )
+
+    assert food_supply._establish_candidate(
+        client, state, (546, 79, -272), 5
+    ) == (555, 71, -264)
+    assert established == [(555, 71, -264)]
+
+
 def test_first_plot_probes_current_column_inside_base_radius(monkeypatch):
     state = _state(
         {"base_location": [546, 79, -304], "food_worker": {"farm_plots": []}}

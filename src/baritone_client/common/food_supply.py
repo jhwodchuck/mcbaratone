@@ -21,6 +21,7 @@ from .inventory import (
     get_inventory,
     resolve_storage_location,
 )
+from .navigation import find_nearby_block
 
 
 WHEAT = "minecraft:wheat"
@@ -344,21 +345,38 @@ def _establish_candidate(client: Any, state: Any, candidate, size: int):
     """Resolve a planned X/Z coordinate to terrain and establish one plot."""
     surface = None
     if getattr(state, "checkpoint_dir", None) and not _plots(state):
+        # A prior interrupted bootstrap may already have placed its center
+        # water without reaching the checkpoint write. Reuse that verified
+        # irrigation instead of selecting fresh grass and spending another
+        # bucket on every retry.
         try:
-            snapshot = client.transport.dispatch("get_state", {})
-            position = snapshot.get("block_position", snapshot.get("position", {}))
-            local = (
-                int(float(position["x"])),
-                int(float(position["y"])),
-                int(float(position["z"])),
-            )
-            anchor = _base_anchor(state)
-            if anchor is not None and _within_reach(
-                local, anchor, MAX_ANCHOR_RADIUS
-            ):
-                surface = find_farm_surface_near(
-                    client, *local, horizontal_radius=20
+            water = find_nearby_block(client, ["minecraft:water"], radius=20)
+            if water is not None:
+                wx, wy, wz = (int(value) for value in water)
+                if _block_id(client, wx, wy - 1, wz) in {
+                    "minecraft:dirt",
+                    "minecraft:grass_block",
+                    "minecraft:farmland",
+                }:
+                    surface = (wx, wy - 1, wz)
+        except Exception:
+            pass
+        try:
+            if surface is None:
+                snapshot = client.transport.dispatch("get_state", {})
+                position = snapshot.get("block_position", snapshot.get("position", {}))
+                local = (
+                    int(float(position["x"])),
+                    int(float(position["y"])),
+                    int(float(position["z"])),
                 )
+                anchor = _base_anchor(state)
+                if anchor is not None and _within_reach(
+                    local, anchor, MAX_ANCHOR_RADIUS
+                ):
+                    surface = find_farm_surface_near(
+                        client, *local, horizontal_radius=20
+                    )
         except (AttributeError, KeyError, TypeError, ValueError):
             pass
         if surface is None:
