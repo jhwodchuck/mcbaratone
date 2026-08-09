@@ -69,18 +69,20 @@ def test_find_farm_surface_near_uses_bounded_view_for_nearby_soil():
 def test_ensure_farm_water_places_bucket_when_already_carried(monkeypatch):
     blocks = {}
     def extra(route, payload, blocks_map):
-        if route == "place_block" and payload.get("item") == "minecraft:water_bucket":
-            blocks_map[(payload["x"], payload["y"], payload["z"])] = "minecraft:water"
-            return {"placed": True}
+        if route == "use_item":
+            blocks_map[(10, 65, 10)] = "minecraft:water"
+            return {"accepted": True}
         return None
     client, calls, blocks = _client(blocks=blocks, dispatch_extra=extra)
 
     monkeypatch.setattr(farming, "count_item", lambda _c, item: 1 if item == "minecraft:water_bucket" else 0)
     monkeypatch.setattr(farming, "select_item", lambda *_a, **_k: True)
     monkeypatch.setattr(farming, "goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(farming.time, "sleep", lambda _seconds: None)
 
     assert farming.ensure_farm_water(client, 10, 64, 10) is True
-    assert ("place_block", {"x": 10, "y": 65, "z": 10, "item": "minecraft:water_bucket"}) in calls
+    assert ("look_at", {"x": 10.5, "y": 64.5, "z": 10.5}) in calls
+    assert ("use_item", {"duration_ms": 0}) in calls
 
 
 def test_ensure_farm_water_clears_replaceable_center_vegetation(monkeypatch):
@@ -91,9 +93,9 @@ def test_ensure_farm_water_clears_replaceable_center_vegetation(monkeypatch):
         if route == "attack_block":
             blocks_map[target] = "minecraft:air"
             return {"started": True}
-        if route == "place_block" and payload.get("item") == "minecraft:water_bucket":
-            blocks_map[target] = "minecraft:water"
-            return {"placed": True}
+        if route == "use_item":
+            blocks_map[(10, 65, 10)] = "minecraft:water"
+            return {"accepted": True}
         return None
 
     client, calls, _blocks = _client(blocks=blocks, dispatch_extra=extra)
@@ -112,10 +114,13 @@ def test_ensure_farm_water_clears_replaceable_center_vegetation(monkeypatch):
 
 def test_ensure_farm_water_fills_bucket_first_when_needed(monkeypatch):
     blocks = {(20, 60, 20): "minecraft:water"}
+    uses = {"count": 0}
     def extra(route, payload, blocks_map):
-        if route == "place_block" and payload.get("item") == "minecraft:water_bucket":
-            blocks_map[(payload["x"], payload["y"], payload["z"])] = "minecraft:water"
-            return {"placed": True}
+        if route == "use_item":
+            uses["count"] += 1
+            if uses["count"] == 2:
+                blocks_map[(0, 65, 0)] = "minecraft:water"
+            return {"accepted": True}
         return None
     client, calls, blocks = _client(blocks=blocks, dispatch_extra=extra)
 

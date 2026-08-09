@@ -262,15 +262,15 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
     if not select_item(client, "minecraft:water_bucket", allow_swap=True):
         return False
     try:
-        result = client.transport.dispatch(
-            "place_block",
-            {"x": x, "y": y + 1, "z": z, "item": "minecraft:water_bucket"},
+        client.transport.dispatch(
+            "look_at",
+            {"x": x + 0.5, "y": y + 0.5, "z": z + 0.5},
         )
+        time.sleep(0.2)
+        client.transport.dispatch("use_item", {"duration_ms": 0})
+        time.sleep(0.5)
     except Exception as exc:
         print(f"  Placing farm water failed: {exc}")
-        return False
-    if isinstance(result, dict) and result.get("error"):
-        print(f"  Placing farm water failed: {result.get('error')}")
         return False
     return "water" in _block_id(client, x, y + 1, z)
 
