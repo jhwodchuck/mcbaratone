@@ -27,6 +27,7 @@ escape relieves is the deadlock this module exists to break.
 from __future__ import annotations
 
 import time
+from math import hypot
 from typing import Any, Mapping, Tuple
 
 #: Consecutive holds tolerated before the bot must move. At roughly one
@@ -146,6 +147,28 @@ def break_camp(
     except Exception as exc:  # pragma: no cover - defensive
         print(f"  BREAK CAMP failed: {exc}")
         return False
+    if not moved:
+        # Baritone can report a failed route after doing the useful part of
+        # the work (live Bot18: traversed the full 96-block relocation, then
+        # immediately relocated again because the stale streak remained 13).
+        # Measure the postcondition before classifying the recovery as failed.
+        try:
+            after = client.transport.dispatch("get_state", {})
+            after_position = after.get(
+                "block_position", after.get("position", {})
+            ) or {}
+            displacement = hypot(
+                float(after_position["x"]) - x,
+                float(after_position["z"]) - z,
+            )
+            if displacement >= min(12.0, max(3.0, float(distance) / 4.0)):
+                print(
+                    "  BREAK CAMP: verified "
+                    f"{displacement:.0f}-block relocation despite route result"
+                )
+                moved = True
+        except (KeyError, TypeError, ValueError):
+            pass
     if moved:
         clear_holds(state)
     return bool(moved)

@@ -98,6 +98,27 @@ def test_a_failed_break_keeps_the_streak_so_it_retries():
     assert camp_breaker.should_break_camp(state)
 
 
+def test_measured_relocation_clears_streak_when_route_reports_failure():
+    state = _state()
+    for _ in range(camp_breaker.CAMP_HOLD_LIMIT):
+        camp_breaker.record_hold(state, "food 0<14")
+    positions = iter((100, 196))
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda *_a, **_k: {
+                "block_position": {"x": next(positions), "y": 64, "z": -200}
+            }
+        )
+    )
+
+    moved = camp_breaker.break_camp(
+        client, state, goto=lambda *_a, **_k: False
+    )
+
+    assert moved is True
+    assert camp_breaker.hold_streak(state) == 0
+
+
 def test_note_hold_breaks_camp_at_the_limit():
     state = _state()
     client = _client()
