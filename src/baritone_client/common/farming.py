@@ -140,9 +140,22 @@ def find_farm_surface_near(
             and y - max_drop <= position[1] <= y + max_rise
         ]
         if surfaces:
+            def usable_neighbors(position):
+                px, py, pz = position
+                return sum(
+                    1
+                    for dx in range(-2, 3)
+                    for dz in range(-2, 3)
+                    if (dx or dz)
+                    and blocks.get((px + dx, py, pz + dz)) in tillable
+                    and blocks.get((px + dx, py + 1, pz + dz))
+                    in _FARM_REPLACEABLE
+                )
+
             return min(
                 surfaces,
                 key=lambda position: (
+                    -usable_neighbors(position),
                     (position[0] - x) ** 2 + (position[2] - z) ** 2,
                     abs(position[1] - y),
                 ),

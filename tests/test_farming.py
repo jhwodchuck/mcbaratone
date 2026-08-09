@@ -66,6 +66,28 @@ def test_find_farm_surface_near_uses_bounded_view_for_nearby_soil():
         client, 553, 74, -268, horizontal_radius=20
     ) == (555, 71, -264)
 
+
+def test_find_farm_surface_near_prefers_a_usable_patch_over_isolated_soil():
+    voxels = [
+        {"x": 1, "y": 64, "z": 0, "id": "minecraft:grass_block"},
+        {"x": 1, "y": 65, "z": 0, "id": "minecraft:air"},
+    ]
+    for x in range(5, 8):
+        for z in range(-1, 2):
+            voxels.extend(
+                [
+                    {"x": x, "y": 64, "z": z, "id": "minecraft:grass_block"},
+                    {"x": x, "y": 65, "z": z, "id": "minecraft:air"},
+                ]
+            )
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda _route, _payload: {"voxels": voxels})
+    )
+
+    assert farming.find_farm_surface_near(
+        client, 0, 65, 0, horizontal_radius=8
+    ) == (5, 64, 0)
+
 def test_ensure_farm_water_places_bucket_when_already_carried(monkeypatch):
     blocks = {}
     def extra(route, payload, blocks_map):

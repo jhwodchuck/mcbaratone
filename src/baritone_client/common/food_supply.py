@@ -353,11 +353,35 @@ def _establish_candidate(client: Any, state: Any, candidate, size: int):
             water = find_nearby_block(client, ["minecraft:water"], radius=20)
             if water is not None:
                 wx, wy, wz = (int(value) for value in water)
-                if _block_id(client, wx, wy - 1, wz) in {
+                tillable = {
                     "minecraft:dirt",
                     "minecraft:grass_block",
                     "minecraft:farmland",
-                }:
+                }
+                usable_neighbors = sum(
+                    1
+                    for dx in range(-2, 3)
+                    for dz in range(-2, 3)
+                    if (dx or dz)
+                    and _block_id(client, wx + dx, wy - 1, wz + dz) in tillable
+                    and _block_id(client, wx + dx, wy, wz + dz)
+                    in {
+                        "minecraft:air",
+                        "minecraft:cave_air",
+                        "minecraft:short_grass",
+                        "minecraft:tall_grass",
+                        "minecraft:fern",
+                        "minecraft:large_fern",
+                        "minecraft:dead_bush",
+                        "minecraft:snow",
+                        "minecraft:wildflowers",
+                        "minecraft:leaf_litter",
+                    }
+                )
+                if (
+                    _block_id(client, wx, wy - 1, wz) in tillable
+                    and usable_neighbors >= 4
+                ):
                     surface = (wx, wy - 1, wz)
         except Exception:
             pass
@@ -375,7 +399,7 @@ def _establish_candidate(client: Any, state: Any, candidate, size: int):
                     local, anchor, MAX_ANCHOR_RADIUS
                 ):
                     surface = find_farm_surface_near(
-                        client, *local, horizontal_radius=20
+                        client, *local, horizontal_radius=32
                     )
         except (AttributeError, KeyError, TypeError, ValueError):
             pass

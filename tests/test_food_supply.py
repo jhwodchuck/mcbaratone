@@ -289,9 +289,11 @@ def test_first_checkpointed_plot_reuses_existing_irrigation(monkeypatch):
     monkeypatch.setattr(
         food_supply,
         "_block_id",
-        lambda _client, x, y, z: "minecraft:grass_block"
-        if (x, y, z) == (555, 71, -264)
-        else "minecraft:air",
+        lambda _client, x, y, z: (
+            "minecraft:grass_block"
+            if y == 71 and 553 <= x <= 557 and -266 <= z <= -262
+            else "minecraft:air"
+        ),
     )
     established = []
     monkeypatch.setattr(
