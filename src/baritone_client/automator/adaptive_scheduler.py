@@ -491,7 +491,14 @@ class AdaptiveScheduler:
             # A hold is a decision to do nothing; say why, and bound repeats.
             hold_reason = local_work_hold_reason(signals)
             reasons = ((focus_reason,) if focus_reason else ()) + (hold_reason,)
-            camp_breaker.note_hold(self.client, self.state, hold_reason)
+            if local_work_blockers(signals):
+                camp_breaker.note_hold(self.client, self.state, hold_reason)
+            else:
+                # A healthy role waiting out its bounded work cooldown is not
+                # camped. Relocating it destroys durable locality: Bot18 was
+                # repeatedly sent 96 blocks away from the farm/base it needed
+                # to use as soon as its food-production cooldown expired.
+                camp_breaker.clear_holds(self.state)
             return SchedulingDecision(reasons=reasons, role_hold=role_complete)
         camp_breaker.clear_holds(self.state)
         self.record_decision(objective, signals)

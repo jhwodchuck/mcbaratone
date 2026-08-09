@@ -708,6 +708,7 @@ def test_village_food_cooldown_holds_without_rearming_villager_infra(
     planner = _post_food_planner()
     state = SimpleNamespace(
         custom_data={
+            "camp_holds": {"streak": 11, "reason": "cooldown"},
             "adaptive_scheduler": {
                 "opportunities": {
                     "food_production": {"last_attempt": 950.0, "success": True}
@@ -725,6 +726,7 @@ def test_village_food_cooldown_holds_without_rearming_villager_infra(
     assert decision.objective is None
     assert decision.role_hold
     assert "waiting for recurring food production" in decision.summary
+    assert state.custom_data["camp_holds"]["streak"] == 0
 
 
 def test_recorded_phase_decision_is_explainable():
