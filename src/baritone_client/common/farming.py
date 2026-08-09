@@ -246,6 +246,19 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
     if not goto(client, x, y, z, timeout=120, tolerance=3):
         print("  Could not reach the farm center to place water.")
         return False
+    above = _block_id(client, x, y + 1, z)
+    if above not in {"minecraft:air", "minecraft:cave_air"}:
+        if above not in _FARM_REPLACEABLE:
+            print(f"  Farm water center is blocked by {above}.")
+            return False
+        client.transport.dispatch("attack_block", {"x": x, "y": y + 1, "z": z})
+        time.sleep(0.15)
+        if _block_id(client, x, y + 1, z) not in {
+            "minecraft:air",
+            "minecraft:cave_air",
+        }:
+            print(f"  Could not clear {above} from the farm water center.")
+            return False
     if not select_item(client, "minecraft:water_bucket", allow_swap=True):
         return False
     try:

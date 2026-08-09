@@ -83,6 +83,33 @@ def test_ensure_farm_water_places_bucket_when_already_carried(monkeypatch):
     assert ("place_block", {"x": 10, "y": 65, "z": 10, "item": "minecraft:water_bucket"}) in calls
 
 
+def test_ensure_farm_water_clears_replaceable_center_vegetation(monkeypatch):
+    blocks = {(10, 65, 10): "minecraft:wildflowers"}
+
+    def extra(route, payload, blocks_map):
+        target = (payload.get("x"), payload.get("y"), payload.get("z"))
+        if route == "attack_block":
+            blocks_map[target] = "minecraft:air"
+            return {"started": True}
+        if route == "place_block" and payload.get("item") == "minecraft:water_bucket":
+            blocks_map[target] = "minecraft:water"
+            return {"placed": True}
+        return None
+
+    client, calls, _blocks = _client(blocks=blocks, dispatch_extra=extra)
+    monkeypatch.setattr(
+        farming,
+        "count_item",
+        lambda _client, item: 1 if item == "minecraft:water_bucket" else 0,
+    )
+    monkeypatch.setattr(farming, "select_item", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(farming, "goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(farming.time, "sleep", lambda _seconds: None)
+
+    assert farming.ensure_farm_water(client, 10, 64, 10) is True
+    assert ("attack_block", {"x": 10, "y": 65, "z": 10}) in calls
+
+
 def test_ensure_farm_water_fills_bucket_first_when_needed(monkeypatch):
     blocks = {(20, 60, 20): "minecraft:water"}
     def extra(route, payload, blocks_map):
