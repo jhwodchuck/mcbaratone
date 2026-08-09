@@ -19,10 +19,7 @@ from ..common.inventory import get_inventory
 from ..common.navigation import find_nearby_block, goto
 from ..common.storage_organizer import run_quartermaster_cycle
 from .end_readiness import (
-    FleetRole,
-    allows_local_work,
-    fleet_role,
-    record_readiness,
+    FleetRole, allows_local_work, fleet_role, record_readiness,
     role_focused_candidates,
 )
 from .fleet_coverage import borrowed_specialty_roles, configured_specialty_roles
@@ -70,6 +67,7 @@ class GameSignals:
     observed: bool = False
     entities_observed: bool = False
     dimension: str = ""
+    difficulty: str = ""
     biome: str = ""
     health: float = 0.0
     food: int = 0
@@ -110,6 +108,7 @@ class GameSignals:
     def safe_for_local_work(self) -> bool:
         """Local side work is allowed only with a comfortable safety margin."""
         return not self.local_work_blockers()
+
 
 @dataclass(frozen=True)
 class PhaseScore:
@@ -307,6 +306,7 @@ def collect_game_signals(client: Any, resources: Any, state: Any) -> GameSignals
         observed=True,
         entities_observed=entities_observed,
         dimension=dimension,
+        difficulty=str(snapshot.get("difficulty", "")).lower(),
         biome=str(snapshot.get("biome", "")),
         health=_as_float(snapshot.get("health", 0) or 0),
         food=_as_int(snapshot.get("food_level", snapshot.get("food", 0)) or 0),

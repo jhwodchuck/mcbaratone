@@ -150,8 +150,27 @@ def select_role_opportunity(
     if not cooldown_ready or not _safe(signals):
         return None
     dimension = str(getattr(signals, "dimension", ""))
+    difficulty = str(getattr(signals, "difficulty", "")).lower()
     inventory = getattr(signals, "inventory", {})
     if role is FleetRole.NETHER_SUPPLY:
+        if difficulty == "peaceful":
+            if "nether" in dimension:
+                portal = _saved_location(state, "nether_portal")
+                if portal is not None:
+                    return LocalOpportunity(
+                        OpportunityKind.DIMENSION_ENTRY,
+                        260,
+                        "Peaceful disables blaze production; return to the Overworld for renewable work",
+                        location=portal,
+                        target_item="minecraft:overworld",
+                    )
+                return None
+            if "overworld" in dimension:
+                return LocalOpportunity(
+                    OpportunityKind.WOOD_FARM,
+                    205,
+                    "Peaceful disables blaze production; bank renewable wood until hostile work resumes",
+                )
         if "overworld" in dimension:
             portal = _saved_location(state, "nether_portal")
             if portal is not None:
@@ -169,6 +188,12 @@ def select_role_opportunity(
             target_item="minecraft:blaze_rod",
         )
     if role is FleetRole.END_RUNNER:
+        if difficulty == "peaceful" and "overworld" in dimension:
+            return LocalOpportunity(
+                OpportunityKind.WOOD_FARM,
+                205,
+                "Peaceful disables Enderman hunting; bank renewable wood until hostile work resumes",
+            )
         if "overworld" in dimension:
             portal = _saved_location(state, "end_portal")
             if portal is not None and _checkpoint_location(state, "end_city"):
@@ -226,6 +251,13 @@ def run_role_opportunity(client: Any, state: Any, opportunity: LocalOpportunity)
     if opportunity.kind is OpportunityKind.DIMENSION_ENTRY and opportunity.location:
         if opportunity.target_item == "minecraft:the_nether":
             entered = enter_nether_portal(client, portal=opportunity.location, timeout=90)
+        elif opportunity.target_item == "minecraft:overworld":
+            entered = enter_nether_portal(
+                client,
+                portal=opportunity.location,
+                target_dimension="minecraft:overworld",
+                timeout=90,
+            )
         elif opportunity.target_item == "minecraft:the_end":
             entered = enter_end_portal(client, portal=opportunity.location, timeout=90)
         else:

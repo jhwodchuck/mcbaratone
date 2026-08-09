@@ -17,6 +17,35 @@ def _signals(**overrides):
     return GameSignals(**values)
 
 
+def test_peaceful_hostile_roles_choose_renewable_work_or_leave_nether(monkeypatch):
+    end_work = role_opportunities.select_role_opportunity(
+        FleetRole.END_RUNNER,
+        _signals(dimension="minecraft:overworld", difficulty="peaceful"),
+        SimpleNamespace(custom_data={}),
+        cooldown_ready=True,
+    )
+    assert end_work and end_work.kind is OpportunityKind.WOOD_FARM
+
+    state = SimpleNamespace(custom_data={"nether_portal": [4, 70, 5]})
+    nether_exit = role_opportunities.select_role_opportunity(
+        FleetRole.NETHER_SUPPLY,
+        _signals(difficulty="peaceful"),
+        state,
+        cooldown_ready=True,
+    )
+    assert nether_exit and nether_exit.target_item == "minecraft:overworld"
+    calls = []
+    monkeypatch.setattr(
+        role_opportunities,
+        "enter_nether_portal",
+        lambda *_args, **kwargs: calls.append(kwargs) or True,
+    )
+    role_opportunities.run_role_opportunity(
+        SimpleNamespace(), state, nether_exit
+    )
+    assert calls[0]["target_dimension"] == "minecraft:overworld"
+
+
 def test_end_runner_requires_end_city_checkpoint_and_safe_end():
     state = SimpleNamespace(custom_data={"end_city": {"location": [1, 70, 1]}})
     chosen = role_opportunities.select_role_opportunity(

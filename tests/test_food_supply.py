@@ -125,6 +125,26 @@ def test_failed_expansion_site_is_retired_before_next_attempt(monkeypatch):
     ]
 
 
+def test_retired_legacy_plot_is_not_resurrected_next_cycle():
+    state = _state(
+        {
+            "base_location": [500, 70, 500],
+            "wheat_farm": {"origin": [0, 64, 0]},
+            "food_worker": {"farm_plots": [{"origin": [0, 64, 0]}]},
+        }
+    )
+
+    retired = food_supply._retire_distant_plots(
+        state,
+        state.custom_data["food_worker"],
+        (500, 70, 500),
+    )
+
+    assert retired == [[0, 64, 0]]
+    assert "wheat_farm" not in state.custom_data
+    assert food_supply._plots(state) == []
+
+
 def test_frontier_keeps_expanding_past_four_verified_plots(monkeypatch):
     _inventory(monkeypatch, {"minecraft:wheat_seeds": 64})
     monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)

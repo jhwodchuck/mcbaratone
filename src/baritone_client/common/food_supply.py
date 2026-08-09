@@ -203,7 +203,11 @@ def _grid_offset(slot: int) -> Tuple[int, int]:
     return perimeter[position % len(perimeter)]
 
 
-def _retire_distant_plots(worker: dict, anchor: Optional[Tuple[int, int, int]]) -> list:
+def _retire_distant_plots(
+    state: Any,
+    worker: dict,
+    anchor: Optional[Tuple[int, int, int]],
+) -> list:
     """Drop plots the siting radius would never choose today.
 
     The unbounded search left plots scattered far from base. They are not
@@ -226,6 +230,15 @@ def _retire_distant_plots(worker: dict, anchor: Optional[Tuple[int, int, int]]) 
         worker["farm_plots"] = kept
         history = worker.setdefault("retired_plots", [])
         history.extend(retired)
+        # `_plots` imports this compatibility field on every cycle. Leaving a
+        # retired origin here resurrects it immediately, so the worker spends
+        # every turn retiring the same unreachable farm and never sites the
+        # replacement near its durable base.
+        custom = getattr(state, "custom_data", None)
+        if isinstance(custom, dict):
+            legacy = _position(custom.get("wheat_farm"))
+            if legacy in {tuple(plot) for plot in retired}:
+                custom.pop("wheat_farm", None)
     return retired
 
 
@@ -416,7 +429,7 @@ def run_food_cycle(
         # is retired so a fresh one can be sited near base. A good plot the
         # worker simply walked away from needs the worker brought home instead
         # -- Bot18's plot sat 21 blocks from its anchor while the bot was 468.
-        retired = _retire_distant_plots(worker, anchor)
+        retired = _retire_distant_plots(state, worker, anchor)
         if retired:
             _flush(state, client)
             return _result(

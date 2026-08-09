@@ -248,8 +248,21 @@ def create_overflow_storage(client, harness_ops):
     return (first,)
 
 
-def store_surplus_in_chest(client, required: int) -> bool:
-    """Bank surplus in nearby storage, growing capacity when necessary."""
+def store_surplus_in_chest(
+    client,
+    required: int,
+    *,
+    deposit_items=None,
+    retain_counts=None,
+    max_stops: int = MAX_STORAGE_TOUR_STOPS,
+) -> bool:
+    """Bank surplus in nearby storage, growing capacity when necessary.
+
+    Role workers may extend the normal cleanup allow-list with their own bulk
+    product. Forestry needs this because logs are valuable output rather than
+    generic clutter, but a full inventory of logs still has to be banked
+    before another harvest can begin.
+    """
     from . import harness_ops
     from .inventory import (
         EARLY_GAME_EXCESS_ITEMS,
@@ -257,14 +270,18 @@ def store_surplus_in_chest(client, required: int) -> bool:
         free_inventory_slots,
     )
 
-    deposit_items = EARLY_GAME_EXCESS_ITEMS | OVERFLOW_BULK_ITEMS
+    selected_items = EARLY_GAME_EXCESS_ITEMS | OVERFLOW_BULK_ITEMS
+    if deposit_items:
+        selected_items |= set(deposit_items)
+    selected_retains = dict(OVERFLOW_RETAIN_COUNTS)
+    selected_retains.update(retain_counts or {})
 
     def deposit(position) -> int:
         return deposit_excess_to_chest(
             client,
             tuple(position),
-            deposit_items=deposit_items,
-            retain_counts=OVERFLOW_RETAIN_COUNTS,
+            deposit_items=selected_items,
+            retain_counts=selected_retains,
         )
 
     if not harness_ops.available():
@@ -280,7 +297,12 @@ def store_surplus_in_chest(client, required: int) -> bool:
 
     try:
         # list_containers already excludes status='missing'.
-        containers = nearby_storage_positions(client, snapshot)
+        if max_stops == MAX_STORAGE_TOUR_STOPS:
+            containers = nearby_storage_positions(client, snapshot)
+        else:
+            containers = nearby_storage_positions(
+                client, snapshot, limit=max(1, int(max_stops))
+            )
     except Exception as exc:
         print(f"  STORAGE: container list unavailable ({exc})")
         containers = []

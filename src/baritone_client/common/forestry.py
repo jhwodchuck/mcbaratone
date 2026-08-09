@@ -16,11 +16,13 @@ from typing import Any, Iterable, Mapping, Optional
 from .base import robust_place
 from .inventory import (
     deposit_excess_to_chest,
+    free_inventory_slots,
     get_inventory,
     resolve_storage_location,
 )
 from .navigation import goto
 from .resources import LOG_BLOCKS, PLANK_ITEMS, ensure_supplies, gather_wood
+from .storage_safety import store_surplus_in_chest
 
 
 SAPLING_ITEMS = (
@@ -314,6 +316,20 @@ def run_wood_cycle(
         return WoodCycleResult(False, "survival or daylight margin is not ready")
 
     before = get_inventory(client)
+    if free_inventory_slots(client) < 3 and _count_logs(before) > 0:
+        store_surplus_in_chest(
+            client,
+            3,
+            deposit_items=set(LOG_BLOCKS) | set(SAPLING_ITEMS),
+            retain_counts={item_id: 4 for item_id in SAPLING_ITEMS},
+            max_stops=12,
+        )
+        before = get_inventory(client)
+        if free_inventory_slots(client) < 3:
+            return WoodCycleResult(
+                False,
+                "carried wood backlog could not be banked to reserve harvest slots",
+            )
     before_logs = _count_logs(before)
     target = _log_equivalents(before) + max(1, int(harvest_target))
     gathered = gather_wood(
@@ -352,6 +368,20 @@ def run_wood_cycle(
         deposit_items=set(LOG_BLOCKS),
         state=state,
     )
+    if deposited <= 0 and _count_logs(after_harvest) > 0:
+        # The checkpointed home container may be full while another cataloged
+        # barrel is empty. Tour bounded nearby storage before declaring the
+        # harvest unbankable.
+        fallback_before = _count_logs(get_inventory(client))
+        store_surplus_in_chest(
+            client,
+            min(8, free_inventory_slots(client) + 3),
+            deposit_items=set(LOG_BLOCKS) | set(SAPLING_ITEMS),
+            retain_counts={item_id: 4 for item_id in SAPLING_ITEMS},
+            max_stops=12,
+        )
+        if _count_logs(get_inventory(client)) < fallback_before:
+            deposited = 1
     if deposited < 0:
         return WoodCycleResult(
             False,

@@ -75,7 +75,10 @@ def expedition_is_too_dangerous(client: Any) -> bool:
         armor = len(get_equipped_armor(client))
         state = client.transport.dispatch("get_state", {})
         health = float(state.get("health", 20) or 20)
+        difficulty = str(state.get("difficulty", "")).lower()
     except Exception:
+        return False
+    if difficulty == "peaceful" and health >= EXPEDITION_MIN_HEALTH:
         return False
     if armor >= EXPEDITION_MIN_ARMOR_PIECES and health >= EXPEDITION_MIN_HEALTH:
         return False

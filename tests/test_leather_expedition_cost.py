@@ -21,10 +21,13 @@ class StateStub:
 
 
 class ClientStub:
-    def __init__(self, *, health=20.0):
+    def __init__(self, *, health=20.0, difficulty="easy"):
         self.health = health
         self.transport = SimpleNamespace(
-            dispatch=lambda *_a, **_k: {"health": self.health}
+            dispatch=lambda *_a, **_k: {
+                "health": self.health,
+                "difficulty": difficulty,
+            }
         )
 
 
@@ -71,6 +74,20 @@ def test_naked_bot_defers_the_expedition(monkeypatch):
     )
 
     assert leather_supply.expedition_is_too_dangerous(ClientStub()) is True
+
+
+def test_peaceful_hunt_does_not_require_combat_armor(monkeypatch):
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.get_equipped_armor",
+        lambda _c: {},
+    )
+
+    assert (
+        leather_supply.expedition_is_too_dangerous(
+            ClientStub(difficulty="peaceful")
+        )
+        is False
+    )
 
 
 def test_wounded_bot_defers_the_expedition(monkeypatch):

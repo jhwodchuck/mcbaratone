@@ -74,6 +74,59 @@ def test_run_wood_cycle_harvests_replants_and_banks(monkeypatch):
     }
 
 
+def test_full_log_backlog_is_banked_before_next_harvest(monkeypatch):
+    counts = {"minecraft:oak_log": 100}
+    free = {"slots": 0}
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, payload=None: {
+                "health": 20,
+                "food_level": 20,
+                "world_time": 1000,
+                "dimension": "minecraft:overworld",
+            }
+            if route == "get_state"
+            else {}
+        )
+    )
+    state = SimpleNamespace(custom_data={})
+    monkeypatch.setattr(forestry, "get_inventory", lambda _client: dict(counts))
+    monkeypatch.setattr(
+        forestry, "free_inventory_slots", lambda _client: free["slots"]
+    )
+
+    def bank_backlog(*_args, **_kwargs):
+        counts["minecraft:oak_log"] = 0
+        free["slots"] = 3
+        return True
+
+    def gather(*_args, **_kwargs):
+        counts["minecraft:oak_log"] = 24
+        return True
+
+    def deposit(*_args, **_kwargs):
+        counts["minecraft:oak_log"] = 0
+        return 1
+
+    monkeypatch.setattr(forestry, "store_surplus_in_chest", bank_backlog)
+    monkeypatch.setattr(forestry, "gather_wood", gather)
+    monkeypatch.setattr(
+        forestry, "plant_carried_saplings", lambda *_args, **_kwargs: 0
+    )
+    monkeypatch.setattr(
+        forestry,
+        "resolve_storage_location",
+        lambda *_args, **_kwargs: (4, 64, 4),
+    )
+    monkeypatch.setattr(forestry, "deposit_excess_to_chest", deposit)
+
+    result = forestry.run_wood_cycle(client, state)
+
+    assert result.success
+    assert result.logs_harvested == 24
+    assert result.logs_banked == 24
+
+
 def test_wood_no_progress_rotates_recovery_and_expands_plantation(monkeypatch):
     waypoints = []
     client = SimpleNamespace(
