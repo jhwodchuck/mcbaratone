@@ -119,6 +119,36 @@ def find_farm_surface_near(
     max_drop: int = 20,
 ) -> Optional[Tuple[int, int, int]]:
     """Resolve a planned X/Z site onto nearby exposed tillable terrain."""
+    tillable = {"minecraft:dirt", "minecraft:grass_block", "minecraft:farmland"}
+    radius = max(0, int(horizontal_radius))
+    try:
+        view = client.transport.dispatch("get_view", {"radius": max(8, radius)})
+        voxels = view.get("voxels", [])
+        blocks = {
+            (int(block["x"]), int(block["y"]), int(block["z"])): block.get(
+                "id", ""
+            )
+            for block in voxels
+        }
+        surfaces = [
+            position
+            for position, block_id in blocks.items()
+            if block_id in tillable
+            and blocks.get((position[0], position[1] + 1, position[2]))
+            in _FARM_REPLACEABLE
+            and (position[0] - x) ** 2 + (position[2] - z) ** 2 <= radius ** 2
+            and y - max_drop <= position[1] <= y + max_rise
+        ]
+        if surfaces:
+            return min(
+                surfaces,
+                key=lambda position: (
+                    (position[0] - x) ** 2 + (position[2] - z) ** 2,
+                    abs(position[1] - y),
+                ),
+            )
+    except Exception:
+        pass
     offsets = [(0, 0)] + [
         (dx, dz)
         for radius in range(1, max(0, int(horizontal_radius)) + 1)
@@ -126,7 +156,6 @@ def find_farm_surface_near(
         for dz in range(-radius, radius + 1)
         if max(abs(dx), abs(dz)) == radius
     ]
-    tillable = {"minecraft:dirt", "minecraft:grass_block", "minecraft:farmland"}
     for dx, dz in offsets:
         for surface_y in range(y + max_rise, y - max_drop - 1, -1):
             if (

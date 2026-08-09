@@ -358,7 +358,9 @@ def _establish_candidate(client: Any, state: Any, candidate, size: int):
             if anchor is not None and _within_reach(
                 local, anchor, MAX_ANCHOR_RADIUS
             ):
-                surface = find_farm_surface_near(client, *local)
+                surface = find_farm_surface_near(
+                    client, *local, horizontal_radius=20
+                )
         except (AttributeError, KeyError, TypeError, ValueError):
             pass
         if surface is None:

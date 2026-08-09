@@ -42,13 +42,29 @@ def test_find_farm_surface_near_drops_from_platform_height():
             (546, 71, -272): "minecraft:short_grass",
         }
     )
-
     assert farming.find_farm_surface_near(client, 546, 79, -272) == (
         546,
         70,
         -272,
     )
 
+
+def test_find_farm_surface_near_uses_bounded_view_for_nearby_soil():
+    voxels = [
+        {"x": 555, "y": 71, "z": -264, "id": "minecraft:grass_block"},
+        {"x": 555, "y": 72, "z": -264, "id": "minecraft:wildflowers"},
+    ]
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: {"voxels": voxels}
+            if route == "get_view"
+            else {"id": "minecraft:air"}
+        )
+    )
+
+    assert farming.find_farm_surface_near(
+        client, 553, 74, -268, horizontal_radius=20
+    ) == (555, 71, -264)
 
 def test_ensure_farm_water_places_bucket_when_already_carried(monkeypatch):
     blocks = {}

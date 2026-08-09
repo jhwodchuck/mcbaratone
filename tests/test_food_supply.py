@@ -292,7 +292,7 @@ def test_first_plot_probes_current_column_inside_base_radius(monkeypatch):
     monkeypatch.setattr(
         food_supply,
         "find_farm_surface_near",
-        lambda _client, x, y, z: (x, 73, z),
+        lambda _client, x, y, z, **_kwargs: (x, 73, z),
     )
     monkeypatch.setattr(
         food_supply,
