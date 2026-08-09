@@ -345,6 +345,18 @@ def _establish_candidate(client: Any, state: Any, candidate, size: int):
     """Resolve a planned X/Z coordinate to terrain and establish one plot."""
     surface = None
     if getattr(state, "checkpoint_dir", None) and not _plots(state):
+        # Adopt an existing real crop before attempting construction. The
+        # industrial base can already contain a large irrigated wheat field;
+        # searching only for empty soil made a fresh worker report zero plots
+        # while standing beside hundreds of farmland/crop blocks.
+        try:
+            wheat = find_nearby_block(client, ["minecraft:wheat"], radius=32)
+            if wheat is not None:
+                wx, wy, wz = (int(value) for value in wheat)
+                if _block_id(client, wx, wy - 1, wz) == "minecraft:farmland":
+                    return (wx, wy - 1, wz)
+        except Exception:
+            pass
         # A prior interrupted bootstrap may already have placed its center
         # water without reaching the checkpoint write. Reuse that verified
         # irrigation instead of selecting fresh grass and spending another
