@@ -95,27 +95,44 @@ def _plots(state: Any) -> list[Tuple[int, int, int]]:
     return found
 
 
-def _anchor(state: Any, plots: Sequence[Tuple[int, int, int]]) -> Optional[Tuple[int, int, int]]:
+def _base_anchor(state: Any) -> Optional[Tuple[int, int, int]]:
+    """Return only a durable base/storage anchor, never a farm fallback."""
     custom = getattr(state, "custom_data", {}) or {}
     if isinstance(custom, Mapping):
         for key in (
             "base_location",
             "homestead_anchor",
-            "farm_location",
             "base",
             "storage",
             "home",
-            "wheat_farm",
         ):
             candidate = _position(custom.get(key))
             if candidate:
                 return candidate
         structures = custom.get("structures", {})
         if isinstance(structures, Mapping):
-            for key in ("storage", "home_storage", "food_source"):
+            for key in ("storage", "home_storage"):
                 candidate = _position(structures.get(key))
                 if candidate:
                     return candidate
+    return None
+
+
+def _anchor(state: Any, plots: Sequence[Tuple[int, int, int]]) -> Optional[Tuple[int, int, int]]:
+    base = _base_anchor(state)
+    if base is not None:
+        return base
+    custom = getattr(state, "custom_data", {}) or {}
+    if isinstance(custom, Mapping):
+        for key in ("farm_location", "wheat_farm"):
+            candidate = _position(custom.get(key))
+            if candidate:
+                return candidate
+        structures = custom.get("structures", {})
+        if isinstance(structures, Mapping):
+            candidate = _position(structures.get("food_source"))
+            if candidate:
+                return candidate
     return plots[0] if plots else None
 
 
@@ -388,6 +405,17 @@ def run_food_cycle(
             worker,
             False,
             "survival recovery could not restore food before farm travel",
+        )
+    known = _plots(state)
+    anchor = _base_anchor(state)
+    retired = _retire_distant_plots(state, worker, anchor)
+    if retired:
+        _flush(state, client)
+        return _result(
+            worker,
+            False,
+            f"retired {len(retired)} farm plot(s) beyond the "
+            f"{MAX_ANCHOR_RADIUS}-block siting radius; will resite near base",
         )
     known = _plots(state)
     worker["farm_plots"] = [{"origin": list(plot)} for plot in known]

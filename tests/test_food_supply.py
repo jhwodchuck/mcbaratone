@@ -145,6 +145,31 @@ def test_retired_legacy_plot_is_not_resurrected_next_cycle():
     assert food_supply._plots(state) == []
 
 
+def test_distant_plot_is_retired_even_when_worker_reached_it(monkeypatch):
+    _inventory(monkeypatch, {"minecraft:wheat_seeds": 10})
+    monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        food_supply,
+        "harvest_wheat_farm",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("distant plot must retire before harvest")
+        ),
+    )
+    state = _state(
+        {
+            "base_location": [500, 70, 500],
+            "wheat_farm": {"origin": [0, 64, 0]},
+            "food_worker": {"farm_plots": [{"origin": [0, 64, 0]}]},
+        }
+    )
+
+    result = food_supply.run_food_cycle(object(), state)
+
+    assert not result.success
+    assert "retired 1 farm plot" in result.detail
+    assert "wheat_farm" not in state.custom_data
+
+
 def test_frontier_keeps_expanding_past_four_verified_plots(monkeypatch):
     _inventory(monkeypatch, {"minecraft:wheat_seeds": 64})
     monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
