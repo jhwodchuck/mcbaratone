@@ -253,6 +253,18 @@ def select_role_opportunity(
             return None
         if location is not None:
             return LocalOpportunity(OpportunityKind.ENCHANTING_XP, 210, "verified spawner checkpoint can produce a bounded XP delta", location=location, target_item="experience_total")
+        page_material = int(inventory.get("minecraft:paper", 0) or 0) + int(
+            inventory.get("minecraft:sugar_cane", 0) or 0
+        )
+        if difficulty == "peaceful" and (
+            int(inventory.get("minecraft:leather", 0) or 0) < 1
+            or page_material < 3
+        ):
+            return LocalOpportunity(
+                OpportunityKind.WOOD_FARM,
+                175,
+                "Peaceful enchanting inputs are unavailable; bank renewable wood until materials recover",
+            )
         return LocalOpportunity(
             OpportunityKind.ENCHANTING_MATERIAL,
             180,

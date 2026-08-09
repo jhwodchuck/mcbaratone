@@ -137,6 +137,21 @@ def test_enchanting_without_xp_engine_acquires_bounded_book_delta(monkeypatch):
     assert requested == [{"minecraft:book": 3}]
 
 
+def test_peaceful_enchanter_without_book_inputs_banks_renewable_wood():
+    chosen = role_opportunities.select_role_opportunity(
+        FleetRole.ENCHANTING,
+        _signals(
+            dimension="minecraft:overworld",
+            difficulty="peaceful",
+            inventory={"minecraft:oak_log": 2},
+        ),
+        SimpleNamespace(custom_data={}),
+        cooldown_ready=True,
+    )
+
+    assert chosen and chosen.kind is OpportunityKind.WOOD_FARM
+
+
 def test_enchanting_material_uses_its_own_cooldown_in_overworld():
     state = SimpleNamespace(
         custom_data={
