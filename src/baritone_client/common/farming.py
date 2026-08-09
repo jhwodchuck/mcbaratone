@@ -366,7 +366,11 @@ def establish_wheat_farm(
 
     planted = 0
     for tx, ty, tz in tiles:
-        if not goto(client, tx, ty, tz, timeout=30, tolerance=1.5):
+        # Every tile in this five-wide patch is within normal interaction
+        # reach from its center. Requiring the pathfinder to stand almost on
+        # each individual tile makes uneven ground consume the full timeout
+        # repeatedly even though tilling and planting are already reachable.
+        if not goto(client, tx, ty, tz, timeout=20, tolerance=3.5):
             continue
         if _till_and_plant_tile(client, tx, ty, tz):
             planted += 1

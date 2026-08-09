@@ -206,7 +206,15 @@ def test_establish_wheat_farm_tills_and_plants_tiles(monkeypatch):
 
     client, calls, blocks = _client(blocks=blocks, dispatch_extra=extra)
     monkeypatch.setattr(farming, "ensure_farm_water", lambda *_a, **_k: True)
-    monkeypatch.setattr(farming, "goto", lambda *_a, **_k: True)
+    arrivals = []
+    monkeypatch.setattr(
+        farming,
+        "goto",
+        lambda _client, x, y, z, **kwargs: arrivals.append(
+            ((x, y, z), kwargs)
+        )
+        or True,
+    )
     monkeypatch.setattr(farming, "select_item", lambda *_a, **_k: True)
     monkeypatch.setattr(farming, "craft", lambda *_a, **_k: True)
     monkeypatch.setattr(farming, "count_item", lambda _c, item: 99 if "hoe" in item or "seed" in item else 0)
@@ -214,6 +222,10 @@ def test_establish_wheat_farm_tills_and_plants_tiles(monkeypatch):
 
     result = farming.establish_wheat_farm(client, 0, 64, 0, size=5)
     assert result == (0, 64, 0)
+    assert all(
+        options == {"timeout": 20, "tolerance": 3.5}
+        for _position, options in arrivals
+    )
     # At least one tile was actually tilled then planted.
     assert any(b == "minecraft:wheat" for b in blocks.values())
 
