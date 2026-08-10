@@ -10,6 +10,7 @@ from baritone_client.actions.homestead import IncrementalHomestead
 from baritone_client.common.tasks import (
     IncrementalProgressRequired,
     PacingHoldRequired,
+    ProgressRecoveryRequired,
     SurvivalRecoveryRequired,
 )
 
@@ -1472,3 +1473,42 @@ def test_infrastructure_directly_above_the_anchor_is_not_usable():
         (-337, anchor[1], 97): "minecraft:chest",
     }.get(tuple(pos), "minecraft:air")
     assert helper._live_infrastructure(level, anchor) is True
+
+
+def test_standing_far_above_the_anchor_is_not_home():
+    """"Home" must mean reachable, not merely horizontally close.
+
+    Live on the A1 server 2026-08-10: the bot worked at y=78 against a y=52
+    anchor. That is 14 blocks away horizontally, so enforce_anchor treated it
+    as home and let it build a base there -- which the reachable-level check on
+    infrastructure then correctly rejected. Neither condition could be
+    satisfied at once, so the step could never complete.
+    """
+    anchor = [-352, 52, 93]
+    helper = IncrementalHomestead.__new__(IncrementalHomestead)
+    helper.state = SimpleNamespace(custom_data={})
+    helper.client = SimpleNamespace()
+
+    returned = []
+    helper.current_position = lambda: [-350, 78, 79]
+    helper._state = lambda: {
+        "dimension": "minecraft:overworld",
+        "world_time": 1000,
+        "health": 20,
+        "food_level": 20,
+    }
+    helper._dry_ground = lambda _p: True
+
+    import baritone_client.actions.homestead as hs
+
+    original = hs.goto
+    hs.goto = lambda _c, x, y, z, **_k: returned.append((x, y, z)) or True
+    try:
+        # Arrival is judged from current_position, which still reports the
+        # high spot, so this raises rather than silently succeeding.
+        with pytest.raises(ProgressRecoveryRequired):
+            helper.enforce_anchor({"anchor": anchor, "steps": {}})
+    finally:
+        hs.goto = original
+
+    assert returned == [(-352, 52, 93)], "must actually travel to the anchor"

@@ -222,7 +222,18 @@ class IncrementalHomestead:
         if anchor is None:
             return False
         current = self.current_position()
-        if self._distance(current, anchor) <= SAFE_RADIUS:
+        # Horizontal *and* vertical, or "home" includes standing on a cliff far
+        # above the base. Live on the A1 server 2026-08-10: the bot worked at
+        # y=78 against a y=52 anchor -- 14 blocks away horizontally, so
+        # enforce_anchor considered it home -- and built its base there, which
+        # the reachable-level check on infrastructure then correctly rejected.
+        # Neither test could be satisfied at once, so the step could never
+        # complete. Whichever way it resolves is fine: the bot either descends
+        # to its anchor, or fails the route and re-homes to where it stands.
+        if (
+            self._distance(current, anchor) <= SAFE_RADIUS
+            and self._within_reach_height(current, anchor)
+        ):
             return False
         state = self._state()
         health = float(state.get("health", 0) or 0)
@@ -327,7 +338,13 @@ class IncrementalHomestead:
                   f"(budget reset)")
             return True
         arrived = self.current_position()
-        if self._distance(arrived, anchor) > SAFE_RADIUS:
+        # Same envelope as the entry test above: a route that ends far above
+        # the anchor has not arrived, however close it looks from overhead.
+        # Treating it as arrival is what let the bot "be home" on a ledge and
+        # build a base its own infrastructure check then rejected.
+        if self._distance(arrived, anchor) > SAFE_RADIUS or not (
+            self._within_reach_height(arrived, anchor)
+        ):
             # Route claims arrival but we are still outside the envelope --
             # treat as unreachable too so we re-home instead of deadlocking.
             homestead[ANCHOR_UNREACHABLE] = True
