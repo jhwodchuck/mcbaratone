@@ -347,3 +347,32 @@ def test_invalidate_stale_does_not_reopen_a_degraded_step():
 
     helper.invalidate_stale(progress)
     assert progress["steps"]["micro_farm"]["verified"] is True
+
+
+def test_a_crafting_shortage_never_moves_the_base():
+    """Relocating cannot conjure a stick, and it re-opens every other step.
+
+    Live on the A1 server 2026-08-10 the homestead reached 8 of 9 steps
+    verified, then torch_supply failed on "Missing ingredient
+    'minecraft:stick'". Three such stalls would have moved the base and
+    discarded all eight verified steps to fix a problem moving cannot fix.
+    """
+    progress = _progress()
+
+    for step in homestead_site.SUPPLY_ONLY_STEPS:
+        for _ in range(MAX_SITE_STEP_FAILURES + 3):
+            assert homestead_site.note_step_stalled(progress, step) is False, step
+        # Still counted, so the stall remains visible to an operator.
+        assert progress[SITE_STEP_FAILURES][step] >= MAX_SITE_STEP_FAILURES
+
+
+def test_a_terrain_step_still_moves_the_base():
+    """The supply exemption must not disarm relocation for site failures."""
+    progress = _progress()
+
+    results = [
+        homestead_site.note_step_stalled(progress, "micro_farm")
+        for _ in range(MAX_SITE_STEP_FAILURES)
+    ]
+
+    assert results[-1] is True

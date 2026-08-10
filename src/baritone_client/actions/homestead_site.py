@@ -50,6 +50,16 @@ MAX_SITE_RELOCATION_HARD_CAP = 25
 MAX_SITE_RELOCATIONS_BEFORE_WAIVE = 6
 
 
+#: Steps whose failure is never evidence about the location. They need carried
+#: items and a workstation, not different terrain, so moving cannot fix them.
+#: Letting them move the base is actively destructive, because relocating
+#: re-opens every other step: a missing stick would discard a nearly-finished
+#: homestead. Live on the A1 server 2026-08-10, at 8 of 9 steps verified,
+#: torch_supply failed on "Missing ingredient 'minecraft:stick'" -- three such
+#: stalls would have relocated the base and re-opened all eight.
+SUPPLY_ONLY_STEPS = frozenset({"plank_reserve", "charcoal_supply", "torch_supply"})
+
+
 def note_step_stalled(homestead: dict[str, Any], step_name: str) -> bool:
     """Count a no-progress step result; True when the site looks unsuitable.
 
@@ -63,6 +73,11 @@ def note_step_stalled(homestead: dict[str, Any], step_name: str) -> bool:
         homestead[SITE_STEP_FAILURES] = failures
     count = int(failures.get(step_name, 0) or 0) + 1
     failures[step_name] = count
+    if step_name in SUPPLY_ONLY_STEPS:
+        # Counted for visibility, but never grounds to move: the remedy is
+        # more materials, which the step's own re-opening of its supplier
+        # already arranges.
+        return False
     if count < MAX_SITE_STEP_FAILURES:
         return False
     relocations = int(homestead.get(SITE_RELOCATIONS, 0) or 0)
