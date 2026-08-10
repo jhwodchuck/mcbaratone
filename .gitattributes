@@ -1,0 +1,37 @@
+# Line endings are normalised to LF in the repository.
+#
+# This repo is edited from two hosts: a Windows workstation (CRLF by default)
+# and the Linux A1 server. Without this file the same content committed from
+# each host produces a whole-file diff, because every line differs by \r.
+#
+# That is not cosmetic. On 2026-08-08 the A1 server had six unpushed commits
+# and `git diff` reported ~277 changed lines in files whose actual content was
+# identical, so the real divergence was invisible without passing -w to every
+# diff. Normalising means a diff shows changed *code*.
+#
+# NOTE: existing files are normalised lazily, as each is next staged. To
+# convert the whole tree in one commit (do this only when no agent session or
+# live run has uncommitted work in flight):
+#     git add --renormalize .
+* text=auto eol=lf
+
+# Windows-only entry points must keep CRLF or cmd.exe mis-parses them.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Gradle wrapper: the shell script must stay LF, the batch file CRLF.
+gradlew     text eol=lf
+gradlew.bat text eol=crlf
+
+# Binaries git must never inspect or convert.
+*.jar   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.zip   binary
+*.gz    binary
+*.nbt   binary
+*.schem binary
