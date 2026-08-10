@@ -403,3 +403,35 @@ def test_light_perimeter_never_moves_a_nearly_finished_homestead():
         if progress["steps"][n]["verified"]
     ]
     assert len(survivors) == len(ORDERED_HOMESTEAD_STEPS) - 1
+
+
+def test_relocating_discards_the_old_perimeter_ring(monkeypatch):
+    """Stored ring coordinates belong to the abandoned site.
+
+    light_perimeter reuses a stored `intended` ring and only rebases its Y,
+    so keeping the old X/Z after a move makes it light empty air around the
+    previous base while the new one stays dark. Live 2026-08-10: torch targets
+    near (-334, 79, 111) against an anchor at (-352, 52, 93), each rejected as
+    "no solid support face".
+    """
+    helper = _homestead_helper(position=(120, 68, -40))
+    progress = _progress()
+    progress["steps"]["light_perimeter"] = {
+        "verified": True,
+        "evidence": "live_perimeter",
+        "intended": [[-334, 79, 111], [-333, 79, 111]],
+        "verified_positions": [[-334, 79, 111]],
+    }
+
+    monkeypatch.setattr(
+        "baritone_client.common.build_site_recovery.relocate_build_site_search",
+        lambda *_a, **_k: True,
+    )
+
+    assert homestead_site.relocate_homestead(
+        SimpleNamespace(), progress, "micro_farm", helper
+    ) is True
+
+    record = progress["steps"]["light_perimeter"]
+    assert "intended" not in record
+    assert "verified_positions" not in record

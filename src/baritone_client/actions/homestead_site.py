@@ -250,5 +250,13 @@ def relocate_homestead(
         record = helper.step(homestead, name)
         record["verified"] = False
         record["evidence"] = "site_relocated"
+        # Coordinates describe the abandoned site, so they must go too.
+        # light_perimeter reuses a stored `intended` ring and only rebases its
+        # Y, keeping the old X/Z -- after a move that lights empty air around
+        # the *previous* base while the new one stays dark. Live 2026-08-10:
+        # torch targets near (-334, 79, 111) against an anchor at
+        # (-352, 52, 93), rejected one by one as "no solid support face".
+        record.pop("intended", None)
+        record.pop("verified_positions", None)
     print(f"  Homestead relocated to {new_anchor}")
     return True
