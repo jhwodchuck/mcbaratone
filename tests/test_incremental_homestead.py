@@ -1355,3 +1355,60 @@ def test_within_homestead_ignores_a_far_saved_farm():
     assert _within_homestead(custom_data, (-288, 70, 96)) is True
     # No anchor yet: a fresh run must not be blocked by a check with no data.
     assert _within_homestead({}, (0, 64, 0)) is True
+
+
+def test_perimeter_ring_from_an_abandoned_site_is_re_derived():
+    """A stored ring that cannot seat anywhere must be rebuilt, not retried.
+
+    The fallback to a fresh ring happens before columns are seated, and the
+    "nothing seated" branch used to return without writing anything back -- so
+    a ring belonging to an abandoned site was reloaded and re-failed every
+    cycle, forever. Live on the A1 server 2026-08-10 at 8 of 9 steps done: the
+    ring still pointed ~110 blocks away at (-245, 72, 12) while the anchor was
+    (-352, 52, 93), and light_perimeter could never finish.
+    """
+    anchor = [-352, 52, 93]
+    helper = IncrementalHomestead.__new__(IncrementalHomestead)
+    helper.state = SimpleNamespace(custom_data={})
+    helper.client = SimpleNamespace()
+    helper.enforce_anchor = lambda _h: False
+    helper.require_construction_pacing = lambda: None
+    helper.plant_crops = lambda _c: True
+
+    # Solid ground only near the anchor; the abandoned site's columns read as
+    # air, exactly as an unloaded distant chunk does.
+    def block_at(pos):
+        x, y, z = (int(v) for v in pos)
+        if abs(x - anchor[0]) <= 12 and abs(z - anchor[2]) <= 12:
+            return "minecraft:stone" if y <= anchor[1] else "minecraft:air"
+        return "minecraft:air"
+
+    helper._block_at = block_at
+    helper._is_torch = lambda _pos: False
+
+    placed = []
+    progress = {
+        "anchor": anchor,
+        "steps": {
+            "light_perimeter": {
+                "verified": False,
+                "intended": [[-245, 72, 12], [-241, 72, 12]],
+                "verified_positions": [[-245, 72, 12]],
+            }
+        },
+    }
+
+    import baritone_client.actions.homestead as hs
+
+    original = hs.place_torch
+    hs.place_torch = lambda _c, x, y, z: placed.append((x, y, z)) or True
+    try:
+        helper.run_light_perimeter(progress)
+    finally:
+        hs.place_torch = original
+
+    record = progress["steps"]["light_perimeter"]
+    ring = record.get("intended") or []
+    assert ring, "a re-derived ring must replace the unusable one"
+    for x, _y, z in ring:
+        assert abs(x - anchor[0]) <= 12 and abs(z - anchor[2]) <= 12, (x, z)

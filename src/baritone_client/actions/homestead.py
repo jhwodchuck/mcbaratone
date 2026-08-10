@@ -794,7 +794,8 @@ class IncrementalHomestead:
         # spacing fix shipped, so the change reached no existing bot. Torches
         # already placed stay placed and simply re-verify against the smaller
         # set.
-        if not intended or len(intended) > len(fresh):
+        used_fresh = not intended or len(intended) > len(fresh)
+        if used_fresh:
             intended = fresh
         # perimeter_ring puts every position at anchor_y+1, which only works on
         # perfectly flat ground. On real terrain most of the ring floats in
@@ -818,7 +819,25 @@ class IncrementalHomestead:
         # no-op for a correctly seated ring, since re-seating finds the same
         # ground again.
         intended = [(x, anchor[1] + 1, z) for x, _y, z in intended]
-        intended = self._ground_adjusted_ring(intended)
+        seated = self._ground_adjusted_ring(intended)
+        if not seated and not used_fresh:
+            # Every stored column failed to seat, which means the ring belongs
+            # somewhere else -- typically a site abandoned by a relocation,
+            # whose X/Z are far enough away that those chunks read as air.
+            # Re-derive around the current anchor instead of giving up.
+            #
+            # Without this the step can never recover: the fallback to `fresh`
+            # above happens before seating, and this branch used to return
+            # without writing anything back, so the unusable ring was reloaded
+            # and re-failed every cycle forever. Live on the A1 server
+            # 2026-08-10, at 8 of 9 steps done, the ring still pointed ~110
+            # blocks away at (-245, 72, 12) against an anchor of
+            # (-352, 52, 93).
+            print("  Perimeter ring does not fit this site; re-deriving around the anchor")
+            seated = self._ground_adjusted_ring(
+                [(x, anchor[1] + 1, z) for x, _y, z in fresh]
+            )
+        intended = seated
         if not intended:
             record["verified"] = False
             return False
