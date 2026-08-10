@@ -642,11 +642,26 @@ class IncrementalHomestead:
             self.step(homestead, "stone_reserve")["verified"] = False
             record["evidence"] = {"missing_cobblestone": 8 - cobblestone}
             return True
-        success, location = setup_base(self.client)
+        # Build at the anchor, not wherever find_flat_ground wanders to.
+        # setup_base() with no location searches for flat ground on its own,
+        # which can be well outside the homestead: live on the A1 server
+        # 2026-08-10 it chose y=78 against a y=52 anchor, 26 blocks up. The
+        # base was built, rejected as unreachable, and rebuilt from scratch on
+        # the next cycle -- burning the planks and cobblestone each time. The
+        # anchor is already verified dry ground, so it is the right site.
+        anchor_site = self._coordinate(homestead.get("anchor"))
+        success, location = setup_base(
+            self.client,
+            tuple(anchor_site) if anchor_site is not None else None,
+        )
         if not success or location is None:
             return False
         origin = [int(value) for value in location]
         if self._distance(origin, homestead["anchor"]) > SAFE_RADIUS:
+            return False
+        if anchor_site is not None and not self._within_reach_height(
+            origin, anchor_site
+        ):
             return False
         infrastructure = {
             "origin": origin,

@@ -1512,3 +1512,40 @@ def test_standing_far_above_the_anchor_is_not_home():
         hs.goto = original
 
     assert returned == [(-352, 52, 93)], "must actually travel to the anchor"
+
+
+def test_infrastructure_is_built_at_the_anchor_not_wherever_is_flat():
+    """setup_base must be told where to build, or it searches on its own.
+
+    Live on the A1 server 2026-08-10: find_flat_ground chose y=78 against a
+    y=52 anchor -- 26 blocks up. The base was built, rejected as unreachable,
+    and rebuilt from scratch every cycle, burning the planks and cobblestone
+    each time. The anchor is already verified dry ground, so it is the site.
+    """
+    anchor = [-352, 52, 93]
+    helper = IncrementalHomestead.__new__(IncrementalHomestead)
+    helper.state = SimpleNamespace(custom_data={})
+    helper.client = SimpleNamespace()
+    helper.enforce_anchor = lambda _h: False
+    helper.require_construction_pacing = lambda: None
+    helper._infrastructure_record = lambda _a=None: {}
+    helper._live_infrastructure = lambda _r, _a: False
+    helper._block_at = lambda _p: "minecraft:air"
+
+    import baritone_client.actions.homestead as hs
+
+    asked = []
+
+    def fake_setup_base(_client, location=None):
+        asked.append(location)
+        return False, None  # stop after recording the requested site
+
+    original_setup, original_count = hs.setup_base, hs.count_item
+    hs.setup_base = fake_setup_base
+    hs.count_item = lambda _c, item: 64  # plenty of planks and cobblestone
+    try:
+        helper.run_infrastructure({"anchor": anchor, "steps": {}})
+    finally:
+        hs.setup_base, hs.count_item = original_setup, original_count
+
+    assert asked == [tuple(anchor)], "must build at the anchor, not search"
