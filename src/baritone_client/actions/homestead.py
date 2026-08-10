@@ -164,7 +164,7 @@ class IncrementalHomestead:
                 self._infrastructure_record(anchor),
                 anchor,
             ),
-            "micro_farm": self._live_farm(),
+            "micro_farm": self._live_farm(anchor),
             "light_perimeter": lighting_live,
         }
         for name, live in checks.items():
@@ -646,12 +646,13 @@ class IncrementalHomestead:
             return True
         self.require_construction_pacing()
         record = self.step(homestead, "micro_farm")
-        if self._live_farm():
+        anchor = homestead.get("anchor")
+        if self._live_farm(anchor):
             changed = not bool(record.get("verified"))
             record.update(verified=True, evidence="live_crop")
             return changed
         record["verified"] = False
-        if not self.plant_crops(self.client) or not self._live_farm():
+        if not self.plant_crops(self.client) or not self._live_farm(anchor):
             return False
         record.update(verified=True, evidence="live_crop")
         return True
@@ -960,13 +961,39 @@ class IncrementalHomestead:
                 return False
         return True
 
-    def _live_farm(self) -> bool:
+    def _live_farm(self, anchor: Any = None) -> bool:
+        """Is there a live crop plot belonging to *this* homestead?
+
+        A plot only counts if it is inside the local envelope.
+        `_live_infrastructure` already enforces SAFE_RADIUS; without the same
+        rule here, a farm left behind at an abandoned site keeps satisfying
+        micro_farm from arbitrarily far away.
+
+        Worse than merely wrong, it oscillates. A distant farm sits near the
+        server's simulation-distance boundary, so `get_block` reports a crop
+        while that chunk happens to be loaded and air while it is not. Live on
+        the A1 server 2026-08-10: the anchor had relocated 22 times and ended
+        ~90 blocks from its original farm, against simulation-distance=6 (96
+        blocks). BOOT_SEQUENCE then ping-ponged forever -- invalidate_stale
+        un-verified micro_farm on an unloaded read, run_micro_farm re-verified
+        it on a loaded one and reported incremental progress, every ~30s. The
+        run never advanced, and because the step always "progressed" it never
+        stalled long enough to relocate or to be waived either.
+        """
+        anchor_coord = self._coordinate(anchor)
         structures = self.state.custom_data.get("structures", {})
         record = structures.get("food_source", {}) if isinstance(structures, Mapping) else {}
         plots = record.get("plots", []) if isinstance(record, Mapping) else []
         for plot in plots:
             position = self._coordinate(plot)
-            if position is not None and self._block_at(position) in CROP_BLOCKS:
+            if position is None:
+                continue
+            if (
+                anchor_coord is not None
+                and self._distance(position, anchor_coord) > SAFE_RADIUS
+            ):
+                continue
+            if self._block_at(position) in CROP_BLOCKS:
                 return True
         return False
 

@@ -343,7 +343,7 @@ def test_invalidate_stale_does_not_reopen_a_degraded_step():
     progress["steps"]["micro_farm"]["degraded"] = True
     progress["steps"]["micro_farm"]["verified"] = True
     # Live farm check would fail (no farm), but degraded steps are exempt.
-    helper._live_farm = lambda: False
+    helper._live_farm = lambda _anchor=None: False
 
     helper.invalidate_stale(progress)
     assert progress["steps"]["micro_farm"]["verified"] is True

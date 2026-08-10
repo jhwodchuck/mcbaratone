@@ -1303,3 +1303,55 @@ def test_stale_high_ring_column_is_rebased_onto_the_anchor_floor(monkeypatch):
     )
     payload = state.custom_data["homestead"]["steps"]["light_perimeter"]
     assert [tuple(p) for p in payload["intended"]] == [(4, 106, 0)]
+
+
+def _farm_helper(anchor, plots, blocks):
+    """IncrementalHomestead wired to a fixed block map and food_source record."""
+    helper = IncrementalHomestead.__new__(IncrementalHomestead)
+    helper.state = SimpleNamespace(
+        custom_data={"structures": {"food_source": {"plots": plots}}}
+    )
+    helper.client = SimpleNamespace()
+    helper._block_at = lambda pos: blocks.get(tuple(pos), "minecraft:air")
+    return helper
+
+
+def test_distant_farm_does_not_satisfy_micro_farm():
+    """A farm left at an abandoned site is not this homestead's farm.
+
+    Live on the A1 server 2026-08-10: after 22 relocations the anchor sat ~90
+    blocks from its original farm, right on the server's simulation-distance
+    boundary (6 chunks = 96 blocks). get_block reported a crop when the chunk
+    was loaded and air when it was not, so invalidate_stale un-verified
+    micro_farm and run_micro_farm re-verified it, forever -- reporting
+    incremental progress every cycle while the run never advanced, and never
+    stalling long enough to relocate or be waived.
+    """
+    anchor = [-290, 69, 94]
+    far_plot = [-244, 74, 17]  # ~90 blocks away
+    helper = _farm_helper(anchor, [far_plot], {tuple(far_plot): "minecraft:wheat"})
+
+    assert helper._live_farm(anchor) is False
+    # Without an anchor the check cannot apply, and must not silently pass.
+    assert helper._live_farm(None) is True
+
+
+def test_nearby_farm_still_satisfies_micro_farm():
+    """The envelope check must not reject the homestead's own plot."""
+    anchor = [-290, 69, 94]
+    near_plot = [-288, 70, 96]
+    helper = _farm_helper(anchor, [near_plot], {tuple(near_plot): "minecraft:wheat"})
+
+    assert helper._live_farm(anchor) is True
+
+
+def test_within_homestead_ignores_a_far_saved_farm():
+    """_plant_crops must not walk back to an abandoned site's farm."""
+    from baritone_client.automator.phases.boot_sequence import _within_homestead
+
+    custom_data = {"homestead": {"anchor": [-290, 69, 94]}}
+
+    assert _within_homestead(custom_data, (-244, 73, 17)) is False
+    assert _within_homestead(custom_data, (-288, 70, 96)) is True
+    # No anchor yet: a fresh run must not be blocked by a check with no data.
+    assert _within_homestead({}, (0, 64, 0)) is True
