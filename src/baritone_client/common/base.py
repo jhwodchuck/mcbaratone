@@ -471,6 +471,33 @@ def place_torch(client, x: int, y: int, z: int) -> bool:
         print(f"  Skipping placement at ({x}, {y}, {z}) - Target is liquid")
         return False
 
+    # A torch needs a solid block on one of its faces (a wall side or the
+    # floor beneath it) to attach to. If the target is genuinely floating in
+    # open air with no support face in any direction, attempting placement is
+    # futile and worse: safe_place_block's scaffolding fallback would recurse
+    # building support blocks that are themselves unsupported, flooding the
+    # bridge with place_block calls. That flood trips the command circuit
+    # breaker OPEN, which then rejects the controller's own get_state/
+    # get_inventory supervision, forcing the automation to stop -> systemd
+    # restarts it into the same impossible target -> crash loop.
+    #
+    # Detect the floating case up front and give up cleanly (no bridge spam)
+    # so the phase reports a transient miss and moves on instead of wedging.
+    air = {"", "minecraft:air", "minecraft:cave_air", "minecraft:void_air"}
+    neighbour_ids = [
+        _house_block_id(client, x - 1, y, z),
+        _house_block_id(client, x + 1, y, z),
+        _house_block_id(client, x, y, z - 1),
+        _house_block_id(client, x, y, z + 1),
+        _house_block_id(client, x, y - 1, z),
+    ]
+    if all(block in air for block in neighbour_ids):
+        print(
+            f"  Skipping torch at ({x}, {y}, {z}) - no solid support face "
+            f"(all neighbours air)"
+        )
+        return False
+
     if not robust_place(client, x, y, z, "minecraft:torch"):
         print("  Place torch failed")
         return False

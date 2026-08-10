@@ -20,6 +20,7 @@ from baritone_client.actions.homestead import (
 )
 from baritone_client.actions.homestead_site import (
     MAX_SITE_RELOCATIONS,
+    MAX_SITE_RELOCATION_HARD_CAP,
     MAX_SITE_STEP_FAILURES,
     SITE_RELOCATIONS,
     SITE_STEP_FAILURES,
@@ -98,13 +99,28 @@ def test_stalls_are_counted_per_step_not_globally():
 
 
 def test_relocation_budget_is_bounded():
-    """A barren region must end in a visible stall, not an endless walk."""
+    """Past the soft budget the bot must keep moving, bounded by the hard cap.
+
+    Jason's directive: the bot needs to get to the dragon from any spawn, so a
+    barren site must not park the run. After MAX_SITE_RELOCATIONS the bot keeps
+    relocating (note_step_stalled stays True) until MAX_SITE_RELOCATION_HARD_CAP,
+    where it finally holds to avoid a genuinely endless walk.
+    """
     helper = _homestead_helper()
     progress = _progress()
     progress[SITE_RELOCATIONS] = MAX_SITE_RELOCATIONS
 
-    for _ in range(MAX_SITE_STEP_FAILURES + 2):
+    # The step-failure gate must trip first (each call advances one stall).
+    for _ in range(MAX_SITE_STEP_FAILURES - 1):
         assert homestead_site.note_step_stalled(progress, "micro_farm") is False
+    # Next call crosses the gate; past the soft budget it stays True (hard cap
+    # not reached).
+    for _ in range(MAX_SITE_STEP_FAILURES + 2):
+        assert homestead_site.note_step_stalled(progress, "micro_farm") is True
+
+    # At the hard cap, finally hold.
+    progress[SITE_RELOCATIONS] = homestead_site.MAX_SITE_RELOCATION_HARD_CAP
+    assert homestead_site.note_step_stalled(progress, "micro_farm") is False
 
 
 def test_relocating_reopens_every_step(monkeypatch):
@@ -151,13 +167,47 @@ def test_a_failed_search_keeps_the_old_site(monkeypatch):
     assert progress[SITE_RELOCATIONS] == 1
 
 
+def test_heading_move_fallback_relocates_when_search_finds_nothing(monkeypatch):
+    """When the build-site search can't move the bot off a barren site, the
+    camp-break heading move relocates it instead of parking."""
+    helper = _homestead_helper(position=(120, 68, -40))
+    progress = _progress()
+    for name in ORDERED_HOMESTEAD_STEPS:
+        progress["steps"][name] = {"verified": True, "evidence": "live_check"}
+
+    monkeypatch.setattr(
+        "baritone_client.common.build_site_recovery.relocate_build_site_search",
+        lambda *_a, **_k: False,  # no better dry build site in range
+    )
+    # break_camp reports a successful physical move.
+    monkeypatch.setattr(
+        "baritone_client.automator.camp_breaker.break_camp",
+        lambda _client, _state: True,
+    )
+
+    assert homestead_site.relocate_homestead(
+        SimpleNamespace(), progress, "micro_farm", helper
+    ) is True
+    assert progress["anchor"] == (120, 68, -40)
+    assert progress[SITE_RELOCATIONS] == 1
+    assert progress[SITE_STEP_FAILURES] == {}
+    for name in ORDERED_HOMESTEAD_STEPS:
+        assert progress["steps"][name]["verified"] is False, name
+        assert progress["steps"][name]["evidence"] == "site_relocated"
+
+
 def test_a_barren_region_eventually_stops_retrying(monkeypatch):
     """Live on the A1 server 2026-08-08: a bot stuck on bare mountain at
 
     Y=140 relocated on "move 1/3" every single cycle forever, because the
     relocation counter only advanced when a search actually found somewhere
     better. Nothing in this test's search radius is ever better, so the
-    counter must still climb to the budget and then stop.
+    counter must still climb.
+
+    Jason's directive supersedes the old "stop retrying" intent: the bot must
+    keep moving to reach the dragon from any spawn. After the old soft budget
+    the bot keeps authorising relocation (bounded by the hard cap) instead of
+    parking on a step its ground can never satisfy.
     """
     helper = _homestead_helper()
     progress = _progress()
@@ -166,17 +216,21 @@ def test_a_barren_region_eventually_stops_retrying(monkeypatch):
         "baritone_client.common.build_site_recovery.relocate_build_site_search",
         lambda *_a, **_k: False,
     )
-
+    # No transport on the test client, so the break_camp heading fallback also
+    # fails to move -- relocate_homestead returns False but still spends budget.
     for _ in range(MAX_SITE_RELOCATIONS):
         assert homestead_site.relocate_homestead(
             SimpleNamespace(), progress, "micro_farm", helper
         ) is False
     assert progress[SITE_RELOCATIONS] == MAX_SITE_RELOCATIONS
 
-    # Budget spent: note_step_stalled must stop authorising further attempts.
+    # Past the soft budget the bot keeps being authorised to move, up to the
+    # hard cap.
     for _ in range(MAX_SITE_STEP_FAILURES):
         result = homestead_site.note_step_stalled(progress, "micro_farm")
-    assert result is False
+    assert result is True
+    progress[SITE_RELOCATIONS] = homestead_site.MAX_SITE_RELOCATION_HARD_CAP
+    assert homestead_site.note_step_stalled(progress, "micro_farm") is False
 
 
 def test_relocation_refuses_non_dry_ground(monkeypatch):
@@ -231,3 +285,65 @@ def test_stall_state_survives_the_load_rebuild():
 
     assert reloaded[SITE_STEP_FAILURES] == {"micro_farm": 2}
     assert reloaded[SITE_RELOCATIONS] == 1
+
+
+def test_waive_step_only_fires_at_waive_threshold():
+    """A waivable step is not waived until enough relocations have been tried
+    that the site has proven it cannot support it.
+
+    Below the threshold the site may still be relocated to better ground, so
+    waiving early would forfeit an actually-buildable site.
+    """
+    helper = _homestead_helper()
+    progress = _progress()
+
+    # Below the waive threshold: not waived.
+    progress[SITE_RELOCATIONS] = homestead_site.MAX_SITE_RELOCATIONS  # 3
+    assert homestead_site.waive_step(progress, helper, "micro_farm") is False
+    assert not progress["steps"]["micro_farm"].get("degraded")
+
+    # At the waive threshold: waived.
+    progress[SITE_RELOCATIONS] = homestead_site.MAX_SITE_RELOCATIONS_BEFORE_WAIVE
+    assert homestead_site.waive_step(progress, helper, "micro_farm") is True
+    record = progress["steps"]["micro_farm"]
+    assert record.get("degraded") is True
+    assert record.get("verified") is True
+    assert record.get("evidence") == "waived_unbuildable_site"
+    # Idempotent: already waived.
+    assert homestead_site.waive_step(progress, helper, "micro_farm") is False
+
+
+def test_non_waivable_steps_never_waive():
+    """Load-bearing steps (e.g. wood_reserve) are never waived."""
+    helper = _homestead_helper()
+    progress = _progress()
+    progress[SITE_RELOCATIONS] = homestead_site.MAX_SITE_RELOCATION_HARD_CAP
+
+    assert homestead_site.waive_step(progress, helper, "wood_reserve") is False
+    assert "degraded" not in progress["steps"]["wood_reserve"]
+
+
+def test_waived_step_is_skipped_by_next_step():
+    """A degraded step no longer blocks onward progression."""
+    helper = _homestead_helper()
+    progress = _progress()
+    # micro_farm is the only unverified step left; waive it.
+    for name in ORDERED_HOMESTEAD_STEPS:
+        progress["steps"][name]["verified"] = True
+    progress["steps"]["micro_farm"]["verified"] = False
+    progress["steps"]["micro_farm"]["degraded"] = True
+
+    assert helper.next_step(progress) is None  # nothing blocks the run
+
+
+def test_invalidate_stale_does_not_reopen_a_degraded_step():
+    """invalidate_stale must leave a waived step alone or it deadlocks again."""
+    helper = _homestead_helper()
+    progress = _progress()
+    progress["steps"]["micro_farm"]["degraded"] = True
+    progress["steps"]["micro_farm"]["verified"] = True
+    # Live farm check would fail (no farm), but degraded steps are exempt.
+    helper._live_farm = lambda: False
+
+    helper.invalidate_stale(progress)
+    assert progress["steps"]["micro_farm"]["verified"] is True

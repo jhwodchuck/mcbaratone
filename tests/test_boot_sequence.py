@@ -190,8 +190,11 @@ def test_boot_crop_planting_verifies_and_persists_irrigated_plot(monkeypatch):
     handler.state = state
     destinations = []
 
+    # The soil/water search moved into common.farming, which binds
+    # find_nearby_block at import time -- patch it where it is looked up, not
+    # where it is defined, or the real bridge-backed search runs instead.
     monkeypatch.setattr(
-        "baritone_client.common.navigation.find_nearby_block",
+        "baritone_client.common.farming.find_nearby_block",
         lambda _client, block_ids, **_kwargs: (0, 64, 0)
         if "minecraft:water" in block_ids
         else None,

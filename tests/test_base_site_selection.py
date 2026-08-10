@@ -1502,3 +1502,49 @@ def test_surface_ascent_uses_aquatic_recovery_before_coordinate_route(monkeypatc
     ) == (375, 63, 46)
 
     assert calls == ["aquatic"]
+
+
+def test_place_torch_refuses_a_target_with_no_support_face(monkeypatch):
+    """A floating torch target must fail fast instead of wedging the run.
+
+    safe_place_block's scaffolding fallback builds support blocks, but a
+    target floating in open air makes those supports unsupported too, so it
+    recurses and floods the bridge with place_block calls. That flood trips
+    the command circuit breaker OPEN, which then rejects the controller's own
+    get_state/get_inventory supervision reads -- the automation stops, systemd
+    restarts it into the same impossible target, and it crash-loops.
+    """
+    placed = []
+    monkeypatch.setattr(base, "count_item", lambda _c, item: 8)
+    monkeypatch.setattr(
+        base, "robust_place",
+        lambda *_a, **_k: placed.append(_a) or True,
+    )
+    # Every neighbour is air: nothing for the torch to attach to.
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, payload=None: {"id": "minecraft:air"}
+        )
+    )
+
+    assert base.place_torch(client, 10, 70, 10) is False
+    assert placed == [], "must not reach the placement primitive at all"
+
+
+def test_place_torch_proceeds_when_a_neighbour_can_support_it(monkeypatch):
+    """The floating-target guard must not block a legitimate wall torch."""
+    solid = (10, 69, 10)  # floor beneath the target
+    monkeypatch.setattr(base, "count_item", lambda _c, item: 8)
+    monkeypatch.setattr(base, "robust_place", lambda *_a, **_k: True)
+    monkeypatch.setattr(base, "is_position_safe", lambda *_a, **_k: True)
+    monkeypatch.setattr(base.time, "sleep", lambda _s: None)
+
+    def dispatch(route, payload=None):
+        if route == "get_block":
+            key = (payload["x"], payload["y"], payload["z"])
+            return {"id": "minecraft:stone" if key == solid else "minecraft:air"}
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+
+    assert base.place_torch(client, 10, 70, 10) is True

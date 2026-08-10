@@ -12,6 +12,7 @@ from ..common.homestead_lighting import perimeter_ring, partition_light_coordina
 from ..common.inventory import count_item, craft
 from ..common.navigation import goto
 from ..common.resources import gather_stone, gather_wood
+from ..common.surface_recovery import reach_dry_surface
 from ..common.tasks import (
     PacingHoldRequired,
     ProgressRecoveryRequired,
@@ -132,14 +133,27 @@ class IncrementalHomestead:
         return progress
 
     def next_step(self, homestead: dict[str, Any]) -> Optional[str]:
-        """Return the first unverified improvement in stable order."""
+        """Return the first unverified, non-degraded improvement in stable order.
+
+        A step marked ``degraded`` was waived after the site proved it could
+        never satisfy it (e.g. micro_farm on a barren mountain); it must not
+        block onward progress toward the dragon, so it is treated as done.
+        """
         for name in ORDERED_HOMESTEAD_STEPS:
-            if not self.step(homestead, name).get("verified"):
+            record = self.step(homestead, name)
+            if record.get("degraded"):
+                continue
+            if not record.get("verified"):
                 return name
         return None
 
     def invalidate_stale(self, homestead: dict[str, Any]) -> None:
-        """Fail closed when checkpoint claims no longer match the live world."""
+        """Fail closed when checkpoint claims no longer match the live world.
+
+        Degraded steps are excluded: their live check is expected to fail
+        (that is why the site's inability to satisfy them waived them), so
+        re-opening them would deadlock the run again.
+        """
         anchor = self._coordinate(homestead.get("anchor"))
         lighting_live = self._live_lighting(
             self.step(homestead, "light_perimeter")
@@ -154,8 +168,11 @@ class IncrementalHomestead:
             "light_perimeter": lighting_live,
         }
         for name, live in checks.items():
-            if self.step(homestead, name).get("verified") and not live:
-                self.step(homestead, name)["verified"] = False
+            record = self.step(homestead, name)
+            if record.get("degraded"):
+                continue
+            if record.get("verified") and not live:
+                record["verified"] = False
 
     def step(self, homestead: dict[str, Any], name: str) -> dict[str, Any]:
         steps = homestead.setdefault("steps", {})
@@ -257,14 +274,36 @@ class IncrementalHomestead:
                 )
             current = self.current_position()
             if not self._dry_ground(current):
-                # Standing on non-dry ground (water/lava), cannot re-home here.
-                homestead[ANCHOR_UNREACHABLE] = True
-                homestead["anchor_unreachable_at"] = current
-                self._persist_anchor_unreachable(homestead, anchor)
-                raise ProgressRecoveryRequired(
-                    "cannot re-home onto non-dry ground at current position"
+                # Standing on non-dry ground (water/lava). Re-home should
+                # actively move the bot to dry land rather than passively
+                # refusing and waiting for it to swim out -- otherwise a bot
+                # pinned in water near a submerged anchor burns recovery
+                # budget until circumstance happens to rescue it (Jason
+                # 2026-08-08: "I would hope the bot would rehome as needed").
+                dry = reach_dry_surface(
+                    self.client,
+                    origin=tuple(int(v) for v in current),
+                    expected_y=int(current[1]),
+                    goto=goto,
                 )
-            homestead["rehome_attempts"] = rehome_attempts + 1
+                if dry is None:
+                    homestead[ANCHOR_UNREACHABLE] = True
+                    homestead["anchor_unreachable_at"] = current
+                    self._persist_anchor_unreachable(homestead, anchor)
+                    raise ProgressRecoveryRequired(
+                        "cannot re-home onto non-dry ground at current position"
+                    )
+                # The bot is now on dry shore; use it as the new anchor so a
+                # later return home lands on solid ground, not open water.
+                current = (int(dry[0]), int(dry[1]), int(dry[2]))
+            # Re-home succeeded: the bot's current dry position becomes the
+            # new anchor and is by construction reachable. Reset the counter
+            # so it bounds *consecutive* failures, not lifetime re-homes --
+            # otherwise two re-homes anywhere in the run permanently latch
+            # every future goto failure into a fatal loop (live 2026-08-08:
+            # BOOT_SEQUENCE spun on "re-home exhausted after 2 attempt(s)"
+            # forever with rehome_attempts persisted at the 2 cap).
+            homestead["rehome_attempts"] = 0
             homestead.pop(ANCHOR_UNREACHABLE, None)
             homestead.pop("anchor_unreachable_at", None)
             homestead["anchor"] = current
@@ -272,13 +311,14 @@ class IncrementalHomestead:
             stored = getattr(self.state, "custom_data", {}).get("homestead")
             if isinstance(stored, dict):
                 stored["anchor"] = list(current)
+                stored["rehome_attempts"] = 0
                 stored.pop(ANCHOR_UNREACHABLE, None)
                 stored.pop("anchor_unreachable_at", None)
             self.step(homestead, "dry_anchor").update(
                 verified=True, evidence="rehomed_dry_anchor"
             )
             print(f"Re-homed homestead to reachable anchor {current} "
-                  f"(attempt {rehome_attempts + 1})")
+                  f"(budget reset)")
             return True
         arrived = self.current_position()
         if self._distance(arrived, anchor) > SAFE_RADIUS:
@@ -291,13 +331,17 @@ class IncrementalHomestead:
                 "return route ended outside the homestead envelope"
             )
         # Reached the anchor; clear any earlier unreachable mark (in-memory
-        # and durable) so a later legitimate return home is not misread.
+        # and durable) so a later legitimate return home is not misread. Also
+        # reset the re-home budget: a clean arrival proves the anchor is
+        # reachable, so the counter should not carry over as a lifetime latch.
         homestead.pop(ANCHOR_UNREACHABLE, None)
         homestead.pop("anchor_unreachable_at", None)
+        homestead["rehome_attempts"] = 0
         stored = getattr(self.state, "custom_data", {}).get("homestead")
         if isinstance(stored, dict):
             stored.pop(ANCHOR_UNREACHABLE, None)
             stored.pop("anchor_unreachable_at", None)
+            stored["rehome_attempts"] = 0
         homestead["last_return_home"] = arrived
         return True
 
@@ -412,10 +456,23 @@ class IncrementalHomestead:
                 )
             current = self.current_position()
             if not self._dry_ground(current):
-                raise ProgressRecoveryRequired(
-                    "cannot re-home onto non-dry ground at current position"
+                # Prefer actively moving the bot to the nearest dry shore over
+                # refusing in place (see enforce_anchor for the same logic).
+                dry = reach_dry_surface(
+                    self.client,
+                    origin=tuple(int(v) for v in current),
+                    expected_y=int(current[1]),
+                    goto=goto,
                 )
-            homestead["rehome_attempts"] = rehome_attempts + 1
+                if dry is None:
+                    raise ProgressRecoveryRequired(
+                        "cannot re-home onto non-dry ground at current position"
+                    )
+                current = (int(dry[0]), int(dry[1]), int(dry[2]))
+            # Re-home succeeded: adopt the current dry position as the new
+            # anchor and reset the budget so it bounds consecutive failures
+            # only (see enforce_anchor re-home block for the same fix).
+            homestead["rehome_attempts"] = 0
             homestead.pop(ANCHOR_UNREACHABLE, None)
             homestead.pop("anchor_unreachable_at", None)
             homestead["anchor"] = current
@@ -423,7 +480,7 @@ class IncrementalHomestead:
             record.update(verified=True, evidence="rehomed_dry_anchor")
             print(
                 f"Re-homed homestead to reachable anchor {current} "
-                f"(attempt {rehome_attempts + 1})"
+                f"(budget reset)"
             )
             return True
 

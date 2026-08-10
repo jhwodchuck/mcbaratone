@@ -85,17 +85,21 @@ def place_farm_soil(client, block_id) -> Optional[Tuple[int, int, int]]:
 
     position = client.transport.dispatch("get_state", {}).get("block_position", {})
     bx, by, bz = int(position.get("x", 0)), int(position.get("y", 64)), int(position.get("z", 0))
-    for dx in (-1, 0, 1):
-        for dz in (-1, 0, 1):
-            if dx == 0 and dz == 0:
-                continue
-            cx, cz = bx + dx, bz + dz
-            if block_id(cx, by - 1, cz) in _UNSUPPORTIVE_GROUND:
-                continue
-            if block_id(cx, by, cz) not in {"minecraft:air", "minecraft:cave_air"}:
-                continue
-            if robust_place(client, cx, by, cz, soil_item):
-                return (cx, by, cz)
+    # The bot's own level first, then the ground plane one block lower -- where
+    # the plot actually belongs when the bot is standing on open ground rather
+    # than in a hollow. Checking only one plane misses the common case.
+    for level in (by, by - 1):
+        for dx in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                if dx == 0 and dz == 0:
+                    continue
+                cx, cz = bx + dx, bz + dz
+                if block_id(cx, level - 1, cz) in _UNSUPPORTIVE_GROUND:
+                    continue
+                if block_id(cx, level, cz) not in {"minecraft:air", "minecraft:cave_air"}:
+                    continue
+                if robust_place(client, cx, level, cz, soil_item):
+                    return (cx, level, cz)
     return None
 
 

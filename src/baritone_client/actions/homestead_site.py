@@ -34,6 +34,20 @@ SITE_RELOCATIONS = "site_relocations"
 MAX_SITE_STEP_FAILURES = 3
 #: Whole-base moves allowed per checkpoint.
 MAX_SITE_RELOCATIONS = 3
+#: Hard ceiling on relocation attempts even after the soft budget is spent. The
+#: soft budget (MAX_SITE_RELOCATIONS) is a signal, not a parking brake: a bot on
+#: genuinely barren ground must keep moving rather than camp forever on a step
+#: its location can never satisfy (Jason: "the bot needs to move"). past the
+#: soft budget the bot still relocates, but a runaway walk on world-spanning
+#: barren terrain is still capped here so the failure stays visible.
+MAX_SITE_RELOCATION_HARD_CAP = 25
+#: Relocations before a *waivable* step (e.g. micro_farm) is waived so the run
+#: can proceed toward the dragon. Waivable steps are convenience food sources
+#: (farming; the bot can eat from hunting/mobs), so gating the whole run on them
+#: for the full hard-cap duration would stall the dragon goal for hours on a
+#: large barren biome. Load-bearing steps ignore this and are bounded only by
+#: MAX_SITE_RELOCATION_HARD_CAP.
+MAX_SITE_RELOCATIONS_BEFORE_WAIVE = 6
 
 
 def note_step_stalled(homestead: dict[str, Any], step_name: str) -> bool:
@@ -52,15 +66,24 @@ def note_step_stalled(homestead: dict[str, Any], step_name: str) -> bool:
     if count < MAX_SITE_STEP_FAILURES:
         return False
     relocations = int(homestead.get(SITE_RELOCATIONS, 0) or 0)
-    if relocations >= MAX_SITE_RELOCATIONS:
-        # Deliberately not raising. The caller still records progress and fails
-        # the step normally, so an operator sees a stuck phase rather than a bot
-        # roaming in search of better ground.
+    if relocations >= MAX_SITE_RELOCATION_HARD_CAP:
+        # Hard safety ceiling reached. Deliberately not raising: the caller
+        # still records progress and fails the step normally, so an operator
+        # sees a stuck phase rather than a bot roaming the world in search of
+        # better ground.
         print(
-            f"  Site unsuitable for {step_name} but relocation budget is spent "
-            f"({relocations}/{MAX_SITE_RELOCATIONS}); staying put"
+            f"  Site unsuitable for {step_name}; relocation hard cap "
+            f"({MAX_SITE_RELOCATION_HARD_CAP}) reached; holding"
         )
         return False
+    if relocations >= MAX_SITE_RELOCATIONS:
+        # Past the soft budget the bot keeps moving: a barren site must not
+        # permanently camp a step it can never satisfy. Print so the move is
+        # observable, still bounded by the hard cap above.
+        print(
+            f"  Site unsuitable for {step_name}; past soft relocation budget "
+            f"({relocations}/{MAX_SITE_RELOCATIONS}); continuing to relocate"
+        )
     return True
 
 
@@ -69,6 +92,46 @@ def clear_step_stall(homestead: dict[str, Any], step_name: str) -> None:
     failures = homestead.get(SITE_STEP_FAILURES)
     if isinstance(failures, dict):
         failures.pop(step_name, None)
+
+
+#: BOOT steps that may be waived (degraded) once the site has proven it can
+#: never satisfy them, so the run can still reach the dragon. Food is the
+#: waivable one: a farm is a convenience renewable source, and a bot that
+#: cannot farm can still eat from hunting/mobs. Load-bearing steps (wood,
+#: stone, charcoal, torches, lighting, a dry anchor) stay mandatory.
+WAIVABLE_STEPS = frozenset({"micro_farm"})
+
+
+def waive_step(homestead: dict[str, Any], helper: Any, step_name: str) -> bool:
+    """Mark a waivable step degraded so the run can proceed past it.
+
+    Callers use this only after the site has exhausted relocation attempts
+    (the hard cap) for a step it can never satisfy -- ``waive_step`` itself
+    re-checks that the relocation hard cap has been reached so it never fires
+    prematurely. The step is flagged ``degraded`` (and ``verified``), which
+    makes ``next_step`` skip it -- but ``invalidate_stale`` leaves it alone
+    because its live check is expected to fail. Returns True when the step was
+    actually waived.
+    """
+    if step_name not in WAIVABLE_STEPS:
+        return False
+    relocations = int(homestead.get(SITE_RELOCATIONS, 0) or 0)
+    if relocations < MAX_SITE_RELOCATIONS_BEFORE_WAIVE:
+        return False
+    record = helper.step(homestead, step_name)
+    if record.get("degraded"):
+        return False
+    record.update(
+        degraded=True,
+        verified=True,
+        evidence=f"waived_unbuildable_site",
+    )
+    print(
+        f"  Waived BOOT step '{step_name}' (site cannot support it after "
+        f"{MAX_SITE_RELOCATIONS_BEFORE_WAIVE} relocations); run proceeds without it"
+    )
+    return True
+
 
 
 def carry_site_state(progress: dict[str, Any], raw: Mapping[str, Any]) -> None:
@@ -121,11 +184,25 @@ def relocate_homestead(
     try:
         moved = relocate_build_site_search(client, attempt=relocations)
     except Exception as error:  # search is best-effort; never kill the run
+        moved = False
         print(f"  Homestead relocation search failed ({error})")
-        return False
     if not moved:
-        print("  Homestead relocation found no better site in range")
-        return False
+        # The build-site search found no better *dry buildable* ground in
+        # range (e.g. on a bare mountain). That is not permission to park: the
+        # bot must keep moving off the barren spot (Jason: "the bot needs to
+        # move"). Fall back to the camp-break heading move, which physically
+        # relocates by a fixed heading + distance using recovery navigation.
+        print("  Homestead relocation: no better build site in range; taking a heading move")
+        from ..automator import camp_breaker
+
+        try:
+            moved = camp_breaker.break_camp(client, helper.state)
+        except Exception as error:  # best-effort; never kill the run
+            moved = False
+            print(f"  Homestead heading move failed ({error})")
+        if not moved:
+            print("  Homestead relocation could not move the bot; holding this cycle")
+            return False
 
     new_anchor = helper.current_position()
     if not helper._dry_ground(new_anchor):

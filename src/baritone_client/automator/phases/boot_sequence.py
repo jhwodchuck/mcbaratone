@@ -221,13 +221,21 @@ class BootSequenceHandler(PhaseHandler):
             # describing the terrain. After MAX_SITE_STEP_FAILURES identical
             # stalls, abandon the site and re-anchor rather than retrying a
             # search the ground cannot satisfy.
-            if homestead_site.note_step_stalled(
-                homestead, step_name
-            ) and homestead_site.relocate_homestead(
+            should_relocate = homestead_site.note_step_stalled(homestead, step_name)
+            if should_relocate and homestead_site.relocate_homestead(
                 client, homestead, step_name, self._homestead
             ):
                 self._homestead.record(homestead)
                 raise IncrementalProgressRequired(f"relocated after {step_name} stalled")
+            if not should_relocate and homestead_site.waive_step(
+                homestead, self._homestead, step_name
+            ):
+                # The site spent its relocation budget on a waivable step
+                # (micro_farm on barren terrain). Waive it so the run proceeds
+                # toward the dragon instead of deadlocking on a convenience
+                # step the ground can never satisfy.
+                self._homestead.record(homestead)
+                raise IncrementalProgressRequired(f"waived BOOT step {step_name}")
 
             # Persist on the no-progress path too. A step that fails to reach
             # its goal can still have recorded essential bookkeeping, and

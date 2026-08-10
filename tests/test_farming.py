@@ -371,6 +371,44 @@ def test_place_farm_soil_gives_up_without_carried_soil(monkeypatch):
     assert result is None
 
 
+def test_place_farm_soil_falls_back_to_the_ground_plane(monkeypatch):
+    """Standing on open ground, the plot belongs one block below the bot.
+
+    Searching only the bot's own level misses this, which is the common case
+    on flat terrain -- the bot's own plane has no solid support under it.
+    """
+    blocks = {
+        # Bot at (10, 66, 20). Nothing supports a block at y=66 (all air at
+        # y=65), but (11, 65, 21) is open with stone under it at y=64.
+        (11, 64, 21): "minecraft:stone",
+    }
+
+    def extra(route, payload, _blocks):
+        if route == "get_state":
+            return {"block_position": {"x": 10, "y": 66, "z": 20}}
+        return None
+
+    client, _calls, blocks = _client(blocks=blocks, dispatch_extra=extra)
+    monkeypatch.setattr(
+        farming, "count_item",
+        lambda _c, item: 8 if item == "minecraft:dirt" else 0,
+    )
+    placed = []
+    monkeypatch.setattr(
+        farming, "robust_place",
+        lambda _c, x, y, z, item_id: (
+            placed.append((x, y, z))
+            or blocks.__setitem__((x, y, z), "minecraft:dirt")
+            or True
+        ),
+    )
+
+    result = farming.place_farm_soil(client, _block_id_reader(client))
+
+    assert result == (11, 65, 21)
+    assert placed == [(11, 65, 21)]
+
+
 def test_find_natural_crop_center_prefers_soil_over_water(monkeypatch):
     client, _calls, _ = _client()
     monkeypatch.setattr(
