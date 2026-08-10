@@ -32,6 +32,12 @@ ORDERED_HOMESTEAD_STEPS = (
     "light_perimeter",
 )
 SAFE_RADIUS = 24.0
+#: Vertical half-height of the homestead envelope. SAFE_RADIUS is horizontal
+#: only, so without this a structure straight above the anchor counts as local
+#: while being unreachable. Deliberately generous enough for a cellar or an
+#: upper floor, but far short of the 19-block gap that stranded a bot from its
+#: own crafting table (see _within_reach_height).
+SAFE_HEIGHT = 8
 # When enforce_anchor() cannot path back to the homestead (e.g. the bot
 # respawned at world origin far below a cliff-side base Baritone cannot
 # re-ascend), we flag the old anchor as unreachable so run_dry_anchor()
@@ -958,6 +964,24 @@ class IncrementalHomestead:
             return {}
         return min(candidates, key=lambda item: item[0])[1]
 
+    @staticmethod
+    def _within_reach_height(position: Sequence[int], anchor: Sequence[int]) -> bool:
+        """Is *position* on a level the bot can actually work at from *anchor*?
+
+        `_distance` measures X and Z only. That is right for pathfinding, where
+        the route sorts out the climb, but wrong for asking "is this mine, and
+        can I use it": a workstation directly above the anchor is horizontally
+        adjacent and physically unreachable.
+
+        Live on the A1 server 2026-08-10: after a relocation the anchor was
+        (-352, 52, 93) while the recorded crafting table sat at (-337, 71, 96)
+        -- 15 blocks away horizontally, so inside SAFE_RADIUS, but 19 blocks
+        straight up. infrastructure stayed "verified" against a table nothing
+        could open, so torch_supply could not craft torches and could not craft
+        a replacement table either. It failed 120 times.
+        """
+        return abs(int(position[1]) - int(anchor[1])) <= SAFE_HEIGHT
+
     def _live_infrastructure(
         self,
         record: Mapping[str, Any],
@@ -968,6 +992,8 @@ class IncrementalHomestead:
         if origin is None or anchor_coord is None:
             return False
         if self._distance(origin, anchor_coord) > SAFE_RADIUS:
+            return False
+        if not self._within_reach_height(origin, anchor_coord):
             return False
         expected = {
             "crafting_table": {"minecraft:crafting_table"},
@@ -1007,9 +1033,9 @@ class IncrementalHomestead:
             position = self._coordinate(plot)
             if position is None:
                 continue
-            if (
-                anchor_coord is not None
-                and self._distance(position, anchor_coord) > SAFE_RADIUS
+            if anchor_coord is not None and (
+                self._distance(position, anchor_coord) > SAFE_RADIUS
+                or not self._within_reach_height(position, anchor_coord)
             ):
                 continue
             if self._block_at(position) in CROP_BLOCKS:

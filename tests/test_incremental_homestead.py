@@ -1271,8 +1271,30 @@ def test_stale_high_ring_column_is_rebased_onto_the_anchor_floor(monkeypatch):
         (4, 113, 0): "minecraft:stone",
         # ...and the real floor at anchor level, where it belongs.
         (4, 105, 0): "minecraft:stone",
+        # The homestead's own structures, at the anchor's level. The shared
+        # defaults sit at y=64, which is ~40 blocks below this y=105 anchor --
+        # outside the envelope, so they would un-verify infrastructure and
+        # micro_farm and this test would never reach light_perimeter.
+        (1, 105, 1): "minecraft:crafting_table",
+        (2, 105, 1): "minecraft:furnace",
+        (1, 105, 2): "minecraft:chest",
+        (0, 106, 0): "minecraft:wheat",
     }
-    state = _state_with_payloads({"homestead": homestead_payload})
+    state = _state_with_payloads({
+        "homestead": homestead_payload,
+        "structures": {
+            "bootstrap_base": {
+                "origin": [0, 105, 0],
+                "crafting_table": [1, 105, 1],
+                "furnace": [2, 105, 1],
+                "supply_chest": [1, 105, 2],
+            },
+            "food_source": {
+                "verified": True,
+                "plots": [[0, 106, 0, "minecraft:wheat"]],
+            },
+        },
+    })
     transport = _transport_with_blocks(
         {
             "dimension": "minecraft:overworld",
@@ -1412,3 +1434,41 @@ def test_perimeter_ring_from_an_abandoned_site_is_re_derived():
     assert ring, "a re-derived ring must replace the unusable one"
     for x, _y, z in ring:
         assert abs(x - anchor[0]) <= 12 and abs(z - anchor[2]) <= 12, (x, z)
+
+
+def test_infrastructure_directly_above_the_anchor_is_not_usable():
+    """SAFE_RADIUS is horizontal; a table 19 blocks up is not "local".
+
+    Live on the A1 server 2026-08-10: after a relocation the anchor was
+    (-352, 52, 93) while the recorded crafting table sat at (-337, 71, 96) --
+    15 blocks away horizontally, inside SAFE_RADIUS, but 19 straight up.
+    infrastructure stayed verified against a table nothing could open, so
+    torch_supply could neither craft torches nor craft a replacement table. It
+    failed 120 times.
+    """
+    anchor = [-352, 52, 93]
+    record = {
+        "origin": [-338, 71, 95],
+        "crafting_table": [-337, 71, 96],
+        "furnace": [-336, 71, 96],
+        "supply_chest": [-337, 71, 97],
+    }
+    helper = IncrementalHomestead.__new__(IncrementalHomestead)
+    helper.state = SimpleNamespace(custom_data={})
+    helper._block_at = lambda pos: {
+        (-337, 71, 96): "minecraft:crafting_table",
+        (-336, 71, 96): "minecraft:furnace",
+        (-337, 71, 97): "minecraft:chest",
+    }.get(tuple(pos), "minecraft:air")
+
+    assert helper._live_infrastructure(record, anchor) is False
+
+    # The same base at the anchor's own level is fine.
+    level = {k: ([v[0], anchor[1], v[2]] if isinstance(v, list) else v)
+             for k, v in record.items()}
+    helper._block_at = lambda pos: {
+        (-337, anchor[1], 96): "minecraft:crafting_table",
+        (-336, anchor[1], 96): "minecraft:furnace",
+        (-337, anchor[1], 97): "minecraft:chest",
+    }.get(tuple(pos), "minecraft:air")
+    assert helper._live_infrastructure(level, anchor) is True
