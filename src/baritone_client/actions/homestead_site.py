@@ -50,14 +50,27 @@ MAX_SITE_RELOCATION_HARD_CAP = 25
 MAX_SITE_RELOCATIONS_BEFORE_WAIVE = 6
 
 
-#: Steps whose failure is never evidence about the location. They need carried
-#: items and a workstation, not different terrain, so moving cannot fix them.
-#: Letting them move the base is actively destructive, because relocating
-#: re-opens every other step: a missing stick would discard a nearly-finished
-#: homestead. Live on the A1 server 2026-08-10, at 8 of 9 steps verified,
-#: torch_supply failed on "Missing ingredient 'minecraft:stick'" -- three such
-#: stalls would have relocated the base and re-opened all eight.
-SUPPLY_ONLY_STEPS = frozenset({"plank_reserve", "charcoal_supply", "torch_supply"})
+#: Steps that may never move the base, because moving cannot fix them and
+#: relocating re-opens every other step -- so letting them relocate discards a
+#: nearly-finished homestead to solve a problem the new site has too.
+#:
+#: plank_reserve, charcoal_supply and torch_supply need carried items and a
+#: workstation, never different terrain.
+#:
+#: light_perimeter is here for a sharper reason: relocating makes it strictly
+#: worse. Its dominant failure is running out of torches -- it already re-opens
+#: torch_supply, which is the remedy that works -- and terrain is rarely fatal
+#: because _ground_adjusted_ring drops columns it cannot seat. Moving discards
+#: the torches, fuel and workstations it was about to use.
+#:
+#: Both cases are observed, not theoretical. On the A1 server 2026-08-10 the
+#: homestead reached 8 of 9 steps verified; light_perimeter stalled three times
+#: for want of torches and relocated the base from (-290, 69, 94) to
+#: (-352, 52, 93), re-opening all eight and abandoning the farm and
+#: infrastructure it had just built.
+NEVER_RELOCATE_STEPS = frozenset(
+    {"plank_reserve", "charcoal_supply", "torch_supply", "light_perimeter"}
+)
 
 
 def note_step_stalled(homestead: dict[str, Any], step_name: str) -> bool:
@@ -73,7 +86,7 @@ def note_step_stalled(homestead: dict[str, Any], step_name: str) -> bool:
         homestead[SITE_STEP_FAILURES] = failures
     count = int(failures.get(step_name, 0) or 0) + 1
     failures[step_name] = count
-    if step_name in SUPPLY_ONLY_STEPS:
+    if step_name in NEVER_RELOCATE_STEPS:
         # Counted for visibility, but never grounds to move: the remedy is
         # more materials, which the step's own re-opening of its supplier
         # already arranges.

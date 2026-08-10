@@ -359,7 +359,7 @@ def test_a_crafting_shortage_never_moves_the_base():
     """
     progress = _progress()
 
-    for step in homestead_site.SUPPLY_ONLY_STEPS:
+    for step in homestead_site.NEVER_RELOCATE_STEPS:
         for _ in range(MAX_SITE_STEP_FAILURES + 3):
             assert homestead_site.note_step_stalled(progress, step) is False, step
         # Still counted, so the stall remains visible to an operator.
@@ -376,3 +376,30 @@ def test_a_terrain_step_still_moves_the_base():
     ]
 
     assert results[-1] is True
+
+
+def test_light_perimeter_never_moves_a_nearly_finished_homestead():
+    """The regression this cost us live, 2026-08-10.
+
+    The homestead reached 8 of 9 steps verified. light_perimeter stalled three
+    times for want of torches and relocated the base from (-290, 69, 94) to
+    (-352, 52, 93), re-opening all eight verified steps and abandoning the farm
+    and infrastructure it had just built -- to fix a torch shortage that the
+    new site has too, and that relocating actively worsens by discarding the
+    fuel and workstations it was about to use.
+    """
+    progress = _progress()
+    for name in ORDERED_HOMESTEAD_STEPS:
+        progress["steps"][name] = {"verified": True, "evidence": "live_check"}
+    progress["steps"]["light_perimeter"]["verified"] = False
+    progress[SITE_RELOCATIONS] = 22  # well past every budget
+
+    for _ in range(MAX_SITE_STEP_FAILURES + 3):
+        assert homestead_site.note_step_stalled(progress, "light_perimeter") is False
+
+    # The eight finished steps must still be standing.
+    survivors = [
+        n for n in ORDERED_HOMESTEAD_STEPS
+        if progress["steps"][n]["verified"]
+    ]
+    assert len(survivors) == len(ORDERED_HOMESTEAD_STEPS) - 1
