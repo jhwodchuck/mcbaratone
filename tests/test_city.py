@@ -120,7 +120,9 @@ def test_build_box_clamps_to_world_height_limits(mock_client):
     build_box(mock_client, 0, -500, 0, 15, 9999, 15, "minecraft:stone")
     msgs = chat_messages(mock_client)
     assert "#sel pos1 0 -64 0" in msgs   # clamped to WORLD_MIN_Y
-    assert "#sel pos2 15 320 15" in msgs  # clamped to WORLD_MAX_Y
+    # 319 is the inclusive ceiling; 320 is Minecraft's EXCLUSIVE build-height
+    # limit and always reads void_air. See terraform_verify.py's WORLD_MAX_Y.
+    assert "#sel pos2 15 319 15" in msgs  # clamped to WORLD_MAX_Y
 
 
 def test_build_hollow_building_shell_then_hollow_then_floor(mock_client):
