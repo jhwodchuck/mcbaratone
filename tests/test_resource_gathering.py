@@ -1428,6 +1428,51 @@ def test_resume_active_furnace_loads_carried_input_into_existing_fuel(monkeypatc
     ]
 
 
+def test_resume_active_furnace_accepts_delayed_carried_output(monkeypatch):
+    """Do not wait for a whole loaded batch after the target reaches inventory."""
+    from baritone_client.common import furnace_recovery, harness_ops
+
+    class FurnaceTransport:
+        def __init__(self):
+            self.closed = False
+
+        def dispatch(self, route, payload):
+            if route == "get_screen":
+                return {
+                    "sync_id": 14,
+                    "slots": [
+                        {"slot": 0, "id": "minecraft:raw_iron", "count": 64},
+                        {"slot": 1, "id": "minecraft:oak_planks", "count": 19},
+                        {"slot": 2, "id": "minecraft:air", "count": 0},
+                    ],
+                }
+            if route == "close_screen":
+                self.closed = True
+            if route == "get_block":
+                return {"id": "minecraft:furnace", "state": {"lit": "true"}}
+            return {}
+
+    transport = FurnaceTransport()
+    client = SimpleNamespace(transport=transport)
+    inventory_reads = iter((0, 3))
+    monkeypatch.setattr(harness_ops, "available", lambda: True)
+    monkeypatch.setattr(harness_ops, "open_container", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        furnace_recovery,
+        "count_item",
+        lambda _client, _item_id: next(inventory_reads),
+    )
+
+    assert furnace_recovery.resume_active_furnace(
+        client,
+        (-411, 79, -14),
+        "minecraft:raw_iron",
+        "minecraft:iron_ingot",
+        minimum_output=3,
+    )
+    assert transport.closed
+
+
 def test_stone_pickaxe_prep_gathers_missing_cobblestone(monkeypatch):
     client = SimpleNamespace(transport=RecordingTransport())
     counts = {"minecraft:cobblestone": 0, "minecraft:cobbled_deepslate": 0}

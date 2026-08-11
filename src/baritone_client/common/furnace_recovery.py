@@ -191,6 +191,20 @@ def resume_active_furnace(
     )
 
     while time.monotonic() < deadline:
+        # A preceding harness/native attempt can complete its QUICK_MOVE after
+        # our initial inventory read but before this recovery loop observes an
+        # output slot.  In that race the requested ingots are already carried
+        # while the furnace still contains a large input batch.  Waiting for
+        # that whole batch wedges every caller even though its bounded target
+        # is satisfied, so re-check carried output on every poll.
+        if (
+            minimum_output is not None
+            and count_item(client, output_item) >= minimum_output
+        ):
+            client.transport.dispatch("close_screen", {})
+            print(f"  Carried furnace output target reached ({minimum_output}).")
+            return True
+
         data, slots = furnace_slots()
         output_slot = slots.get(2, {})
         if (
