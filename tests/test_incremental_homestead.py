@@ -1370,14 +1370,14 @@ def test_nearby_farm_still_satisfies_micro_farm():
 
 def test_within_homestead_ignores_a_far_saved_farm():
     """_plant_crops must not walk back to an abandoned site's farm."""
-    from baritone_client.automator.phases.boot_sequence import _within_homestead
+    from baritone_client.common.farming import within_homestead
 
     custom_data = {"homestead": {"anchor": [-290, 69, 94]}}
 
-    assert _within_homestead(custom_data, (-244, 73, 17)) is False
-    assert _within_homestead(custom_data, (-288, 70, 96)) is True
+    assert within_homestead(custom_data, (-244, 73, 17)) is False
+    assert within_homestead(custom_data, (-288, 70, 96)) is True
     # No anchor yet: a fresh run must not be blocked by a check with no data.
-    assert _within_homestead({}, (0, 64, 0)) is True
+    assert within_homestead({}, (0, 64, 0)) is True
 
 
 def test_perimeter_ring_from_an_abandoned_site_is_re_derived():

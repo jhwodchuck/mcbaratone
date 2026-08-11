@@ -20,10 +20,14 @@ from ...common.resources import gather_wood, gather_stone, gather_ores, ensure_s
 from ...common.inventory import count_item, craft, select_item
 from ...common.base import setup_base
 from ...common.combat import hunt_passive_mobs
-from ...common.farming import find_natural_crop_center, place_farm_soil
+from ...common.farming import (
+    find_natural_crop_center,
+    local_saved_farm,
+    place_farm_soil,
+)
 from ...common.runtime_artifacts import append_world_map_entry
 from ...actions import homestead_site
-from ...actions.homestead import SAFE_RADIUS as HOMESTEAD_SAFE_RADIUS, IncrementalHomestead
+from ...actions.homestead import IncrementalHomestead
 
 from ...actions import (
     SequenceAction,
@@ -43,27 +47,6 @@ from ...actions import (
     FinalSleepAction,
 )
 
-
-def _within_homestead(custom_data, position) -> bool:
-    """Is *position* inside the current homestead envelope?
-
-    Returns True when no anchor is known yet, so a fresh run is never blocked
-    by a check it has no data for.
-    """
-    anchor = None
-    homestead = custom_data.get("homestead") if hasattr(custom_data, "get") else None
-    if isinstance(homestead, dict):
-        anchor = homestead.get("anchor")
-    if anchor is None and hasattr(custom_data, "get"):
-        anchor = custom_data.get("homestead_anchor")
-    if not isinstance(anchor, (list, tuple)) or len(anchor) < 3:
-        return True
-    try:
-        dx = float(position[0]) - float(anchor[0])
-        dz = float(position[2]) - float(anchor[2])
-    except (TypeError, ValueError, IndexError):
-        return True
-    return (dx * dx + dz * dz) ** 0.5 <= HOMESTEAD_SAFE_RADIUS
 
 
 class BootSequenceHandler(PhaseHandler):
@@ -625,25 +608,7 @@ class BootSequenceHandler(PhaseHandler):
         custom_data = getattr(state_manager, "custom_data", {})
         saved_farm = custom_data.get("farm_location")
 
-        center = None
-        irrigated = False
-        if isinstance(saved_farm, (list, tuple)) and len(saved_farm) == 3:
-            try:
-                center = tuple(int(value) for value in saved_farm)
-                irrigated = block_id(*center) == "minecraft:water"
-            except (TypeError, ValueError):
-                center = None
-            # A saved farm belonging to an abandoned site is not this
-            # homestead's farm. The homestead relocates on barren ground, so
-            # after several moves the stored location can be far outside the
-            # local envelope -- and walking back to it is both a long trip the
-            # 45s goto below cannot make and a plot outside the base it is
-            # meant to feed. Live 2026-08-10: 90 blocks away after 22
-            # relocations. Fall through to siting a fresh plot instead.
-            if center is not None and not _within_homestead(custom_data, center):
-                print(f"  Ignoring farm at {center}: outside the homestead envelope")
-                center = None
-                irrigated = False
+        center, irrigated = local_saved_farm(saved_farm, custom_data, block_id)
 
         if center is None:
             center, irrigated = find_natural_crop_center(client, block_id)

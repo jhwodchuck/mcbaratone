@@ -48,6 +48,56 @@ def surface_soil(block_id, candidate, max_rise: int = 6):
     return None
 
 
+#: Horizontal half-width of the homestead envelope, mirroring
+#: actions.homestead.SAFE_RADIUS. Imported lazily at the call site would be a
+#: cycle (homestead imports common.*), so the value is duplicated here and the
+#: two must stay in step.
+_HOMESTEAD_SAFE_RADIUS = 24.0
+
+
+def within_homestead(custom_data, position) -> bool:
+    """Is *position* inside the current homestead envelope?
+
+    True when no anchor is known, so a fresh run is never blocked by a check
+    it has no data for.
+    """
+    anchor = None
+    homestead = custom_data.get("homestead") if hasattr(custom_data, "get") else None
+    if isinstance(homestead, dict):
+        anchor = homestead.get("anchor")
+    if anchor is None and hasattr(custom_data, "get"):
+        anchor = custom_data.get("homestead_anchor")
+    if not isinstance(anchor, (list, tuple)) or len(anchor) < 3:
+        return True
+    try:
+        dx = float(position[0]) - float(anchor[0])
+        dz = float(position[2]) - float(anchor[2])
+    except (TypeError, ValueError, IndexError):
+        return True
+    return (dx * dx + dz * dz) ** 0.5 <= _HOMESTEAD_SAFE_RADIUS
+
+
+def local_saved_farm(saved_farm, custom_data, block_id):
+    """Resolve a checkpointed farm location, ignoring one left at an old site.
+
+    The homestead relocates on barren ground, so after several moves the stored
+    location can be far outside the local envelope. Walking back to it is both
+    a trip the caller's 45s goto cannot make and a plot outside the base it is
+    meant to feed -- live 2026-08-10, 90 blocks away after 22 relocations.
+    Returns (center, irrigated); center is None when there is nothing usable.
+    """
+    if not isinstance(saved_farm, (list, tuple)) or len(saved_farm) != 3:
+        return None, False
+    try:
+        center = tuple(int(value) for value in saved_farm)
+    except (TypeError, ValueError):
+        return None, False
+    if not within_homestead(custom_data, center):
+        print(f"  Ignoring farm at {center}: outside the homestead envelope")
+        return None, False
+    return center, block_id(*center) == "minecraft:water"
+
+
 def find_natural_crop_center(client, block_id):
     """Search for existing tillable soil, falling back to a water source."""
     # Search exposed grass before generic dirt. A combined nearest-block query
