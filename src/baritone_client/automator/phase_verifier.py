@@ -516,9 +516,17 @@ def _postgame_specs() -> Dict[Phase, _Spec]:
                 == int(e.payload(Phase.TERRAFORM).get("chunks_total", -1)),
             ),
             _check(
-                "terraform progress persisted consistently",
-                lambda e: int(e.custom("terraform_progress", "next_index", default=-1))
-                == int(e.payload(Phase.TERRAFORM).get("progress_entries_total", -2)),
+                # Was a cursor check (next_index == progress_entries_total).
+                # terraform_ring/terraform_area now record-and-continue --
+                # the cursor always reaches the end of a sweep whether or not
+                # every chunk actually succeeded, so that comparison became
+                # unconditionally true and stopped verifying anything. A
+                # ledger with zero failed and zero unverified entries is the
+                # replacement: it is the one thing record-and-continue can no
+                # longer guarantee for free.
+                "terraform progress has no failed or unverified chunks",
+                lambda e: int(e.custom("terraform_progress", "counts", "failed", default=-1)) == 0
+                and int(e.custom("terraform_progress", "counts", "unverified", default=-1)) == 0,
             ),
             _check(
                 "terraform plan persisted",

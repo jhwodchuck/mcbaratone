@@ -93,10 +93,27 @@ def test_postgame_verifiers_require_completed_persisted_operations(tmp_path):
         "progress_entries_total": 9,
         "terraform_plan": {"center": [0, 0], "target_y": 64},
     }
-    state.custom_data["terraform_progress"] = {"next_index": 9, "total": 9}
+    state.custom_data["terraform_progress"] = {
+        "next_index": 9, "total": 9,
+        "counts": {"done": 9, "failed": 0, "unverified": 0, "skipped": 0},
+    }
     assert verifier.verify(
         Phase.TERRAFORM, TaskResult.ok("done", **terraform_data)
     ).success
+
+    # The cursor can reach the end of a sweep (record-and-continue) while
+    # chunks are still failed/unverified -- that must not pass the gate even
+    # though next_index == total, which is the exact case that used to slip
+    # through when this check only compared the cursor to the total.
+    state.custom_data["terraform_progress"]["counts"] = {
+        "done": 8, "failed": 1, "unverified": 0, "skipped": 0,
+    }
+    assert not verifier.verify(
+        Phase.TERRAFORM, TaskResult.ok("swept but incomplete", **terraform_data)
+    ).success
+    state.custom_data["terraform_progress"]["counts"] = {
+        "done": 9, "failed": 0, "unverified": 0, "skipped": 0,
+    }
 
     incomplete = dict(terraform_data, chunks_completed=8)
     assert not verifier.verify(
