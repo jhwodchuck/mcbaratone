@@ -207,16 +207,26 @@ def resume_active_furnace(
 
         data, slots = furnace_slots()
         output_slot = slots.get(2, {})
-        if (
-            output_slot.get("id") == output_item
-            and int(output_slot.get("count", 0)) > 0
-        ):
+        output_id = output_slot.get("id")
+        output_count = int(output_slot.get("count", 0))
+        if output_id not in (None, "minecraft:air") and output_count > 0:
             payload = {"slot": 2, "type": "QUICK_MOVE", "button": 0}
             sync_id = data.get("sync_id")
             if sync_id is not None:
                 payload["sync_id"] = sync_id
             client.transport.dispatch("inventory_click", payload)
             time.sleep(0.2)
+            if output_id != output_item:
+                # A furnace can retain output from an older recipe. Vanilla
+                # will not smelt the loaded input while that incompatible
+                # stack occupies slot 2, so collect it before waiting for the
+                # requested batch. The item remains in player inventory.
+                print(
+                    f"  Cleared obstructing furnace output "
+                    f"({output_count} {output_id})."
+                )
+                empty_polls = 0
+                continue
             if (
                 minimum_output is not None
                 and count_item(client, output_item) >= minimum_output

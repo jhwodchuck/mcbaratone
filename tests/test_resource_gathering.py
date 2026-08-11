@@ -1473,6 +1473,65 @@ def test_resume_active_furnace_accepts_delayed_carried_output(monkeypatch):
     assert transport.closed
 
 
+def test_resume_active_furnace_clears_incompatible_output(monkeypatch):
+    """Old recipe output must not block the loaded target recipe forever."""
+    from baritone_client.common import furnace_recovery, harness_ops
+
+    class FurnaceTransport:
+        def __init__(self):
+            self.obstruction_cleared = False
+            self.target_collected = False
+            self.clicks = []
+
+        def dispatch(self, route, payload):
+            if route == "get_screen":
+                output = (
+                    {"slot": 2, "id": "minecraft:iron_ingot", "count": 3}
+                    if self.obstruction_cleared
+                    else {"slot": 2, "id": "minecraft:charcoal", "count": 4}
+                )
+                return {
+                    "sync_id": 51,
+                    "slots": [
+                        {"slot": 0, "id": "minecraft:raw_iron", "count": 64},
+                        {"slot": 1, "id": "minecraft:oak_planks", "count": 47},
+                        output,
+                    ],
+                }
+            if route == "inventory_click":
+                self.clicks.append(payload)
+                if not self.obstruction_cleared:
+                    self.obstruction_cleared = True
+                else:
+                    self.target_collected = True
+            if route == "get_block":
+                return {"id": "minecraft:furnace", "state": {"lit": "true"}}
+            return {}
+
+    transport = FurnaceTransport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(harness_ops, "available", lambda: True)
+    monkeypatch.setattr(harness_ops, "open_container", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        furnace_recovery,
+        "count_item",
+        lambda _client, _item_id: 3 if transport.target_collected else 0,
+    )
+    monkeypatch.setattr(furnace_recovery.time, "sleep", lambda _seconds: None)
+
+    assert furnace_recovery.resume_active_furnace(
+        client,
+        (-411, 79, -14),
+        "minecraft:raw_iron",
+        "minecraft:iron_ingot",
+        minimum_output=3,
+    )
+    assert transport.clicks == [
+        {"slot": 2, "type": "QUICK_MOVE", "button": 0, "sync_id": 51},
+        {"slot": 2, "type": "QUICK_MOVE", "button": 0, "sync_id": 51},
+    ]
+
+
 def test_stone_pickaxe_prep_gathers_missing_cobblestone(monkeypatch):
     client = SimpleNamespace(transport=RecordingTransport())
     counts = {"minecraft:cobblestone": 0, "minecraft:cobbled_deepslate": 0}
