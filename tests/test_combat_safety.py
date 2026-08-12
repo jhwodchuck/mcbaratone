@@ -282,6 +282,43 @@ def test_emergency_food_crafts_carried_wheat_before_hunting(monkeypatch):
     assert crafted == [("minecraft:bread", 6)]
 
 
+def test_emergency_food_crafts_one_bread_from_partial_wheat(monkeypatch):
+    from baritone_client.common import emergency_food, resources
+
+    counts = {"minecraft:wheat": 3, "minecraft:bread": 0}
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.count_item",
+        lambda _client, item_id: counts.get(item_id, 0),
+    )
+    monkeypatch.setattr(
+        emergency_food,
+        "emergency_food_count",
+        lambda _client: counts["minecraft:bread"],
+    )
+
+    def craft(_client, item_id, target):
+        counts[item_id] = target
+        return True
+
+    monkeypatch.setattr(resources, "_craft_with_table", craft)
+
+    assert emergency_food.craft_emergency_bread_from_carried_wheat(object())
+    assert counts["minecraft:bread"] == 1
+
+
+def test_emergency_food_preserves_wheat_when_food_is_already_carried(monkeypatch):
+    from baritone_client.common import emergency_food, resources
+
+    monkeypatch.setattr(emergency_food, "emergency_food_count", lambda _client: 1)
+    monkeypatch.setattr(
+        resources,
+        "_craft_with_table",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not craft")),
+    )
+
+    assert emergency_food.craft_emergency_bread_from_carried_wheat(object())
+
+
 def test_acquire_emergency_food_uses_carried_wheat_recovery(monkeypatch):
     state = {"health": 20.0, "food_level": 10, "world_time": 1000}
     client = SimpleNamespace(
@@ -2051,7 +2088,7 @@ def test_safe_combat_no_retreat_attacks_despite_low_health(monkeypatch):
     transport = CombatTransport(health=1.5)
     client = SimpleNamespace(transport=transport)
     target = {"id": 5, "type": "minecraft:zombie", "distance": 3.0}
-    monkeypatch.setattr(combat, "equip_best_weapon", lambda *_a, **_k: None)
+    monkeypatch.setattr(combat, "equip_best_weapon", lambda *_a, **_k: True)
     monkeypatch.setattr(combat, "_get_combat_snapshot", lambda *_a, **_k: None)
     monkeypatch.setattr(
         combat, "get_nearby_entities", lambda *_a, **_k: [target]

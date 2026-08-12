@@ -352,6 +352,10 @@ def test_resource_contracts_do_not_short_circuit_world_state_phases():
 
 def test_iron_farm_builds_and_physically_transports_population(monkeypatch):
     monkeypatch.setattr("baritone_client.common.harness_ops.available", lambda: False)
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.run_navigation_defense",
+        lambda *_args, **_kwargs: False,
+    )
     transport = IronTransport()
     state = RecordingState({Phase.IRON_FARM: {"farm_location": [10, 64, 10]}})
 
@@ -407,6 +411,10 @@ def test_iron_farm_builds_and_physically_transports_population(monkeypatch):
 
 def test_iron_farm_fails_when_bridge_does_not_verify_physical_transport(monkeypatch):
     monkeypatch.setattr("baritone_client.common.harness_ops.available", lambda: False)
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.run_navigation_defense",
+        lambda *_args, **_kwargs: False,
+    )
     transport = IronTransport(fail_transport=True)
     state = RecordingState({Phase.IRON_FARM: {"farm_location": [10, 64, 10]}})
 

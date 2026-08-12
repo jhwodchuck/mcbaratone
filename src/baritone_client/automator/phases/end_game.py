@@ -209,6 +209,9 @@ class WorldUnlockHandler(PhaseHandler):
     def _enter_end(
         self, client, state: StateManager, resources: ResourceManager
     ) -> bool:
+        if not self._ensure_end_fight_readiness(client, state):
+            print("  End entry deferred until the dragon combat kit is verified.")
+            return False
         portal = state.custom_data.get("end_portal")
         if not enter_end_portal(client, portal=portal):
             return False
@@ -217,6 +220,48 @@ class WorldUnlockHandler(PhaseHandler):
         payload["end_entered"] = True
         state.record_phase_payload(Phase.WORLD_UNLOCK, payload)
         self._checkpoint(state, resources)
+        return True
+
+    @staticmethod
+    def _ensure_end_fight_readiness(client, state: StateManager) -> bool:
+        """Provision and verify the shared dragon-fight admission kit."""
+        if not combat_readiness.ensure_combat_readiness(client, state):
+            return False
+        from ...common.combat_ranged import ranged_loadout_ready
+        from ...common.dragon_combat import (
+            dragon_kit_provision_requirements,
+            dragon_kit_ready,
+        )
+
+        requirements = dragon_kit_provision_requirements(client)
+        if requirements is None:
+            return False
+        withdraw_required_from_catalog(
+            client,
+            requirements,
+            state=state,
+            max_containers=3,
+            max_travel_distance=96.0,
+            max_vertical_distance=32.0,
+        )
+        # Recompute after storage withdrawal. A catalog can satisfy the item
+        # count with another near-broken stack; the second plan then requests
+        # one additional, usable replacement instead of livelocking here.
+        requirements = dragon_kit_provision_requirements(client)
+        if requirements is None or (
+            requirements
+            and not ensure_supplies(client, requirements, timeout=180).success
+        ):
+            return False
+
+        if not ranged_loadout_ready(client, minimum_arrows=32):
+            return False
+        if not dragon_kit_ready(client):
+            print(
+                "  End entry deferred: the exact durable armor, shield, "
+                "weapon, bow, arrow, and food contract is not satisfied."
+            )
+            return False
         return True
 
     def _kill_dragon(

@@ -24,7 +24,35 @@ _HAZARDS = (
     "sweet_berry_bush",
 )
 _NON_GROUND = ("air", "water", "lava", "cave_air", "void_air")
-_PASSABLE = ("air", "grass", "fern", "flower", "snow", "vine")
+_PASSABLE_BLOCKS = {
+    "air",
+    "cave_air",
+    "void_air",
+    "short_grass",
+    "tall_grass",
+    "fern",
+    "large_fern",
+    "snow",
+    "vine",
+    "glow_lichen",
+    "dead_bush",
+    "dandelion",
+    "poppy",
+    "blue_orchid",
+    "allium",
+    "azure_bluet",
+    "oxeye_daisy",
+    "cornflower",
+    "lily_of_the_valley",
+    "torchflower",
+    "wither_rose",
+}
+
+
+def _passable(block_id: str) -> bool:
+    """Classify replaceable plants without accepting similarly named solids."""
+    path = str(block_id or "").split(":", 1)[-1]
+    return path in _PASSABLE_BLOCKS or path.endswith("_tulip")
 
 
 def _block_id(client: Any, x: int, y: int, z: int) -> Optional[str]:
@@ -45,12 +73,17 @@ def destination_safe(client: Any, x: int, y: int, z: int) -> bool:
     feet = _block_id(client, x, y, z)
     head = _block_id(client, x, y + 1, z)
     below = _block_id(client, x, y - 1, z)
+    # Terrain uncertainty during combat is not evidence of a safe landing.
+    # The prior fail-open behavior sent bots toward unreadable endpoints and
+    # only discovered the bad route while incoming damage continued.
+    if feet is None or head is None or below is None:
+        return False
     known = tuple(value for value in (feet, head, below) if value)
     if any(token in block for block in known for token in _HAZARDS):
         return False
-    if feet and not any(token in feet for token in _PASSABLE):
+    if feet and not _passable(feet):
         return False
-    if head and not any(token in head for token in _PASSABLE):
+    if head and not _passable(head):
         return False
     if below and any(token in below for token in _NON_GROUND):
         return False
@@ -180,6 +213,63 @@ def verify_escape(
     return False
 
 
+def verify_escape_from_threats(
+    client: Any,
+    initial_distances: Dict[int, float],
+    initial_position: Dict,
+    *,
+    timeout: float,
+    minimum_gain: float,
+) -> bool:
+    """Verify separation from every original and newly urgent threat."""
+    from . import combat as api
+
+    deadline = time.monotonic() + max(0.5, timeout)
+    clear_observations = 0
+    while time.monotonic() < deadline:
+        api.ensure_alive(client)
+        snapshot = api._get_combat_snapshot(client, radius=40)
+        if snapshot is None or int(snapshot.get("skipped_count", 0) or 0) > 0:
+            time.sleep(0.5)
+            continue
+        entities = snapshot["entities"]
+        state = snapshot["player"]
+        position = state.get("block_position", state.get("position", {})) or {}
+        by_id = {
+            int(entity["id"]): entity
+            for entity in entities
+            if entity.get("id") is not None
+        }
+        originals_clear = all(
+            threat_id not in by_id
+            or separation_from(by_id[threat_id], position)
+            >= max(14.0, initial + minimum_gain)
+            for threat_id, initial in initial_distances.items()
+        )
+        from .combat_intent import exclude_authorized_threats
+
+        urgent_now = [
+            item
+            for item in exclude_authorized_threats(
+                client, assess_threats(entities, state)
+            )
+            if item.distance < 12.0
+        ]
+        displacement = (
+            (float(position.get("x", 0)) - float(initial_position.get("x", 0))) ** 2
+            + (float(position.get("z", 0)) - float(initial_position.get("z", 0))) ** 2
+        ) ** 0.5
+        clear_observations = (
+            clear_observations + 1
+            if originals_clear and not urgent_now and displacement >= 3.0
+            else 0
+        )
+        if clear_observations >= 2:
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def relocate_away_from(
     client: Any,
     threat: Dict,
@@ -270,7 +360,11 @@ def run_away(
             nearby = [threat]
         if not any(item.get("id") == threat.get("id") for item in nearby):
             nearby.append(threat)
-        assessments = assess_threats(nearby, state) or [
+        from .combat_intent import exclude_authorized_threats
+
+        assessments = exclude_authorized_threats(
+            client, assess_threats(nearby, state)
+        ) or [
             ThreatAssessment(
                 entity=threat,
                 entity_type=str(threat.get("type", "unknown")),
@@ -282,6 +376,13 @@ def run_away(
             )
         ]
         initial = separation_from(threat, position)
+        initial_distances = {
+            int(item.entity["id"]): separation_from(item.entity, position)
+            for item in assessments
+            if item.entity.get("id") is not None and item.distance <= 16.0
+        }
+        if threat.get("id") is not None:
+            initial_distances[int(threat["id"])] = initial
         candidates = plan_escape_candidates(position, assessments)
         # Active combat cannot afford a broad surface-block scan. Live Bot16
         # spent ~22 seconds inside the retried find_blocks fallback while four
@@ -326,10 +427,10 @@ def run_away(
                 {"x": candidate.x, "y": candidate.y, "z": candidate.z},
             )
             client.transport.dispatch("chat", {"message": "#path"})
-            if verify_escape(
+            if verify_escape_from_threats(
                 client,
-                threat.get("id"),
-                initial,
+                initial_distances,
+                position,
                 timeout=per_candidate,
                 minimum_gain=minimum_gain,
             ):

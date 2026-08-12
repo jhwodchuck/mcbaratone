@@ -49,7 +49,7 @@ RATE_LIMIT_REQUESTS = 500   // per 10 second window
 
 The command system uses a handler pattern for extensibility and modularity.
 
-#### CommandDispatcher [`CommandDispatcher.java`](bridge/src/main/java/com/minecraftbot/baritone/CommandDispatcher.java:1)
+#### CommandDispatcher [`CommandDispatcher.java`](src/main/java/com/minecraftbot/baritone/CommandDispatcher.java)
 
 Central command routing component that:
 - Dispatches commands through registered handlers
@@ -76,7 +76,7 @@ Each handler:
 - Returns structured JSON responses
 - Handles errors gracefully
 
-### Upload Manager [`UploadManager.java`](bridge/src/main/java/com/minecraftbot/baritone/UploadManager.java:1)
+### Upload Manager [`UploadManager.java`](src/main/java/com/minecraftbot/baritone/UploadManager.java)
 
 Manages schematic file uploads with advanced features:
 
@@ -95,7 +95,7 @@ Manages schematic file uploads with advanced features:
 **Priority Levels:**
 - LOW, NORMAL, HIGH, CRITICAL (affects processing order)
 
-### Event Manager [`EventManager.java`](bridge/src/main/java/com/minecraftbot/baritone/EventManager.java:1)
+### Event Manager [`EventManager.java`](src/main/java/com/minecraftbot/baritone/EventManager.java)
 
 Handles asynchronous event publishing with buffering and subscription capabilities.
 
@@ -118,7 +118,7 @@ Handles asynchronous event publishing with buffering and subscription capabiliti
 - Push and poll-based event delivery
 - Thread-safe operations
 
-### Mission Controller [`MissionController.java`](bridge/src/main/java/com/minecraftbot/baritone/MissionController.java:1)
+### Mission Controller [`MissionController.java`](src/main/java/com/minecraftbot/baritone/MissionController.java)
 
 Manages high-level automation workflows with state persistence.
 
@@ -193,7 +193,8 @@ Error responses include:
 The Python client connects to the bridge via TCP transport:
 
 1. **Connection**: Establishes TCP connection to port 5555
-2. **Authentication**: No explicit auth required (relies on network security)
+2. **Authentication**: None. Keep the bridge on loopback/trusted local
+   transport only; never publish it as a remote control surface.
 3. **Command Dispatch**: Sends JSON-RPC requests for Baritone operations
 4. **Event Streaming**: Polls or subscribes to game events
 5. **Upload Handling**: Manages schematic uploads for building operations
@@ -208,10 +209,13 @@ The Python client connects to the bridge via TCP transport:
 
 1. **JDK 25**: Required for the configured Minecraft 26.2 compilation target
 2. **Fabric API**: Minecraft modding framework
-3. **Baritone API Jar**: Must be manually copied to `libs/`
-   - **Important**: File must be named `baritone-api-fabric-1.15.0-9-gd93f1582.jar`
-   - Copy from your Minecraft mods folder to `bridge/libs/`
-   - **Note**: Build will fail without this file
+3. **Baritone API JAR**: The pinned compatibility JAR is tracked at
+   `libs/baritone-api-fabric-1.15.0-9-gd93f1582.jar`
+   - Upstream Baritone commit: `d93f1582`
+   - Target: Minecraft 26.2; license: LGPL-3.0
+   - SHA-256: `86d06fce44e8c2da1a46eb44fb7d934fe3712ce63738ecd5be5c68f03f71a9cf`
+   - `scripts/check_repository_hygiene.py` verifies its identity before builds
+   - See [`libs/README.md`](libs/README.md) for provenance and update procedure
 
 ## Building
 
@@ -219,12 +223,12 @@ Open a terminal in the `bridge/` directory:
 
 ### Windows
 ```powershell
-./gradlew build
+.\gradlew.bat --no-daemon --console=plain build
 ```
 
 ### Linux/Mac
 ```bash
-./gradlew build
+./gradlew --no-daemon --console=plain build
 ```
 
 The built JAR will be in `build/libs/baritone-api-bridge-1.0.31.jar`
@@ -269,4 +273,5 @@ The bridge follows these patterns:
 - Builder pattern for complex operations
 - TTL-based resource cleanup
 
-**Important**: The `bridge/` directory is a clone of the Baritone repository. Only modify files when updating the bridge implementation to avoid upstream drift.
+**Important**: `bridge/` is the tracked first-party Fabric bridge. Follow its
+local `AGENTS.md`; keep source changes bridge-scoped and validate with Java 25.

@@ -3,6 +3,20 @@ from types import SimpleNamespace
 from baritone_client.common import navigation
 
 
+def test_critical_travel_gate_reads_bridge_food_level():
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: {
+                "health": 5,
+                "food_level": 0,
+                "block_position": {"x": 0, "y": 64, "z": 0},
+            }
+        )
+    )
+
+    assert navigation._refuse_critical_long_travel(client, 100, 64, 0)
+
+
 def test_goto_fails_fast_when_goal_is_rejected_without_movement(monkeypatch):
     class Transport:
         def __init__(self):
@@ -44,6 +58,7 @@ def test_goto_cancels_when_defense_intervenes(monkeypatch):
             if route == "get_state":
                 return {
                     "health": 20,
+                    "food_level": 20,
                     "is_pathing": True,
                     "block_position": {"x": 0, "y": 64, "z": 0},
                 }
@@ -74,6 +89,7 @@ def test_recovery_goto_uses_recovery_aware_defense(monkeypatch):
             if route == "get_state":
                 return {
                     "health": 5,
+                    "food_level": 20,
                     "is_pathing": True,
                     "block_position": {"x": 20, "y": 64, "z": 0},
                 }
@@ -198,9 +214,18 @@ def test_goto_xz_survives_a_slow_chat_reply(monkeypatch):
     class SlowChatTransport:
         def dispatch(self, route, _payload=None):
             if route == "chat":
-                raise TimeoutError("Timeout waiting for bridge response (route: chat)")
+                from baritone_client.core.exceptions import BridgeResponseTimeout
+
+                raise BridgeResponseTimeout(
+                    "chat", transport_type="tcp", request_sent=True
+                )
             if route == "get_state":
-                return {"block_position": next(positions, last), "is_pathing": True}
+                return {
+                    "health": 20,
+                    "food_level": 20,
+                    "block_position": next(positions, last),
+                    "is_pathing": True,
+                }
             return {}
 
     client = SimpleNamespace(transport=SlowChatTransport())

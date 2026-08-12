@@ -28,7 +28,7 @@ def test_crop_bootstrap_mines_current_short_grass_id(monkeypatch):
     client = SimpleNamespace(transport=Transport())
 
     monkeypatch.setattr(
-        "baritone_client.common.navigation.find_nearby_block",
+            "baritone_client.common.farming.find_nearby_block",
         lambda _client, block_ids, **_kwargs: (
             (0, 64, 0) if "minecraft:grass_block" in block_ids else None
         ),
@@ -73,7 +73,7 @@ def test_crop_bootstrap_prefers_dry_soil_over_natural_water(monkeypatch):
         return (10, 64, 10)
 
     monkeypatch.setattr(
-        "baritone_client.common.navigation.find_nearby_block", find_plot
+        "baritone_client.common.farming.find_nearby_block", find_plot
     )
     monkeypatch.setattr(
         "baritone_client.common.navigation.goto",
@@ -106,7 +106,7 @@ def test_crop_bootstrap_promotes_buried_dirt_candidate_to_surface(monkeypatch):
     client = SimpleNamespace(transport=Transport())
 
     monkeypatch.setattr(
-        "baritone_client.common.navigation.find_nearby_block",
+        "baritone_client.common.farming.find_nearby_block",
         lambda _client, block_ids, **_kwargs: (
             (10, 64, 10) if "minecraft:dirt" in block_ids else None
         ),

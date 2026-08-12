@@ -1,12 +1,11 @@
-"""
-Navigation utilities - Movement, exploration, and hazard avoidance.
-"""
+"""Navigation utilities - movement, exploration, and hazard avoidance."""
 
 import math
 import time
 from functools import wraps
 from typing import Callable, Iterable, Optional, Tuple
 
+from ..core.exceptions import BridgeResponseTimeout
 from .tasks import PlayerDeathDetected, TaskResult
 
 
@@ -14,42 +13,120 @@ DefenseCallback = Callable[[], bool]
 _DEFENSE_GUARD = "_navigation_defense_callback_active"
 _RECOVERY_DEPTH = "_safe_recovery_navigation_depth"
 
-# Below food 18 Minecraft grants no natural regeneration, so a critically
-# injured bot cannot heal a single point no matter how long it walks. Bot07
-# died crossing ~300 blocks pinned at 2.1 health with food 5: every block was
-# unrecoverable damage exposure. Long journeys are refused in that state;
-# recovery movement is exempt because that is the path that fetches the food.
+# Refuse long journeys when critical health cannot regenerate; retain recovery.
 _CRITICAL_TRAVEL_HEALTH = 6.0
 _REGEN_FOOD_FLOOR = 18
 _MAX_CRITICAL_TRAVEL_DISTANCE = 48.0
+_MAX_CONSECUTIVE_STATE_MISSES = 2
+_VERIFIED_STATE_FRESH_SECONDS = 30.0
+class _UnsafeNavigationTelemetry(RuntimeError):
+    """The bridge returned state that cannot safely supervise movement."""
 
 
-def _refuse_critical_long_travel(client, x: int, y: int, z: int) -> bool:
+def _verified_navigation_state(raw_state) -> dict:
+    """Validate the safety fields required before or during movement."""
+    if not isinstance(raw_state, dict):
+        raise _UnsafeNavigationTelemetry("navigation state is not an object")
+    health_value = raw_state.get("health")
+    try:
+        health = float(health_value)
+    except (TypeError, ValueError) as exc:
+        raise _UnsafeNavigationTelemetry("navigation health is not numeric") from exc
+    if raw_state.get("is_dead") is True or health <= 0:
+        raise PlayerDeathDetected("player died during navigation")
+    position = raw_state.get("block_position", raw_state.get("position"))
+    food_value = raw_state.get("food_level", raw_state.get("food"))
+    values = (health_value, food_value)
+    if not isinstance(position, dict) or any(value is None for value in values):
+        raise _UnsafeNavigationTelemetry("navigation state is incomplete")
+    coordinates = (position.get("x"), position.get("y"), position.get("z"))
+    if any(value is None or isinstance(value, bool) for value in coordinates + values):
+        raise _UnsafeNavigationTelemetry("navigation state has invalid fields")
+    try:
+        food = int(values[1])
+        x, y, z = (float(value) for value in coordinates)
+    except (TypeError, ValueError) as exc:
+        raise _UnsafeNavigationTelemetry("navigation state is not numeric") from exc
+    if not all(math.isfinite(value) for value in (health, x, y, z)):
+        raise _UnsafeNavigationTelemetry("navigation state is not finite")
+    if not 0 <= food <= 20:
+        raise _UnsafeNavigationTelemetry("navigation food level is out of range")
+    verified = dict(raw_state)
+    verified["health"], verified["food_level"] = health, food
+    verified["block_position"] = {"x": x, "y": y, "z": z}
+    return verified
+
+
+class _VerifiedStateWindow:
+    """Bound stale-state grace to recent, healthy bridge telemetry."""
+
+    def __init__(self, state: dict) -> None:
+        self.state = state
+        self.observed_at = time.monotonic()
+        self.misses = 0
+
+    def read(self, client) -> Optional[dict]:
+        try:
+            raw_state = client.transport.dispatch("get_state", {})
+        except BridgeResponseTimeout as exc:
+            if exc.route != "get_state":
+                raise
+            self.misses += 1
+            age = time.monotonic() - self.observed_at
+            too_many = self.misses > _MAX_CONSECUTIVE_STATE_MISSES
+            stale = age > _VERIFIED_STATE_FRESH_SECONDS
+            critical = float(self.state["health"]) < _CRITICAL_TRAVEL_HEALTH
+            if too_many or stale or critical:
+                raise
+            return None
+        state = _verified_navigation_state(raw_state)
+        self.state = state
+        self.observed_at = time.monotonic()
+        self.misses = 0
+        return state
+
+
+def _dispatch_indeterminate_goal(client, route: str, payload: dict) -> None:
+    """Accept only a matching timeout after local transmission completed."""
+    try:
+        client.transport.dispatch(route, payload)
+    except BridgeResponseTimeout as exc:
+        if exc.route != route or not exc.request_sent:
+            raise
+        print(f"Navigation: {route} response timed out; polling verified state")
+
+
+def _cancel_once(client, cancelled: list[bool]) -> None:
+    if cancelled[0]:
+        return
+    cancelled[0] = True
+    try:
+        client.transport.dispatch("cancel", {})
+    except Exception:
+        pass
+
+
+def _refuse_critical_long_travel(
+    client, x: int, y: int, z: int, *, state: Optional[dict] = None
+) -> bool:
     """Return True when a long route must not start at critical health."""
+    if state is None:
+        try:
+            state = _verified_navigation_state(client.transport.dispatch("get_state", {}))
+        except _UnsafeNavigationTelemetry:
+            return True
     if int(getattr(client, _RECOVERY_DEPTH, 0) or 0) > 0:
         return False
-    try:
-        state = client.transport.dispatch("get_state", {})
-    except Exception:
-        return False
-    if not isinstance(state, dict):
-        return False
-    # Missing telemetry must not block navigation; assume healthy.
-    health = float(state.get("health", 20) or 20)
-    food = int(state.get("food", 20) or 20)
+    health = float(state["health"])
+    food = int(state["food_level"])
     if health >= _CRITICAL_TRAVEL_HEALTH or food >= _REGEN_FOOD_FLOOR:
         return False
 
-    position = state.get("block_position", state.get("position", {}))
-    if not isinstance(position, dict):
-        return False
-    try:
-        distance = math.dist(
-            (float(position.get("x", x)), float(position.get("z", z))),
-            (float(x), float(z)),
-        )
-    except (TypeError, ValueError):
-        return False
+    position = state["block_position"]
+    distance = math.dist(
+        (float(position["x"]), float(position["z"])),
+        (float(x), float(z)),
+    )
     if distance <= _MAX_CRITICAL_TRAVEL_DISTANCE:
         return False
 
@@ -127,61 +204,46 @@ def goto(
     on_defense: Optional[DefenseCallback] = None,
     defense_check_interval: float = 0.5,
 ) -> bool:
-    """
-    Navigate to specific coordinates.
-    
-    Args:
-        client: Baritone client
-        x, y, z: Target coordinates
-        timeout: Maximum seconds to wait
-        check_interval: Seconds between status checks
-        tolerance: Distance considered "arrived"
-        on_tick: Optional callback for each iteration
-        
-    Returns:
-        True if reached destination
-    """
+    """Navigate to exact coordinates under fresh-state safety supervision."""
     defense_check_interval = max(0.1, float(defense_check_interval))
-
+    cancelled = [False]
+    goal_active = False
     try:
         client._last_navigation_survival_abort = False
-        if _refuse_critical_long_travel(client, x, y, z):
+        try:
+            initial_state = _verified_navigation_state(client.transport.dispatch("get_state", {}))
+        except _UnsafeNavigationTelemetry:
             return False
-        client.transport.dispatch("goto", {"x": x, "y": y, "z": z})
-        
+        if _refuse_critical_long_travel(client, x, y, z, state=initial_state):
+            return False
+        _dispatch_indeterminate_goal(client, "goto", {"x": x, "y": y, "z": z})
+        goal_active = True
+        state_window = _VerifiedStateWindow(initial_state)
         start = time.time()
         last_position = None
         idle_unpathing_checks = 0
         while time.time() - start < timeout:
             if on_tick:
                 on_tick()
-            state = client.transport.dispatch("get_state", {})
-
-            # Central survival reflex: surface before drowning. Surfacing
-            # cancels the path, and the target may itself be underwater. Do not
-            # immediately replay that same goal: live grave recovery repeatedly
-            # dived back to a submerged death point until the bot drowned.
+            state = state_window.read(client)
+            if state is None:
+                time.sleep(min(float(check_interval), defense_check_interval))
+                continue
             from .combat import survival_tick
 
             if survival_tick(client, state):
                 client._last_navigation_survival_abort = True
-                client.transport.dispatch("cancel", {})
+                _cancel_once(client, cancelled)
                 return False
-
             if run_navigation_defense(client, on_defense):
-                client.transport.dispatch("cancel", {})
+                _cancel_once(client, cancelled)
                 return False
-
-            position = state.get("block_position", state.get("position", {}))
-            px = position.get("x", state.get("x", 0))
-            py = position.get("y", state.get("y", 0))
-            pz = position.get("z", state.get("z", 0))
-
+            position = state["block_position"]
+            px, py, pz = position["x"], position["y"], position["z"]
             distance = ((px - x)**2 + (py - y)**2 + (pz - z)**2) ** 0.5
             if distance <= tolerance:
-                client.transport.dispatch("cancel", {})
+                _cancel_once(client, cancelled)
                 return True
-
             current_position = (float(px), float(py), float(pz))
             is_pathing = state.get("is_pathing")
             if is_pathing is False and current_position == last_position:
@@ -191,30 +253,23 @@ def goto(
             else:
                 idle_unpathing_checks = 0
             last_position = current_position
-
-            # A rejected Baritone goal reports is_pathing=False immediately.
-            # Waiting the full caller timeout cannot make that route start and
-            # hides the distinction between an expensive path and no path at
-            # all. Three unchanged observations tolerate a brief transition
-            # while returning control soon enough for staged recovery.
             if idle_unpathing_checks >= 3:
-                client.transport.dispatch("cancel", {})
+                _cancel_once(client, cancelled)
                 return False
-
             time.sleep(min(float(check_interval), defense_check_interval))
-        
-        client.transport.dispatch("cancel", {})
+        _cancel_once(client, cancelled)
         return False
-        
     except PlayerDeathDetected:
-        try:
-            client.transport.dispatch("cancel", {})
-        except Exception:
-            pass
+        _cancel_once(client, cancelled)
         raise
-    except Exception as e:
-        print(f"Navigation error: {e}")
+    except _UnsafeNavigationTelemetry:
+        if goal_active:
+            _cancel_once(client, cancelled)
         return False
+    except Exception:
+        if goal_active:
+            _cancel_once(client, cancelled)
+        raise
 
 
 def recovery_goto(client, x: int, y: int, z: int, **kwargs) -> bool:
@@ -238,48 +293,43 @@ def goto_xz(
 ) -> bool:
     """Navigate to a horizontal column while Baritone chooses loaded terrain Y."""
     defense_check_interval = max(0.1, float(defense_check_interval))
-
+    cancelled = [False]
+    goal_active = False
     try:
         client._last_navigation_survival_abort = False
         try:
-            client.transport.dispatch("chat", {"message": f"#goto {x} {z}"})
-        except Exception as exc:
-            # `#goto` is fire-and-forget: Baritone begins pathing when the
-            # message arrives, and the reply carries no information. Treating a
-            # slow reply as a navigation failure cost real work -- on
-            # 2026-08-07 Bot17's farmer crash-looped on it, because a single
-            # "Timeout waiting for bridge response (route: chat)" became
-            # goto_xz -> False -> RuntimeError("crop farm is unreachable") ->
-            # worker exit, twice in a row, on a farm 14 blocks away that was
-            # perfectly reachable.
-            #
-            # Poll for movement instead. If the command really was lost the
-            # idle-unpathing check below still returns False a few seconds
-            # later, which callers already handle -- but a command that landed
-            # now completes normally.
-            print(
-                f"Navigation: '#goto {x} {z}' reply timed out ({exc}); "
-                "polling for movement instead of failing"
-            )
+            initial_state = _verified_navigation_state(client.transport.dispatch("get_state", {}))
+        except _UnsafeNavigationTelemetry:
+            return False
+        initial_y = round(initial_state["block_position"]["y"])
+        if _refuse_critical_long_travel(
+            client, x, initial_y, z, state=initial_state
+        ):
+            return False
+        _dispatch_indeterminate_goal(client, "chat", {"message": f"#goto {x} {z}"})
+        goal_active = True
+        state_window = _VerifiedStateWindow(initial_state)
         start = time.time()
         last_position = None
         idle_unpathing_checks = 0
         while time.time() - start < timeout:
-            state = client.transport.dispatch("get_state", {})
+            state = state_window.read(client)
+            if state is None:
+                time.sleep(min(float(check_interval), defense_check_interval))
+                continue
             from .combat import survival_tick
 
             if survival_tick(client, state):
                 client._last_navigation_survival_abort = True
-                client.transport.dispatch("cancel", {})
+                _cancel_once(client, cancelled)
                 return False
             if run_navigation_defense(client, on_defense):
-                client.transport.dispatch("cancel", {})
+                _cancel_once(client, cancelled)
                 return False
-            position = state.get("block_position", state.get("position", {}))
-            px = float(position.get("x", state.get("x", 0)) or 0)
-            pz = float(position.get("z", state.get("z", 0)) or 0)
+            position = state["block_position"]
+            px, pz = float(position["x"]), float(position["z"])
             if math.hypot(px - x, pz - z) <= tolerance:
-                client.transport.dispatch("cancel", {})
+                _cancel_once(client, cancelled)
                 return True
 
             current_position = (px, pz)
@@ -292,20 +342,22 @@ def goto_xz(
                 idle_unpathing_checks = 0
             last_position = current_position
             if idle_unpathing_checks >= 3:
-                client.transport.dispatch("cancel", {})
+                _cancel_once(client, cancelled)
                 return False
             time.sleep(min(float(check_interval), defense_check_interval))
-        client.transport.dispatch("cancel", {})
+        _cancel_once(client, cancelled)
         return False
     except PlayerDeathDetected:
-        try:
-            client.transport.dispatch("cancel", {})
-        except Exception:
-            pass
+        _cancel_once(client, cancelled)
         raise
-    except Exception as exc:
-        print(f"Horizontal navigation error: {exc}")
+    except _UnsafeNavigationTelemetry:
+        if goal_active:
+            _cancel_once(client, cancelled)
         return False
+    except Exception:
+        if goal_active:
+            _cancel_once(client, cancelled)
+        raise
 
 
 def staged_goto(
@@ -369,9 +421,7 @@ def staged_goto(
         tolerance=2.0,
     ):
         return True
-    # The final column may still be unloaded after the last interpolation
-    # leg. Load it with a Y-agnostic goal, then retry the exact doorway/farm
-    # height once its terrain is known.
+    # Load the final column before retrying its exact height.
     if not goto_xz(client, target_x, target_z, timeout=120, tolerance=6.0):
         return False
     return navigate(
@@ -388,16 +438,13 @@ def staged_goto(
 def _loaded_stage_y(client, x: int, nominal_y: int, z: int) -> int:
     """Use the top of a loaded column instead of an arbitrary exact Y."""
     for y in range(nominal_y + 16, nominal_y - 33, -1):
-        try:
-            block = client.transport.dispatch(
-                "get_block", {"x": x, "y": y, "z": z}
-            ).get("id", "")
-        except Exception:
-            return nominal_y
+        block = client.transport.dispatch(
+            "get_block", {"x": x, "y": y, "z": z}
+        ).get("id", "")
         if block in ("", "minecraft:air", "minecraft:void_air"):
             continue
         if block == "minecraft:lava":
-            return nominal_y
+            raise ValueError(f"unsafe lava surface at ({x}, {y}, {z})")
         return y + 1
     return nominal_y
 

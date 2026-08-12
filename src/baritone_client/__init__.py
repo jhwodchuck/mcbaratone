@@ -28,7 +28,7 @@ from .core.client import Client
 from .core.facades.missions import MissionFacade
 from .transport.command_dispatcher import CommandDispatcher, CommandResult
 from .transport.enums import MovementStatus, PathCalculationResultType, PathingCommandType, TransportEvent
-from .core.exceptions import CircuitBreakerOpenError, CommandError, RetryExhaustedError, RouteError, TransportError, ValidationError
+from .core.exceptions import BridgeResponseTimeout, CircuitBreakerOpenError, CommandError, RetryExhaustedError, RouteError, TransportError, ValidationError
 from .core.facades.goals import GoalFactory, GoalManager
 from .events.lifecycle import Ticker
 from .models.models import (
@@ -44,7 +44,19 @@ from .transport.transport import Py4JTransport, TcpTransport, Transport, WebSock
 from .transport.transport_manager import TransportManager
 from .utils.cache_manager import CacheManager, CacheStats
 from .utils.upload_manager import UploadManager, UploadPriority, UploadProgress, UploadStatus
-from .chat_control import FollowController, FollowCommandConfig, parse_chat_command
+from .chat_control import (
+    AllowlistedChatGateway,
+    ChatMessageSource,
+    FollowController,
+    FollowCommandConfig,
+    ObservedChatMessage,
+    PrefixedChatRequest,
+    ServerLogChatSource,
+    parse_chat_command,
+    parse_prefixed_chat,
+    parse_server_chat_line,
+    validate_chat_prefix,
+)
 from .world_identity import WorldIdentity
 
 __all__ = [
@@ -76,6 +88,7 @@ __all__ = [
     "TransportEvent",
     "Ticker",
     "CircuitBreakerOpenError",
+    "BridgeResponseTimeout",
     "CommandError",
     "RetryExhaustedError",
     "RouteError",
@@ -100,7 +113,15 @@ __all__ = [
     "BatchResult",
     "FollowController",
     "FollowCommandConfig",
+    "AllowlistedChatGateway",
+    "ChatMessageSource",
+    "ObservedChatMessage",
+    "PrefixedChatRequest",
+    "ServerLogChatSource",
     "parse_chat_command",
+    "parse_prefixed_chat",
+    "parse_server_chat_line",
+    "validate_chat_prefix",
     "WorldIdentity",
 ]
 

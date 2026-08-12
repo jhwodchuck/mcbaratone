@@ -29,6 +29,9 @@ EMERGENCY_FOOD_ITEMS = (
     "minecraft:cooked_salmon",
     "minecraft:cooked_cod",
     "minecraft:baked_potato",
+    "minecraft:potato",
+    "minecraft:carrot",
+    "minecraft:beetroot",
     "minecraft:golden_carrot",
     "minecraft:golden_apple",
     "minecraft:beef",
@@ -53,16 +56,27 @@ def craft_emergency_bread_from_carried_wheat(
     client: Any,
     *,
     maximum_bread: int = 6,
+    minimum_reserve: Optional[int] = None,
 ) -> bool:
-    """Turn an existing wheat reserve into food before risking a hunt."""
+    """Turn carried wheat into enough bread for a verified food reserve."""
     from .inventory import count_item
 
-    if emergency_food_count(client) > 0:
+    maximum_bread = max(1, int(maximum_bread))
+    required_reserve = (
+        None if minimum_reserve is None else max(1, int(minimum_reserve))
+    )
+    reserve = emergency_food_count(client)
+    if reserve > 0 and required_reserve is None:
+        return True
+    if required_reserve is not None and reserve >= required_reserve:
         return True
     wheat = count_item(client, "minecraft:wheat")
-    bread_target = min(max(1, int(maximum_bread)), wheat // 3)
-    if bread_target <= 0:
+    bread_to_craft = min(maximum_bread, wheat // 3)
+    if required_reserve is not None:
+        bread_to_craft = min(bread_to_craft, required_reserve - reserve)
+    if bread_to_craft <= 0:
         return False
+    bread_target = count_item(client, "minecraft:bread") + bread_to_craft
     try:
         # Lazy import avoids emergency_food <-> resources initialization cycles.
         from .resources import _craft_with_table
@@ -72,10 +86,21 @@ def craft_emergency_bread_from_carried_wheat(
     except Exception as exc:
         print(f"RECOVERY: carried-wheat bread craft failed ({exc})")
         return False
-    if emergency_food_count(client) <= 0:
+    finally:
+        # Crafting leaves a container screen open. A subsequent use_item acts
+        # on that GUI instead of eating, so recovery can wait forever beside a
+        # full bread stack unless the shared helper closes it explicitly.
+        try:
+            client.transport.dispatch("close_screen", {})
+        except Exception:
+            pass
+    reserve = emergency_food_count(client)
+    if required_reserve is None and reserve <= 0:
+        return False
+    if required_reserve is not None and reserve < required_reserve:
         return False
     print(
-        f"RECOVERY: crafted carried wheat into up to {bread_target} emergency bread"
+        f"RECOVERY: crafted carried wheat into {bread_to_craft} emergency bread"
     )
     return True
 

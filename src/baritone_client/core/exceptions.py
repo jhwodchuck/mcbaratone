@@ -6,6 +6,26 @@ class TransportError(RuntimeError):
         self.original_error = original_error
 
 
+class BridgeResponseTimeout(TransportError):
+    """Raised when a sent bridge request receives no correlated response."""
+
+    def __init__(
+        self,
+        route: str,
+        *,
+        transport_type: str,
+        request_sent: bool,
+    ) -> None:
+        message = (
+            "Timeout waiting for bridge response "
+            f"(route: {route}, transport: {transport_type})"
+        )
+        super().__init__(message)
+        self.route = route
+        self.transport_type = transport_type
+        self.request_sent = request_sent
+
+
 class ValidationError(ValueError):
     """Raised for invalid or incompatible arguments."""
     

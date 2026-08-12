@@ -1,9 +1,10 @@
 """Supervised melee execution behind :func:`combat.safe_combat`."""
 
 import time
+from functools import partial
 
 from . import combat as api
-
+from .combat_action import dispatch_held_item_use, exclusive_combat_action
 
 # Cover one blaze fireball volley without delaying every sword swing by nearly
 # two seconds. Live Bot16 reduced a blaze to 2 HP, then died because the old
@@ -32,21 +33,24 @@ def _has_shield(entries) -> bool:
 def _prepare_shield(client) -> bool:
     """Equip and verify a carried shield for a forced ranged approach."""
     try:
-        inventory = _inventory_payload(
-            client.transport.dispatch("get_inventory", {})
-        )
-        if _has_shield(inventory.get("offhand")):
-            return True
-        if not _has_shield(inventory.get("inventory")):
-            return False
-        client.transport.dispatch(
-            "equip",
-            {"slot": "offhand", "item": "minecraft:shield"},
-        )
-        refreshed = _inventory_payload(
-            client.transport.dispatch("get_inventory", {})
-        )
-        return _has_shield(refreshed.get("offhand"))
+        with exclusive_combat_action(client) as acquired:
+            if not acquired:
+                return False
+            inventory = _inventory_payload(
+                client.transport.dispatch("get_inventory", {})
+            )
+            if _has_shield(inventory.get("offhand")):
+                return True
+            if not _has_shield(inventory.get("inventory")):
+                return False
+            client.transport.dispatch(
+                "equip",
+                {"slot": "offhand", "item": "minecraft:shield"},
+            )
+            refreshed = _inventory_payload(
+                client.transport.dispatch("get_inventory", {})
+            )
+            return _has_shield(refreshed.get("offhand"))
     except Exception as exc:
         print(f"COMBAT: shield preparation failed: {exc}")
         return False
@@ -67,6 +71,155 @@ def _prepare_ranged_shield(client, target, state, shield) -> bool:
     return bool(shield["ready"])
 
 
+def _boss_attack_authorized(client, target, state) -> bool:
+    """Require explicit, exact intent before provoking a boss."""
+    assessments = api.assess_threats([target], state)
+    if not assessments or assessments[0].style != api.AttackStyle.BOSS:
+        return True
+    from .combat_intent import current_combat_intent
+
+    intent = current_combat_intent(client)
+    return bool(
+        intent is not None
+        and intent.allow_boss
+        and intent.authorizes(target)
+    )
+
+
+def _equip_target_weapon(client, target) -> bool:
+    """Equip a fresh target-aware weapon through the shared loadout policy."""
+    try:
+        return bool(api.equip_best_weapon(client, target.get("type", "")))
+    except TypeError:  # compatibility with one-argument injected fakes
+        return bool(api.equip_best_weapon(client))
+
+
+def _combat_intervention(client, snapshot, state, *, no_retreat):
+    """Return a fail-closed reason before an approach or attack."""
+    skipped = api._snapshot_skipped_count(snapshot)
+    if skipped:
+        reason = "incomplete_snapshot"
+        fields = {"skipped_count": skipped}
+    else:
+        food = state.get("food_level", state.get("food"))
+        try:
+            hungry = food is not None and int(food) < 7
+        except (TypeError, ValueError):
+            hungry = False
+        if no_retreat or not hungry:
+            return None
+        reason = "retreat_hunger"
+        fields = {"food": food}
+    api.combat_telemetry.record_combat_action(
+        client,
+        "combat_intervention",
+        outcome=reason,
+        **fields,
+    )
+    api._stop_for_defense(client)
+    return reason
+
+
+def execute_melee_strike(client, target, state, *, min_cooldown=None):
+    """Attempt one cooldown-verified strike through the canonical boundary."""
+    target_id = target.get("id")
+    if target_id is None:
+        return {"attacked": False, "reason": "target_id_missing"}
+    if not _boss_attack_authorized(client, target, state):
+        return {"attacked": False, "reason": "boss_not_authorized"}
+    threshold = (
+        api.MELEE_ATTACK_COOLDOWN_THRESHOLD
+        if min_cooldown is None
+        else float(min_cooldown)
+    )
+    if api._attack_cooldown(state) < threshold:
+        return {"attacked": False, "reason": "cooldown", "local_check": True}
+    with exclusive_combat_action(client) as acquired:
+        if not acquired:
+            return {"attacked": False, "reason": "action_busy"}
+        if not _equip_target_weapon(client, target):
+            return {"attacked": False, "reason": "weapon_unavailable"}
+        api.look_at_entity(client, target)
+        result = client.transport.dispatch(
+            "attack_entity",
+            {"entity_id": int(target_id), "min_cooldown": threshold},
+        )
+    api.combat_telemetry.record_melee_attack(client, target, result)
+    return result
+
+
+def _supervise_approach(
+    client,
+    *,
+    target_id,
+    retreat_health,
+    tracking_radius,
+    no_retreat,
+    abort_on_other_hostiles,
+    intervention,
+    ranged_approach,
+    shield,
+) -> bool:
+    """Keep target approaches survival-aware and sensitive to new threats."""
+    state = client.transport.dispatch("get_state", {})
+    api.ensure_alive(client, state)
+    health = float(state.get("health", 20.0) or 0)
+    if not no_retreat and health < retreat_health:
+        intervention["reason"] = "retreat_health"
+        return True
+    food = state.get("food_level", state.get("food"))
+    try:
+        hungry = food is not None and int(food) < 7
+    except (TypeError, ValueError):
+        hungry = False
+    if not no_retreat and hungry:
+        intervention["reason"] = "retreat_hunger"
+        api._stop_for_defense(client)
+        return True
+    if abort_on_other_hostiles:
+        try:
+            entities = api.get_nearby_entities(
+                client,
+                radius=max(30, tracking_radius),
+                raise_on_error=True,
+            )
+        except api.EntityQueryError:
+            intervention["reason"] = "entity_query_unavailable"
+            return True
+        other = next(
+            (
+                threat
+                for threat in api.assess_threats(entities, state)
+                if threat.entity.get("id") != target_id
+                and threat.distance <= api.MULTI_THREAT_ABORT_RADIUS
+            ),
+            None,
+        )
+        if other is not None:
+            intervention["reason"] = "secondary_hostile"
+            api.combat_telemetry.record_combat_action(
+                client,
+                "approach_interrupted",
+                outcome="secondary_hostile",
+                target=other.entity,
+            )
+            return True
+    now = time.monotonic()
+    if (
+        ranged_approach["active"]
+        and shield["ready"]
+        and now >= shield["refresh_at"]
+    ):
+        with exclusive_combat_action(client) as acquired:
+            if not acquired:
+                return False
+            dispatch_held_item_use(client, SHIELD_HOLD_MS)
+        released_at = time.monotonic()
+        shield["blocked_until"] = released_at
+        shield["refresh_at"] = released_at + SHIELD_REFRESH_SECONDS
+    return False
+
+
 def execute_safe_combat(
     client,
     target_id: int,
@@ -77,7 +230,6 @@ def execute_safe_combat(
     no_retreat: bool,
 ) -> bool:
     """Fight one target while preserving survival and truthful outcomes."""
-    api.equip_best_weapon(client)
     intervention = {"reason": None}
     ranged_approach = {"active": False}
     shield = {
@@ -93,25 +245,18 @@ def execute_safe_combat(
         ).set_disengagement_reason(reason)
         return result
 
-    def navigation_watchdog() -> bool:
-        state = client.transport.dispatch("get_state", {})
-        api.ensure_alive(client, state)
-        health = float(state.get("health", 20.0) or 0)
-        if not no_retreat and health < retreat_health:
-            intervention["reason"] = "retreat_health"
-            return True
-        now = time.monotonic()
-        if (
-            ranged_approach["active"]
-            and shield["ready"]
-            and now >= shield["refresh_at"]
-        ):
-            client.transport.dispatch(
-                "use_item", {"duration_ms": SHIELD_HOLD_MS}
-            )
-            shield["blocked_until"] = now + SHIELD_HOLD_MS / 1000.0
-            shield["refresh_at"] = now + SHIELD_REFRESH_SECONDS
-        return False
+    navigation_watchdog = partial(
+        _supervise_approach,
+        client,
+        target_id=target_id,
+        retreat_health=retreat_health,
+        tracking_radius=tracking_radius,
+        no_retreat=no_retreat,
+        abort_on_other_hostiles=abort_on_other_hostiles,
+        intervention=intervention,
+        ranged_approach=ranged_approach,
+        shield=shield,
+    )
 
     started_at = time.time()
     approach_failures = 0
@@ -121,8 +266,8 @@ def execute_safe_combat(
             radius=max(30, tracking_radius),
         )
         if snapshot is not None:
-            state = snapshot["player"]
-            entities = snapshot["entities"]
+            state = snapshot.get("player", {})
+            entities = snapshot.get("entities", [])
         else:
             state = client.transport.dispatch("get_state", {})
             entities = api.get_nearby_entities(
@@ -133,6 +278,11 @@ def execute_safe_combat(
             client, {"player": state, "entities": entities}
         )
         api.ensure_alive(client, state)
+        intervention_reason = _combat_intervention(
+            client, snapshot, state, no_retreat=no_retreat
+        )
+        if intervention_reason is not None:
+            return finish(intervention_reason)
 
         if api._submerged_too_long(client, state, max_seconds=8.0):
             print(
@@ -176,9 +326,28 @@ def execute_safe_combat(
         if target is None:
             # Absence can mean death, despawn, escape, or an unloaded chunk.
             return finish("target_unobserved")
+        if not _boss_attack_authorized(client, target, state):
+            client.transport.dispatch("cancel", {})
+            return finish("boss_not_authorized")
         target_health = target.get("health")
         if target_health is not None and float(target_health) <= 0:
             return finish("verified_health_zero", True)
+        distance = target.get("distance", 999)
+        if distance >= 7.0 and _is_ranged_target(target, state):
+            from .combat_ranged import (
+                fire_best_ranged_attack,
+                ranged_attack_in_flight,
+            )
+
+            if ranged_attack_in_flight(client) or fire_best_ranged_attack(
+                client, target
+            ):
+                time.sleep(0.05)
+                continue
+
+        if distance >= 4.5 and not _equip_target_weapon(client, target):
+            client.transport.dispatch("cancel", {})
+            return finish("weapon_unavailable")
 
         # Keep shielding ranged mobs even inside 4.5m. Live Bot16 bypassed its
         # shield when a spawner placed a blaze at 1.2m and burned to death.
@@ -188,7 +357,6 @@ def execute_safe_combat(
         if ranged_approach["active"]:
             navigation_watchdog()
 
-        distance = target.get("distance", 999)
         if distance < 4.5:
             if time.monotonic() < shield["blocked_until"]:
                 # The bridge releases use_item on its own.  Wait for that
@@ -196,20 +364,8 @@ def execute_safe_combat(
                 # the first melee swing after the approach completes.
                 time.sleep(0.05)
                 continue
-            api.look_at_entity(client, target)
-            cooldown = api._attack_cooldown(state)
-            if cooldown < api.MELEE_ATTACK_COOLDOWN_THRESHOLD:
-                time.sleep(0.05)
-                continue
             try:
-                result = client.transport.dispatch(
-                    "attack_entity",
-                    {
-                        "entity_id": target_id,
-                        "min_cooldown": api.MELEE_ATTACK_COOLDOWN_THRESHOLD,
-                    },
-                )
-                api.combat_telemetry.record_melee_attack(client, target, result)
+                result = execute_melee_strike(client, target, state)
             except Exception as exc:
                 if "entity not found" in str(exc).lower():
                     return finish("target_unobserved")
@@ -252,6 +408,7 @@ def execute_safe_combat(
                 approach_failures = 0
             else:
                 if intervention["reason"] is not None:
+                    client.transport.dispatch("cancel", {})
                     return finish(str(intervention["reason"]))
                 approach_failures += 1
                 if approach_failures >= 3:

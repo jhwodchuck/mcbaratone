@@ -94,13 +94,20 @@ def _xp_engine_location(state: Any) -> Optional[Tuple[int, int, int]]:
     return _saved_location(state, "xp_engine", verified=True)
 
 
-def _safe(signals: Any) -> bool:
+def _safe(signals: Any, *, allow_end_hostiles: bool = False) -> bool:
+    hostiles = int(getattr(signals, "nearby_hostiles", 0))
+    end_hunt_ready = (
+        allow_end_hostiles
+        and "the_end" in str(getattr(signals, "dimension", ""))
+        and float(getattr(signals, "health", 0.0)) >= 18.0
+        and int(getattr(signals, "food", 0)) >= 18
+    )
     return bool(
         getattr(signals, "observed", False)
         and getattr(signals, "entities_observed", False)
         and float(getattr(signals, "health", 0.0)) >= 16.0
         and int(getattr(signals, "food", 0)) >= 14
-        and int(getattr(signals, "nearby_hostiles", 0)) == 0
+        and (hostiles == 0 or end_hunt_ready)
     )
 
 
@@ -121,6 +128,14 @@ def _end_worker(state: Any) -> dict[str, Any]:
         worker = {}
         custom["end_worker"] = worker
     return worker
+
+
+def _end_supply_priority(state: Any) -> str:
+    worker = _end_worker(state)
+    priority = worker.get("supply_priority")
+    if priority == "shulker_box":
+        return "shulker_box"
+    return "elytra_first"
 
 
 def _end_frontier_required(state: Any) -> bool:
@@ -159,7 +174,10 @@ def select_role_opportunity(
     role: FleetRole, signals: Any, state: Any, *, cooldown_ready: bool
 ) -> Optional[LocalOpportunity]:
     """Select only work whose dimension, safety, and durable prerequisites exist."""
-    if not cooldown_ready or not _safe(signals):
+    if not cooldown_ready or not _safe(
+        signals,
+        allow_end_hostiles=role is FleetRole.END_RUNNER,
+    ):
         return None
     dimension = str(getattr(signals, "dimension", ""))
     difficulty = str(getattr(signals, "difficulty", "")).lower()
@@ -235,6 +253,12 @@ def select_role_opportunity(
                 OpportunityKind.END_FRONTIER, 245,
                 "previous End-city supply produced no item delta; search a bounded new frontier",
                 location=city,
+            )
+        if _end_supply_priority(state) == "shulker_box":
+            return LocalOpportunity(
+                OpportunityKind.END_SUPPLY, 240,
+                "verified End-city checkpoint can supply a shulker box",
+                target_item="minecraft:shulker_box",
             )
         if int(inventory.get("minecraft:elytra", 0) or 0) < 1:
             return LocalOpportunity(

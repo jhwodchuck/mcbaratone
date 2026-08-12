@@ -15,6 +15,19 @@ for the same world.
 Never run all functional suites in a real autonomous world. Use `--list`, then
 select an explicit test ID or suite.
 
+The archived action inventory and Suites 100-900 narrative are planning aids,
+not execution instructions. The table above and the runner's `--list` output
+are the current safety/coverage authority. Preserve these acceptance classes
+when adding a test:
+
+| Acceptance class | Required observable |
+| --- | --- |
+| Movement/navigation | Position, progress, collision, or bounded failure |
+| Inventory/crafting | Slot/count delta plus expected output |
+| World mutation | Exact block/entity postcondition and bounded cleanup |
+| Combat | Health/hostile/outcome telemetry, not command success alone |
+| Recovery | Checkpoint, identity, process state, and safe resume result |
+
 ## Disposable worlds
 
 Two local runtimes isolate destructive tests from the autonomous fleet:
@@ -94,8 +107,14 @@ Run offline harness and contract tests without Minecraft:
   tests\test_survival_progression.py
 ```
 
-The repository-wide offline collection contains 259 tests and exercises slow
-retry paths. It is separate from the manual live functional runner.
+The repository-wide offline collection count changes frequently and exercises
+slow retry paths. Check it with `python -m pytest --collect-only -q`; it is
+separate from the manual live functional runner.
 
 See [Suite 1200](survival/README.md) for the complete gate list and promotion
 rule.
+
+Historical planning detail is retained in
+[`docs/archive/reference/action-test-plan-legacy.md`](../../docs/archive/reference/action-test-plan-legacy.md)
+and
+[`docs/archive/reference/extended-test-suites-100-900.md`](../../docs/archive/reference/extended-test-suites-100-900.md).

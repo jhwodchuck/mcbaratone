@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from baritone_client.automator import adaptive_scheduler as adaptive
 from baritone_client.automator import aid_response
 from baritone_client.automator import safety_recovery
@@ -22,6 +24,16 @@ from baritone_client.automator.state_manager import Phase
 from baritone_client.automator.end_readiness import FleetRole
 from baritone_client.common.forestry import WoodCycleResult
 from baritone_client.common.storage_organizer import QuartermasterCycleResult
+
+
+@pytest.fixture(autouse=True)
+def _isolate_scheduler_from_armor_inventory(monkeypatch):
+    """Keep scheduler unit tests from polling a live-like inventory client."""
+    monkeypatch.setattr(
+        adaptive.armor_upkeep,
+        "select_armor_opportunity",
+        lambda *_args, **_kwargs: None,
+    )
 
 
 def _state(custom_data=None):

@@ -4,7 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple, Union
+from pathlib import Path
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    Union,
+)
 import re
 
 from .transport.transport import WebSocketTransport
@@ -12,6 +24,235 @@ from .transport.transport import WebSocketTransport
 DispatchProvider = Callable[[str, Dict[str, Any]], Union[Mapping[str, Any], None]]
 StateProvider = Callable[[], Optional[Mapping[str, Any]]]
 HomeProvider = Callable[[], Optional[Union[Mapping[str, Any], Sequence[Any]]]]
+
+
+_SERVER_CHAT_LINE = re.compile(
+    r"^\[[^\]]+\] \[[^\]]+/INFO\]: "
+    r"(?:\[Not Secure\] )?<(?P<actor>[^>\r\n]+)> (?P<message>[^\r\n]*)$"
+)
+_SAFE_CHAT_PREFIX = re.compile(r"^![A-Za-z0-9_-]{1,24}$")
+
+
+@dataclass(frozen=True)
+class ObservedChatMessage:
+    """One actor/message pair from an authoritative Minecraft chat source."""
+
+    actor: str
+    message: str
+
+
+@dataclass(frozen=True)
+class PrefixedChatRequest:
+    """Authorized, prefix-stripped input for a domain-specific controller."""
+
+    actor: str
+    command: str
+    message: str
+
+
+class ChatMessageSource(Protocol):
+    """Minimal source contract shared by log, plugin, and event adapters."""
+
+    def poll(self) -> Sequence[ObservedChatMessage]:
+        """Return newly observed messages exactly once."""
+
+
+def validate_chat_prefix(value: Any) -> str:
+    """Validate a prefix without allowing whitespace or command syntax."""
+    if not isinstance(value, str) or not _SAFE_CHAT_PREFIX.fullmatch(value):
+        raise ValueError("chat prefix must look like !bots")
+    return value
+
+
+def parse_server_chat_line(line: str) -> Optional[ObservedChatMessage]:
+    """Parse one vanilla dedicated-server player-chat log line."""
+    match = _SERVER_CHAT_LINE.fullmatch(str(line).rstrip("\r\n"))
+    if match is None:
+        return None
+    actor = match.group("actor").strip()
+    message = match.group("message").strip()
+    if not actor or not message:
+        return None
+    return ObservedChatMessage(actor=actor, message=message)
+
+
+def parse_prefixed_chat(
+    message: str,
+    actor: str,
+    *,
+    allowed_actors: Iterable[str],
+    prefix: str,
+) -> Optional[PrefixedChatRequest]:
+    """Authorize an exact actor and extract one explicitly prefixed command."""
+    prefix = validate_chat_prefix(prefix)
+    actor_name = str(actor).strip()
+    allowed = {str(item).strip() for item in allowed_actors if str(item).strip()}
+    if actor_name not in allowed:
+        return None
+    normalized = " ".join(str(message).strip().split())
+    prefix_text = prefix.casefold()
+    lowered = normalized.casefold()
+    if lowered == prefix_text:
+        command = ""
+    elif lowered.startswith(prefix_text + " "):
+        command = normalized[len(prefix) + 1 :].strip()
+    else:
+        return None
+    return PrefixedChatRequest(
+        actor=actor_name,
+        command=command,
+        message=normalized,
+    )
+
+
+class ServerLogChatSource:
+    """Read only new complete messages from a Minecraft dedicated-server log."""
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        start_at_end: bool = True,
+        line_parser: Callable[[str], Optional[ObservedChatMessage]] = (
+            parse_server_chat_line
+        ),
+    ) -> None:
+        self.path = Path(path)
+        self._line_parser = line_parser
+        self._identity: Optional[Tuple[int, int]] = None
+        self._offset = 0
+        self._pending = b""
+        self._initialized = False
+        self._start_at_end = bool(start_at_end)
+        self._initialize_if_present()
+
+    @staticmethod
+    def _file_identity(stat: Any) -> Tuple[int, int]:
+        inode = int(getattr(stat, "st_ino", 0))
+        # Some Windows filesystems report inode zero. Creation time is stable
+        # there and still distinguishes a replaced latest.log; Unix uses inode.
+        file_marker = inode or int(getattr(stat, "st_ctime_ns", 0))
+        return (int(getattr(stat, "st_dev", 0)), file_marker)
+
+    def _initialize_if_present(self) -> None:
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return
+        self._identity = self._file_identity(stat)
+        self._offset = int(stat.st_size) if self._start_at_end else 0
+        self._pending = b""
+        self._initialized = True
+
+    def poll(self, *, max_bytes: int = 262_144) -> Tuple[ObservedChatMessage, ...]:
+        """Poll a bounded byte range; partial final lines stay buffered."""
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return ()
+        identity = self._file_identity(stat)
+        if not self._initialized:
+            self._identity = identity
+            self._offset = int(stat.st_size) if self._start_at_end else 0
+            self._pending = b""
+            self._initialized = True
+            return ()
+        if identity != self._identity:
+            # A newly rotated log contains only events after rotation, so read it
+            # from the beginning. Existing startup history was already skipped.
+            self._identity = identity
+            self._offset = 0
+            self._pending = b""
+        elif int(stat.st_size) < self._offset:
+            self._offset = 0
+            self._pending = b""
+        try:
+            with self.path.open("rb") as handle:
+                handle.seek(self._offset)
+                chunk = handle.read(max(1, int(max_bytes)))
+                self._offset = handle.tell()
+        except OSError:
+            return ()
+        if not chunk:
+            return ()
+        data = self._pending + chunk
+        complete = data.splitlines(keepends=True)
+        self._pending = b""
+        if complete and not complete[-1].endswith((b"\n", b"\r")):
+            self._pending = complete.pop()
+        messages = []
+        for raw_line in complete:
+            parsed = self._line_parser(
+                raw_line.decode("utf-8", errors="replace")
+            )
+            if parsed is not None:
+                messages.append(parsed)
+        return tuple(messages)
+
+
+class AllowlistedChatGateway:
+    """Authorize prefixed requests and send replies through any bot transport."""
+
+    def __init__(
+        self,
+        source: ChatMessageSource,
+        dispatch: DispatchProvider,
+        *,
+        speaker_name: str,
+        allowed_actors: Sequence[str],
+        prefix: str = "!bot",
+        max_reply_length: int = 240,
+    ) -> None:
+        if source is None:
+            raise ValueError("chat source is required")
+        if dispatch is None:
+            raise ValueError("chat reply dispatch is required")
+        speaker = str(speaker_name).strip()
+        if not speaker:
+            raise ValueError("chat speaker name is required")
+        actors = tuple(
+            dict.fromkeys(
+                str(item).strip() for item in allowed_actors if str(item).strip()
+            )
+        )
+        if speaker in set(actors):
+            raise ValueError("the bot spokesperson must not be a chat-control actor")
+        if not 1 <= int(max_reply_length) <= 256:
+            raise ValueError("max_reply_length must be between 1 and 256")
+        self.source = source
+        self._dispatch = dispatch
+        self.speaker_name = speaker
+        self.allowed_actors = actors
+        self.prefix = validate_chat_prefix(prefix)
+        self.max_reply_length = int(max_reply_length)
+
+    def poll(self) -> Tuple[PrefixedChatRequest, ...]:
+        """Return only new prefixed requests from exact allowlisted actors."""
+        requests = []
+        for chat in self.source.poll():
+            request = parse_prefixed_chat(
+                chat.message,
+                chat.actor,
+                allowed_actors=self.allowed_actors,
+                prefix=self.prefix,
+            )
+            if request is not None:
+                requests.append(request)
+        return tuple(requests)
+
+    def reply(self, message: str) -> bool:
+        """Send one short, sanitized, non-command response through the bot."""
+        clean = " ".join(
+            str(message).replace("\r", " ").replace("\n", " ").split()
+        )
+        if not clean or clean.startswith(("#", "/")):
+            return False
+        clean = clean[: self.max_reply_length]
+        try:
+            self._dispatch("chat", {"message": clean})
+            return True
+        except Exception:
+            return False
 
 
 class ChatCommandError(ValueError):
@@ -63,7 +304,7 @@ class ParsedCommand:
 
 
 _FOLLOW_RE = re.compile(r"^follow\s+(?P<target>\S+)$", re.IGNORECASE)
-_PLAYER_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
+_PLAYER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 
 def parse_chat_command(
@@ -465,4 +706,3 @@ class FollowController:
                 pass
 
         return getattr(transport, "name", type(transport).__name__) or "unknown"
-

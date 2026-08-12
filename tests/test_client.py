@@ -2,7 +2,13 @@ import sys
 from unittest import TestCase
 from unittest.mock import MagicMock
 
-from baritone_client import Client, MovementStatus, PathCalculationResultType, PathingCommandType
+from baritone_client import (
+    Client,
+    MovementStatus,
+    ObservedChatMessage,
+    PathCalculationResultType,
+    PathingCommandType,
+)
 from baritone_client.core.facades.goals import GoalFactory
 from baritone_client.models.models import Selection, BetterBlockPos
 from baritone_client.core.facades.processes import BuilderProcess
@@ -61,6 +67,21 @@ class ClientFacadeTest(TestCase):
         self.client.process.calculation_result(PathCalculationResultType.SUCCESS)
         self.assertIn(("process/status", {"status": MovementStatus.RUNNING.value}), self.transport.dispatched)
         self.assertIn(("process/path_result", {"result": PathCalculationResultType.SUCCESS.value}), self.transport.dispatched)
+
+    def test_create_chat_gateway_uses_this_bot_transport(self):
+        source = MagicMock()
+        source.poll.return_value = [ObservedChatMessage("Alice", "!crew status")]
+        gateway = self.client.create_chat_gateway(
+            source,
+            speaker_name="Bot07",
+            allowed_actors=("Alice",),
+            prefix="!crew",
+        )
+
+        requests = gateway.poll()
+        self.assertEqual("status", requests[0].command)
+        self.assertTrue(gateway.reply("Crew ready"))
+        self.assertIn(("chat", {"message": "Crew ready"}), self.transport.dispatched)
 
     def test_shutdown(self):
         self.client.shutdown()

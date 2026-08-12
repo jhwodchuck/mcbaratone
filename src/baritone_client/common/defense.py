@@ -150,6 +150,19 @@ class EscapeCandidate:
 
 
 _PROFILES = {
+    # Loaded hostile projectiles are immediate movement hazards. Their bridge
+    # metadata includes owner and velocity, so ignoring them made the policy
+    # react only after the damage landed.
+    "arrow": ThreatProfile(96, AttackStyle.RANGED, always_evade=True),
+    "spectral_arrow": ThreatProfile(96, AttackStyle.RANGED, always_evade=True),
+    "trident": ThreatProfile(100, AttackStyle.RANGED, always_evade=True),
+    "small_fireball": ThreatProfile(105, AttackStyle.EXPLOSIVE, always_evade=True),
+    "fireball": ThreatProfile(110, AttackStyle.EXPLOSIVE, always_evade=True),
+    "dragon_fireball": ThreatProfile(118, AttackStyle.EXPLOSIVE, always_evade=True),
+    "wither_skull": ThreatProfile(118, AttackStyle.EXPLOSIVE, always_evade=True),
+    "shulker_bullet": ThreatProfile(98, AttackStyle.RANGED, always_evade=True),
+    "wind_charge": ThreatProfile(92, AttackStyle.RANGED, always_evade=True),
+    "breeze_wind_charge": ThreatProfile(94, AttackStyle.RANGED, always_evade=True),
     "creeper": ThreatProfile(100, AttackStyle.EXPLOSIVE, always_evade=True),
     "warden": ThreatProfile(120, AttackStyle.BOSS, always_evade=True),
     "wither": ThreatProfile(120, AttackStyle.BOSS, always_evade=True),
@@ -191,11 +204,28 @@ _PROFILES = {
     "vex": ThreatProfile(82, AttackStyle.MELEE, always_evade=True),
 }
 
+_PROJECTILE_TYPES = {
+    "arrow",
+    "spectral_arrow",
+    "trident",
+    "small_fireball",
+    "fireball",
+    "dragon_fireball",
+    "wither_skull",
+    "shulker_bullet",
+    "wind_charge",
+    "breeze_wind_charge",
+}
 
 def normalize_entity_type(entity_type: object) -> str:
     """Return a Minecraft entity registry path without its namespace."""
     value = str(entity_type or "").lower()
     return value.split(":", 1)[-1]
+
+
+def is_projectile_threat(entity_type: object) -> bool:
+    """Return whether a threat is a projectile that must never be meleed."""
+    return normalize_entity_type(entity_type) in _PROJECTILE_TYPES
 
 
 def _profile_for(entity_type: str) -> Optional[ThreatProfile]:
@@ -244,15 +274,21 @@ def _closing_speed(entity: Dict, player_state: Dict) -> float:
         player_state.get("position", {}),
     ) or {}
     velocity = entity.get("velocity") or {}
+    player_velocity = player_state.get("velocity") or {}
     try:
         dx = float(position.get("x", 0)) - float(player.get("x", 0))
+        dy = float(position.get("y", 0)) - float(player.get("y", 0))
         dz = float(position.get("z", 0)) - float(player.get("z", 0))
-        distance = math.hypot(dx, dz)
+        distance = math.sqrt(dx * dx + dy * dy + dz * dz)
         if distance < 0.01:
             return 0.0
         radial_velocity = (
-            float(velocity.get("x", 0)) * dx
-            + float(velocity.get("z", 0)) * dz
+            (float(velocity.get("x", 0)) - float(player_velocity.get("x", 0)))
+            * dx
+            + (float(velocity.get("y", 0)) - float(player_velocity.get("y", 0)))
+            * dy
+            + (float(velocity.get("z", 0)) - float(player_velocity.get("z", 0)))
+            * dz
         ) / distance
         return max(0.0, -radial_velocity)
     except (TypeError, ValueError):
@@ -269,6 +305,12 @@ def assess_threats(
     for entity in entities:
         entity_type = normalize_entity_type(entity.get("type"))
         profile = _profile_for(entity_type)
+        explicit_aggression = _explicit_aggression(entity, state)
+        # Future Minecraft hostiles and modded mobs must fail safe when the
+        # bridge explicitly reports that they target this player.  Unknown,
+        # non-aggressive entities remain ignored.
+        if profile is None and explicit_aggression is True:
+            profile = ThreatProfile(72, AttackStyle.MELEE)
         if profile is None:
             continue
         try:
@@ -280,10 +322,37 @@ def assess_threats(
         ):
             continue
         closing = _closing_speed(entity, state)
+        if entity_type in _PROJECTILE_TYPES:
+            owner_id = entity.get("owner_id")
+            player_id = state.get("entity_id", state.get("player_id"))
+            if owner_id is not None and owner_id == player_id:
+                continue
+            # Ignore spent/outbound projectiles. A projectile already at
+            # contact range remains urgent even when one sample reports no
+            # closing velocity.
+            if closing <= 0.05 and distance > 2.0:
+                continue
         proximity = max(0.0, 16.0 - distance) * 2.5
         closing_risk = min(20.0, closing * 16.0)
-        score = profile.severity + proximity + closing_risk
+        aggression_risk = 18.0 if explicit_aggression is True else 0.0
+        line_of_sight_risk = (
+            8.0
+            if profile.style == AttackStyle.RANGED
+            and entity.get("can_see_player") is True
+            else 0.0
+        )
+        score = (
+            profile.severity
+            + proximity
+            + closing_risk
+            + aggression_risk
+            + line_of_sight_risk
+        )
         reasons = [profile.style.value, f"{distance:.1f}m"]
+        if explicit_aggression is True:
+            reasons.append("targeting player")
+        if line_of_sight_risk:
+            reasons.append("line of sight")
         if closing > 0.1:
             reasons.append(f"closing {closing:.2f}m/tick")
         if profile.always_evade:

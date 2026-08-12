@@ -10,6 +10,12 @@
 *.userosscache
 *.sln.docstates
 *.env
+.env
+.env.*
+!*.env.example
+!.env.example
+!.env.*.example
+.envrc
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
@@ -18,10 +24,10 @@
 mono_crash.*
 
 # Build results
-[Dd]ebug/
-[Dd]ebugPublic/
-[Rr]elease/
-[Rr]eleases/
+/[Dd]ebug/
+/[Dd]ebugPublic/
+/[Rr]elease/
+/[Rr]eleases/
 x64/
 x86/
 [Ww][Ii][Nn]32/
@@ -343,6 +349,11 @@ paket-files/
 **/__pycache__/
 *.pyc
 *.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Cake - Uncomment if you are using it
 #tools/**
@@ -424,6 +435,8 @@ build/
 bin/
 *.class
 *.jar
+!bridge/gradle/wrapper/gradle-wrapper.jar
+!bridge/libs/baritone-api-fabric-1.15.0-9-gd93f1582.jar
 
 # Ignore the embedded baritone source tree
 baritone_src/
@@ -439,27 +452,53 @@ bridge/jdk21*
 # Infrastructure/Debug
 crash-reports/
 downloads/
-*.json
-!package.json
-!composer.json
-!tsconfig.json
 !bridge/src/main/resources/baritone-api-bridge.mixins.json
 !*.md
 
+# JSON is source/configuration by default. Ignore only known local state.
+/.claude/settings.local.json
+*_checkpoint.json
+checkpoint_*.json
+checkpoint_storage.json
+endgame_checkpoint.json
+HOME_LOCATION_*.json
+bounded_*_status.json
+/artifacts/
+/.codex_merge_*.py
+
 # mcbaratone runtime state (never source or acceptance evidence by itself)
-.current_run_log
-.current_run_pid
-spawn_to_dragon_checkpoint.*
+/.current_run_log
+/.current_run_pid
+/spawn_to_dragon_checkpoint.*
 metrics_*.json
-storage_catalog.sqlite3
-storage_catalog.sqlite3-shm
-storage_catalog.sqlite3-wal
+/*.pid
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Test fixtures are source even when their names resemble runtime state.
+!tests/fixtures/
+!tests/fixtures/**/*.json
 
 # Local headless Minecraft installation and generated run state
-HeadlessMC/
-runs/
-local_server/
-telemetry/
+/HeadlessMC/
+/runs/
+/local_server/
+/telemetry/
+/bridge/run/
+
+# Generated transcripts and manual functional-test captures
+bridge/build*.txt
+bridge/log*.txt
+bridge/compile*.txt
+bridge/debug_trace.txt
+bridge/deps.txt
+bridge/my_build_log*.txt
+bridge/test_output.txt
+tests/functional/logs/
+tests/functional/t*_log*.txt
+tests/functional/t*_debug.txt
+tests/functional/*_test_results.txt
 
 # Downloaded Gradle distribution
 bridge/gradle-8.12/

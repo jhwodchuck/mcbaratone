@@ -223,19 +223,11 @@ def select_item(client, item_id: str, allow_swap: bool = False) -> bool:
     return False
 
 
-def equip_best_weapon(client) -> bool:
-    """Equip best available weapon/tool."""
-    weapons = [
-        "minecraft:netherite_sword", "minecraft:diamond_sword", "minecraft:iron_sword", "minecraft:stone_sword", "minecraft:golden_sword", "minecraft:wooden_sword",
-        "minecraft:netherite_axe", "minecraft:diamond_axe", "minecraft:iron_axe", "minecraft:stone_axe", "minecraft:golden_axe", "minecraft:wooden_axe",
-        "minecraft:netherite_pickaxe", "minecraft:diamond_pickaxe", "minecraft:iron_pickaxe", "minecraft:stone_pickaxe", "minecraft:wooden_pickaxe"
-    ]
-    
-    for weapon in weapons:
-        if select_item(client, weapon, allow_swap=True):
-            return True
-            
-    return False
+def equip_best_weapon(client, target_type: object = "") -> bool:
+    """Equip the best fresh, durable, target-aware melee weapon."""
+    from .combat_loadout import equip_best_weapon as select_combat_weapon
+
+    return select_combat_weapon(client, target_type)
 
 
 _ARMOR_RANK = {
@@ -1764,13 +1756,20 @@ def deposit_excess_to_chest(
         reserve = retain_counts.get(item_id, 0)
         if player_totals.get(item_id, 0) - count < reserve:
             continue
-        payload = {"slot": slot, "type": "QUICK_MOVE", "button": 0}
-        if sync_id is not None:
-            payload["sync_id"] = sync_id
-        client.transport.dispatch("inventory_click", payload)
-        player_totals[item_id] = max(0, player_totals.get(item_id, 0) - count)
+        from .container_transfer import verified_quick_move
+
+        moved_count = verified_quick_move(
+            client,
+            slot=slot,
+            item_id=item_id,
+            before_count=count,
+            sync_id=sync_id,
+        )
+        if moved_count <= 0:
+            print(f"STORAGE: target chest is full; {item_id} did not move")
+            break
+        player_totals[item_id] = max(0, player_totals.get(item_id, 0) - moved_count)
         deposited += 1
-        time.sleep(0.05)
 
     try:
         from .storage_catalog import catalog_for, observe_open_container

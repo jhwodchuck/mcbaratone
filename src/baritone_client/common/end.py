@@ -350,92 +350,10 @@ def enter_end_portal(
 
 
 def fight_ender_dragon(client, timeout: int = 1200) -> bool:
-    """
-    Advanced dragon fight logic including crystal destruction and pillar climbing.
-    """
-    from .navigation import goto
-    from .inventory import select_item
-    
-    print("Beginning Ender Dragon fight sequence...")
-    start_time = time.time()
-    
-    while time.time() - start_time < timeout:
-        entities = _entities(
-            client.transport.dispatch("get_entities", {"radius": 128})
-        )
-        crystals = [
-            entity for entity in entities
-            if entity.get("type") == "minecraft:end_crystal"
-        ]
-        dragon = next(
-            (
-                entity for entity in entities
-                if entity.get("type") == "minecraft:ender_dragon"
-            ),
-            None,
-        )
-        if dragon is None and not crystals:
-            exit_portal = _found(
-                client.transport.dispatch(
-                    "find_blocks",
-                    {"blocks": ["minecraft:end_portal"], "radius": 64, "limit": 1},
-                )
-            )
-            if exit_portal:
-                return True
+    """Delegate to the canonical supervised boss-combat implementation."""
+    from .dragon_combat import fight_ender_dragon as implementation
 
-        # 1. Deal with crystal entities, never nonexistent crystal blocks.
-        if crystals:
-            crystal = min(crystals, key=lambda value: float(value.get("distance", 999)))
-            crystal_pos = crystal.get("position", {})
-            if not all(axis in crystal_pos for axis in ("x", "y", "z")):
-                time.sleep(1)
-                continue
-            coords = (
-                float(crystal_pos["x"]),
-                float(crystal_pos["y"]),
-                float(crystal_pos["z"]),
-            )
-            print(f"Targeting crystal at {crystal_pos}")
-            # Climb if high up
-            if coords[1] > 70:
-                print("Climbing pillar...")
-                # Pillar up or path to top
-                goto(client, *coords, tolerance=10)
-            
-            # Use bow or snowballs if possible
-            if select_item(client, "minecraft:bow") or select_item(client, "minecraft:snowball"):
-                client.transport.dispatch("look_at", {"x": coords[0], "y": coords[1], "z": coords[2]})
-                client.transport.dispatch("use_item", {})
-            else:
-                # Get close and hit (dangerous)
-                goto(client, *coords, tolerance=3)
-                client.transport.dispatch(
-                    "attack_entity", {"entity_id": int(crystal["id"])}
-                )
-            continue
-
-        # 2. Attack Dragon
-        if dragon:
-            dx, dy, dz = dragon["position"]["x"], dragon["position"]["y"], dragon["position"]["z"]
-            print(f"Dragon spotted at ({dx}, {dy}, {dz})")
-            
-            # If perched (at center Y ~64)
-            if abs(dx) < 10 and abs(dz) < 10 and dy < 80:
-                print("Dragon is perched! Melee attack!")
-                goto(client, 0, 64, 0, tolerance=2)
-                client.transport.dispatch(
-                    "attack_entity", {"entity_id": int(dragon["id"])}
-                )
-            else:
-                # Snipe with bow
-                if select_item(client, "minecraft:bow"):
-                    client.transport.dispatch("look_at", {"x": dx, "y": dy, "z": dz})
-                    client.transport.dispatch("use_item", {})
-        
-        time.sleep(1)
-        
-    return False
+    return implementation(client, timeout=timeout)
 
 
 def traverse_end_gateway(client, timeout: int = 90) -> Optional[Tuple[int, int, int]]:

@@ -18,7 +18,11 @@ class SubmergedNavTransport:
         if route == "goto":
             self.gotos += 1
         if route == "get_state":
-            return {"health": 20, "block_position": {"x": 0, "y": 62, "z": 0}}
+            return {
+                "health": 20,
+                "food_level": 20,
+                "block_position": {"x": 0, "y": 62, "z": 0},
+            }
         if route == "get_block":
             return {"id": "minecraft:water"}
         return {}

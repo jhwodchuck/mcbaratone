@@ -12,6 +12,8 @@ from .food_recovery import (
     must_hold_for_critical_food,
 )
 from .combat_targeting import matches_requested_mob
+from .combat_intent import exclude_authorized_threats
+from .combat_action import dispatch_held_item_use, exclusive_client_function
 from .emergency_food import (
     EMERGENCY_FOOD_ITEMS,
     EmergencyExploration,
@@ -154,8 +156,7 @@ def find_entity_by_type(
     entities = get_nearby_entities(client, radius, raise_on_error=raise_on_error)
 
     for entity in sorted(entities, key=lambda e: e.get("distance", 999)):
-        entity_type = entity.get("type", "").lower()
-        if any(t.lower() in entity_type for t in entity_types):
+        if matches_requested_mob(entity.get("type", ""), entity_types):
             return entity
 
     return None
@@ -166,41 +167,17 @@ def attack_nearest(
     entity_types: List[str],
     max_range: int = 10,
 ) -> bool:
-    """
-    Attack nearest entity of specified type.
-    
-    Args:
-        client: Baritone client
-        entity_types: Types to attack (e.g., ["pig", "cow"])
-        max_range: Maximum attack range
-        
-    Returns:
-        True if attacked an entity
-    """
+    """Fight the nearest exact requested type through verified safe combat."""
     entity = find_entity_by_type(client, entity_types, radius=max_range)
-    
-    if entity is None:
+    if entity is None or entity.get("id") is None:
         return False
-    
-    entity_id = entity.get("id")
-    if entity_id is None:
-        return False
-        
-    # Equip weapon
-    equip_best_weapon(client)
-    
-    try:
-        # Look at entity (coordinates - the bridge does not accept entity_id here)
-        look_at_entity(client, entity)
-        time.sleep(0.2)
-
-        # Attack
-        client.transport.dispatch("attack_entity", {"entity_id": entity_id})
-        return True
-
-    except Exception as e:
-        print(f"Attack error: {e}")
-        return False
+    return safe_combat(
+        client,
+        int(entity["id"]),
+        purpose="attack_nearest",
+        source="attack_nearest",
+        target_metadata=entity,
+    )
 
 
 @combat_telemetry.trace_safe_combat
@@ -218,17 +195,25 @@ def safe_combat(
     target_metadata: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Fight one target through the supervised cooldown-aware melee loop."""
+    from .combat_intent import CombatIntent, combat_intent
     from .combat_melee import execute_safe_combat
 
-    return execute_safe_combat(
-        client,
+    metadata = target_metadata if isinstance(target_metadata, dict) else {}
+    intent = CombatIntent.for_target(
         target_id,
-        retreat_health,
-        max_duration,
-        abort_on_other_hostiles,
-        tracking_radius,
-        no_retreat,
+        purpose=purpose or source,
+        target_type=metadata.get("type", ""),
     )
+    with combat_intent(client, intent):
+        return execute_safe_combat(
+            client,
+            target_id,
+            retreat_health,
+            max_duration,
+            abort_on_other_hostiles,
+            tracking_radius,
+            no_retreat,
+        )
 
 def _approach_aquatic_food(
     client,
@@ -423,6 +408,7 @@ _FOOD_YIELDING_MOBS = ("cow", "mooshroom", "sheep", "pig", "chicken", "rabbit")
 _CRITICAL_HUNT_HEALTH = 10.0
 
 
+@exclusive_client_function
 def eat_until_hunger(client, minimum_food: int = 14) -> bool:
     """Consume carried food until the hunger bar is safe for progression."""
     minimum_food = max(1, min(int(minimum_food), 20))
@@ -454,7 +440,7 @@ def eat_until_hunger(client, minimum_food: int = 14) -> bool:
             client.transport.dispatch("look", {"yaw": 0, "pitch": -90})
         except Exception:
             pass
-        client.transport.dispatch("use_item", {"duration_ms": 2500})
+        dispatch_held_item_use(client, 2500)
         # The bridge starts a held-use action asynchronously.  Reissuing it
         # every half-second resets the eating timer, so wait for a real hunger
         # or stack-count delta before touching the selected item again.
@@ -488,6 +474,7 @@ def eat_until_hunger(client, minimum_food: int = 14) -> bool:
     return int(final_state.get("food_level", final_state.get("food", 0))) >= minimum_food
 
 
+@exclusive_client_function
 def heal_if_needed(client, threshold: float = 10.0) -> bool:
     """
     Eat food if health below threshold.
@@ -517,7 +504,7 @@ def heal_if_needed(client, threshold: float = 10.0) -> bool:
                 client.transport.dispatch("look", {"yaw": 0, "pitch": -90})
             except Exception:
                 pass
-            client.transport.dispatch("use_item", {"duration_ms": 2500})
+            dispatch_held_item_use(client, 2500)
             return True
     
     return False
@@ -1161,6 +1148,20 @@ def _get_combat_snapshot(client, radius: int = 16) -> Optional[Dict]:
     return snapshot
 
 
+def _snapshot_skipped_count(snapshot: Optional[Dict]) -> int:
+    """Return incomplete atomic-serialization count; legacy snapshots are complete."""
+    if not isinstance(snapshot, dict) or "skipped_count" not in snapshot:
+        return 0
+    raw_count = snapshot.get("skipped_count")
+    try:
+        skipped = int(raw_count)
+    except (TypeError, ValueError):
+        return 1
+    if isinstance(raw_count, float) and not raw_count.is_integer():
+        return 1
+    return skipped if skipped >= 0 else 1
+
+
 def secure_recovery_area(
     client,
     timeout: float = 90.0,
@@ -1376,7 +1377,10 @@ def _choose_supervised_defense(
             and (urgent_count <= 1 or shielded_blaze)
             and (not primary.always_evade or shielded_blaze)
         ):
-            has_weapon = equip_best_weapon(client)
+            try:
+                has_weapon = equip_best_weapon(client, primary.entity_type)
+            except TypeError:  # compatibility with injected one-argument fakes
+                has_weapon = equip_best_weapon(client)
     decision = choose_defense_action(
         assessments,
         health=health,
@@ -1397,22 +1401,41 @@ def defend_or_flee(
     client,
     *,
     allow_safe_recovery_movement: bool = False,
+    observed_snapshot: Optional[Dict] = None,
 ) -> bool:
     """Advance the canonical defensive state machine by one supervised tick."""
     client._last_defense_intervention = None
-    snapshot = _get_combat_snapshot(client)
+    snapshot = (
+        observed_snapshot
+        if observed_snapshot is not None
+        else _get_combat_snapshot(client)
+    )
     state = (
-        snapshot["player"]
+        snapshot.get("player", {})
         if snapshot is not None
         else client.transport.dispatch("get_state", {})
     )
     ensure_alive(client, state)
-    # Surface before assessing land threats; drowning is more urgent.
+    runtime = _defense_runtime(client)
+    skipped = _snapshot_skipped_count(snapshot)
+    if skipped:
+        client._last_defense_intervention = "incomplete_snapshot"
+        runtime.transition(
+            DefenseMode.ALERT,
+            f"incomplete combat snapshot ({skipped} skipped)",
+        )
+        combat_telemetry.record_combat_action(
+            client,
+            "defense_intervention",
+            outcome="incomplete_snapshot",
+            skipped_count=skipped,
+        )
+        _stop_for_defense(client)
+        return True
     if escape_water_if_submerged(client, state):
         client._last_defense_intervention = "aquatic"
         return True
     health = float(state.get("health", 20) or 0)
-    runtime = _defense_runtime(client)
     try:
         if snapshot is not None:
             threats = [
@@ -1434,7 +1457,10 @@ def defend_or_flee(
         _stop_for_defense(client)
         return True
 
-    assessments = assess_threats(threats, state)
+    assessments = exclude_authorized_threats(
+        client, assess_threats(threats, state)
+    )
+    threats = [item.entity for item in assessments]
     armor_count = (
         int(state.get("armor_count", 0) or 0)
         if assessments and "armor_count" in state
@@ -1489,53 +1515,16 @@ def defend_or_flee(
             # failed escape made the bot stand still and try to heal while it
             # was being hit; retry defense immediately on the next tick.
             return True
-        # Some threats must never be meleed no matter how badly evasion is
-        # going: a creeper detonates when you close on it, and an early-game
-        # bot cannot trade with a boss. Those carry EXPLOSIVE/BOSS styles, and
-        # escalating against them turns a stalemate into a death. This branch
-        # originally escalated on ANY failed evasion, which live-fired against
-        # creepers 364x on Bot07 and 367x on Bot08 -- it never killed them only
-        # because abort_on_other_hostiles kept bailing out first. Relocate out
-        # of the contested area instead; that is the one remaining move that
-        # both respects the no-fight policy and actually ends the standoff.
-        if primary.style in (AttackStyle.EXPLOSIVE, AttackStyle.BOSS):
-            print(
-                f"DEFENSE: evasion failed {runtime.evade_failures}x against "
-                f"{primary.entity.get('type')}; relocating (never melee "
-                f"{primary.style.value} threats)"
-            )
-            relocated = _relocate_away_from(client, primary.entity)
-            runtime.record_evade_result(threat_id, relocated)
-            if relocated:
-                runtime.hold_recovery(8.0)
-                return True
+        from .cornered_defense import handle_non_engageable_escape_failure
 
-            # Never close on the explosive threat itself, but do not let a
-            # high-scored creeper hide the zombie already in melee range. A
-            # failed relocation leaves fighting the close non-explosive
-            # attacker as the only action that can reduce incoming damage.
-            alternative = next(
-                (
-                    item
-                    for item in assessments
-                    if item.entity.get("id") != threat_id
-                    and item.style not in (AttackStyle.EXPLOSIVE, AttackStyle.BOSS)
-                    and item.distance <= 6.5
-                ),
-                None,
-            )
-            if alternative is not None:
-                defeated = _fight_defensive_target(
-                    client,
-                    alternative.entity,
-                    no_retreat=True,
-                    abort_on_other_hostiles=False,
-                )
-                if defeated:
-                    runtime.record_evade_result(
-                        alternative.entity.get("id"), True
-                    )
-                    runtime.hold_recovery(6.0)
+        if handle_non_engageable_escape_failure(
+            client,
+            primary,
+            assessments,
+            runtime,
+            relocate=_relocate_away_from,
+            fight=_fight_defensive_target,
+        ):
             return True
         # Repeated evasion against this exact threat has failed every time
         # (see DefenseRuntime.record_evade_result) -- continuing to hold that
@@ -1583,7 +1572,10 @@ def defend_or_flee(
         escape_target = primary.entity
         latest = _get_combat_snapshot(client)
         if latest is not None:
-            updated = assess_threats(latest["entities"], latest["player"])
+            updated = exclude_authorized_threats(
+                client,
+                assess_threats(latest["entities"], latest["player"]),
+            )
             if updated:
                 escape_target = updated[0].entity
         run_away(client, escape_target)
