@@ -394,6 +394,75 @@ def test_stable_surface_recovery_continues_past_air_over_water(monkeypatch):
     assert ("chat", {"message": "#surface"}) in transport.calls
 
 
+def test_stable_loaded_ascent_targets_feet_air_above_water():
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_block":
+                return {
+                    "id": (
+                        "minecraft:water"
+                        if int(payload["y"]) <= 8
+                        else "minecraft:air"
+                    )
+                }
+            return {}
+
+    transport = Transport()
+    assert surface_recovery._start_loaded_column_ascent(
+        SimpleNamespace(transport=transport),
+        (-437, 4, 14),
+        require_stable_support=True,
+    )
+    assert ("goal", {"type": "yLevel", "value": 9}) in transport.calls
+
+
+def test_stable_surface_places_carried_support_below_air_pocket(monkeypatch):
+    from baritone_client.common import harness_ops, inventory
+
+    class Transport:
+        supported = False
+
+        def dispatch(self, route, payload):
+            if route == "get_block":
+                return {
+                    "id": (
+                        "minecraft:cobblestone"
+                        if self.supported
+                        else "minecraft:water"
+                    )
+                }
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    placements = []
+    monkeypatch.setattr(
+        inventory,
+        "get_inventory",
+        lambda _client: {"minecraft:cobblestone": 591},
+    )
+    monkeypatch.setattr(inventory, "select_item", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(harness_ops, "available", lambda: True)
+
+    def place(_client, x, y, z, material, allow_break):
+        placements.append((x, y, z, material, allow_break))
+        transport.supported = True
+        return True
+
+    monkeypatch.setattr(harness_ops, "place_block_exact", place)
+
+    assert surface_recovery._place_support_below_breathing_position(
+        client, (-437, 9, 14)
+    )
+    assert placements == [
+        (-437, 8, 14, "minecraft:cobblestone", False)
+    ]
+
+
 def test_loaded_shore_candidates_reject_lower_cave_ledges():
     class Transport:
         def dispatch(self, route, payload):

@@ -143,11 +143,18 @@ def _loaded_breathing_level_above(
 def _start_loaded_column_ascent(
     client: Any,
     position: tuple[int, int, int],
+    *,
+    require_stable_support: bool = False,
 ) -> bool:
     """Prefer an upward-only Y goal when the water surface is already loaded."""
     target_y = _loaded_breathing_level_above(client, position)
     if target_y is None or target_y <= position[1]:
         return False
+    if require_stable_support:
+        # The ordinary breathing target puts the player's head in air while
+        # their feet may remain in the top water block. Stable recovery needs
+        # the feet in the air block above so it can install support beneath.
+        target_y += 1
     return _start_y_level_ascent(client, target_y)
 
 
@@ -275,6 +282,35 @@ def _walkway_materials(
         if len(allocated) >= required:
             return allocated
     return None
+
+
+def _place_support_below_breathing_position(
+    client: Any,
+    position: tuple[int, int, int],
+) -> bool:
+    """Install one carried solid block beneath an unsupported air pocket."""
+    from . import harness_ops
+    from .inventory import get_inventory, select_item
+
+    if _has_stable_support(client, position):
+        return True
+    materials = _walkway_materials(get_inventory(client), required=1)
+    if not materials or not harness_ops.available():
+        return False
+    material = materials[0]
+    if not select_item(client, material, allow_swap=True):
+        return False
+    x, y, z = position
+    if not harness_ops.place_block_exact(
+        client,
+        x,
+        y - 1,
+        z,
+        material,
+        allow_break=False,
+    ):
+        return False
+    return _has_stable_support(client, position)
 
 
 def _build_aquatic_walkway(
@@ -447,7 +483,11 @@ def reach_breathing_air(
     )
     if shore is not None:
         return True
-    loaded_ascent = _start_loaded_column_ascent(client, initial)
+    loaded_ascent = _start_loaded_column_ascent(
+        client,
+        initial,
+        require_stable_support=require_stable_support,
+    )
     if not loaded_ascent:
         client.transport.dispatch("chat", {"message": "#surface"})
     started_at = clock()
@@ -475,6 +515,16 @@ def reach_breathing_air(
                 if not require_stable_support or (
                     not aquatic and _has_stable_support(client, current)
                 ):
+                    return True
+                if (
+                    require_stable_support
+                    and not aquatic
+                    and _place_support_below_breathing_position(client, current)
+                ):
+                    print(
+                        "SURVIVAL: stabilized breathing air with carried support "
+                        f"at {current}"
+                    )
                     return True
             if current[1] < initial[1] - 2:
                 print("SURVIVAL: surface route moved downward; aborting it")
