@@ -482,9 +482,20 @@ def test_manual_crafting_table_recovers_from_full_inventory(monkeypatch):
         "count": 4,
     }
 
+    screen_reads = {"count": 0}
+
     class Transport:
         def dispatch(self, route, _payload):
             if route == "get_screen":
+                screen_reads["count"] += 1
+                if screen_reads["count"] <= 2:
+                    return {
+                        "type": "ChestMenu",
+                        "slots": [
+                            {"slot": slot, "id": "minecraft:air", "count": 0}
+                            for slot in range(63)
+                        ],
+                    }
                 return {"type": "PlayerScreenHandler", "slots": slots}
             return {}
 
@@ -538,6 +549,7 @@ def test_manual_crafting_table_recovers_from_full_inventory(monkeypatch):
     monkeypatch.setattr(inventory_ops.time, "sleep", lambda _seconds: None)
 
     assert inventory_ops.craft_crafting_table_manual(Context())
+    assert screen_reads["count"] >= 3
     assert (9, "THROW", 1) in clicks
     assert (0, "QUICK_MOVE", 0) in clicks
 
