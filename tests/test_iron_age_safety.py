@@ -1799,6 +1799,9 @@ def test_protected_smelting_return_skips_after_pick_breaks_on_deep_haul(monkeypa
 def test_food_and_iron_banks_excess_before_first_smelting():
     source = inspect.getsource(iron_age.iron_age_progress.build_phase_tasks)
 
+    assert source.index("Carry deep-mining workstation") < source.index(
+        "Deposit bulky excess before smelting"
+    )
     assert source.index("Deposit bulky excess before smelting") < source.index(
         'ActionTask("Smelt iron ingots"'
     )

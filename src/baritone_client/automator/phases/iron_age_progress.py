@@ -160,6 +160,12 @@ def build_phase_tasks(
                         client, state
                     ),
                 ),
+                # Craft in the player grid before opening storage. Container
+                # opens are asynchronous and can otherwise race the close.
+                ActionTask(
+                    "Carry deep-mining workstation",
+                    carry_deep_mining_workstation,
+                ),
                 ActionTask(
                     "Deposit bulky excess before smelting",
                     lambda client: handler._deposit_excess_at_home(client, state),
@@ -184,10 +190,6 @@ def build_phase_tasks(
                 ActionTask(
                     "Restore expedition pickaxe",
                     handler._ensure_expedition_pickaxe,
-                ),
-                ActionTask(
-                    "Carry deep-mining workstation",
-                    carry_deep_mining_workstation,
                 ),
                 ActionTask(
                     "Checkpoint deep-mining task boundary",
