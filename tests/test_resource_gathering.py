@@ -1304,8 +1304,10 @@ def test_aquatic_wood_recovery_completes_surface_escape_before_relocation(
     starts = []
     resets = []
 
-    def complete_surface(_client, *, timeout, ensure_alive):
-        surface_calls.append((timeout, ensure_alive))
+    def complete_surface(
+        _client, *, timeout, ensure_alive, require_stable_support
+    ):
+        surface_calls.append((timeout, ensure_alive, require_stable_support))
         transport.surfaced = True
         return True
 
@@ -1336,6 +1338,7 @@ def test_aquatic_wood_recovery_completes_surface_escape_before_relocation(
         movement_watchdogs=(watchdog,),
     )
     assert surface_calls and surface_calls[0][0] == 45.0
+    assert surface_calls[0][2] is True
     assert starts == [True]
     assert resets == [state]
 

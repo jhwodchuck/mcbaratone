@@ -433,10 +433,11 @@ def reach_breathing_air(
     *,
     timeout: float,
     ensure_alive: Callable[[Any, Optional[dict]], None],
+    require_stable_support: bool = False,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> bool:
-    """Run ``#surface`` without allowing a bad route to descend farther."""
+    """Reach breathing air, optionally continuing until footing is stable."""
     initial = block_position(client.transport.dispatch("get_state", {}))
     _configure_surface_pathing(client, sleep=sleep)
     shore = _swim_to_loaded_dry_shore(
@@ -462,7 +463,8 @@ def reach_breathing_air(
             ensure_alive(client, state)
             current = block_position(state)
             if _head_is_dry(client, current):
-                if position_is_aquatic(client, current):
+                aquatic = position_is_aquatic(client, current)
+                if aquatic:
                     shore = _swim_to_loaded_dry_shore(
                         client,
                         current,
@@ -470,7 +472,10 @@ def reach_breathing_air(
                     )
                     if shore is not None:
                         return True
-                return True
+                if not require_stable_support or (
+                    not aquatic and _has_stable_support(client, current)
+                ):
+                    return True
             if current[1] < initial[1] - 2:
                 print("SURVIVAL: surface route moved downward; aborting it")
                 return False

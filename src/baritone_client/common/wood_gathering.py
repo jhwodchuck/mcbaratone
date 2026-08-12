@@ -175,6 +175,7 @@ def recover_after_aquatic_stop(
                 client,
                 timeout=45.0,
                 ensure_alive=ensure_alive,
+                require_stable_support=True,
             )
             state = api._read_state_optional(
                 client,
