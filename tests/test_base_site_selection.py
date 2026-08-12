@@ -463,6 +463,53 @@ def test_stable_surface_places_carried_support_below_air_pocket(monkeypatch):
     ]
 
 
+def test_stable_surface_excavates_adjacent_supported_ledge(monkeypatch):
+    from baritone_client.common import inventory, navigation
+
+    origin = (-437, 9, 14)
+    target = (-436, 9, 14)
+    blocks = {
+        (-436, 8, 14): "minecraft:stone",
+        target: "minecraft:stone",
+        (-436, 10, 14): "minecraft:stone",
+    }
+    state = {"block_position": {"x": origin[0], "y": origin[1], "z": origin[2]}}
+    calls = []
+
+    class Transport:
+        def dispatch(self, route, payload):
+            calls.append((route, payload))
+            if route == "get_block":
+                position = (int(payload["x"]), int(payload["y"]), int(payload["z"]))
+                return {"id": blocks.get(position, "minecraft:air")}
+            if route == "break_block":
+                position = (int(payload["x"]), int(payload["y"]), int(payload["z"]))
+                blocks[position] = "minecraft:air"
+                return {"accepted": True}
+            if route == "get_state":
+                return state
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    monkeypatch.setattr(inventory, "select_item", lambda *_args, **_kwargs: True)
+
+    def move(_client, x, y, z, **_kwargs):
+        state["block_position"] = {"x": x, "y": y, "z": z}
+        return True
+
+    monkeypatch.setattr(navigation, "goto", move)
+    monkeypatch.setattr(surface_recovery.time, "sleep", lambda _seconds: None)
+
+    assert surface_recovery._excavate_supported_breathing_ledge(
+        client, origin
+    ) == target
+    broken = [payload for route, payload in calls if route == "break_block"]
+    assert broken == [
+        {"x": -436, "y": 10, "z": 14},
+        {"x": -436, "y": 9, "z": 14},
+    ]
+
+
 def test_loaded_shore_candidates_reject_lower_cave_ledges():
     class Transport:
         def dispatch(self, route, payload):

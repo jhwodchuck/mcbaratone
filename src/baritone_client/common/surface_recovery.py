@@ -37,6 +37,8 @@ _NON_SUPPORT_BLOCKS = {
     "seagrass",
     "tall_seagrass",
 }
+_OPEN_PLAYER_BLOCKS = {"air", "cave_air", "void_air"}
+_UNBREAKABLE_EGRESS_BLOCKS = {"bedrock", "barrier", "end_portal_frame"}
 
 _AQUATIC_WALKWAY_MATERIALS = (
     "minecraft:dirt",
@@ -313,6 +315,95 @@ def _place_support_below_breathing_position(
     return _has_stable_support(client, position)
 
 
+def _block_name(client: Any, position: tuple[int, int, int]) -> str:
+    try:
+        response = client.transport.dispatch(
+            "get_block",
+            {"x": position[0], "y": position[1], "z": position[2]},
+        )
+    except Exception:
+        return ""
+    value = response.get("id", response.get("block")) if response else None
+    return str(value).split(":")[-1] if value else ""
+
+
+def _wait_for_open_block(
+    client: Any,
+    position: tuple[int, int, int],
+    *,
+    timeout: float = 5.0,
+) -> bool:
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() < deadline:
+        if _block_name(client, position) in _OPEN_PLAYER_BLOCKS:
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def _excavate_supported_breathing_ledge(
+    client: Any,
+    position: tuple[int, int, int],
+) -> Optional[tuple[int, int, int]]:
+    """Open one adjacent two-high cell whose floor is already solid."""
+    from .inventory import select_item
+    from .navigation import goto
+
+    if not any(
+        select_item(client, pickaxe, allow_swap=True)
+        for pickaxe in (
+            "minecraft:netherite_pickaxe",
+            "minecraft:diamond_pickaxe",
+            "minecraft:iron_pickaxe",
+            "minecraft:stone_pickaxe",
+            "minecraft:wooden_pickaxe",
+        )
+    ):
+        return None
+    px, py, pz = position
+    for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        target = (px + dx, py, pz + dz)
+        feet_name = _block_name(client, target)
+        head_name = _block_name(client, (target[0], target[1] + 1, target[2]))
+        if (
+            not feet_name
+            or not head_name
+            or feet_name in _UNBREAKABLE_EGRESS_BLOCKS
+            or head_name in _UNBREAKABLE_EGRESS_BLOCKS
+            or not _has_stable_support(client, target)
+        ):
+            continue
+        opened = True
+        for block in (
+            (target[0], target[1] + 1, target[2]),
+            target,
+        ):
+            if _block_name(client, block) not in _OPEN_PLAYER_BLOCKS:
+                try:
+                    client.transport.dispatch(
+                        "break_block",
+                        {"x": block[0], "y": block[1], "z": block[2]},
+                    )
+                except Exception:
+                    opened = False
+                    break
+                if not _wait_for_open_block(client, block):
+                    opened = False
+                    break
+        if not opened:
+            continue
+        if not goto(client, *target, timeout=15.0, tolerance=1.0):
+            continue
+        current = block_position(client.transport.dispatch("get_state", {}))
+        if (
+            _has_stable_support(client, current)
+            and not position_is_aquatic(client, current)
+            and _head_is_dry(client, current)
+        ):
+            return current
+    return None
+
+
 def _build_aquatic_walkway(
     client: Any,
     origin: tuple[int, int, int],
@@ -526,6 +617,14 @@ def reach_breathing_air(
                         f"at {current}"
                     )
                     return True
+                if require_stable_support and not aquatic:
+                    ledge = _excavate_supported_breathing_ledge(client, current)
+                    if ledge is not None:
+                        print(
+                            "SURVIVAL: excavated supported breathing ledge at "
+                            f"{ledge}"
+                        )
+                        return True
             if current[1] < initial[1] - 2:
                 print("SURVIVAL: surface route moved downward; aborting it")
                 return False
