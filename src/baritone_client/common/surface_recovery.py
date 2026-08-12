@@ -25,6 +25,18 @@ _NON_BREATHABLE_BLOCK_TOKENS = (
     "kelp",
     "seagrass",
 )
+_NON_SUPPORT_BLOCKS = {
+    "air",
+    "cave_air",
+    "void_air",
+    "water",
+    "lava",
+    "bubble_column",
+    "kelp",
+    "kelp_plant",
+    "seagrass",
+    "tall_seagrass",
+}
 
 _AQUATIC_WALKWAY_MATERIALS = (
     "minecraft:dirt",
@@ -89,6 +101,22 @@ def position_is_aquatic(
     except Exception:
         return False
     return not _block_is_breathable(block)
+
+
+def _has_stable_support(
+    client: Any,
+    position: tuple[int, int, int],
+) -> bool:
+    """Require a readable non-liquid block directly below the player."""
+    try:
+        block = client.transport.dispatch(
+            "get_block",
+            {"x": position[0], "y": position[1] - 1, "z": position[2]},
+        ).get("id", "")
+    except Exception:
+        return False
+    value = str(block).split(":")[-1]
+    return bool(value) and value not in _NON_SUPPORT_BLOCKS
 
 
 def _loaded_breathing_level_above(
@@ -374,6 +402,7 @@ def _swim_to_loaded_dry_shore(
             if (
                 not position_is_aquatic(client, current)
                 and _head_is_dry(client, current)
+                and _has_stable_support(client, current)
             ):
                 client.transport.dispatch("cancel", {})
                 print(f"SURVIVAL: reached loaded dry shore at {current}")

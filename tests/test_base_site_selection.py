@@ -297,6 +297,54 @@ def test_breathing_air_reaches_loaded_shore_before_sinking(monkeypatch):
     assert shore_origins == [(4, 60, 4)]
 
 
+def test_loaded_shore_route_does_not_accept_air_over_water(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.states = iter(
+                (
+                    {
+                        "block_position": {"x": -437, "y": 9, "z": 14},
+                        "is_pathing": True,
+                    },
+                    {
+                        "block_position": {"x": -430, "y": 12, "z": 14},
+                        "is_pathing": True,
+                    },
+                )
+            )
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return next(self.states)
+            if route == "get_block":
+                x, y = int(payload["x"]), int(payload["y"])
+                if x == -437 and y == 8:
+                    return {"id": "minecraft:water"}
+                if x == -430 and y == 11:
+                    return {"id": "minecraft:stone"}
+                return {"id": "minecraft:air"}
+            return {}
+
+    transport = Transport()
+    monkeypatch.setattr(
+        surface_recovery,
+        "_loaded_dry_shore_candidates",
+        lambda *_args, **_kwargs: [(-430, 12, 14)],
+    )
+    monkeypatch.setattr(surface_recovery.time, "sleep", lambda _seconds: None)
+
+    reached = surface_recovery._swim_to_loaded_dry_shore(
+        SimpleNamespace(transport=transport),
+        (-437, 4, 14),
+        timeout=5.0,
+    )
+
+    assert reached == (-430, 12, 14)
+    assert transport.calls.count(("cancel", {})) == 2
+
+
 def test_loaded_shore_candidates_reject_lower_cave_ledges():
     class Transport:
         def dispatch(self, route, payload):
