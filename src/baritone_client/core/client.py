@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from ..utils.cache_manager import CacheManager
 from ..transport.command_dispatcher import CommandDispatcher
@@ -14,7 +14,12 @@ from ..transport.transport import Transport
 from ..utils.upload_manager import UploadManager
 from .advanced import CommandAnalyticsTracker, ClientRetryPolicyHandler, BridgeMonitor
 from ..automator.resource_manager import ResourceManager
-from ..chat_control import FollowCommandConfig, FollowController
+from ..chat_control import (
+    AllowlistedChatGateway,
+    ChatMessageSource,
+    FollowCommandConfig,
+    FollowController,
+)
 
 
 class Client:
@@ -101,6 +106,23 @@ class Client:
         )
         self.cache = CacheManager(transport)
         self.upload = UploadManager(transport)
+
+    def create_chat_gateway(
+        self,
+        source: ChatMessageSource,
+        *,
+        speaker_name: str,
+        allowed_actors: Sequence[str],
+        prefix: str = "!bot",
+    ) -> AllowlistedChatGateway:
+        """Create reusable allowlisted chat control for this bot transport."""
+        return AllowlistedChatGateway(
+            source,
+            self.transport.dispatch,
+            speaker_name=speaker_name,
+            allowed_actors=allowed_actors,
+            prefix=prefix,
+        )
 
     def create_follow_controller(
         self,

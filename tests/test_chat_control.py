@@ -3,15 +3,22 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import pytest
 
 from baritone_client.chat_control import (
+    AllowlistedChatGateway,
     ChatParseError,
     ChatUnauthorizedActorError,
     FollowCommandConfig,
     FollowController,
     FollowControllerResult,
     FollowState,
+    ObservedChatMessage,
     ParsedAction,
+    PrefixedChatRequest,
+    ServerLogChatSource,
     UnsupportedCapabilityError,
     parse_chat_command,
+    parse_prefixed_chat,
+    parse_server_chat_line,
+    validate_chat_prefix,
 )
 
 
@@ -28,6 +35,16 @@ class DummyTransport:
         return {"status": "ok"}
 
 
+class DummyChatSource:
+    def __init__(self, messages: Sequence[ObservedChatMessage]):
+        self.messages = tuple(messages)
+
+    def poll(self) -> Tuple[ObservedChatMessage, ...]:
+        messages = self.messages
+        self.messages = ()
+        return messages
+
+
 def test_parse_chat_command_allowlist_and_targets() -> None:
     allowed = {"Alice", "Bob"}
 
@@ -40,6 +57,13 @@ def test_parse_chat_command_allowlist_and_targets() -> None:
     assert parse_chat_command("return   home", "Bob", allowed_actors=allowed).action == "return_home"
     assert parse_chat_command("status", "Bob", allowed_actors=allowed).action == "status"
 
+    bedrock = parse_chat_command(
+        "follow .CommanderRykerH",
+        "Alice",
+        allowed_actors=allowed,
+    )
+    assert bedrock.target == ".CommanderRykerH"
+
 
 def test_parse_chat_command_rejects_invalid_actor_and_payload() -> None:
     with pytest.raises(ChatUnauthorizedActorError):
@@ -49,7 +73,7 @@ def test_parse_chat_command_rejects_invalid_actor_and_payload() -> None:
         parse_chat_command("follow", "Alice", allowed_actors={"Alice"})
 
     with pytest.raises(ChatParseError):
-        parse_chat_command("follow invalid-name", "Alice", allowed_actors={"Alice"})
+        parse_chat_command("follow invalid/name", "Alice", allowed_actors={"Alice"})
 
     with pytest.raises(ChatParseError):
         parse_chat_command("teleport home", "Alice", allowed_actors={"Alice"})
@@ -196,3 +220,91 @@ def test_status_reports_websocket_or_polling_mode() -> None:
     assert ws_status.details["state_snapshot"] is None
     assert tcp_status.details["state_snapshot"] == {"foo": "bar"}
 
+
+def test_prefixed_chat_is_exact_allowlisted_and_domain_neutral() -> None:
+    request = parse_prefixed_chat(
+        "!crew Follow Me Now",
+        ".CommanderRykerH",
+        allowed_actors={".CommanderRykerH"},
+        prefix="!crew",
+    )
+
+    assert request == PrefixedChatRequest(
+        actor=".CommanderRykerH",
+        command="Follow Me Now",
+        message="!crew Follow Me Now",
+    )
+    assert parse_prefixed_chat(
+        "ordinary conversation",
+        ".CommanderRykerH",
+        allowed_actors={".CommanderRykerH"},
+        prefix="!crew",
+    ) is None
+    assert parse_prefixed_chat(
+        "!crew start",
+        "Mallory",
+        allowed_actors={".CommanderRykerH"},
+        prefix="!crew",
+    ) is None
+    assert validate_chat_prefix("!crew") == "!crew"
+
+
+def test_server_log_chat_source_handles_real_format_and_stale_lines(tmp_path) -> None:
+    log = tmp_path / "latest.log"
+    log.write_text(
+        "[15:00:00] [Server thread/INFO]: [Not Secure] "
+        "<JHWodchuck> !crew stale\n",
+        encoding="utf-8",
+    )
+    source = ServerLogChatSource(log, start_at_end=True)
+
+    assert source.poll() == ()
+    with log.open("ab") as handle:
+        handle.write(
+            b"[15:01:00] [Server thread/INFO]: [Not Secure] "
+            b"<.CommanderRykerH> !crew sta"
+        )
+    assert source.poll() == ()
+    with log.open("ab") as handle:
+        handle.write(b"tus\r\n")
+
+    expected = ObservedChatMessage(".CommanderRykerH", "!crew status")
+    assert source.poll() == (expected,)
+    assert parse_server_chat_line(
+        "[15:02:00] [Server thread/INFO]: <Alice> hello"
+    ) == ObservedChatMessage("Alice", "hello")
+
+
+def test_allowlisted_gateway_works_with_any_source_and_bot_dispatch() -> None:
+    source = DummyChatSource(
+        (
+            ObservedChatMessage("Mallory", "!crew start"),
+            ObservedChatMessage("Alice", "ordinary chat"),
+            ObservedChatMessage("Alice", "!crew status"),
+            ObservedChatMessage("Bot07", "!crew start"),
+        )
+    )
+    transport = DummyTransport()
+    gateway = AllowlistedChatGateway(
+        source,
+        transport.dispatch,
+        speaker_name="Bot07",
+        allowed_actors=("Alice",),
+        prefix="!crew",
+    )
+
+    assert gateway.poll() == (
+        PrefixedChatRequest("Alice", "status", "!crew status"),
+    )
+    assert gateway.reply("Crew ready\nnow")
+    assert transport.calls == [("chat", {"message": "Crew ready now"})]
+    assert not gateway.reply("#stop")
+    assert not gateway.reply("/kill @e")
+    assert transport.calls == [("chat", {"message": "Crew ready now"})]
+    with pytest.raises(ValueError):
+        AllowlistedChatGateway(
+            source,
+            transport.dispatch,
+            speaker_name="Bot07",
+            allowed_actors=("Bot07",),
+        )
