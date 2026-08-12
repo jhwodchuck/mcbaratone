@@ -575,11 +575,60 @@ def test_equip_best_armor_replaces_nearly_broken_same_tier_piece():
     ) in transport.calls
 
 
-def test_deposit_excess_uses_live_chest_screen_player_slots_only():
+def test_deposit_excess_uses_live_chest_screen_player_slots_only(monkeypatch):
     class ChestTransport:
         def __init__(self):
             self.clicks = []
+            self.moved = False
 
+        def dispatch(self, route, payload):
+            if route == "get_block":
+                return {"id": "minecraft:chest"}
+            if route == "get_state":
+                return {"block_position": {"x": 1, "y": 65, "z": 1}}
+            if route == "get_screen":
+                slots = [
+                    {"slot": index, "id": "minecraft:air", "count": 0}
+                    for index in range(63)
+                ]
+                if not self.moved:
+                    slots[27] = {
+                        "slot": 27,
+                        "id": "minecraft:rotten_flesh",
+                        "count": 4,
+                    }
+                slots[28] = {
+                    "slot": 28,
+                    "id": "minecraft:diamond",
+                    "count": 5,
+                }
+                return {
+                    "sync_id": 7,
+                    "total_slots": 63,
+                    "slots": slots,
+                }
+            if route == "inventory_click":
+                self.clicks.append(payload)
+                self.moved = True
+            return {}
+
+    transport = ChestTransport()
+    client = DummyClient(transport)
+    monkeypatch.setattr(harness_ops, "open_container", lambda *_args, **_kwargs: True)
+
+    assert inventory.deposit_excess_to_chest(client, (1, 65, 1)) == 1
+    assert transport.clicks == [
+        {
+            "slot": 27,
+            "type": "QUICK_MOVE",
+            "button": 0,
+            "sync_id": 7,
+        }
+    ]
+
+
+def test_deposit_excess_does_not_claim_a_stack_that_failed_to_move(monkeypatch):
+    class FullChestTransport:
         def dispatch(self, route, payload):
             if route == "get_block":
                 return {"id": "minecraft:chest"}
@@ -595,38 +644,22 @@ def test_deposit_excess_uses_live_chest_screen_player_slots_only():
                     "id": "minecraft:rotten_flesh",
                     "count": 4,
                 }
-                slots[28] = {
-                    "slot": 28,
-                    "id": "minecraft:diamond",
-                    "count": 5,
-                }
-                return {
-                    "sync_id": 7,
-                    "total_slots": 63,
-                    "slots": slots,
-                }
-            if route == "inventory_click":
-                self.clicks.append(payload)
+                return {"sync_id": 7, "total_slots": 63, "slots": slots}
             return {}
 
-    transport = ChestTransport()
-    client = DummyClient(transport)
+    monkeypatch.setattr(harness_ops, "open_container", lambda *_args, **_kwargs: True)
 
-    assert inventory.deposit_excess_to_chest(client, (1, 65, 1)) == 1
-    assert transport.clicks == [
-        {
-            "slot": 27,
-            "type": "QUICK_MOVE",
-            "button": 0,
-            "sync_id": 7,
-        }
-    ]
+    assert inventory.deposit_excess_to_chest(
+        DummyClient(FullChestTransport()),
+        (1, 65, 1),
+    ) == 0
 
 
 def test_withdraw_required_uses_chest_slots_and_leaves_other_storage(monkeypatch):
     class ChestTransport:
         def __init__(self):
             self.clicks = []
+            self.moved = False
 
         def dispatch(self, route, payload):
             if route == "get_inventory":
@@ -1128,6 +1161,7 @@ def test_dump_to_chest_uses_production_location_and_verified_screen(
     class ChestTransport:
         def __init__(self):
             self.clicks = []
+            self.moved = False
 
         def dispatch(self, route, payload):
             if route == "get_block":
@@ -1139,11 +1173,12 @@ def test_dump_to_chest_uses_production_location_and_verified_screen(
                     {"slot": index, "id": "minecraft:air", "count": 0}
                     for index in range(63)
                 ]
-                slots[27] = {
-                    "slot": 27,
-                    "id": "minecraft:dirt",
-                    "count": 64,
-                }
+                if not self.moved:
+                    slots[27] = {
+                        "slot": 27,
+                        "id": "minecraft:dirt",
+                        "count": 64,
+                    }
                 slots[28] = {
                     "slot": 28,
                     "id": "minecraft:stone_pickaxe",
@@ -1156,6 +1191,7 @@ def test_dump_to_chest_uses_production_location_and_verified_screen(
                 }
             if route == "inventory_click":
                 self.clicks.append(payload)
+                self.moved = True
             return {}
 
     state = SimpleNamespace(

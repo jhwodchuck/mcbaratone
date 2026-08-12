@@ -29,6 +29,9 @@ EMERGENCY_FOOD_ITEMS = (
     "minecraft:cooked_salmon",
     "minecraft:cooked_cod",
     "minecraft:baked_potato",
+    "minecraft:potato",
+    "minecraft:carrot",
+    "minecraft:beetroot",
     "minecraft:golden_carrot",
     "minecraft:golden_apple",
     "minecraft:beef",
@@ -53,16 +56,24 @@ def craft_emergency_bread_from_carried_wheat(
     client: Any,
     *,
     maximum_bread: int = 6,
+    minimum_reserve: int = 1,
 ) -> bool:
-    """Turn an existing wheat reserve into food before risking a hunt."""
+    """Turn carried wheat into enough bread for a verified food reserve."""
     from .inventory import count_item
 
-    if emergency_food_count(client) > 0:
+    minimum_reserve = max(1, int(minimum_reserve))
+    reserve = emergency_food_count(client)
+    if reserve >= minimum_reserve:
         return True
     wheat = count_item(client, "minecraft:wheat")
-    bread_target = min(max(1, int(maximum_bread)), wheat // 3)
-    if bread_target <= 0:
+    bread_to_craft = min(
+        max(1, int(maximum_bread)),
+        wheat // 3,
+        minimum_reserve - reserve,
+    )
+    if bread_to_craft <= 0:
         return False
+    bread_target = count_item(client, "minecraft:bread") + bread_to_craft
     try:
         # Lazy import avoids emergency_food <-> resources initialization cycles.
         from .resources import _craft_with_table
@@ -72,10 +83,18 @@ def craft_emergency_bread_from_carried_wheat(
     except Exception as exc:
         print(f"RECOVERY: carried-wheat bread craft failed ({exc})")
         return False
-    if emergency_food_count(client) <= 0:
+    finally:
+        # Crafting leaves a container screen open. A subsequent use_item acts
+        # on that GUI instead of eating, so recovery can wait forever beside a
+        # full bread stack unless the shared helper closes it explicitly.
+        try:
+            client.transport.dispatch("close_screen", {})
+        except Exception:
+            pass
+    if emergency_food_count(client) < minimum_reserve:
         return False
     print(
-        f"RECOVERY: crafted carried wheat into up to {bread_target} emergency bread"
+        f"RECOVERY: crafted carried wheat into {bread_to_craft} emergency bread"
     )
     return True
 

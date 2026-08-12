@@ -1764,13 +1764,20 @@ def deposit_excess_to_chest(
         reserve = retain_counts.get(item_id, 0)
         if player_totals.get(item_id, 0) - count < reserve:
             continue
-        payload = {"slot": slot, "type": "QUICK_MOVE", "button": 0}
-        if sync_id is not None:
-            payload["sync_id"] = sync_id
-        client.transport.dispatch("inventory_click", payload)
-        player_totals[item_id] = max(0, player_totals.get(item_id, 0) - count)
+        from .container_transfer import verified_quick_move
+
+        moved_count = verified_quick_move(
+            client,
+            slot=slot,
+            item_id=item_id,
+            before_count=count,
+            sync_id=sync_id,
+        )
+        if moved_count <= 0:
+            print(f"STORAGE: target chest is full; {item_id} did not move")
+            break
+        player_totals[item_id] = max(0, player_totals.get(item_id, 0) - moved_count)
         deposited += 1
-        time.sleep(0.05)
 
     try:
         from .storage_catalog import catalog_for, observe_open_container
