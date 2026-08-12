@@ -1494,6 +1494,32 @@ def test_initial_smelt_defers_carried_raw_iron_when_deep_kit_exists(monkeypatch)
     assert iron_age.FoodAndIronHandler()._smelt_iron(SimpleNamespace())
 
 
+def test_deep_haul_skips_replayed_pre_descent_workstation_tasks(monkeypatch):
+    handler = iron_age.FoodAndIronHandler()
+    client = SimpleNamespace()
+    monkeypatch.setattr(
+        handler,
+        "_total_owned",
+        lambda _client, item_id: 5 if item_id == "minecraft:diamond" else 0,
+    )
+    monkeypatch.setattr(
+        iron_age,
+        "ensure_supplies",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("completed deep haul must not bootstrap a workstation")
+        ),
+    )
+    monkeypatch.setattr(
+        iron_age,
+        "remaining_pickaxe_durability",
+        lambda *_args, **_kwargs: 136,
+    )
+
+    assert handler._smelt_iron(client)
+    assert handler._craft_essential_iron(client)
+    assert handler._ensure_expedition_pickaxe(client)
+
+
 def test_forced_smelt_uses_verified_nearby_furnace_without_crafting_furnace(monkeypatch):
     inventory = {
         "minecraft:iron_ingot": 5,

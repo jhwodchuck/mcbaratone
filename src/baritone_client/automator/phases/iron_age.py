@@ -1174,6 +1174,13 @@ class FoodAndIronHandler(PhaseHandler):
         """Smelt raw iron into ingots using furnace."""
         # Uses imports from file header: ensure_supplies, gather_stone, count_item
 
+        if not force and self._total_owned(client, "minecraft:diamond") >= 5:
+            print(
+                "  Deep-mining haul already reached; deferring carried raw "
+                "iron until the post-haul return."
+            )
+            return True
+
         # Check before constructing workshop infrastructure.  On resume the
         # previous run may already have collected every finished ingot.
         current_ingots = count_item(client, "minecraft:iron_ingot")
@@ -1265,6 +1272,12 @@ class FoodAndIronHandler(PhaseHandler):
 
     def _craft_essential_iron(self, client) -> bool:
         """Carry enough iron-pick durability for descent and bulk mining."""
+        if self._total_owned(client, "minecraft:diamond") >= 5:
+            print(
+                "  Deep-mining haul already reached; skipping replay of the "
+                "pre-descent tool reserve."
+            )
+            return True
         mining_pickaxes = [
             "minecraft:stone_pickaxe",
             "minecraft:iron_pickaxe",
@@ -1344,6 +1357,8 @@ class FoodAndIronHandler(PhaseHandler):
 
     def _ensure_expedition_pickaxe(self, client) -> bool:
         """Restore a banked iron pick before committing to deep mining."""
+        if self._total_owned(client, "minecraft:diamond") >= 5:
+            return True
         mining_pickaxes = [
             "minecraft:iron_pickaxe",
             "minecraft:diamond_pickaxe",
