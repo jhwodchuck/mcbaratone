@@ -65,8 +65,18 @@ def equipped_pieces(client: Any) -> int:
 
 
 def carried_iron(client: Any) -> int:
-    """Ingots plus raw iron, since raw smelts into ingots."""
+    """Report ingots plus raw iron as the bot's eventual iron reserve."""
     return _count(client, "minecraft:iron_ingot") + _count(client, "minecraft:raw_iron")
+
+
+def spendable_iron(client: Any) -> int:
+    """Return ingots immediately usable by armour recipes.
+
+    Raw iron belongs to the smelting phase.  Treating it as recipe-ready made
+    armour upkeep repeatedly call the generic crafter for pieces it could not
+    afford, delaying the phase that would actually smelt the ore.
+    """
+    return _count(client, "minecraft:iron_ingot")
 
 
 def missing_pieces(client: Any) -> list[Tuple[str, int]]:
@@ -111,7 +121,7 @@ def needs_armor(client: Any) -> bool:
         return False
     if not missing_pieces(client):
         return False  # carried but unequipped: equipping alone will fix it
-    return carried_iron(client) >= MIN_IRON_TO_EQUIP
+    return spendable_iron(client) >= MIN_IRON_TO_EQUIP
 
 
 def armor_work_allowed(signals: Any) -> bool:
@@ -182,7 +192,9 @@ def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
         after = equipped_pieces(client)
         return True, f"equipped carried armour ({before}->{after})", before, after
 
-    budget = min(carried_iron(client), FULL_SET_IRON)
+    # Armour recipes consume ingots, not raw ore.  Leave raw-iron conversion
+    # to FOOD_AND_IRON instead of burning a timeout on unaffordable recipes.
+    budget = min(spendable_iron(client), FULL_SET_IRON)
     crafted = []
     for piece, cost in missing_pieces(client):
         if budget < cost:
@@ -225,6 +237,7 @@ __all__ = [
     "equipped_pieces",
     "missing_pieces",
     "needs_armor",
+    "spendable_iron",
     "unworn_carried_pieces",
     "run_armor_upkeep",
     "select_armor_opportunity",

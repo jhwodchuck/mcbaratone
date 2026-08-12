@@ -297,3 +297,30 @@ def test_no_iron_and_no_spare_is_never_offered(monkeypatch):
     assert armor_upkeep.select_armor_opportunity(
         _Client(iron=3, raw=0, worn=1), _signals(), True
     ) is None, "3 iron cannot buy the cheapest piece (boots cost 4)"
+
+
+def test_raw_iron_yields_to_smelting_instead_of_armor_crafting(monkeypatch):
+    """Live A1 regression: raw ore is not spendable in an armour recipe."""
+    import baritone_client.common.inventory as inv
+    import baritone_client.common.resources as res
+
+    client = _Client(iron=3, raw=11, worn=1)
+    monkeypatch.setattr(
+        inv, "get_equipped_armor", lambda _c: {"feet": "minecraft:iron_boots"}
+    )
+    monkeypatch.setattr(inv, "equip_best_armor", lambda _c: None)
+    monkeypatch.setattr(
+        res,
+        "ensure_supplies",
+        lambda *_a, **_k: pytest.fail("raw iron was treated as recipe-ready"),
+    )
+
+    assert armor_upkeep.carried_iron(client) == 14
+    assert armor_upkeep.spendable_iron(client) == 3
+    assert armor_upkeep.select_armor_opportunity(client, _signals(), True) is None
+
+    ok, detail, before, after = armor_upkeep.run_armor_upkeep(
+        client, SimpleNamespace()
+    )
+    assert ok is False and before == after == 1
+    assert "unchanged" in detail
