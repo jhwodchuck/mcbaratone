@@ -62,18 +62,18 @@ def craft_emergency_bread_from_carried_wheat(
     from .inventory import count_item
 
     maximum_bread = max(1, int(maximum_bread))
-    if minimum_reserve is None:
-        minimum_reserve = maximum_bread
-    minimum_reserve = max(1, int(minimum_reserve))
+    required_reserve = (
+        None if minimum_reserve is None else max(1, int(minimum_reserve))
+    )
     reserve = emergency_food_count(client)
-    if reserve >= minimum_reserve:
+    if reserve > 0 and required_reserve is None:
+        return True
+    if required_reserve is not None and reserve >= required_reserve:
         return True
     wheat = count_item(client, "minecraft:wheat")
-    bread_to_craft = min(
-        maximum_bread,
-        wheat // 3,
-        minimum_reserve - reserve,
-    )
+    bread_to_craft = min(maximum_bread, wheat // 3)
+    if required_reserve is not None:
+        bread_to_craft = min(bread_to_craft, required_reserve - reserve)
     if bread_to_craft <= 0:
         return False
     bread_target = count_item(client, "minecraft:bread") + bread_to_craft
@@ -94,7 +94,10 @@ def craft_emergency_bread_from_carried_wheat(
             client.transport.dispatch("close_screen", {})
         except Exception:
             pass
-    if emergency_food_count(client) < minimum_reserve:
+    reserve = emergency_food_count(client)
+    if required_reserve is None and reserve <= 0:
+        return False
+    if required_reserve is not None and reserve < required_reserve:
         return False
     print(
         f"RECOVERY: crafted carried wheat into {bread_to_craft} emergency bread"
