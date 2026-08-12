@@ -38,7 +38,7 @@ Homepage = "https://github.com/jhwodchuck/mcbaratone"
 Repository = "https://github.com/jhwodchuck/mcbaratone"
 
 [project.scripts]
-baritone-mcp-server = "baritone_client.mcp_server:main"
+baritone-mcp-server = "baritone_client.mcp.mcp_server:main"
 baritone-http-client = "baritone_client.http_cli:main"
 
 [tool.pytest.ini_options]
