@@ -91,6 +91,107 @@ def test_end_runner_requires_end_city_checkpoint_and_safe_end():
     ) is None
 
 
+def test_end_runner_supply_priority_chooses_shulker_box():
+    state = SimpleNamespace(
+        custom_data={
+            "end_worker": {"supply_priority": "shulker_box"},
+            "end_city": {"location": [1, 70, 1]},
+        }
+    )
+    chosen = role_opportunities.select_role_opportunity(
+        FleetRole.END_RUNNER,
+        _signals(dimension="minecraft:the_end", health=20, inventory={}),
+        state,
+        cooldown_ready=True,
+    )
+
+    assert chosen is not None
+    assert chosen.kind is OpportunityKind.END_SUPPLY
+    assert chosen.target_item == "minecraft:shulker_box"
+
+
+def test_healthy_end_runner_can_start_shulker_hunt_with_hostiles_nearby():
+    state = SimpleNamespace(
+        custom_data={
+            "end_worker": {"supply_priority": "shulker_box"},
+            "end_city": {"location": [200, 70, 200], "verified": True},
+        }
+    )
+    chosen = role_opportunities.select_role_opportunity(
+        FleetRole.END_RUNNER,
+        _signals(
+            dimension="minecraft:the_end",
+            position=(200, 70, 200),
+            health=20,
+            food=20,
+            nearby_hostiles=2,
+        ),
+        state,
+        cooldown_ready=True,
+    )
+
+    assert chosen is not None
+    assert chosen.kind is OpportunityKind.END_SUPPLY
+    assert chosen.target_item == "minecraft:shulker_box"
+
+
+def test_end_runner_missing_supply_priority_keeps_elytra_first():
+    state = SimpleNamespace(
+        custom_data={
+            "end_worker": {},
+            "end_city": {"location": [1, 70, 1]},
+        }
+    )
+    chosen = role_opportunities.select_role_opportunity(
+        FleetRole.END_RUNNER,
+        _signals(dimension="minecraft:the_end", health=20, inventory={}),
+        state,
+        cooldown_ready=True,
+    )
+
+    assert chosen is not None
+    assert chosen.kind is OpportunityKind.END_SUPPLY
+    assert chosen.target_item == "minecraft:elytra"
+
+
+def test_end_runner_frontier_required_overrides_supply_priority():
+    state = SimpleNamespace(
+        custom_data={
+            "end_worker": {"supply_priority": "shulker_box"},
+            "end_city": [1, 70, 1],
+            "adaptive_scheduler": {"opportunities": {"end_supply": {"success": False}}},
+        }
+    )
+    chosen = role_opportunities.select_role_opportunity(
+        FleetRole.END_RUNNER,
+        _signals(dimension="minecraft:the_end", health=20, nearby_hostiles=0),
+        state,
+        cooldown_ready=True,
+    )
+
+    assert chosen is not None
+    assert chosen.kind is OpportunityKind.END_FRONTIER
+
+
+def test_end_runner_route_selection_overrides_supply_priority():
+    state = SimpleNamespace(
+        custom_data={
+            "end_worker": {"supply_priority": "shulker_box"},
+            "end_city": [900, 70, 900],
+        }
+    )
+    chosen = role_opportunities.select_role_opportunity(
+        FleetRole.END_RUNNER,
+        _signals(dimension="minecraft:the_end", position=(0, 70, 0)),
+        state,
+        cooldown_ready=True,
+    )
+
+    assert chosen is not None
+    assert chosen.kind is OpportunityKind.END_CITY_ROUTE
+    assert chosen.target_item == "gateway_then_city"
+
+
 def test_enchanting_uses_persisted_verified_xp_engine_and_only_xp_delta(monkeypatch):
     state = SimpleNamespace(
         custom_data={
