@@ -7,12 +7,17 @@ re-sending goto/mine/place/craft is not.
 """
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
-from baritone_client.core.exceptions import CommandError, TransportError
+from baritone_client.core.exceptions import (
+    BridgeResponseTimeout,
+    CommandError,
+    TransportError,
+)
 from baritone_client.transport import transport as transport_module
-from baritone_client.transport.transport import TcpTransport
+from baritone_client.transport.transport import TcpTransport, WebSocketTransport
 
 
 class _DummySocket:
@@ -30,6 +35,11 @@ class _DummySocket:
 
     def settimeout(self, _t):
         pass
+
+
+class _DummyFuture:
+    def result(self, timeout=None):
+        return None
 
 
 @pytest.fixture
@@ -60,7 +70,12 @@ def test_read_route_retries_past_transient_timeout(monkeypatch, tcp):
     calls = _script_dispatch_once(
         monkeypatch,
         tcp,
-        [TransportError("Timeout waiting for bridge response (route: get_state)"), {"health": 20.0}],
+        [
+            BridgeResponseTimeout(
+                "get_state", transport_type="tcp", request_sent=True
+            ),
+            {"health": 20.0},
+        ],
     )
 
     assert tcp.dispatch("get_state", {}) == {"health": 20.0}
@@ -68,7 +83,9 @@ def test_read_route_retries_past_transient_timeout(monkeypatch, tcp):
 
 
 def test_read_route_raises_after_exhausting_attempts(monkeypatch, tcp):
-    boom = TransportError("Timeout waiting for bridge response (route: get_block)")
+    boom = BridgeResponseTimeout(
+        "get_block", transport_type="tcp", request_sent=True
+    )
     calls = _script_dispatch_once(monkeypatch, tcp, [boom])
 
     with pytest.raises(TransportError):
@@ -77,7 +94,7 @@ def test_read_route_raises_after_exhausting_attempts(monkeypatch, tcp):
 
 
 def test_mutating_route_never_retries(monkeypatch, tcp):
-    boom = TransportError("Timeout waiting for bridge response (route: goto)")
+    boom = BridgeResponseTimeout("goto", transport_type="tcp", request_sent=True)
     calls = _script_dispatch_once(monkeypatch, tcp, [boom])
 
     with pytest.raises(TransportError):
@@ -116,3 +133,75 @@ def test_best_effort_close_screen_timeout_is_a_noop(tcp):
     tcp.timeout = 0.01
 
     assert tcp.dispatch("close_screen", {}) == {}
+
+
+def test_tcp_timeout_records_logical_route_and_confirmed_send(tcp):
+    tcp.timeout = 0
+
+    with pytest.raises(BridgeResponseTimeout) as raised:
+        tcp._dispatch_once("command/run", {"command": "#help"})
+
+    assert raised.value.route == "command/run"
+    assert raised.value.transport_type == "tcp"
+    assert raised.value.request_sent is True
+
+
+def test_tcp_send_failure_is_not_a_response_timeout(tcp):
+    class BrokenSocket(_DummySocket):
+        def sendall(self, _data):
+            raise OSError("broken pipe")
+
+    tcp._socket = BrokenSocket()
+
+    with pytest.raises(TransportError) as raised:
+        tcp._dispatch_once("goto", {"x": 1, "y": 64, "z": 1})
+
+    assert not isinstance(raised.value, BridgeResponseTimeout)
+    assert isinstance(raised.value.original_error, OSError)
+
+
+def test_websocket_timeout_records_logical_route_and_confirmed_send(monkeypatch):
+    with patch.object(WebSocketTransport, "_connect", lambda self: None):
+        transport = WebSocketTransport(
+            "ws://test", timeout=0, enable_event_storage=False
+        )
+    sent = []
+    transport._loop = object()
+    transport._send_message = lambda message: sent.append(message)
+    monkeypatch.setattr(
+        transport_module.asyncio,
+        "run_coroutine_threadsafe",
+        lambda _coro, _loop: _DummyFuture(),
+    )
+
+    with pytest.raises(BridgeResponseTimeout) as raised:
+        transport.dispatch("goal/apply", {})
+
+    assert raised.value.route == "goal/apply"
+    assert raised.value.transport_type == "websocket"
+    assert raised.value.request_sent is True
+    assert sent[0]["method"] == "goal.apply"
+    assert not transport._response_queues
+
+
+def test_websocket_rpc_error_remains_command_error(monkeypatch):
+    with patch.object(WebSocketTransport, "_connect", lambda self: None):
+        transport = WebSocketTransport(
+            "ws://test", timeout=0, enable_event_storage=False
+        )
+    transport._loop = object()
+
+    def send_with_error(message):
+        transport._response_queues[message["id"]].put(
+            {"id": message["id"], "error": {"message": "rejected"}}
+        )
+
+    transport._send_message = send_with_error
+    monkeypatch.setattr(
+        transport_module.asyncio,
+        "run_coroutine_threadsafe",
+        lambda _coro, _loop: _DummyFuture(),
+    )
+
+    with pytest.raises(CommandError, match="rejected"):
+        transport.dispatch("goto", {})

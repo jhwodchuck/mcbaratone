@@ -28,7 +28,7 @@ from .core.client import Client
 from .core.facades.missions import MissionFacade
 from .transport.command_dispatcher import CommandDispatcher, CommandResult
 from .transport.enums import MovementStatus, PathCalculationResultType, PathingCommandType, TransportEvent
-from .core.exceptions import CircuitBreakerOpenError, CommandError, RetryExhaustedError, RouteError, TransportError, ValidationError
+from .core.exceptions import BridgeResponseTimeout, CircuitBreakerOpenError, CommandError, RetryExhaustedError, RouteError, TransportError, ValidationError
 from .core.facades.goals import GoalFactory, GoalManager
 from .events.lifecycle import Ticker
 from .models.models import (
@@ -88,6 +88,7 @@ __all__ = [
     "TransportEvent",
     "Ticker",
     "CircuitBreakerOpenError",
+    "BridgeResponseTimeout",
     "CommandError",
     "RetryExhaustedError",
     "RouteError",

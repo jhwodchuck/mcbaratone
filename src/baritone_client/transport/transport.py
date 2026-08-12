@@ -12,9 +12,16 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union
 import websockets
 
 from .enums import TransportEvent
+from .tcp_protocol import BEST_EFFORT_ROUTES, READ_ONLY_ROUTES
+from .tcp_protocol import is_traced_command, translate_route
 from ..events.event_manager import EventManager, EventFilter
 from ..events.event_storage import EventStorage
-from ..core.exceptions import CommandError, RouteError, TransportError
+from ..core.exceptions import (
+    BridgeResponseTimeout,
+    CommandError,
+    RouteError,
+    TransportError,
+)
 from ..observability import (
     emit_event,
     observe_command_response,
@@ -86,10 +93,9 @@ class TcpTransport(Transport):
         self.port = port
         self.timeout = timeout
 
-        # Create and connect socket. Use connect() helper so tests can patch it.
-        # Use the configured transport timeout for the initial connect attempt so
-        # slow bridges have a chance to accept the socket before we give up.
+        # Use connect() so tests can replace socket creation.
         self._socket = connect(host, port, timeout=self.timeout)
+        self._socket.settimeout(min(0.5, self.timeout))
 
         self._lock = threading.RLock()
         self._response_queues: Dict[str, queue.Queue] = {}
@@ -100,86 +106,55 @@ class TcpTransport(Transport):
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
 
-    def _translate_route(self, route: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        mapped_route = route
-        params: Dict[str, Any] = dict(payload)
+    def _reconnect(self, expected_socket) -> bool:
+        """Replace one known-stale socket without closing a newer connection."""
+        with self._lock:
+            if self._shutdown_event.is_set() or self._socket is not expected_socket:
+                return False
 
-        if route == "process/status":
-            mapped_route = "get_state"
-            params = {}
-        elif route == "command":
-            # Direct command dispatch for handler-based execution
-            mapped_route = payload.get("command", "")
-            params = payload.get("params", {})
-        elif route == "command/run":
-            mapped_route = "chat"
-            params = {"message": payload.get("command", "")}
-        elif route == "command/cancel":
-            mapped_route = "cancel"
-            params = {}
-        elif route == "command/explore":
-            mapped_route = "explore"
-        elif route == "command/follow":
-            mapped_route = "follow"
-        elif route == "command/get_block":
-            mapped_route = "get_block"
-        elif route.startswith("mission/"):
-            mapped_route = route.replace("/", "_")
-        elif route.startswith("settings/"):
-            mode = route.split("/", 1)[1]
-            mapped_route = "settings"
-            name = params.pop("name", None)
-            if mode == "set" and name:
-                params["set"] = name
-            elif mode == "get" and name:
-                params["get"] = name
-            elif mode == "reset" and name:
-                params["reset"] = name
-        elif route.startswith("schematics.upload."):
-            suffix = route.split(".")[-1]
-            mapped_route = {
-                "init": "schematic_init",
-                "chunk": "schematic_chunk",
-                "commit": "schematic_commit",
-            }.get(suffix, "schematic_init")
-        elif route == "goal/apply":
-            mapped_route = "goal"
-        elif route == "goal/clear":
-            mapped_route = "goal"
-            params = {"clear": True}
-        elif route.startswith("process/"):
-            parts = route.split("/")
-            if len(parts) == 3:
-                _, proc, action = parts
-                if action == "start":
-                    mapped_route = proc
-                elif action == "stop":
-                    mapped_route = "cancel"
-                elif action == "status":
-                    mapped_route = "get_state"
-                    params = {}
+        replacement = connect(self.host, self.port, timeout=self.timeout)
+        try:
+            replacement.settimeout(min(0.5, self.timeout))
+        except Exception:
+            replacement.close()
+            raise
 
-        return {"command": mapped_route, "params": params}
+        with self._lock:
+            if self._shutdown_event.is_set() or self._socket is not expected_socket:
+                installed = False
+            else:
+                self._socket = replacement
+                installed = True
+        if not installed:
+            replacement.close()
+            return False
+        try:
+            expected_socket.close()
+        except OSError:
+            pass
+        return True
+
+    def _reconnect_after_failure(self, expected_socket, route: str) -> bool:
+        """Best-effort reconnect for a retry-safe read or reader failure."""
+        try:
+            return self._reconnect(expected_socket)
+        except OSError:
+            logger.warning(
+                "Bridge reconnect failed for route %s at %s:%s",
+                route,
+                self.host,
+                self.port,
+                exc_info=True,
+            )
+            return False
     # Read-only routes are safe to re-send verbatim: a duplicated query cannot
     # mutate the world, unlike goto/mine/place/craft commands, which must
     # never be silently replayed. One transient bridge stall (server lag,
     # chunk generation) previously burned a whole phase retry.
-    _READ_ONLY_RETRY_ROUTES = {
-        "get_state",
-        "get_block",
-        "get_view",
-        "get_entities",
-        "get_combat_snapshot",
-        "get_screen",
-        "get_dimension",
-        "get_version",
-        "get_events",
-        "get_death_location",
-        "find_blocks",
-    }
+    _READ_ONLY_RETRY_ROUTES = READ_ONLY_ROUTES
     # Best-effort commands that may time out under bridge lag; they are safe to
     # retry and should never abort the whole mission.
-    _BEST_EFFORT_RETRY_ROUTES = {"close_screen"}
+    _BEST_EFFORT_RETRY_ROUTES = BEST_EFFORT_ROUTES
     _READ_RETRY_ATTEMPTS = 3
     _READ_RETRY_PAUSE_SECONDS = 0.5
     _TRANSIENT_COMMAND_ERRORS = (
@@ -190,22 +165,7 @@ class TcpTransport(Transport):
     )
 
     def dispatch(self, route: str, payload: Dict[str, Any], timeout: Optional[float] = None) -> Dict[str, Any]:
-        traced_command = route in {
-            "goto",
-            "explore",
-            "mine",
-            "cancel",
-            "command/cancel",
-            "place_block",
-            "break_block",
-            "set_fast_break",
-            "craft",
-            "smelt",
-            "open_container",
-            "open_chest",
-            "respawn",
-            "attack",
-        } or route.startswith("process/")
+        traced_command = is_traced_command(route)
         command_id = uuid.uuid4().hex if traced_command else None
         command_started_ns = time.monotonic_ns()
         if traced_command:
@@ -339,7 +299,7 @@ class TcpTransport(Transport):
             self._seq += 1
             seq = self._seq
 
-        bridge_cmd = self._translate_route(route, payload)
+        bridge_cmd = translate_route(route, payload)
         bridge_cmd["id"] = req_id
         bridge_cmd["seq"] = seq
 
@@ -347,14 +307,22 @@ class TcpTransport(Transport):
         with self._lock:
             self._response_queues[req_id] = q
 
+        request_socket = None
+        request_sent = False
         try:
             msg = json.dumps(bridge_cmd) + "\n"
             try:
                 with self._lock:
-                    self._socket.sendall(msg.encode("utf-8"))
-            except Exception:
-                # In unit tests socket may be unusable; that's ok - we rely on mocked responses
-                pass
+                    request_socket = self._socket
+                    request_socket.sendall(msg.encode("utf-8"))
+                    request_sent = True
+            except OSError as exc:
+                if route in self._READ_ONLY_RETRY_ROUTES and request_socket:
+                    self._reconnect_after_failure(request_socket, route)
+                raise TransportError(
+                    f"Failed to send bridge request (route: {route})",
+                    original_error=exc,
+                ) from exc
 
             # Determine effective timeout: prefer per-call timeout if provided,
             # otherwise apply short per-route overrides for non-critical calls.
@@ -389,7 +357,13 @@ class TcpTransport(Transport):
                 return {}
             if route == "get_inventory":
                 return {"inventory": [], "armor": [], "offhand": []}
-            raise TransportError(f"Timeout waiting for bridge response (route: {route})")
+            if route in self._READ_ONLY_RETRY_ROUTES and request_socket:
+                self._reconnect_after_failure(request_socket, route)
+            raise BridgeResponseTimeout(
+                route,
+                transport_type="tcp",
+                request_sent=request_sent,
+            )
         finally:
             with self._lock:
                 self._response_queues.pop(req_id, None)
@@ -412,18 +386,29 @@ class TcpTransport(Transport):
             pass
 
     def _read_loop(self) -> None:
-        # Minimal read loop: tries to read responses from the socket and route them to
-        # waiting queues. If the socket is not connected or reading fails, just sleep.
+        """Route responses and replace sockets that have reached EOF."""
         buffer = ""
         while not self._shutdown_event.is_set():
             try:
+                with self._lock:
+                    active_socket = self._socket
                 try:
-                    chunk = self._socket.recv(4096).decode("utf-8")
+                    chunk = active_socket.recv(4096).decode("utf-8")
                     if not chunk:
+                        if self._shutdown_event.is_set():
+                            break
+                        self._reconnect_after_failure(active_socket, "reader_eof")
+                        buffer = ""
                         time.sleep(0.1)
                         continue
                     buffer += chunk
-                except Exception:
+                except socket.timeout:
+                    continue
+                except OSError:
+                    if self._shutdown_event.is_set():
+                        break
+                    self._reconnect_after_failure(active_socket, "reader_error")
+                    buffer = ""
                     time.sleep(0.1)
                     continue
 
@@ -814,11 +799,15 @@ class WebSocketTransport(Transport):
 
     async def _send_message(self, message: Dict[str, Any]) -> None:
         """Send a message over WebSocket asynchronously."""
-        if self._websocket and self._websocket.open:
-            try:
-                await self._websocket.send(json.dumps(message))
-            except Exception as e:
-                logger.error(f"Failed to send WebSocket message: {e}")
+        if not self._websocket or not self._websocket.open:
+            raise TransportError("WebSocket is not connected")
+        try:
+            await self._websocket.send(json.dumps(message))
+        except Exception as exc:
+            raise TransportError(
+                f"Failed to send WebSocket message: {exc}",
+                original_error=exc,
+            ) from exc
 
     def dispatch(self, route: str, payload: Dict[str, Any], timeout: Optional[float] = None) -> Dict[str, Any]:
         """Dispatch request over WebSocket with sequence tracking."""
@@ -827,6 +816,7 @@ class WebSocketTransport(Transport):
 
         for attempt in range(attempts):
             req_id = None
+            request_sent = False
             try:
                 with self._lock:
                     self._seq += 1
@@ -849,6 +839,7 @@ class WebSocketTransport(Transport):
                 # Send request asynchronously
                 future = asyncio.run_coroutine_threadsafe(self._send_message(req), self._loop)
                 future.result(timeout=1.0)  # Wait for send to complete
+                request_sent = True
 
                 # Wait for response
                 effective_timeout = self.timeout if timeout is None else timeout
@@ -860,7 +851,11 @@ class WebSocketTransport(Transport):
                 return response.get("result", {})
 
             except queue.Empty:
-                last_error = TransportError(f"Timeout waiting for WebSocket response (route: {route})")
+                last_error = BridgeResponseTimeout(
+                    route,
+                    transport_type="websocket",
+                    request_sent=request_sent,
+                )
                 if attempt + 1 < attempts:
                     logger.warning(
                         "Read route %s retryable failure (attempt %d/%d); retrying",
@@ -879,8 +874,13 @@ class WebSocketTransport(Transport):
                     )
                     return {}
                 raise last_error
-            except Exception as e:
-                raise TransportError(f"WebSocket dispatch error: {e}")
+            except (CommandError, TransportError):
+                raise
+            except Exception as exc:
+                raise TransportError(
+                    f"WebSocket dispatch error: {exc}",
+                    original_error=exc,
+                ) from exc
             finally:
                 if req_id is not None:
                     with self._response_lock:

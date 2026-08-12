@@ -95,8 +95,8 @@ def test_healthy_bot_travels_freely():
     assert "goto" in client.transport.routes()
 
 
-def test_missing_telemetry_does_not_block_navigation():
-    """Absent health/food must fail open, not strand every bot."""
+def test_missing_telemetry_blocks_navigation():
+    """Absent safety telemetry must fail closed before movement begins."""
 
     class BlankTransport(NavTransport):
         def dispatch(self, route, payload=None, **_kwargs):
@@ -109,4 +109,4 @@ def test_missing_telemetry_does_not_block_navigation():
 
     navigation.goto(client, 300, 64, 0, timeout=1)
 
-    assert "goto" in client.transport.routes()
+    assert "goto" not in client.transport.routes()
