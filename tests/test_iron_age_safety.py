@@ -1421,7 +1421,11 @@ def test_phase_retry_rechecks_initial_iron_storage(monkeypatch):
             observed.append(handler._initial_iron_supplies_withdrawn)
             return True
 
-    monkeypatch.setattr(iron_age, "SequentialTask", CapturingSequence)
+    monkeypatch.setattr(
+        iron_age.iron_age_progress,
+        "SequentialTask",
+        CapturingSequence,
+    )
 
     assert handler.execute(
         SimpleNamespace(),
@@ -1518,6 +1522,107 @@ def test_deep_haul_skips_replayed_pre_descent_workstation_tasks(monkeypatch):
     assert handler._smelt_iron(client)
     assert handler._craft_essential_iron(client)
     assert handler._ensure_expedition_pickaxe(client)
+
+
+def test_subterranean_retry_resumes_after_persisted_task_boundary(monkeypatch):
+    """A1Bot's live retry must not build a furnace at the shaft bottom."""
+    captured = {}
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                return {
+                    "block_position": {"x": -437, "y": 4, "z": 14},
+                    "health": 20,
+                    "food_level": 20,
+                }
+            return {}
+
+    class FakeState:
+        def __init__(self):
+            self.custom_data = {}
+            self.saved = []
+            self.position = None
+
+        def update_position(self, x, y, z):
+            self.position = (x, y, z)
+
+        def save_checkpoint(self, inventory):
+            self.saved.append(dict(inventory))
+
+    class FakeResources:
+        def refresh_inventory(self):
+            return {
+                "minecraft:iron_ingot": 17,
+                "minecraft:raw_iron": 11,
+                "minecraft:iron_pickaxe": 1,
+                "minecraft:bucket": 1,
+            }
+
+    class CapturingSequence:
+        def __init__(self, _name, tasks):
+            captured["tasks"] = [task.name for task in tasks]
+
+        def run(self, _client):
+            return iron_age.TaskResult.ok()
+
+    counts = {
+        "minecraft:iron_ingot": 17,
+        "minecraft:raw_iron": 11,
+        "minecraft:iron_pickaxe": 1,
+        "minecraft:bucket": 1,
+    }
+    monkeypatch.setattr(
+        iron_age.iron_age_progress,
+        "count_item",
+        lambda _client, item_id: counts.get(item_id, 0),
+    )
+    monkeypatch.setattr(
+        iron_age.iron_age_progress,
+        "remaining_pickaxe_durability",
+        lambda *_args, **_kwargs: 136,
+    )
+    monkeypatch.setattr(
+        iron_age.iron_age_progress,
+        "SequentialTask",
+        CapturingSequence,
+    )
+
+    state = FakeState()
+    result = iron_age.FoodAndIronHandler().execute(
+        SimpleNamespace(transport=Transport()),
+        FakeResources(),
+        state,
+    )
+
+    assert result.success
+    assert state.custom_data["food_and_iron_stage"]["stage"] == "deep_mining"
+    assert state.custom_data["food_and_iron_stage"]["inferred_from_live_descent"]
+    assert state.position == (-437.0, 4.0, 14.0)
+    assert state.saved
+    assert "Smelt iron ingots" not in captured["tasks"]
+    assert "Bank starter iron before deep expedition" not in captured["tasks"]
+    assert "Carry deep-mining workstation" not in captured["tasks"]
+    assert "Dig to diamond level Y-58" in captured["tasks"]
+
+
+def test_fresh_descent_carries_repair_workstation(monkeypatch):
+    crafted = []
+    monkeypatch.setattr(
+        iron_age.iron_age_progress,
+        "count_item",
+        lambda *_args: 0,
+    )
+    monkeypatch.setattr(
+        iron_age.iron_age_progress,
+        "craft",
+        lambda _client, item_id, count: crafted.append((item_id, count)) or True,
+    )
+
+    assert iron_age.iron_age_progress.carry_deep_mining_workstation(
+        SimpleNamespace()
+    )
+    assert crafted == [("minecraft:crafting_table", 1)]
 
 
 def test_forced_smelt_uses_verified_nearby_furnace_without_crafting_furnace(monkeypatch):
@@ -1692,8 +1797,7 @@ def test_protected_smelting_return_skips_after_pick_breaks_on_deep_haul(monkeypa
 
 
 def test_food_and_iron_banks_excess_before_first_smelting():
-    handler = iron_age.FoodAndIronHandler()
-    source = inspect.getsource(handler.execute)
+    source = inspect.getsource(iron_age.iron_age_progress.build_phase_tasks)
 
     assert source.index("Deposit bulky excess before smelting") < source.index(
         'ActionTask("Smelt iron ingots"'
