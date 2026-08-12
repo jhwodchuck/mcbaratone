@@ -27,6 +27,15 @@ class AttackEntityCommandHandlerTest {
     }
 
     @Test
+    void rejectsTargetsThatWouldProduceInvalidAttackPackets() {
+        assertFalse(AttackEntityCommandHandler.isValidAttackTarget(true, false, true, true));
+        assertFalse(AttackEntityCommandHandler.isValidAttackTarget(false, true, true, true));
+        assertFalse(AttackEntityCommandHandler.isValidAttackTarget(false, false, false, true));
+        assertFalse(AttackEntityCommandHandler.isValidAttackTarget(false, false, true, false));
+        assertTrue(AttackEntityCommandHandler.isValidAttackTarget(false, false, true, true));
+    }
+
+    @Test
     void rejectsMissingEntityBeforeSchedulingMinecraftWork() throws Exception {
         CommandResult result = new AttackEntityCommandHandler().handle(
             new JsonObject(),

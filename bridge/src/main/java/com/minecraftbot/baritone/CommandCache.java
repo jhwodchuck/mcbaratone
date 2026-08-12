@@ -37,10 +37,10 @@ public class CommandCache {
     private final long defaultTtlMs;
     private final ScheduledExecutorService cleanupExecutor;
 
-    // Commands that are considered idempotent and safe to cache
-    private static final Set<String> IDEMPOTENT_COMMANDS = Set.of(
-        "get_inventory", "get_screen", "get_events", "get_dimension", "get_version",
-        "get_death_location", "get_view", "get_recipes", "state"
+    // Cache only immutable bridge metadata. Live observations and event polls
+    // must always reflect the current client tick and must never be replayed.
+    private static final Set<String> CACHEABLE_COMMANDS = Set.of(
+        "get_version", "get_recipes"
     );
 
     // Default configuration
@@ -69,7 +69,7 @@ public class CommandCache {
      * Check if a command is idempotent and can be cached.
      */
     public boolean isIdempotentCommand(String command) {
-        return IDEMPOTENT_COMMANDS.contains(command);
+        return CACHEABLE_COMMANDS.contains(command);
     }
 
     /**

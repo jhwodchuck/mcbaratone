@@ -13,19 +13,22 @@
     },
     "license": "LGPL-3.0",
     "icon": "assets/modid/icon.png",
-    "environment": "*",
+    "environment": "client",
     "entrypoints": {
         "main": [
             "com.minecraftbot.baritone.BaritoneAPIBridge"
         ]
     },
-    "mixins": [],
+    "mixins": [
+        "baritone-api-bridge.mixins.json"
+    ],
     "accessWidener": "baritone-api-bridge.accesswidener",
     "depends": {
         "fabricloader": ">=0.19.3",
         "minecraft": "26.2",
         "java": ">=25",
-        "fabric-api": "*"
+        "fabric-api": "*",
+        "baritone": "=1.15.0-9-gd93f1582"
     },
     "suggests": {
         "another-mod": "*"

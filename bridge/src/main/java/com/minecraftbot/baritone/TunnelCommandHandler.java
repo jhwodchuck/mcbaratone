@@ -3,17 +3,16 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import baritone.api.pathing.goals.GoalBlock;
 import baritone.api.pathing.goals.GoalNear;
-import baritone.api.utils.BlockOptionalMeta;
-import baritone.api.utils.BlockOptionalMetaLookup;
 import com.google.gson.JsonObject;
 import java.net.Socket;
+import java.util.concurrent.CompletableFuture;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 
 /**
  * Handler for the tunnel command - starts tunnel mining.
  */
-public class TunnelCommandHandler extends AbstractCommandHandler {
+public class TunnelCommandHandler extends AsyncCommandHandler {
 
     @Override
     public String getCommandName() {
@@ -21,9 +20,11 @@ public class TunnelCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> execute(
+            JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         if (client.player == null) {
-            return CommandResult.error("Player not available");
+            return CompletableFuture.completedFuture(
+                CommandResult.error("Player not available"));
         }
 
         int x = params.has("x") ? params.get("x").getAsInt() : 0;
@@ -31,40 +32,28 @@ public class TunnelCommandHandler extends AbstractCommandHandler {
         int z = params.has("z") ? params.get("z").getAsInt() : 0;
         int radius = params.has("radius") ? params.get("radius").getAsInt() : 1;
 
-        JsonObject data = new JsonObject();
-
         try {
-            // Set up mining for common tunnel blocks
-            BlockOptionalMetaLookup blocksToMine = new BlockOptionalMetaLookup(
-                new BlockOptionalMeta("stone"),
-                new BlockOptionalMeta("cobblestone"),
-                new BlockOptionalMeta("dirt"),
-                new BlockOptionalMeta("gravel"),
-                new BlockOptionalMeta("andesite"),
-                new BlockOptionalMeta("diorite"),
-                new BlockOptionalMeta("granite")
-            );
-
-            // Start mining these blocks
-            executeOnMainThread(client, () -> baritone.getMineProcess().mine(0, blocksToMine));
-
-            // Set goal to tunnel destination
             BlockPos targetPos = new BlockPos(x, y, z);
-            executeOnMainThread(client, () -> {
+            return executeOnMainThread(client, () -> {
                 if (radius > 1) {
                     baritone.getCustomGoalProcess().setGoalAndPath(new GoalNear(targetPos, radius));
                 } else {
                     baritone.getCustomGoalProcess().setGoalAndPath(new GoalBlock(targetPos));
                 }
+                JsonObject data = new JsonObject();
+                data.addProperty("started", true);
+                data.addProperty("accepted", true);
+                data.addProperty("applied", true);
+                data.addProperty("target_x", x);
+                data.addProperty("target_y", y);
+                data.addProperty("target_z", z);
+                data.addProperty("radius", radius);
+                data.addProperty("note", "Tunnel path applied; Baritone may break route obstructions");
+                if (client.level != null) {
+                    data.addProperty("applied_tick", client.level.getGameTime());
+                }
+                return CommandResult.success(data);
             });
-
-            data.addProperty("started", true);
-            data.addProperty("target_x", x);
-            data.addProperty("target_y", y);
-            data.addProperty("target_z", z);
-            data.addProperty("radius", radius);
-            data.addProperty("note", "Tunnel started - mining common blocks while pathing to target");
-
         } catch (Exception e) {
             logger.error("Error starting tunnel", e);
             // Fallback to chat command
@@ -73,12 +62,16 @@ public class TunnelCommandHandler extends AbstractCommandHandler {
                 tunnelCommand += " " + params.get("width").getAsInt();
             }
             final String finalCmd = tunnelCommand;
-            executeOnMainThread(client, () -> client.player.connection.sendChat(finalCmd));
-            data.addProperty("sent", true);
-            data.addProperty("command", tunnelCommand);
-            data.addProperty("note", "Using chat command fallback due to error: " + e.getMessage());
+            return executeOnMainThread(client, () -> {
+                client.player.connection.sendChat(finalCmd);
+                JsonObject data = new JsonObject();
+                data.addProperty("sent", true);
+                data.addProperty("accepted", true);
+                data.addProperty("applied", true);
+                data.addProperty("command", finalCmd);
+                data.addProperty("note", "Using chat command fallback due to error: " + e.getMessage());
+                return CommandResult.success(data);
+            });
         }
-
-        return CommandResult.success(data);
     }
 }

@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
 
 /**
@@ -33,6 +34,8 @@ public class EventManager {
     // Statistics
     private final AtomicInteger totalEventsProcessed = new AtomicInteger(0);
     private final AtomicInteger eventsDropped = new AtomicInteger(0);
+    private final AtomicLong nextEventSequence = new AtomicLong(0);
+    private final AtomicLong droppedBeforeSequence = new AtomicLong(0);
 
     /**
      * Event types supported by the system
@@ -92,8 +95,14 @@ public class EventManager {
         private final long timestamp;
         private final Priority priority;
         private final String source;
+        private final long sequence;
 
         public Event(String type, JsonObject data, Priority priority, String source) {
+            this(0L, type, data, priority, source);
+        }
+
+        public Event(long sequence, String type, JsonObject data, Priority priority, String source) {
+            this.sequence = sequence;
             this.type = type;
             this.data = data != null ? data : new JsonObject();
             this.timestamp = System.currentTimeMillis();
@@ -106,6 +115,7 @@ public class EventManager {
         public long getTimestamp() { return timestamp; }
         public Priority getPriority() { return priority; }
         public String getSource() { return source; }
+        public long getSequence() { return sequence; }
 
         public boolean isExpired(long ttlMs) {
             return System.currentTimeMillis() - timestamp > ttlMs;
@@ -191,20 +201,24 @@ public class EventManager {
             return;
         }
 
-        Event event = new Event(type, data, priority, source);
-
         // Add to buffer with size management
+        Event event;
         synchronized (eventBuffer) {
             // Clean expired events first
             cleanupExpiredEvents();
 
-            // Add new event
+            // Sequence allocation and append are one critical section so
+            // concurrent publishers cannot expose out-of-order cursors.
+            event = new Event(
+                    nextEventSequence.incrementAndGet(), type, data, priority, source);
             eventBuffer.addLast(event);
 
             // Trim buffer if too large (remove oldest)
             while (eventBuffer.size() > maxBufferSize) {
                 Event removed = eventBuffer.removeFirst();
                 eventsDropped.incrementAndGet();
+                droppedBeforeSequence.accumulateAndGet(
+                        removed.getSequence(), Math::max);
                 LOGGER.debug("Dropped expired event due to buffer size limit: {}", removed);
             }
         }
@@ -328,6 +342,10 @@ public class EventManager {
                 if (filter == null || filter.test(event)) {
                     result.add(event);
                     iterator.remove(); // Remove from buffer when polled
+                    // Legacy drain mode makes this sequence unavailable to
+                    // independent cursor readers. Advertise that loss.
+                    droppedBeforeSequence.accumulateAndGet(
+                            event.getSequence(), Math::max);
                 }
             }
         }
@@ -368,6 +386,35 @@ public class EventManager {
         return result;
     }
 
+    /** Return a non-destructive, sequence-based event page for one consumer. */
+    public List<Event> getEventsAfter(long afterSequence, String type, int limit) {
+        int boundedLimit = Math.max(1, Math.min(limit, 1000));
+        List<Event> result = new ArrayList<>();
+        synchronized (eventBuffer) {
+            cleanupExpiredEvents();
+            for (Event event : eventBuffer) {
+                if (event.getSequence() <= afterSequence) continue;
+                if (type != null && !type.equals(event.getType())) continue;
+                result.add(event);
+                if (result.size() >= boundedLimit) break;
+            }
+        }
+        return result;
+    }
+
+    public long getLatestSequence() {
+        return nextEventSequence.get();
+    }
+
+    public long getOldestSequence() {
+        Event first = eventBuffer.peekFirst();
+        return first == null ? nextEventSequence.get() + 1 : first.getSequence();
+    }
+
+    public long getDroppedBeforeSequence() {
+        return droppedBeforeSequence.get();
+    }
+
     // Utility methods
 
     /**
@@ -376,6 +423,11 @@ public class EventManager {
     public void clearBuffer() {
         synchronized (eventBuffer) {
             int cleared = eventBuffer.size();
+            Event last = eventBuffer.peekLast();
+            if (last != null) {
+                droppedBeforeSequence.accumulateAndGet(
+                        last.getSequence(), Math::max);
+            }
             eventBuffer.clear();
             LOGGER.debug("Cleared {} events from buffer", cleared);
         }
@@ -391,6 +443,9 @@ public class EventManager {
         stats.addProperty("ttl_ms", ttlMs);
         stats.addProperty("total_events_processed", totalEventsProcessed.get());
         stats.addProperty("events_dropped", eventsDropped.get());
+        stats.addProperty("oldest_seq", getOldestSequence());
+        stats.addProperty("latest_seq", getLatestSequence());
+        stats.addProperty("dropped_before_seq", getDroppedBeforeSequence());
         stats.addProperty("global_listeners", globalListeners.size());
 
         JsonObject typeListeners = new JsonObject();
@@ -406,7 +461,16 @@ public class EventManager {
 
     private void cleanupExpiredEvents() {
         synchronized (eventBuffer) {
-            eventBuffer.removeIf(event -> event.isExpired(ttlMs));
+            Iterator<Event> iterator = eventBuffer.iterator();
+            while (iterator.hasNext()) {
+                Event event = iterator.next();
+                if (event.isExpired(ttlMs)) {
+                    iterator.remove();
+                    eventsDropped.incrementAndGet();
+                    droppedBeforeSequence.accumulateAndGet(
+                            event.getSequence(), Math::max);
+                }
+            }
         }
     }
 

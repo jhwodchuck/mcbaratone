@@ -40,11 +40,18 @@ public class GetEventsCommandHandler extends AbstractCommandHandler {
             return CommandResult.error("EventManager not initialized");
         }
 
-        List<EventManager.Event> polledEvents = eventManager.pollEvents();
+        boolean cursorMode = params.has("after_seq");
+        long afterSequence = cursorMode ? params.get("after_seq").getAsLong() : -1L;
+        String type = params.has("type") ? params.get("type").getAsString() : null;
+        int limit = params.has("limit") ? params.get("limit").getAsInt() : 250;
+        List<EventManager.Event> polledEvents = cursorMode
+            ? eventManager.getEventsAfter(afterSequence, type, limit)
+            : (type == null ? eventManager.pollEvents() : eventManager.pollEvents(type));
         JsonArray events = new JsonArray();
 
         for (EventManager.Event event : polledEvents) {
             JsonObject eventJson = new JsonObject();
+            eventJson.addProperty("event_seq", event.getSequence());
             eventJson.addProperty("type", event.getType());
             eventJson.addProperty("timestamp", event.getTimestamp());
             eventJson.add("data", event.getData());
@@ -56,6 +63,16 @@ public class GetEventsCommandHandler extends AbstractCommandHandler {
         JsonObject data = new JsonObject();
         data.add("events", events);
         data.addProperty("count", events.size());
+        data.addProperty("cursor_mode", cursorMode);
+        data.addProperty("oldest_seq", eventManager.getOldestSequence());
+        data.addProperty("latest_seq", eventManager.getLatestSequence());
+        data.addProperty("dropped_before_seq", eventManager.getDroppedBeforeSequence());
+        if (cursorMode) {
+            data.addProperty("after_seq", afterSequence);
+            data.addProperty(
+                "gap_detected",
+                afterSequence < eventManager.getDroppedBeforeSequence());
+        }
         return CommandResult.success(data);
     }
 

@@ -13,6 +13,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 import net.minecraft.client.Minecraft;
 import java.util.concurrent.TimeUnit;
 import java.util.Comparator;
@@ -78,11 +79,28 @@ public class CommandDispatcher {
     // Commands that change state and should invalidate cache
     private static final Set<String> STATE_CHANGING_COMMANDS = Set.of(
         "goto", "mine", "build", "explore", "stop", "pause", "cancel",
-        "goal", "path", "tunnel", "farm", "interact_block", "attack_entity",
+        "goal", "path", "tunnel", "farm", "interact_block", "attack_entity", "sel",
         "use_item", "place_block", "break_block", "throw_item", "select_slot",
         "equip", "inventory_click", "chat", "set_fast_break",
         "settings", "smelt_items", "craft", "auto_craft", "craft_advanced", "click_recipe",
-        "place_fire", "respawn", "screenshot"
+        "place_fire", "place_recipe", "respawn", "screenshot",
+        "come", "follow", "look", "look_at", "attack_block", "dig_block",
+        "select_trade", "entity_interact", "entity_transport", "advanced_goal",
+        "sequence", "axis", "strip", "quarry", "tunnel_wide", "place_torches",
+        "mission", "close_screen", "schematic_init", "schematic_chunk",
+        "schematic_commit", "upload_cancel"
+    );
+
+    private static final Set<String> READ_ONLY_COMMANDS = Set.of(
+        "get_inventory", "get_state", "get_entities", "get_combat_snapshot",
+        "get_player_pos", "scan_biomes", "inspect_build_site", "get_block",
+        "get_recipes", "find_blocks", "get_view", "get_version", "get_events",
+        "get_screen", "get_dimension", "get_death_location", "upload_progress",
+        "upload_list", "upload_stats"
+    );
+
+    private static final Set<String> CIRCUIT_BYPASS_COMMANDS = Set.of(
+        "cancel", "stop", "pause", "debug_reset_circuit"
     );
 
     public CommandDispatcher(MissionController missionController, LegacyCommandHandler legacyHandler) {
@@ -190,12 +208,17 @@ public class CommandDispatcher {
                 params.addProperty("action", "entities");
             } else if ("get_combat_snapshot".equals(command) && !params.has("action")) {
                 params.addProperty("action", "combat_snapshot");
+            } else if (("come".equals(command) || "follow".equals(command))
+                    && !params.has("action")) {
+                params.addProperty("action", command);
             }
 
             logger.debug("Dispatching command: {}", command);
 
             // Circuit breaker check
-            if (!circuitBreaker.allowRequest()) {
+            if (!READ_ONLY_COMMANDS.contains(command)
+                    && !CIRCUIT_BYPASS_COMMANDS.contains(command)
+                    && !circuitBreaker.allowRequest()) {
                 logger.warn("Circuit breaker is OPEN, rejecting command: {}", command);
                 CommandResult result = CommandResult.error("Service temporarily unavailable (circuit breaker open)");
                 metricsCollector.recordCommandExecution(command, false, System.currentTimeMillis() - startTime);
@@ -272,11 +295,12 @@ public class CommandDispatcher {
                 commandCache.put(command, params, result);
             }
 
-            // Record circuit breaker success/failure
+            // A normal command rejection (invalid parameters, no path, missing
+            // resources, occupied block, etc.) is not an infrastructure
+            // outage. Only unexpected dispatch exceptions count as circuit
+            // failures; successful calls continue to close/recover the circuit.
             if (result.isSuccess()) {
                 circuitBreaker.recordSuccess();
-            } else {
-                circuitBreaker.recordFailure();
             }
 
             // Record metrics
@@ -464,11 +488,11 @@ public class CommandDispatcher {
     private CommandResult executeWithTimeoutAndRetry(CommandHandler handler, JsonObject params,
             Minecraft client, IBaritone baritone, Socket clientSocket, long startTime, String commandName) {
 
-        // Execute with retry logic
-        return retryHandler.executeWithRetry(() -> {
+        Supplier<CommandResult> operation = () -> {
+            CompletableFuture<CommandResult> future = null;
             try {
                 // Execute handler asynchronously and wait for completion with timeout
-                CompletableFuture<CommandResult> future = handler.handle(params, client, baritone, clientSocket);
+                future = handler.handle(params, client, baritone, clientSocket);
 
                 // Calculate remaining timeout
                 long remainingTimeout = Math.max(1, COMMAND_TIMEOUT_MS - (System.currentTimeMillis() - startTime));
@@ -485,6 +509,9 @@ public class CommandDispatcher {
 
                 return result;
             } catch (java.util.concurrent.TimeoutException e) {
+                if (future != null) {
+                    future.cancel(true);
+                }
                 throw new RuntimeException("Command execution timed out for handler: " + handler.getCommandName(), e);
             } catch (java.util.concurrent.ExecutionException e) {
                 throw new RuntimeException("Command execution failed for handler: " + handler.getCommandName(), e.getCause());
@@ -492,7 +519,16 @@ public class CommandDispatcher {
                 Thread.currentThread().interrupt();
                 throw new RuntimeException("Command execution was interrupted for handler: " + handler.getCommandName(), e);
             }
-        }, "command:" + commandName);
+        };
+
+        // Retry only commands explicitly classified as read-only. Treat every
+        // unknown or future route as a possible mutation so additions fail
+        // safe instead of being replayed after an uncertain timeout.
+        if (!READ_ONLY_COMMANDS.contains(commandName)
+                || "get_events".equals(commandName)) {
+            return operation.get();
+        }
+        return retryHandler.executeWithRetry(operation, "command:" + commandName);
     }
 
 

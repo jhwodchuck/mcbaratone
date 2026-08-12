@@ -107,6 +107,12 @@ public abstract class AbstractBaseCommandHandler implements CommandHandler {
         CompletableFuture<CommandResult> future = new CompletableFuture<>();
         if (client != null) {
             client.execute(() -> {
+                // A dispatcher timeout cancels the future. If the client thread
+                // has not started the task yet, do not apply a mutation after
+                // the caller has already received an uncertain timeout.
+                if (future.isDone()) {
+                    return;
+                }
                 try {
                     future.complete(task.get());
                 } catch (Exception e) {

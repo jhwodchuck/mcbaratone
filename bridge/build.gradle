@@ -132,6 +132,17 @@ tasks.register("verifyBridgeJarContents") {
                 "Bridge JAR is missing baritone-api-bridge.accesswidener"
             )
         }
+        def mixinConfig = zipTree(bridgeJar).matching {
+            include "baritone-api-bridge.mixins.json"
+        }
+        def mixinClass = zipTree(bridgeJar).matching {
+            include "com/minecraftbot/baritone/mixin/BlockOptionalMetaMixin.class"
+        }
+        if (mixinConfig.isEmpty() || mixinClass.isEmpty()) {
+            throw new GradleException(
+                "Bridge JAR is missing the required client-safe Baritone mixin"
+            )
+        }
     }
 }
 

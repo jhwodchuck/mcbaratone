@@ -26,6 +26,7 @@ public class RequestProcessor {
     private static final Gson GSON = new Gson();
     
     private final AtomicLong sequenceNumber = new AtomicLong(0);
+    private final String sessionId = GetVersionCommandHandler.getBridgeInstanceId();
     private final CommandDispatcher commandDispatcher;
     private final Supplier<IBaritone> baritoneSupplier;
     private final Supplier<Minecraft> clientSupplier;
@@ -156,13 +157,9 @@ public class RequestProcessor {
             // Dispatch through the command dispatcher
             CommandResult result = commandDispatcher.dispatchCommand(request, clientSocket, client, baritone);
             
-            // Convert CommandResult to JsonObject response
-            if (result.isSuccess()) {
-                response.addProperty("status", "ok");
-                response.add("data", result.getData());
-            } else {
-                response.addProperty("status", "error");
-                response.addProperty("error", result.getErrorMessage());
+            // Preserve the full CommandResult contract, including typed errors.
+            for (var entry : result.toJson().entrySet()) {
+                response.add(entry.getKey(), entry.getValue());
             }
             
         } catch (Exception e) {
@@ -182,8 +179,15 @@ public class RequestProcessor {
      */
     private JsonObject createResponseEnvelope(JsonObject request) {
         JsonObject response = new JsonObject();
-        response.addProperty("seq", sequenceNumber.incrementAndGet());
+        long serverSeq = sequenceNumber.incrementAndGet();
+        response.addProperty("seq", serverSeq);
+        response.addProperty("server_seq", serverSeq);
+        response.addProperty("bridge_session_id", sessionId);
         response.addProperty("timestamp", System.currentTimeMillis());
+
+        if (request != null && request.has("seq")) {
+            response.add("request_seq", request.get("seq"));
+        }
         
         String id = request != null && request.has("id") ? request.get("id").getAsString() : null;
         response.addProperty("id", id);
@@ -200,7 +204,10 @@ public class RequestProcessor {
      */
     public JsonObject createErrorResponse(String error, String requestId) {
         JsonObject response = new JsonObject();
-        response.addProperty("seq", sequenceNumber.incrementAndGet());
+        long serverSeq = sequenceNumber.incrementAndGet();
+        response.addProperty("seq", serverSeq);
+        response.addProperty("server_seq", serverSeq);
+        response.addProperty("bridge_session_id", sessionId);
         response.addProperty("timestamp", System.currentTimeMillis());
         response.addProperty("id", requestId);
         response.addProperty("status", "error");
@@ -217,7 +224,10 @@ public class RequestProcessor {
      */
     public JsonObject createSuccessResponse(JsonObject data, String requestId) {
         JsonObject response = new JsonObject();
-        response.addProperty("seq", sequenceNumber.incrementAndGet());
+        long serverSeq = sequenceNumber.incrementAndGet();
+        response.addProperty("seq", serverSeq);
+        response.addProperty("server_seq", serverSeq);
+        response.addProperty("bridge_session_id", sessionId);
         response.addProperty("timestamp", System.currentTimeMillis());
         response.addProperty("id", requestId);
         response.addProperty("status", "ok");

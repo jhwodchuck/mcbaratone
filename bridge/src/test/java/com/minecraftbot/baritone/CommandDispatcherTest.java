@@ -136,6 +136,26 @@ public class CommandDispatcherTest {
     }
 
     @Test
+    void stateChangingCommandIsNotRetriedAfterUncertainFailure() {
+        JsonObject request = new JsonObject();
+        request.addProperty("command", "respawn");
+        JsonObject params = new JsonObject();
+        request.add("params", params);
+        when(mockCommandHandler.getCommandName()).thenReturn("respawn");
+        when(mockCommandHandler.handle(params, mockClient, mockBaritone, mockSocket))
+            .thenReturn(CompletableFuture.failedFuture(
+                new IllegalStateException("uncertain mutation outcome")));
+        CommandHandlerFactory.registerHandlerInstance("respawn", mockCommandHandler);
+
+        CommandResult result = dispatcher.dispatchCommand(
+            request, mockSocket, mockClient, mockBaritone);
+
+        assertFalse(result.isSuccess());
+        verify(mockCommandHandler, times(1))
+            .handle(params, mockClient, mockBaritone, mockSocket);
+    }
+
+    @Test
     void testDispatchCommand_NoHandlerFound_ShouldFallbackToLegacy() {
         JsonObject request = new JsonObject();
         request.addProperty("command", "unknown_command");

@@ -176,6 +176,9 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
         // otherwise-valid craft appear to produce air.
         CompletableFuture<CommandResult> result = new CompletableFuture<>();
         client.execute(() -> {
+            if (result.isDone()) {
+                return;
+            }
             try {
                 if (client.player == null || client.gameMode == null) {
                     result.complete(CommandResult.error(
