@@ -1,5 +1,5 @@
 plugins {
-    id 'net.fabricmc.fabric-loom' version '1.17-SNAPSHOT'
+    id 'net.fabricmc.fabric-loom' version '1.17.19'
     id 'maven-publish'
     id 'jacoco'
 }
@@ -53,7 +53,7 @@ dependencies {
     // implementation 'com.goebl:david-webb:0.9'
 
     // Local Baritone API
-    // We expect the user to put baritone-api-fabric-*.jar in the 'libs' folder
+    // The exact API JAR is tracked and verified by scripts/check_repository_hygiene.py.
     implementation files('libs/baritone-api-fabric-1.15.0-9-gd93f1582.jar')
 
     // WebSocket and networking - include to bundle in JAR (Jar-in-Jar)
@@ -114,9 +114,6 @@ jar {
     // still requires the declared file in the distributable mod JAR.
     from("src/main/resources/baritone-api-bridge.accesswidener")
 
-    from("LICENSE") {
-        rename { "${it}_${project.base.archivesName.get()}" }
-    }
 }
 
 tasks.register("verifyBridgeJarContents") {

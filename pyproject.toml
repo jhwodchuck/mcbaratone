@@ -8,10 +8,9 @@ version = "0.1.0"
 description = "Python facade and optional HTTP client for controlling Baritone"
 authors = [{name = "mcbaratone contributors"}]
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 dependencies = [
@@ -27,7 +26,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
+    "markdown-it-py>=3.0,<5",
+    "pytest>=8.0,<10",
+    "pytest-socket>=0.7.0",
+    "pytest-timeout>=2.3.1",
     "responses>=0.25.0",
 ]
 
@@ -41,6 +43,16 @@ baritone-http-client = "baritone_client.http_cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--strict-markers -m 'not live_readonly and not live_mutating'"
+timeout = 180
+filterwarnings = [
+    "error::pytest.PytestUnraisableExceptionWarning",
+]
+markers = [
+    "offline_slow: offline test with intentional retry or timing coverage",
+    "live_readonly: connects to Minecraft without intending to mutate it",
+    "live_mutating: changes Minecraft or controller state and requires explicit authorization",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

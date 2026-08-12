@@ -27,9 +27,11 @@ def test_iron_phase_stabilizes_low_hunger_before_mining(monkeypatch):
     assert calls == [12]
 
 
-def test_iron_phase_checks_cataloged_food_before_hunting(monkeypatch):
+def test_iron_phase_checks_cataloged_food_before_hunting(monkeypatch, tmp_path):
     handler = iron_age.FoodAndIronHandler()
-    handler.state = SimpleNamespace(custom_data={}, checkpoint_dir="test-run")
+    handler.state = SimpleNamespace(
+        custom_data={}, checkpoint_dir=tmp_path / "controller"
+    )
     calls = []
     monkeypatch.setattr(
         iron_age,
@@ -50,9 +52,11 @@ def test_iron_phase_checks_cataloged_food_before_hunting(monkeypatch):
     assert calls[0][1] == 96.0
 
 
-def test_expedition_pickaxe_restores_banked_iron_tool(monkeypatch):
+def test_expedition_pickaxe_restores_banked_iron_tool(monkeypatch, tmp_path):
     handler = iron_age.FoodAndIronHandler()
-    handler.state = SimpleNamespace(custom_data={}, checkpoint_dir="test-run")
+    handler.state = SimpleNamespace(
+        custom_data={}, checkpoint_dir=tmp_path / "controller"
+    )
     durability = {"value": 0}
     withdrawals = []
     monkeypatch.setattr(
