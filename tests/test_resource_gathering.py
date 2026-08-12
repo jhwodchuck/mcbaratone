@@ -1276,6 +1276,70 @@ def test_wood_gather_resumes_from_verified_dry_shore_without_relocation(monkeypa
     assert len(starts) == 2
 
 
+def test_aquatic_wood_recovery_completes_surface_escape_before_relocation(
+    monkeypatch,
+):
+    from baritone_client.common import surface_recovery, wood_gathering
+
+    class FloodedTransport(RecordingTransport):
+        surfaced = False
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_block":
+                block_y = int(payload["y"])
+                if block_y == 8:
+                    return {"id": "minecraft:stone"}
+                return {
+                    "id": "minecraft:air"
+                    if self.surfaced
+                    else "minecraft:water"
+                }
+            return {}
+
+    transport = FloodedTransport()
+    client = SimpleNamespace(transport=transport)
+    state = {"block_position": {"x": -437, "y": 9, "z": 14}, "health": 20}
+    surface_calls = []
+    starts = []
+    resets = []
+
+    def complete_surface(_client, *, timeout, ensure_alive):
+        surface_calls.append((timeout, ensure_alive))
+        transport.surfaced = True
+        return True
+
+    monkeypatch.setattr(
+        resources,
+        "_read_state_optional",
+        lambda *_args, **_kwargs: state,
+    )
+    monkeypatch.setattr(
+        resources,
+        "_start_mine_process",
+        lambda *_args: starts.append(True),
+    )
+    monkeypatch.setattr(
+        resources,
+        "_relocate_to_dry_stone_terrain",
+        lambda _client: (_ for _ in ()).throw(
+            AssertionError("surface completion should precede relocation")
+        ),
+    )
+    monkeypatch.setattr(surface_recovery, "reach_breathing_air", complete_surface)
+
+    watchdog = SimpleNamespace(reset=lambda value: resets.append(value))
+    assert wood_gathering.recover_after_aquatic_stop(
+        client,
+        wood_gathering.AQUATIC_STOP,
+        quantity=5,
+        movement_watchdogs=(watchdog,),
+    )
+    assert surface_calls and surface_calls[0][0] == 45.0
+    assert starts == [True]
+    assert resets == [state]
+
+
 def test_missing_mining_pickaxe_is_replaced(monkeypatch):
     transport = RecordingTransport()
     client = SimpleNamespace(transport=transport)

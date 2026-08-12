@@ -160,15 +160,44 @@ def recover_after_aquatic_stop(
             "resuming wood gather"
         )
     else:
-        if not api._relocate_to_dry_stone_terrain(client):
+        from .aquatic_survival import head_block_is_water, player_is_in_water
+
+        if player_is_in_water(client, state) or head_block_is_water(client, state):
+            # The normal defense tick uses a short emergency surface window.
+            # Deep flooded mines can make upward progress without reaching dry
+            # footing inside that window. Give the shared surface driver one
+            # bounded completion attempt before asking horizontal navigation
+            # to route from the same submerged cell.
+            from .combat import ensure_alive
+            from .surface_recovery import reach_breathing_air
+
+            reach_breathing_air(
+                client,
+                timeout=45.0,
+                ensure_alive=ensure_alive,
+            )
+            state = api._read_state_optional(
+                client,
+                retries=3,
+                label="Wood gather completed surface recovery",
+            )
+            if state is None:
+                return False
+        if _verified_dry_standing_position(client, state):
+            print(
+                "DEBUG: Bounded surface recovery reached verified dry ground; "
+                "resuming wood gather"
+            )
+        elif not api._relocate_to_dry_stone_terrain(client):
             return False
-        state = api._read_state_optional(
-            client,
-            retries=3,
-            label="Wood gather dry relocation",
-        )
-        if state is None:
-            return False
+        else:
+            state = api._read_state_optional(
+                client,
+                retries=3,
+                label="Wood gather dry relocation",
+            )
+            if state is None:
+                return False
     api._start_mine_process(client, api.LOG_BLOCKS, quantity)
     for watchdog in movement_watchdogs:
         watchdog.reset(state)
