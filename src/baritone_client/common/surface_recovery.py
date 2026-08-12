@@ -168,6 +168,53 @@ def _loaded_two_block_air_level_above(
     return None
 
 
+def _clear_reachable_ascent_obstructions(
+    client: Any,
+    position: tuple[int, int, int],
+    *,
+    target_y: int,
+) -> bool:
+    """Clear solid blocks in the reachable part of a loaded vertical escape."""
+    from .inventory import select_item
+
+    _, origin_y, _ = position
+    breakable = []
+    for block_y in range(origin_y + 1, min(int(target_y), origin_y + 5)):
+        block = (position[0], block_y, position[2])
+        name = _block_name(client, block)
+        if not name:
+            return False
+        if name in _OPEN_PLAYER_BLOCKS or name in _NON_SUPPORT_BLOCKS:
+            continue
+        if name in _UNBREAKABLE_EGRESS_BLOCKS:
+            return False
+        breakable.append(block)
+    if not breakable:
+        return True
+    if not any(
+        select_item(client, pickaxe, allow_swap=True)
+        for pickaxe in (
+            "minecraft:netherite_pickaxe",
+            "minecraft:diamond_pickaxe",
+            "minecraft:iron_pickaxe",
+            "minecraft:stone_pickaxe",
+            "minecraft:wooden_pickaxe",
+        )
+    ):
+        return False
+    for block in reversed(breakable):
+        try:
+            client.transport.dispatch(
+                "break_block",
+                {"x": block[0], "y": block[1], "z": block[2]},
+            )
+        except Exception:
+            return False
+        if not _wait_for_open_block(client, block):
+            return False
+    return True
+
+
 def _start_loaded_column_ascent(
     client: Any,
     position: tuple[int, int, int],
@@ -181,6 +228,12 @@ def _start_loaded_column_ascent(
         else _loaded_breathing_level_above(client, position)
     )
     if target_y is None or target_y <= position[1]:
+        return False
+    if require_stable_support and not _clear_reachable_ascent_obstructions(
+        client,
+        position,
+        target_y=target_y,
+    ):
         return False
     return _start_y_level_ascent(client, target_y)
 
@@ -632,22 +685,18 @@ def reach_breathing_air(
                     not aquatic and _has_stable_support(client, current)
                 ):
                     return True
-                if (
-                    require_stable_support
-                    and not aquatic
-                    and _place_support_below_breathing_position(client, current)
-                ):
-                    print(
-                        "SURVIVAL: stabilized breathing air with carried support "
-                        f"at {current}"
-                    )
-                    return True
                 if require_stable_support and not aquatic:
                     ledge = _excavate_supported_breathing_ledge(client, current)
                     if ledge is not None:
                         print(
                             "SURVIVAL: excavated supported breathing ledge at "
                             f"{ledge}"
+                        )
+                        return True
+                    if _place_support_below_breathing_position(client, current):
+                        print(
+                            "SURVIVAL: stabilized breathing air with carried "
+                            f"support at {current}"
                         )
                         return True
             if current[1] < initial[1] - 2:

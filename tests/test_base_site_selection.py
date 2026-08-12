@@ -420,32 +420,39 @@ def test_stable_loaded_ascent_targets_feet_air_above_water():
     assert ("goal", {"type": "yLevel", "value": 9}) in transport.calls
 
 
-def test_stable_loaded_ascent_skips_one_block_air_gap_below_support():
+def test_stable_loaded_ascent_skips_one_block_air_gap_below_support(monkeypatch):
+    from baritone_client.common import inventory
+
     class Transport:
         def __init__(self):
             self.calls = []
+            self.blocks = {
+                7: "minecraft:air",
+                8: "minecraft:dirt",
+                9: "minecraft:air",
+                10: "minecraft:air",
+            }
 
         def dispatch(self, route, payload):
             self.calls.append((route, payload))
             if route == "get_block":
                 block_y = int(payload["y"])
-                return {
-                    "id": {
-                        7: "minecraft:air",
-                        8: "minecraft:dirt",
-                        9: "minecraft:air",
-                        10: "minecraft:air",
-                    }.get(block_y, "minecraft:water")
-                }
+                return {"id": self.blocks.get(block_y, "minecraft:water")}
+            if route == "break_block":
+                self.blocks[int(payload["y"])] = "minecraft:air"
+                return {"accepted": True}
             return {}
 
     transport = Transport()
+    monkeypatch.setattr(inventory, "select_item", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(surface_recovery.time, "sleep", lambda _seconds: None)
     assert surface_recovery._start_loaded_column_ascent(
         SimpleNamespace(transport=transport),
         (-437, 4, 14),
         require_stable_support=True,
     )
     assert ("goal", {"type": "yLevel", "value": 9}) in transport.calls
+    assert ("break_block", {"x": -437, "y": 8, "z": 14}) in transport.calls
 
 
 def test_stable_surface_places_carried_support_below_air_pocket(monkeypatch):
