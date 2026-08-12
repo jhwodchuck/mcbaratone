@@ -483,6 +483,7 @@ def test_manual_crafting_table_recovers_from_full_inventory(monkeypatch):
     }
 
     screen_reads = {"count": 0}
+    close_requests = {"count": 0}
 
     class Transport:
         def dispatch(self, route, _payload):
@@ -497,6 +498,8 @@ def test_manual_crafting_table_recovers_from_full_inventory(monkeypatch):
                         ],
                     }
                 return {"type": "PlayerScreenHandler", "slots": slots}
+            if route == "close_screen":
+                close_requests["count"] += 1
             return {}
 
     class Context:
@@ -550,6 +553,7 @@ def test_manual_crafting_table_recovers_from_full_inventory(monkeypatch):
 
     assert inventory_ops.craft_crafting_table_manual(Context())
     assert screen_reads["count"] >= 3
+    assert close_requests["count"] == 2
     assert (9, "THROW", 1) in clicks
     assert (0, "QUICK_MOVE", 0) in clicks
 
