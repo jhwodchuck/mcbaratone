@@ -662,7 +662,15 @@ def reach_breathing_air(
     started_at = clock()
     deadline = started_at + max(0.0, timeout)
     highest_y = initial[1]
-    progress_deadline = started_at + min(3.0, max(1.0, timeout * 0.4))
+    if require_stable_support:
+        # Loaded flooded shafts need several seconds to swim a vertical
+        # column before the supported-air-pocket logic can run. The emergency
+        # breathing path keeps its fast fallback; stable recovery can spend a
+        # bounded larger slice of its own timeout on the upward goal.
+        progress_window = min(12.0, max(4.0, timeout * 0.35))
+    else:
+        progress_window = min(3.0, max(1.0, timeout * 0.4))
+    progress_deadline = started_at + progress_window
     try:
         while True:
             now = clock()

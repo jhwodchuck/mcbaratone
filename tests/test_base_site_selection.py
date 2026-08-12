@@ -385,11 +385,11 @@ def test_stable_surface_recovery_continues_past_air_over_water(monkeypatch):
 
     assert surface_recovery.reach_breathing_air(
         SimpleNamespace(transport=transport),
-        timeout=10.0,
+        timeout=20.0,
         ensure_alive=lambda *_args: None,
         require_stable_support=True,
         sleep=lambda _seconds: None,
-        clock=iter((0.0, 0.5, 3.1, 4.0)).__next__,
+        clock=iter((0.0, 0.5, 11.0, 13.0)).__next__,
     )
     assert ("chat", {"message": "#surface"}) in transport.calls
 
