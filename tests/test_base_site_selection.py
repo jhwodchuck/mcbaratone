@@ -297,6 +297,254 @@ def test_breathing_air_reaches_loaded_shore_before_sinking(monkeypatch):
     assert shore_origins == [(4, 60, 4)]
 
 
+def test_loaded_shore_route_does_not_accept_air_over_water(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.states = iter(
+                (
+                    {
+                        "block_position": {"x": -437, "y": 9, "z": 14},
+                        "is_pathing": True,
+                    },
+                    {
+                        "block_position": {"x": -430, "y": 12, "z": 14},
+                        "is_pathing": True,
+                    },
+                )
+            )
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return next(self.states)
+            if route == "get_block":
+                x, y = int(payload["x"]), int(payload["y"])
+                if x == -437 and y == 8:
+                    return {"id": "minecraft:water"}
+                if x == -430 and y == 11:
+                    return {"id": "minecraft:stone"}
+                return {"id": "minecraft:air"}
+            return {}
+
+    transport = Transport()
+    monkeypatch.setattr(
+        surface_recovery,
+        "_loaded_dry_shore_candidates",
+        lambda *_args, **_kwargs: [(-430, 12, 14)],
+    )
+    monkeypatch.setattr(surface_recovery.time, "sleep", lambda _seconds: None)
+
+    reached = surface_recovery._swim_to_loaded_dry_shore(
+        SimpleNamespace(transport=transport),
+        (-437, 4, 14),
+        timeout=5.0,
+    )
+
+    assert reached == (-430, 12, 14)
+    assert transport.calls.count(("cancel", {})) == 2
+
+
+def test_stable_surface_recovery_continues_past_air_over_water(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.states = iter(
+                (
+                    {"block_position": {"x": -437, "y": 4, "z": 14}},
+                    {"block_position": {"x": -437, "y": 8, "z": 14}},
+                    {"block_position": {"x": -437, "y": 8, "z": 14}},
+                    {"block_position": {"x": -430, "y": 12, "z": 14}},
+                )
+            )
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return next(self.states)
+            if route == "get_block":
+                x, y = int(payload["x"]), int(payload["y"])
+                if x == -437 and y == 7:
+                    return {"id": "minecraft:water"}
+                if x == -430 and y == 11:
+                    return {"id": "minecraft:stone"}
+                return {"id": "minecraft:air"}
+            return {}
+
+    transport = Transport()
+    monkeypatch.setattr(
+        surface_recovery,
+        "_swim_to_loaded_dry_shore",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        surface_recovery,
+        "_start_loaded_column_ascent",
+        lambda *_args, **_kwargs: True,
+    )
+
+    assert surface_recovery.reach_breathing_air(
+        SimpleNamespace(transport=transport),
+        timeout=20.0,
+        ensure_alive=lambda *_args: None,
+        require_stable_support=True,
+        sleep=lambda _seconds: None,
+        clock=iter((0.0, 0.5, 11.0, 13.0)).__next__,
+    )
+    assert ("chat", {"message": "#surface"}) in transport.calls
+
+
+def test_stable_loaded_ascent_targets_feet_air_above_water():
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_block":
+                return {
+                    "id": (
+                        "minecraft:water"
+                        if int(payload["y"]) <= 8
+                        else "minecraft:air"
+                    )
+                }
+            return {}
+
+    transport = Transport()
+    assert surface_recovery._start_loaded_column_ascent(
+        SimpleNamespace(transport=transport),
+        (-437, 4, 14),
+        require_stable_support=True,
+    )
+    assert ("goal", {"type": "yLevel", "value": 9}) in transport.calls
+
+
+def test_stable_loaded_ascent_skips_one_block_air_gap_below_support(monkeypatch):
+    from baritone_client.common import inventory
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.blocks = {
+                7: "minecraft:air",
+                8: "minecraft:dirt",
+                9: "minecraft:air",
+                10: "minecraft:air",
+            }
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_block":
+                block_y = int(payload["y"])
+                return {"id": self.blocks.get(block_y, "minecraft:water")}
+            if route == "break_block":
+                self.blocks[int(payload["y"])] = "minecraft:air"
+                return {"accepted": True}
+            return {}
+
+    transport = Transport()
+    monkeypatch.setattr(inventory, "select_item", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(surface_recovery.time, "sleep", lambda _seconds: None)
+    assert surface_recovery._start_loaded_column_ascent(
+        SimpleNamespace(transport=transport),
+        (-437, 4, 14),
+        require_stable_support=True,
+    )
+    assert ("goal", {"type": "yLevel", "value": 9}) in transport.calls
+    assert ("break_block", {"x": -437, "y": 8, "z": 14}) in transport.calls
+
+
+def test_stable_surface_places_carried_support_below_air_pocket(monkeypatch):
+    from baritone_client.common import harness_ops, inventory
+
+    class Transport:
+        supported = False
+
+        def dispatch(self, route, payload):
+            if route == "get_block":
+                return {
+                    "id": (
+                        "minecraft:cobblestone"
+                        if self.supported
+                        else "minecraft:water"
+                    )
+                }
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    placements = []
+    monkeypatch.setattr(
+        inventory,
+        "get_inventory",
+        lambda _client: {"minecraft:cobblestone": 591},
+    )
+    monkeypatch.setattr(inventory, "select_item", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(harness_ops, "available", lambda: True)
+
+    def place(_client, x, y, z, material, allow_break):
+        placements.append((x, y, z, material, allow_break))
+        transport.supported = True
+        return True
+
+    monkeypatch.setattr(harness_ops, "place_block_exact", place)
+
+    assert surface_recovery._place_support_below_breathing_position(
+        client, (-437, 9, 14)
+    )
+    assert placements == [
+        (-437, 8, 14, "minecraft:cobblestone", False)
+    ]
+
+
+def test_stable_surface_excavates_adjacent_supported_ledge(monkeypatch):
+    from baritone_client.common import inventory, navigation
+
+    origin = (-437, 9, 14)
+    target = (-436, 9, 14)
+    blocks = {
+        (-436, 8, 14): "minecraft:stone",
+        target: "minecraft:stone",
+        (-436, 10, 14): "minecraft:stone",
+    }
+    state = {"block_position": {"x": origin[0], "y": origin[1], "z": origin[2]}}
+    calls = []
+
+    class Transport:
+        def dispatch(self, route, payload):
+            calls.append((route, payload))
+            if route == "get_block":
+                position = (int(payload["x"]), int(payload["y"]), int(payload["z"]))
+                return {"id": blocks.get(position, "minecraft:air")}
+            if route == "break_block":
+                position = (int(payload["x"]), int(payload["y"]), int(payload["z"]))
+                blocks[position] = "minecraft:air"
+                return {"accepted": True}
+            if route == "get_state":
+                return state
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    monkeypatch.setattr(inventory, "select_item", lambda *_args, **_kwargs: True)
+
+    def move(_client, x, y, z, **_kwargs):
+        state["block_position"] = {"x": x, "y": y, "z": z}
+        return True
+
+    monkeypatch.setattr(navigation, "goto", move)
+    monkeypatch.setattr(surface_recovery.time, "sleep", lambda _seconds: None)
+
+    assert surface_recovery._excavate_supported_breathing_ledge(
+        client, origin
+    ) == target
+    broken = [payload for route, payload in calls if route == "break_block"]
+    assert broken == [
+        {"x": -436, "y": 10, "z": 14},
+        {"x": -436, "y": 9, "z": 14},
+    ]
+
+
 def test_loaded_shore_candidates_reject_lower_cave_ledges():
     class Transport:
         def dispatch(self, route, payload):

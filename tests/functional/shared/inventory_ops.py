@@ -2167,16 +2167,26 @@ def craft_crafting_table_manual(ctx) -> bool:
     """
     ctx.log_event("Starting manual 2x2 crafting-table sequence...")
     do_close_container(ctx)
-    time.sleep(0.1)
-
-    screen = ctx.client.transport.dispatch("get_screen", {})
-    data = screen.get("data", screen)
-    slots = data.get("slots", [])
-    screen_type = data.get("type", "")
-    if len(slots) < 46 or (
-        "Player" not in screen_type
-        and screen_type not in {"class_1723", "PlayerScreenHandler"}
-    ):
+    screen = {}
+    data = {}
+    slots = []
+    screen_type = ""
+    for _ in range(10):
+        screen = ctx.client.transport.dispatch("get_screen", {})
+        data = screen.get("data", screen)
+        slots = data.get("slots", [])
+        screen_type = data.get("type", "")
+        if len(slots) >= 46 and (
+            "Player" in screen_type
+            or screen_type in {"class_1723", "PlayerScreenHandler"}
+        ):
+            break
+        # A just-finished container interaction can enqueue its open callback
+        # after the first close. Reissue the close only after observing that
+        # stale menu, then leave enough time for the client thread to apply it.
+        ctx.client.transport.dispatch("close_screen", {})
+        time.sleep(0.35)
+    else:
         ctx.log_event(
             f"Manual crafting table failed: expected player 2x2 screen, got {screen_type} ({len(slots)} slots)"
         )
@@ -2308,5 +2318,3 @@ def log_full_status(ctx, prefix: str = "STATUS:"):
         print(status_line)
     except Exception as e:
         print(f"{prefix} Error getting status: {e}")
-
-

@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import StateManager
-from ...common import TaskResult, SequentialTask, ActionTask
+from ...common import TaskResult
 from ...common.tasks import SurvivalRecoveryRequired
 from ...common.resources import (
     _craft_with_table,
@@ -40,7 +40,6 @@ from ...common.inventory import (
 )
 from ...common.navigation import find_nearby_block, goto, staged_goto
 from ...common import harness_ops
-from ...common import base as house_utils
 from ...common.combat import acquire_emergency_food, eat_until_hunger, recover_health
 from ...common.farming import harvest_wheat_farm
 from ...common.husbandry import (
@@ -49,6 +48,7 @@ from ...common.husbandry import (
     visit_known_herd_for_loot,
 )
 from .iron_age_food import persisted_food_source, remember_food_source
+from . import iron_age_progress
 
 class FoodAndIronHandler(PhaseHandler):
     """Phase 2: Iron & Diamond mining - Hour 1-2."""
@@ -91,77 +91,7 @@ class FoodAndIronHandler(PhaseHandler):
         # Each phase attempt must re-read durable storage. Keeping this flag
         # across retries hid iron and tools banked by the previous attempt.
         self._initial_iron_supplies_withdrawn = False
-        tasks = [
-            # Best-effort, non-blocking: if a bed exists and it happens to be
-            # night right now, sleep to anchor the respawn point near base.
-            # A checkpoint resumed here (already past BASE_CONSTRUCTION,
-            # which normally establishes this) may never have gotten the
-            # chance -- deep mining routinely strands the player too far
-            # underground from the surface bed to reach it before dawn, so
-            # without this a death sends the player back to world spawn
-            # instead of near base. Always reports success; establishing the
-            # anchor is a bonus, not a requirement to keep mining.
-            ActionTask(
-                "Opportunistically establish respawn anchor",
-                lambda c: bool(house_utils.try_establish_respawn_anchor_now(c, state)) or True,
-            ),
-            # Do not begin a long mining phase on an empty hunger bar.  This
-            # uses carried food (including emergency rotten flesh) and fails
-            # closed if the bot has no edible reserve.
-            ActionTask("Stabilize hunger", self._stabilize_hunger),
-            # Phase 2a: Get initial iron (Baritone will dig to reach it)
-            ActionTask("Ensure initial mining pickaxe", self._ensure_initial_mining_pickaxe),
-            ActionTask("Mine initial iron (15)", self._mine_initial_iron),  # Creates tunnels naturally!
-            ActionTask(
-                "Return to base for protected smelting",
-                lambda c: self._return_to_base_for_initial_smelting(c, state),
-            ),
-            # Smelting and table crafting both need output slots.  Bank the
-            # conservative excess allowlist while the bot is already beside
-            # its checkpointed home chest instead of dropping stacks later.
-            ActionTask(
-                "Deposit bulky excess before smelting",
-                lambda c: self._deposit_excess_at_home(c, state),
-            ),
-            ActionTask("Smelt iron ingots", self._smelt_iron),
-            ActionTask("Prepare deep-mining tools + bucket", self._craft_essential_iron),
-            ActionTask(
-                "Bank starter iron before deep expedition",
-                lambda c: self._bank_progression_at_home(c, state),
-            ),
-            ActionTask("Establish renewable food source", self._ensure_durable_food),
-            ActionTask(
-                "Equip affordable armor before deep descent",
-                self._equip_affordable_pre_descent_armor,
-            ),
-            ActionTask(
-                "Restore expedition pickaxe",
-                self._ensure_expedition_pickaxe,
-            ),
-            
-            # Phase 2b: Now mine deep diamonds with iron tools
-            ActionTask("Dig to diamond level Y-58", self._dig_staircase),
-            ActionTask("Mine diamonds & remaining iron", self._bulk_mine),
-            ActionTask(
-                "Return to base with mined valuables",
-                lambda c: self._return_to_base(c, state),
-            ),
-            ActionTask(
-                "Withdraw banked iron for equipment crafting",
-                lambda c: self._withdraw_banked_iron(c, state),
-            ),
-            ActionTask("Smelt mined iron", lambda c: self._smelt_iron(c, force=True)),
-            ActionTask("Craft full iron armor", self._craft_iron_armor),
-            ActionTask("Equip and verify iron armor", self._equip_iron_armor),
-            ActionTask("Craft iron tools", self._craft_iron_tools),
-            ActionTask(
-                "Bank progression loot at home",
-                lambda c: self._bank_progression_at_home(c, state),
-            ),
-        ]
-        
-        executor = SequentialTask("Iron & Diamond", tasks)
-        return executor.run(client)
+        return iron_age_progress.run_phase(self, client, resources, state)
 
     def _stabilize_hunger(self, client) -> bool:
         state = self._read_state(client, "Stabilize hunger") or {}
@@ -1174,6 +1104,16 @@ class FoodAndIronHandler(PhaseHandler):
         """Smelt raw iron into ingots using furnace."""
         # Uses imports from file header: ensure_supplies, gather_stone, count_item
 
+        if not force and (
+            self._total_owned(client, "minecraft:diamond") >= 5
+            or iron_age_progress.stage_is_deep_mining(self.state)
+        ):
+            print(
+                "  Deep-mining leg already reached; deferring carried raw "
+                "iron until the post-haul return."
+            )
+            return True
+
         # Check before constructing workshop infrastructure.  On resume the
         # previous run may already have collected every finished ingot.
         current_ingots = count_item(client, "minecraft:iron_ingot")
@@ -1265,6 +1205,12 @@ class FoodAndIronHandler(PhaseHandler):
 
     def _craft_essential_iron(self, client) -> bool:
         """Carry enough iron-pick durability for descent and bulk mining."""
+        if self._total_owned(client, "minecraft:diamond") >= 5:
+            print(
+                "  Deep-mining haul already reached; skipping replay of the "
+                "pre-descent tool reserve."
+            )
+            return True
         mining_pickaxes = [
             "minecraft:stone_pickaxe",
             "minecraft:iron_pickaxe",
@@ -1277,7 +1223,11 @@ class FoodAndIronHandler(PhaseHandler):
         # trapped the phase. One working iron pickaxe (plus the stone backup
         # and the bucket) is enough to begin the descent; the bulk-mining step
         # crafts more picks from mined iron. Require a usable single pick.
-        minimum_durability = 200
+        minimum_durability = (
+            iron_age_progress.DEEP_RESUME_PICK_DURABILITY
+            if iron_age_progress.stage_is_deep_mining(self.state)
+            else 200
+        )
 
         def kit_ready() -> tuple[bool, int]:
             high_tier_picks = sum(
@@ -1344,12 +1294,22 @@ class FoodAndIronHandler(PhaseHandler):
 
     def _ensure_expedition_pickaxe(self, client) -> bool:
         """Restore a banked iron pick before committing to deep mining."""
+        if self._total_owned(client, "minecraft:diamond") >= 5:
+            return True
         mining_pickaxes = [
             "minecraft:iron_pickaxe",
             "minecraft:diamond_pickaxe",
             "minecraft:netherite_pickaxe",
         ]
-        if remaining_pickaxe_durability(client, mining_pickaxes) >= 200:
+        minimum_durability = (
+            iron_age_progress.DEEP_RESUME_PICK_DURABILITY
+            if iron_age_progress.stage_is_deep_mining(self.state)
+            else 200
+        )
+        if (
+            remaining_pickaxe_durability(client, mining_pickaxes)
+            >= minimum_durability
+        ):
             return True
         if self.state is None:
             return False
@@ -1359,7 +1319,10 @@ class FoodAndIronHandler(PhaseHandler):
             state=self.state,
             max_travel_distance=96.0,
         )
-        return remaining_pickaxe_durability(client, mining_pickaxes) >= 200
+        return (
+            remaining_pickaxe_durability(client, mining_pickaxes)
+            >= minimum_durability
+        )
 
     def _equip_affordable_pre_descent_armor(self, client) -> bool:
         """Turn available iron into protection before the hazardous descent."""

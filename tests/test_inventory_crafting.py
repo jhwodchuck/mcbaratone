@@ -204,6 +204,44 @@ def test_crafting_table_uses_manual_grid_before_native_recipe(monkeypatch):
     )
 
 
+def test_crafting_table_gathers_missing_wood_before_manual_grid(monkeypatch):
+    """A resumed bot with two planks must bootstrap a table, not stall."""
+    from baritone_client.common import resources
+
+    transport = FoodAndIronTransport()
+    transport.items = {"minecraft:birch_planks": 2}
+    client = DummyClient(transport)
+    gathered = []
+    monkeypatch.setattr(harness_ops, "available", lambda: True)
+
+    def gather_wood(_client, count=16, **_kwargs):
+        gathered.append(count)
+        transport.items["minecraft:birch_log"] = count
+        return True
+
+    def manual_planks(_client, item_id, output_count):
+        assert item_id == "minecraft:birch_planks"
+        assert output_count == 4
+        transport.items["minecraft:birch_log"] -= 1
+        transport.items[item_id] += 4
+        return True
+
+    def manual_table(_client):
+        assert transport.items["minecraft:birch_planks"] >= 4
+        transport.items["minecraft:birch_planks"] -= 4
+        transport.items["minecraft:crafting_table"] = 1
+        return True
+
+    monkeypatch.setattr(resources, "gather_wood", gather_wood)
+    monkeypatch.setattr(harness_ops, "craft_planks_manual", manual_planks)
+    monkeypatch.setattr(harness_ops, "craft_crafting_table_manual", manual_table)
+
+    assert inventory.craft(client, "minecraft:crafting_table", 1)
+    assert gathered == [1]
+    assert transport.items["minecraft:crafting_table"] == 1
+    assert transport.items["minecraft:birch_planks"] == 2
+
+
 def test_tool_craft_prepares_sticks_before_pickaxe(monkeypatch):
     transport = RecipeAwareTransport()
     client = DummyClient(transport)
@@ -283,7 +321,18 @@ def test_crafting_action_uses_same_tool_dependency_guard(monkeypatch):
 
 
 def test_crafting_table_manual_fallback_does_not_require_existing_table(monkeypatch):
-    transport = DummyTransport()
+    transport = DummyTransport(
+        {
+            "get_inventory": {
+                "status": "ok",
+                "data": {
+                    "inventory": [
+                        {"id": "minecraft:oak_planks", "count": 4, "slot": 9}
+                    ]
+                },
+            }
+        }
+    )
     client = DummyClient(transport)
     monkeypatch.setattr(inventory, "_wait_craft_result", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(harness_ops, "available", lambda: True)

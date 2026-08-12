@@ -6,6 +6,34 @@ from typing import Any, Optional, Sequence
 
 
 AQUATIC_STOP = "after aquatic safety intervention"
+_PASSABLE_DRY_BLOCKS = ("air", "grass", "fern", "flower", "snow", "vine")
+_NON_GROUND_BLOCKS = ("air", "water", "lava", "cave_air", "void_air")
+
+
+def _verified_dry_standing_position(client: Any, state: dict) -> bool:
+    """Require readable dry feet/head blocks and solid support after surfacing."""
+    position = state.get("block_position", state.get("position", {})) or {}
+    if not all(axis in position for axis in ("x", "y", "z")):
+        return False
+    x, y, z = (int(position[axis]) for axis in ("x", "y", "z"))
+    blocks = []
+    for block_y in (y, y + 1, y - 1):
+        try:
+            response = client.transport.dispatch(
+                "get_block", {"x": x, "y": block_y, "z": z}
+            )
+        except Exception:
+            return False
+        block_id = response.get("id", response.get("block")) if response else None
+        if not block_id:
+            return False
+        blocks.append(str(block_id).lower())
+    feet, head, below = blocks
+    return (
+        any(token in feet for token in _PASSABLE_DRY_BLOCKS)
+        and any(token in head for token in _PASSABLE_DRY_BLOCKS)
+        and not any(token in below for token in _NON_GROUND_BLOCKS)
+    )
 
 
 def required_log_count(client: Any, count: int) -> Optional[int]:
@@ -114,18 +142,63 @@ def recover_after_aquatic_stop(
     quantity: int,
     movement_watchdogs: Sequence[Any],
 ) -> bool:
-    """Relocate to verified dry terrain before restarting a wood mine."""
+    """Resume on verified dry ground, otherwise relocate before restarting."""
     from . import resources as api
 
-    if reason != AQUATIC_STOP or not api._relocate_to_dry_stone_terrain(client):
+    if reason != AQUATIC_STOP:
         return False
     state = api._read_state_optional(
         client,
         retries=3,
-        label="Wood gather dry relocation",
+        label="Wood gather post-surface state",
     )
     if state is None:
         return False
+    if _verified_dry_standing_position(client, state):
+        print(
+            "DEBUG: Aquatic defense reached verified dry ground; "
+            "resuming wood gather"
+        )
+    else:
+        from .aquatic_survival import head_block_is_water, player_is_in_water
+
+        if player_is_in_water(client, state) or head_block_is_water(client, state):
+            # The normal defense tick uses a short emergency surface window.
+            # Deep flooded mines can make upward progress without reaching dry
+            # footing inside that window. Give the shared surface driver one
+            # bounded completion attempt before asking horizontal navigation
+            # to route from the same submerged cell.
+            from .combat import ensure_alive
+            from .surface_recovery import reach_breathing_air
+
+            reach_breathing_air(
+                client,
+                timeout=45.0,
+                ensure_alive=ensure_alive,
+                require_stable_support=True,
+            )
+            state = api._read_state_optional(
+                client,
+                retries=3,
+                label="Wood gather completed surface recovery",
+            )
+            if state is None:
+                return False
+        if _verified_dry_standing_position(client, state):
+            print(
+                "DEBUG: Bounded surface recovery reached verified dry ground; "
+                "resuming wood gather"
+            )
+        elif not api._relocate_to_dry_stone_terrain(client):
+            return False
+        else:
+            state = api._read_state_optional(
+                client,
+                retries=3,
+                label="Wood gather dry relocation",
+            )
+            if state is None:
+                return False
     api._start_mine_process(client, api.LOG_BLOCKS, quantity)
     for watchdog in movement_watchdogs:
         watchdog.reset(state)

@@ -25,6 +25,20 @@ _NON_BREATHABLE_BLOCK_TOKENS = (
     "kelp",
     "seagrass",
 )
+_NON_SUPPORT_BLOCKS = {
+    "air",
+    "cave_air",
+    "void_air",
+    "water",
+    "lava",
+    "bubble_column",
+    "kelp",
+    "kelp_plant",
+    "seagrass",
+    "tall_seagrass",
+}
+_OPEN_PLAYER_BLOCKS = {"air", "cave_air", "void_air"}
+_UNBREAKABLE_EGRESS_BLOCKS = {"bedrock", "barrier", "end_portal_frame"}
 
 _AQUATIC_WALKWAY_MATERIALS = (
     "minecraft:dirt",
@@ -91,6 +105,22 @@ def position_is_aquatic(
     return not _block_is_breathable(block)
 
 
+def _has_stable_support(
+    client: Any,
+    position: tuple[int, int, int],
+) -> bool:
+    """Require a readable non-liquid block directly below the player."""
+    try:
+        block = client.transport.dispatch(
+            "get_block",
+            {"x": position[0], "y": position[1] - 1, "z": position[2]},
+        ).get("id", "")
+    except Exception:
+        return False
+    value = str(block).split(":")[-1]
+    return bool(value) and value not in _NON_SUPPORT_BLOCKS
+
+
 def _loaded_breathing_level_above(
     client: Any,
     position: tuple[int, int, int],
@@ -112,13 +142,98 @@ def _loaded_breathing_level_above(
     return None
 
 
+def _loaded_two_block_air_level_above(
+    client: Any,
+    position: tuple[int, int, int],
+    *,
+    scan_height: int = 32,
+) -> Optional[int]:
+    """Return the first loaded feet level with open feet and head blocks."""
+    x, y, z = position
+    for feet_y in range(y + 1, y + max(2, int(scan_height))):
+        try:
+            feet = client.transport.dispatch(
+                "get_block", {"x": x, "y": feet_y, "z": z}
+            ).get("id", "")
+            head = client.transport.dispatch(
+                "get_block", {"x": x, "y": feet_y + 1, "z": z}
+            ).get("id", "")
+        except Exception:
+            return None
+        if (
+            str(feet).split(":")[-1] in _OPEN_PLAYER_BLOCKS
+            and str(head).split(":")[-1] in _OPEN_PLAYER_BLOCKS
+        ):
+            return feet_y
+    return None
+
+
+def _clear_reachable_ascent_obstructions(
+    client: Any,
+    position: tuple[int, int, int],
+    *,
+    target_y: int,
+) -> bool:
+    """Clear solid blocks in the reachable part of a loaded vertical escape."""
+    from .inventory import select_item
+
+    _, origin_y, _ = position
+    breakable = []
+    for block_y in range(origin_y + 1, min(int(target_y), origin_y + 5)):
+        block = (position[0], block_y, position[2])
+        name = _block_name(client, block)
+        if not name:
+            return False
+        if name in _OPEN_PLAYER_BLOCKS or name in _NON_SUPPORT_BLOCKS:
+            continue
+        if name in _UNBREAKABLE_EGRESS_BLOCKS:
+            return False
+        breakable.append(block)
+    if not breakable:
+        return True
+    if not any(
+        select_item(client, pickaxe, allow_swap=True)
+        for pickaxe in (
+            "minecraft:netherite_pickaxe",
+            "minecraft:diamond_pickaxe",
+            "minecraft:iron_pickaxe",
+            "minecraft:stone_pickaxe",
+            "minecraft:wooden_pickaxe",
+        )
+    ):
+        return False
+    for block in reversed(breakable):
+        try:
+            client.transport.dispatch(
+                "break_block",
+                {"x": block[0], "y": block[1], "z": block[2]},
+            )
+        except Exception:
+            return False
+        if not _wait_for_open_block(client, block):
+            return False
+    return True
+
+
 def _start_loaded_column_ascent(
     client: Any,
     position: tuple[int, int, int],
+    *,
+    require_stable_support: bool = False,
 ) -> bool:
     """Prefer an upward-only Y goal when the water surface is already loaded."""
-    target_y = _loaded_breathing_level_above(client, position)
+    target_y = (
+        _loaded_two_block_air_level_above(client, position)
+        if require_stable_support
+        else _loaded_breathing_level_above(client, position)
+    )
     if target_y is None or target_y <= position[1]:
+        return False
+    if require_stable_support and not _clear_reachable_ascent_obstructions(
+        client,
+        position,
+        target_y=target_y,
+    ):
         return False
     return _start_y_level_ascent(client, target_y)
 
@@ -249,6 +364,124 @@ def _walkway_materials(
     return None
 
 
+def _place_support_below_breathing_position(
+    client: Any,
+    position: tuple[int, int, int],
+) -> bool:
+    """Install one carried solid block beneath an unsupported air pocket."""
+    from . import harness_ops
+    from .inventory import get_inventory, select_item
+
+    if _has_stable_support(client, position):
+        return True
+    materials = _walkway_materials(get_inventory(client), required=1)
+    if not materials or not harness_ops.available():
+        return False
+    material = materials[0]
+    if not select_item(client, material, allow_swap=True):
+        return False
+    x, y, z = position
+    if not harness_ops.place_block_exact(
+        client,
+        x,
+        y - 1,
+        z,
+        material,
+        allow_break=False,
+    ):
+        return False
+    return _has_stable_support(client, position)
+
+
+def _block_name(client: Any, position: tuple[int, int, int]) -> str:
+    try:
+        response = client.transport.dispatch(
+            "get_block",
+            {"x": position[0], "y": position[1], "z": position[2]},
+        )
+    except Exception:
+        return ""
+    value = response.get("id", response.get("block")) if response else None
+    return str(value).split(":")[-1] if value else ""
+
+
+def _wait_for_open_block(
+    client: Any,
+    position: tuple[int, int, int],
+    *,
+    timeout: float = 5.0,
+) -> bool:
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() < deadline:
+        if _block_name(client, position) in _OPEN_PLAYER_BLOCKS:
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def _excavate_supported_breathing_ledge(
+    client: Any,
+    position: tuple[int, int, int],
+) -> Optional[tuple[int, int, int]]:
+    """Open one adjacent two-high cell whose floor is already solid."""
+    from .inventory import select_item
+    from .navigation import goto
+
+    if not any(
+        select_item(client, pickaxe, allow_swap=True)
+        for pickaxe in (
+            "minecraft:netherite_pickaxe",
+            "minecraft:diamond_pickaxe",
+            "minecraft:iron_pickaxe",
+            "minecraft:stone_pickaxe",
+            "minecraft:wooden_pickaxe",
+        )
+    ):
+        return None
+    px, py, pz = position
+    for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        target = (px + dx, py, pz + dz)
+        feet_name = _block_name(client, target)
+        head_name = _block_name(client, (target[0], target[1] + 1, target[2]))
+        if (
+            not feet_name
+            or not head_name
+            or feet_name in _UNBREAKABLE_EGRESS_BLOCKS
+            or head_name in _UNBREAKABLE_EGRESS_BLOCKS
+            or not _has_stable_support(client, target)
+        ):
+            continue
+        opened = True
+        for block in (
+            (target[0], target[1] + 1, target[2]),
+            target,
+        ):
+            if _block_name(client, block) not in _OPEN_PLAYER_BLOCKS:
+                try:
+                    client.transport.dispatch(
+                        "break_block",
+                        {"x": block[0], "y": block[1], "z": block[2]},
+                    )
+                except Exception:
+                    opened = False
+                    break
+                if not _wait_for_open_block(client, block):
+                    opened = False
+                    break
+        if not opened:
+            continue
+        if not goto(client, *target, timeout=15.0, tolerance=1.0):
+            continue
+        current = block_position(client.transport.dispatch("get_state", {}))
+        if (
+            _has_stable_support(client, current)
+            and not position_is_aquatic(client, current)
+            and _head_is_dry(client, current)
+        ):
+            return current
+    return None
+
+
 def _build_aquatic_walkway(
     client: Any,
     origin: tuple[int, int, int],
@@ -374,6 +607,7 @@ def _swim_to_loaded_dry_shore(
             if (
                 not position_is_aquatic(client, current)
                 and _head_is_dry(client, current)
+                and _has_stable_support(client, current)
             ):
                 client.transport.dispatch("cancel", {})
                 print(f"SURVIVAL: reached loaded dry shore at {current}")
@@ -404,10 +638,11 @@ def reach_breathing_air(
     *,
     timeout: float,
     ensure_alive: Callable[[Any, Optional[dict]], None],
+    require_stable_support: bool = False,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> bool:
-    """Run ``#surface`` without allowing a bad route to descend farther."""
+    """Reach breathing air, optionally continuing until footing is stable."""
     initial = block_position(client.transport.dispatch("get_state", {}))
     _configure_surface_pathing(client, sleep=sleep)
     shore = _swim_to_loaded_dry_shore(
@@ -417,13 +652,25 @@ def reach_breathing_air(
     )
     if shore is not None:
         return True
-    loaded_ascent = _start_loaded_column_ascent(client, initial)
+    loaded_ascent = _start_loaded_column_ascent(
+        client,
+        initial,
+        require_stable_support=require_stable_support,
+    )
     if not loaded_ascent:
         client.transport.dispatch("chat", {"message": "#surface"})
     started_at = clock()
     deadline = started_at + max(0.0, timeout)
     highest_y = initial[1]
-    progress_deadline = started_at + min(3.0, max(1.0, timeout * 0.4))
+    if require_stable_support:
+        # Loaded flooded shafts need several seconds to swim a vertical
+        # column before the supported-air-pocket logic can run. The emergency
+        # breathing path keeps its fast fallback; stable recovery can spend a
+        # bounded larger slice of its own timeout on the upward goal.
+        progress_window = min(12.0, max(4.0, timeout * 0.35))
+    else:
+        progress_window = min(3.0, max(1.0, timeout * 0.4))
+    progress_deadline = started_at + progress_window
     try:
         while True:
             now = clock()
@@ -433,7 +680,8 @@ def reach_breathing_air(
             ensure_alive(client, state)
             current = block_position(state)
             if _head_is_dry(client, current):
-                if position_is_aquatic(client, current):
+                aquatic = position_is_aquatic(client, current)
+                if aquatic:
                     shore = _swim_to_loaded_dry_shore(
                         client,
                         current,
@@ -441,7 +689,24 @@ def reach_breathing_air(
                     )
                     if shore is not None:
                         return True
-                return True
+                if not require_stable_support or (
+                    not aquatic and _has_stable_support(client, current)
+                ):
+                    return True
+                if require_stable_support and not aquatic:
+                    ledge = _excavate_supported_breathing_ledge(client, current)
+                    if ledge is not None:
+                        print(
+                            "SURVIVAL: excavated supported breathing ledge at "
+                            f"{ledge}"
+                        )
+                        return True
+                    if _place_support_below_breathing_position(client, current):
+                        print(
+                            "SURVIVAL: stabilized breathing air with carried "
+                            f"support at {current}"
+                        )
+                        return True
             if current[1] < initial[1] - 2:
                 print("SURVIVAL: surface route moved downward; aborting it")
                 return False
