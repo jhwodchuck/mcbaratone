@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8.7",
+  "package": "com.minecraftbot.baritone.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": [
+    "BlockOptionalMetaMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

@@ -443,6 +443,7 @@ downloads/
 !package.json
 !composer.json
 !tsconfig.json
+!bridge/src/main/resources/baritone-api-bridge.mixins.json
 !*.md
 
 # mcbaratone runtime state (never source or acceptance evidence by itself)

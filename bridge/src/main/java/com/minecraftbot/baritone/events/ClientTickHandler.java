@@ -4,6 +4,7 @@ import baritone.api.BaritoneAPI;
 import baritone.api.IBaritone;
 import com.minecraftbot.baritone.BaritoneAPIBridge;
 import com.minecraftbot.baritone.EventManager;
+import com.minecraftbot.baritone.DeathTracker;
 import com.google.gson.JsonObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,6 +32,7 @@ public class ClientTickHandler {
 
     private final BaritoneAPIBridge.IPlayerContext playerContext;
     private final EventManager eventManager;
+    private final DeathTracker deathTracker;
 
     // State tracking
     private int tickCounter = 0;
@@ -57,8 +59,16 @@ public class ClientTickHandler {
     private final Map<BlockPos, BlockState> previousBlockStates = new ConcurrentHashMap<>();
 
     public ClientTickHandler(BaritoneAPIBridge.IPlayerContext playerContext, EventManager eventManager) {
+        this(playerContext, eventManager, new DeathTracker());
+    }
+
+    public ClientTickHandler(
+            BaritoneAPIBridge.IPlayerContext playerContext,
+            EventManager eventManager,
+            DeathTracker deathTracker) {
         this.playerContext = playerContext;
         this.eventManager = eventManager;
+        this.deathTracker = deathTracker;
     }
 
     public void onClientTick(Minecraft client) {
@@ -88,7 +98,7 @@ public class ClientTickHandler {
 
         // Damage and death tracking (every tick is fine)
         trackPlayerDamage(client);
-        trackPlayerDeath();
+        trackPlayerDeath(client);
 
         // Weather and time change detection (every tick)
         checkWeatherChanges(client);
@@ -188,10 +198,17 @@ public class ClientTickHandler {
         position.addProperty("y", playerContext.getY());
         position.addProperty("z", playerContext.getZ());
         
-        JsonObject velocity = new JsonObject(); 
-        velocity.addProperty("x", 0);
-        velocity.addProperty("y", 0);
-        velocity.addProperty("z", 0);
+        JsonObject velocity = new JsonObject();
+        Minecraft client = Minecraft.getInstance();
+        if (client.player != null) {
+            velocity.addProperty("x", client.player.getDeltaMovement().x);
+            velocity.addProperty("y", client.player.getDeltaMovement().y);
+            velocity.addProperty("z", client.player.getDeltaMovement().z);
+        } else {
+            velocity.addProperty("x", 0);
+            velocity.addProperty("y", 0);
+            velocity.addProperty("z", 0);
+        }
 
         JsonObject payload = new JsonObject();
         payload.add("position", position);
@@ -202,15 +219,23 @@ public class ClientTickHandler {
         // Note: mission phase is not readily available here without circular dependency on MissionController,
         // but it's emitted separately by MissionController itself.
         payload.addProperty("timestamp", now);
+        if (client.level != null) {
+            payload.addProperty("game_tick", client.level.getGameTime());
+        }
         try {
             payload.addProperty("is_pathing", baritone.getPathingBehavior().isPathing());
+            if (baritone.getPathingBehavior().getGoal() != null) {
+                payload.addProperty(
+                    "pathing_goal",
+                    baritone.getPathingBehavior().getGoal().toString());
+            }
         } catch (Exception e) {
             payload.addProperty("is_pathing", false);
         }
         eventManager.publishEvent(EventManager.EventType.TICK_UPDATE, payload);
     }
 
-    private void trackPlayerDeath() {
+    private void trackPlayerDeath(Minecraft client) {
         if (playerContext.isPlayerNull()) return;
 
         boolean isDead = playerContext.getHealth() <= 0;
@@ -222,6 +247,14 @@ public class ClientTickHandler {
             lastDeathZ = playerContext.getZ();
             lastDeathDimension = playerContext.getDimension();
             lastDeathTime = System.currentTimeMillis();
+            long gameTick = client.level != null ? client.level.getGameTime() : -1L;
+            DeathTracker.DeathSnapshot death = deathTracker.record(
+                    lastDeathX,
+                    lastDeathY,
+                    lastDeathZ,
+                    lastDeathDimension,
+                    gameTick,
+                    lastDeathTime);
 
             JsonObject deathData = new JsonObject();
             deathData.addProperty("x", lastDeathX);
@@ -229,6 +262,8 @@ public class ClientTickHandler {
             deathData.addProperty("z", lastDeathZ);
             deathData.addProperty("dimension", lastDeathDimension);
             deathData.addProperty("timestamp", lastDeathTime);
+            deathData.addProperty("death_id", death.deathId());
+            deathData.addProperty("game_tick", death.gameTick());
             eventManager.publishEvent(EventManager.EventType.DEATH, deathData, EventManager.Priority.HIGH);
 
             LOGGER.info("Player died at ({}, {}, {}) in {}",

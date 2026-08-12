@@ -44,6 +44,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Baritone API Bridge for Minecraft Bot Control
@@ -81,13 +82,14 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
     // Modular event system
     private ClientTickHandler clientTickHandler;
     private FabricEventRegistrar fabricEventRegistrar;
+    private final DeathTracker deathTracker = new DeathTracker();
 
     // Connection tracking
     private final Set<Socket> activeConnections = ConcurrentHashMap.newKeySet();
-    private long lastSeq = 0;
+    private final AtomicLong lastSeq = new AtomicLong(0);
 
     // Event management
-    private final EventManager eventManager = new EventManager(100, CACHE_TTL_MS);
+    private final EventManager eventManager = new EventManager(2048, 300000L);
     private final MissionController missionController = new MissionController(this);
 
     // Weather and time fields removed - migrated to ClientTickHandler
@@ -103,6 +105,10 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         CommandHandlerFactory.registerHandlerInstance(
             "get_events",
             new GetEventsCommandHandler(eventManager)
+        );
+        CommandHandlerFactory.registerHandlerInstance(
+            "get_death_location",
+            new GetDeathLocationCommandHandler(deathTracker)
         );
 
         // Initialize command dispatcher with legacy handler
@@ -288,7 +294,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
         fabricEventRegistrar = new FabricEventRegistrar(eventManager);
         fabricEventRegistrar.registerEvents();
 
-        clientTickHandler = new ClientTickHandler(playerContext, eventManager);
+        clientTickHandler = new ClientTickHandler(playerContext, eventManager, deathTracker);
         ClientTickEvents.END_CLIENT_TICK.register(clientTickHandler::onClientTick);
 
         // Initialize modular network layer
@@ -403,9 +409,12 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             running = true;
         } catch (Exception e) {
             LOGGER.error("Failed to start network server", e);
-            // Fall back to legacy server if new one fails
-            LOGGER.warn("Falling back to legacy server implementation");
-            startAPIServer(bridgePort);
+            running = false;
+            // A second asynchronous bind attempt would hide port ownership
+            // failures and could leave a live game with no working bridge.
+            throw new IllegalStateException(
+                    "Unable to bind Baritone API bridge on port " + bridgePort,
+                    e);
         }
     }
 
@@ -474,7 +483,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
                 } catch (Exception e) {
                     LOGGER.error("Error handling command from {}", clientId, e);
                     JsonObject response = new JsonObject();
-                    response.addProperty("seq", ++lastSeq);
+                    response.addProperty("seq", lastSeq.incrementAndGet());
                     response.addProperty("timestamp", System.currentTimeMillis());
 
                     if (requestId != null) {
@@ -546,7 +555,7 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
 
     JsonObject handleCommand(JsonObject request, Socket clientSocket) {
         JsonObject response = new JsonObject();
-        response.addProperty("seq", ++lastSeq);
+        response.addProperty("seq", lastSeq.incrementAndGet());
         response.addProperty("timestamp", System.currentTimeMillis());
 
         // Set request ID if present
@@ -600,13 +609,9 @@ public class BaritoneAPIBridge implements ModInitializer, MissionBridgeAdapter {
             // Dispatch through the command dispatcher
             CommandResult result = commandDispatcher.dispatchCommand(request, clientSocket, client, baritone);
 
-            // Convert CommandResult to JsonObject response
-            if (result.isSuccess()) {
-                response.addProperty("status", "ok");
-                response.add("data", result.getData());
-            } else {
-                response.addProperty("status", "error");
-                response.addProperty("error", result.getErrorMessage());
+            // Preserve the full CommandResult contract, including typed errors.
+            for (var entry : result.toJson().entrySet()) {
+                response.add(entry.getKey(), entry.getValue());
             }
 
         } catch (Exception e) {

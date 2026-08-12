@@ -79,6 +79,25 @@ class CommandError {
     }
 
     public ErrorSeverity getSeverity() { return severity; }
+    public String getMessage() { return message; }
+
+    public boolean isRetryable() {
+        return code == ErrorCode.TIMEOUT_ERROR
+            || code == ErrorCode.RESOURCE_UNAVAILABLE
+            || code == ErrorCode.SERVICE_UNAVAILABLE;
+    }
+
+    public String getCategory() {
+        return switch (code) {
+            case MISSING_PARAMETER, INVALID_PARAMETER_TYPE, INVALID_PARAMETER_VALUE,
+                    PARAMETER_OUT_OF_RANGE, INVALID_COORDINATES,
+                    COORDINATES_OUT_OF_BOUNDS, INVALID_BLOCK_ID,
+                    INVALID_ITEM_NAME -> "validation";
+            case COMMAND_EXECUTION_FAILED, TIMEOUT_ERROR,
+                    RESOURCE_UNAVAILABLE -> "execution";
+            case INTERNAL_ERROR, SERVICE_UNAVAILABLE -> "infrastructure";
+        };
+    }
 
     /**
      * Convert this CommandError to a CommandResult.
@@ -92,6 +111,8 @@ class CommandError {
         error.addProperty("code", code.getCode());
         error.addProperty("severity", severity.name().toLowerCase());
         error.addProperty("message", message);
+        error.addProperty("category", getCategory());
+        error.addProperty("retryable", isRetryable());
         if (parameterName != null) error.addProperty("parameter", parameterName);
         if (providedValue != null) error.addProperty("provided_value", providedValue);
         if (expectedFormat != null) error.addProperty("expected_format", expectedFormat);
@@ -186,7 +207,10 @@ public class CommandResult {
      * @return Error message or null if successful
      */
     public String getErrorMessage() {
-        return legacyErrorMessage;
+        if (legacyErrorMessage != null) {
+            return legacyErrorMessage;
+        }
+        return errors.isEmpty() ? null : errors.get(0).getMessage();
     }
 
     /**
@@ -216,6 +240,8 @@ public class CommandResult {
                     errorArray.add(error.toJson());
                 }
                 result.add("errors", errorArray);
+                // Retain the legacy string during the protocol transition.
+                result.addProperty("error", errors.get(0).getMessage());
             } else if (legacyErrorMessage != null) {
                 // Fallback to legacy error message for backward compatibility
                 result.addProperty("error", legacyErrorMessage);

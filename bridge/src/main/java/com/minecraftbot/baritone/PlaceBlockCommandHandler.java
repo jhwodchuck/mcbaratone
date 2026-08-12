@@ -4,7 +4,6 @@ import baritone.api.IBaritone;
 import com.google.gson.JsonObject;
 import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -18,7 +17,7 @@ import net.minecraft.world.phys.Vec3;
  * Simple block placement handler that avoids any packet-level manipulation.
  * This is a minimal implementation that just uses the client's interactBlock API.
  */
-public class PlaceBlockCommandHandler implements CommandHandler {
+public class PlaceBlockCommandHandler extends AsyncCommandHandler {
 
     /**
      * Prefer ordinary top/side placement faces and use an overhead support
@@ -36,7 +35,8 @@ public class PlaceBlockCommandHandler implements CommandHandler {
     };
 
     @Override
-    public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
+    public CompletableFuture<CommandResult> execute(
+            JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         if (client.player == null || client.level == null || client.gameMode == null) {
             return CompletableFuture.completedFuture(
                 CommandResult.error("Player, world, or interaction manager not available"));
@@ -55,7 +55,7 @@ public class PlaceBlockCommandHandler implements CommandHandler {
             
             BlockPos targetPos = new BlockPos(x, y, z);
             
-            CommandResult result = client.submit(() -> {
+            return executeOnMainThread(client, () -> {
                 BlockState currentTargetState = client.level.getBlockState(targetPos);
                 if (!currentTargetState.canBeReplaced()) {
                     return CommandResult.error("Target position is already occupied: " + targetPos);
@@ -121,11 +121,7 @@ public class PlaceBlockCommandHandler implements CommandHandler {
                             + "; item=" + client.player.getMainHandItem().getHoverName().getString()
                             + "; target=" + targetPos);
                 }
-            }).get();
-            
-            return CompletableFuture.completedFuture(result);
-        } catch (InterruptedException | ExecutionException e) {
-            return CompletableFuture.completedFuture(CommandResult.error("Place execution error: " + e.getMessage()));
+            });
         } catch (Exception e) {
             return CompletableFuture.completedFuture(CommandResult.error("Place failed: " + e.getMessage()));
         }
@@ -136,4 +132,3 @@ public class PlaceBlockCommandHandler implements CommandHandler {
         return "place_block";
     }
 }
-

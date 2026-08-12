@@ -86,20 +86,27 @@ public class NetworkServer implements INetworkServer {
         
         this.port = port;
         this.executor = executor;
-        
-        // Start the accept loop in a background thread
-        executor.submit(this::acceptLoop);
+
+        // Bind before returning so callers never advertise a listener that
+        // failed asynchronously because the port was already occupied.
+        this.serverSocket = new ServerSocket(port);
+        running.set(true);
+        try {
+            executor.submit(this::acceptLoop);
+        } catch (RuntimeException e) {
+            running.set(false);
+            serverSocket.close();
+            throw e;
+        }
     }
     
     /**
      * The main accept loop that listens for client connections.
      */
     private void acceptLoop() {
+        LOGGER.info("Baritone API server listening on port {}", port);
+
         try {
-            serverSocket = new ServerSocket(port);
-            running.set(true);
-            LOGGER.info("Baritone API server listening on port {}", port);
-            
             while (running.get()) {
                 try {
                     Socket clientSocket = serverSocket.accept();
@@ -127,8 +134,6 @@ public class NetworkServer implements INetworkServer {
                     }
                 }
             }
-        } catch (IOException e) {
-            LOGGER.error("Failed to start API server on port {}", port, e);
         } finally {
             running.set(false);
         }

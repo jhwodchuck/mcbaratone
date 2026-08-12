@@ -5,9 +5,11 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import java.net.Socket;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -21,7 +23,7 @@ import net.minecraft.world.phys.AABB;
 /**
  * Command handler for state queries: get_state, get_entities, and combat snapshots.
  */
-public class StateCommandHandler extends AbstractCommandHandler {
+public class StateCommandHandler extends AsyncCommandHandler {
 
     @Override
     public String getCommandName() {
@@ -29,7 +31,7 @@ public class StateCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone,
+    public CompletableFuture<CommandResult> execute(JsonObject params, Minecraft client, IBaritone baritone,
             Socket clientSocket) {
         // Determine action from explicit 'action' param or check for entity-specific
         // params
@@ -44,13 +46,21 @@ public class StateCommandHandler extends AbstractCommandHandler {
 
         switch (action) {
             case "get":
-                return handleGetState(client, baritone);
+                // Capture the entire snapshot on one client tick. Mutable
+                // inventory, effects, connection, screen and world fields must
+                // not be mixed across a network worker and render thread.
+                return executeOnMainThread(
+                    client,
+                    () -> handleGetState(client, baritone));
             case "entities":
-                return handleGetEntities(client, params);
+                return CompletableFuture.completedFuture(
+                    handleGetEntities(client, params));
             case "combat_snapshot":
-                return handleCombatSnapshot(client, baritone, params);
+                return CompletableFuture.completedFuture(
+                    handleCombatSnapshot(client, baritone, params));
             default:
-                return CommandResult.error("Unknown state action: " + action);
+                return CompletableFuture.completedFuture(
+                    CommandResult.error("Unknown state action: " + action));
         }
     }
 
@@ -96,6 +106,23 @@ public class StateCommandHandler extends AbstractCommandHandler {
             data.addProperty("is_dead", player.isDeadOrDying());
             data.addProperty("entity_id", player.getId());
             data.addProperty("entity_uuid", player.getStringUUID());
+            data.addProperty("player_name", player.getName().getString());
+            data.addProperty("automation_profile", "non_op_client");
+            data.addProperty("server_authority", false);
+            data.addProperty("rcon_required", false);
+            if (client.gameMode != null) {
+                data.addProperty("game_mode", client.gameMode.getPlayerMode().getName());
+            }
+
+            JsonArray onlinePlayers = new JsonArray();
+            if (client.getConnection() != null) {
+                for (PlayerInfo playerInfo : client.getConnection().getOnlinePlayers()) {
+                    onlinePlayers.add(playerInfo.getProfile().name());
+                }
+            }
+            data.add("online_players", onlinePlayers);
+            data.addProperty("snapshot_tick", client.level.getGameTime());
+            data.addProperty("observed_at_ms", System.currentTimeMillis());
 
             // Player Flags
             data.addProperty("is_sprinting", player.isSprinting());
@@ -142,6 +169,9 @@ public class StateCommandHandler extends AbstractCommandHandler {
 
                 if (isPathing && baritone.getPathingBehavior().getGoal() != null) {
                     data.addProperty("pathing_goal", true);
+                    data.addProperty(
+                        "pathing_goal_description",
+                        baritone.getPathingBehavior().getGoal().toString());
                 }
             } catch (Exception e) {
                 logger.debug("Could not get pathing status", e);

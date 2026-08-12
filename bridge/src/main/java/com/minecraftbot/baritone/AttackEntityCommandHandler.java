@@ -34,6 +34,9 @@ public class AttackEntityCommandHandler implements CommandHandler {
 
         CompletableFuture<CommandResult> result = new CompletableFuture<>();
         Runnable attackTask = () -> {
+            if (result.isDone()) {
+                return;
+            }
             try {
                 if (client.player == null || client.gameMode == null || client.level == null) {
                     result.complete(CommandResult.error("Player/World not available"));
@@ -41,7 +44,7 @@ public class AttackEntityCommandHandler implements CommandHandler {
                 }
 
                 Entity target = client.level.getEntity(entityId);
-                if (target == null) {
+                if (!isValidAttackTarget(client.player, target)) {
                     result.complete(CommandResult.error("Entity not found: " + entityId));
                     return;
                 }
@@ -82,6 +85,25 @@ public class AttackEntityCommandHandler implements CommandHandler {
 
     static boolean cooldownReady(float cooldown, float minimumCooldown) {
         return cooldown >= minimumCooldown;
+    }
+
+    /** Reject stale client ghosts and entities that cannot receive an attack. */
+    static boolean isValidAttackTarget(Entity player, Entity target) {
+        return target != null && isValidAttackTarget(
+            target == player,
+            target.isRemoved(),
+            target.isAlive(),
+            target.isAttackable()
+        );
+    }
+
+    static boolean isValidAttackTarget(
+        boolean self,
+        boolean removed,
+        boolean alive,
+        boolean attackable
+    ) {
+        return !self && !removed && alive && attackable;
     }
 
     String entityType(Entity target) {
