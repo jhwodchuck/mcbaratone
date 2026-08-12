@@ -575,6 +575,47 @@ def test_equip_best_armor_replaces_nearly_broken_same_tier_piece():
     ) in transport.calls
 
 
+def test_equip_best_armor_replaces_unsafe_diamond_with_durable_iron():
+    class DowngradeTransport:
+        def __init__(self):
+            self.inventory_items = [
+                {
+                    "slot": 0,
+                    "id": "minecraft:iron_chestplate",
+                    "count": 1,
+                    "damage": 0,
+                    "max_damage": 240,
+                }
+            ]
+            self.armor_items = [
+                {
+                    "slot": 38,
+                    "id": "minecraft:diamond_chestplate",
+                    "count": 1,
+                    "damage": 520,
+                    "max_damage": 528,
+                }
+            ]
+
+        def dispatch(self, route, payload):
+            if route == "get_inventory":
+                return {
+                    "inventory": list(self.inventory_items),
+                    "armor": list(self.armor_items),
+                    "offhand": [],
+                }
+            if route == "inventory_click" and payload["slot"] == 6:
+                self.armor_items = []
+            if route == "inventory_click" and payload["slot"] == 36:
+                self.armor_items = [self.inventory_items.pop(0)]
+            return {}
+
+    transport = DowngradeTransport()
+
+    assert inventory.equip_best_armor(DummyClient(transport)) == 1
+    assert transport.armor_items[0]["id"] == "minecraft:iron_chestplate"
+
+
 def test_deposit_excess_uses_live_chest_screen_player_slots_only(monkeypatch):
     class ChestTransport:
         def __init__(self):

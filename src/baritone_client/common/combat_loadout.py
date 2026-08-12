@@ -210,7 +210,46 @@ def equip_best_weapon(client: Any, target_type: object = "") -> bool:
         return False
 
 
+def choose_armor_replacement(
+    candidates: Iterable[tuple[int, int, dict]],
+    *,
+    current_rank: int,
+    current_remaining: int | None,
+    minimum_rank: int,
+    minimum_remaining: int,
+) -> tuple[int, int, dict] | None:
+    """Choose a durable combat downgrade when worn high-tier armor is unsafe."""
+    values = list(candidates)
+    if not values:
+        return None
+    current_unsafe = (
+        current_remaining is not None and current_remaining < minimum_remaining
+    )
+    durable = [
+        value
+        for value in values
+        if value[0] >= minimum_rank and value[1] >= minimum_remaining
+    ]
+    best = max(durable if current_unsafe and durable else values, key=lambda value: value[:2])
+    rank, remaining, _item = best
+    same_tier_upgrade = bool(
+        rank == current_rank
+        and current_unsafe
+        and current_remaining is not None
+        and remaining > current_remaining
+    )
+    safe_downgrade = bool(
+        current_unsafe and rank >= minimum_rank and remaining >= minimum_remaining
+    )
+    if (rank < current_rank and not safe_downgrade) or (
+        rank == current_rank and not same_tier_upgrade
+    ):
+        return None
+    return best
+
+
 __all__ = [
+    "choose_armor_replacement",
     "choose_best_weapon",
     "equip_best_weapon",
     "remaining_durability",

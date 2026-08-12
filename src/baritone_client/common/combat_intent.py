@@ -74,6 +74,21 @@ def current_combat_intent(client: Any) -> CombatIntent | None:
     )
 
 
+def boss_action_context_allowed(target: dict, state: Any) -> bool:
+    """Require Survival, plus The End for dragon and crystal mutations."""
+    if not isinstance(state, dict):
+        return False
+    if str(state.get("game_mode", "")).lower() != "survival":
+        return False
+    target_type = normalize_mob_type(target.get("type"))
+    if target_type in {"ender_dragon", "end_crystal"}:
+        return str(state.get("dimension", "")).lower() in {
+            "the_end",
+            "minecraft:the_end",
+        }
+    return True
+
+
 @contextmanager
 def combat_intent(client: Any, intent: CombatIntent) -> Iterator[CombatIntent]:
     """Temporarily authorize a target without suppressing other threats."""
@@ -102,6 +117,7 @@ def exclude_authorized_threats(client: Any, assessments: Iterable[Any]) -> list[
 
 __all__ = [
     "CombatIntent",
+    "boss_action_context_allowed",
     "combat_intent",
     "current_combat_intent",
     "exclude_authorized_threats",

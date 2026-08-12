@@ -87,6 +87,7 @@ def dispatch_held_item_use(
         try:
             attempted = True
             payload = dict(parameters)
+            payload.setdefault("hand", "MAIN_HAND")
             payload["duration_ms"] = duration
             return client.transport.dispatch("use_item", payload)
         finally:

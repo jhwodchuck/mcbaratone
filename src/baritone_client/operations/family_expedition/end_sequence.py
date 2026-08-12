@@ -10,6 +10,7 @@ import time
 from typing import Any, Callable, Mapping, Optional, Sequence, Tuple
 
 from ...common.end import activate_end_portal, enter_end_portal
+from ...common.end_search import exit_portal_search_payload
 from .models import BotReadiness, ExpeditionConfig, PlayerSnapshot
 
 
@@ -18,6 +19,23 @@ def _unwrap(value: Any) -> Mapping[str, Any]:
         return {}
     nested = value.get("data")
     return nested if isinstance(nested, Mapping) else value
+
+
+def _complete_entity_frame(value: Any) -> tuple[Mapping[str, Any], ...] | None:
+    """Accept only complete bridge entity snapshots for boss coordination."""
+    payload = _unwrap(value)
+    raw_entities = payload.get("entities")
+    skipped_count = payload.get("skipped_count")
+    if (
+        not isinstance(raw_entities, Sequence)
+        or isinstance(raw_entities, (str, bytes))
+        or isinstance(skipped_count, bool)
+        or not isinstance(skipped_count, int)
+        or skipped_count != 0
+        or not all(isinstance(item, Mapping) for item in raw_entities)
+    ):
+        return None
+    return tuple(raw_entities)
 
 
 @dataclass(frozen=True)
@@ -294,10 +312,13 @@ class DragonSupportCoordinator:
         if not leader_fresh or not leader.in_end:
             return DragonSupportOutcome.HOLD
         try:
-            payload = _unwrap(observer_client.transport.dispatch("get_entities", {"radius": 128}))
+            entities = _complete_entity_frame(
+                observer_client.transport.dispatch("get_entities", {"radius": 128})
+            )
         except Exception:
             return DragonSupportOutcome.HOLD
-        entities = tuple(item for item in payload.get("entities", ()) if isinstance(item, Mapping))
+        if entities is None:
+            return DragonSupportOutcome.HOLD
         targets = tuple(item for item in entities if is_dragon_support_target(item, self.protected_names))
         crystals = sorted(
             (item for item in targets if item.get("type") == "minecraft:end_crystal"),
@@ -310,7 +331,8 @@ class DragonSupportCoordinator:
             try:
                 portal = _unwrap(
                     observer_client.transport.dispatch(
-                        "find_blocks", {"blocks": ["minecraft:end_portal"], "radius": 64, "limit": 1}
+                        "find_blocks",
+                        exit_portal_search_payload(),
                     )
                 )
             except Exception:

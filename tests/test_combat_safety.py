@@ -1201,6 +1201,14 @@ def test_forced_ranged_approach_equips_and_raises_carried_shield(monkeypatch):
             if route == "equip":
                 self.equipped = True
                 return {"equipped": True}
+            if route == "use_item":
+                return {
+                    "holding": True,
+                    "hand": "OFF_HAND",
+                    "active_hand": "OFF_HAND",
+                    "held_item": "minecraft:shield",
+                    "is_using_item": True,
+                }
             return {}
 
     transport = ShieldTransport()
@@ -1239,7 +1247,7 @@ def test_forced_ranged_approach_equips_and_raises_carried_shield(monkeypatch):
     ) in transport.calls
     assert (
         "use_item",
-        {"duration_ms": combat_melee.SHIELD_HOLD_MS},
+        {"hand": "OFF_HAND", "duration_ms": combat_melee.SHIELD_HOLD_MS},
     ) in transport.calls
 
 
@@ -1271,6 +1279,14 @@ def test_close_ranged_target_raises_shield_before_melee(monkeypatch):
             if route == "equip":
                 self.equipped = True
                 return {"equipped": True}
+            if route == "use_item":
+                return {
+                    "holding": True,
+                    "hand": "OFF_HAND",
+                    "active_hand": "OFF_HAND",
+                    "held_item": "minecraft:shield",
+                    "is_using_item": True,
+                }
             if route == "attack_entity":
                 self.attacked = True
                 return {"attacked": True}
@@ -1303,7 +1319,10 @@ def test_close_ranged_target_raises_shield_before_melee(monkeypatch):
         max_duration=2,
     )
     shield_call = transport.calls.index(
-        ("use_item", {"duration_ms": combat_melee.SHIELD_HOLD_MS})
+        (
+            "use_item",
+            {"hand": "OFF_HAND", "duration_ms": combat_melee.SHIELD_HOLD_MS},
+        )
     )
     attack_call = transport.calls.index(
         (
@@ -1315,6 +1334,51 @@ def test_close_ranged_target_raises_shield_before_melee(monkeypatch):
         )
     )
     assert shield_call < attack_call
+
+
+def test_close_ranged_target_aborts_when_offhand_hold_is_unverified(monkeypatch):
+    """Never attack as if protected when the bridge cannot prove shield use."""
+    blaze = {
+        "id": 42,
+        "type": "minecraft:blaze",
+        "distance": 1.2,
+        "position": {"x": 1, "y": 64, "z": 0},
+    }
+
+    class UnverifiedShieldTransport(CombatTransport):
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_inventory":
+                return {
+                    "inventory": [],
+                    "offhand": [{"id": "minecraft:shield", "count": 1}],
+                }
+            if route == "use_item":
+                return {
+                    "holding": True,
+                    "held_item": "minecraft:shield",
+                }
+            if route == "attack_entity":
+                raise AssertionError("unverified shielding must abort before attack")
+            return super().dispatch(route, payload)
+
+    transport = UnverifiedShieldTransport(health=20.0)
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(
+        combat,
+        "_get_combat_snapshot",
+        lambda *_args, **_kwargs: {
+            "player": {"health": 20.0},
+            "entities": [blaze],
+        },
+    )
+    monkeypatch.setattr(combat_melee.time, "sleep", lambda _seconds: None)
+
+    assert not combat.safe_combat(
+        client, blaze["id"], no_retreat=True, max_duration=2
+    )
+    assert ("cancel", {}) in transport.calls
+    assert not any(route == "attack_entity" for route, _ in transport.calls)
 
 
 def test_melee_approach_does_not_raise_shield(monkeypatch):

@@ -8,7 +8,11 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
@@ -19,6 +23,8 @@ import net.minecraft.world.phys.HitResult;
  * Used for eating food, using bows, interacting with items in hand, etc.
  */
 public class UseItemCommandHandler extends AsyncCommandHandler {
+
+    private static final int ACTION_SCHEDULE_TIMEOUT_SECONDS = 2;
     
     private static final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
         Thread thread = new Thread(runnable, "bridge-use-item-release");
@@ -34,30 +40,98 @@ public class UseItemCommandHandler extends AsyncCommandHandler {
             return CompletableFuture.completedFuture(
                 CommandResult.error("duration_ms must be non-negative"));
         }
+        final InteractionHand requestedHand;
+        try {
+            requestedHand = requestedHand(params);
+        } catch (IllegalArgumentException exception) {
+            return CompletableFuture.completedFuture(
+                CommandResult.error(exception.getMessage()));
+        }
 
         return executeOnMainThread(client, () -> {
             if (client.player == null) {
                 return CommandResult.error("Player not available");
+            }
+            if (requestedHand != null && client.gameMode == null) {
+                return CommandResult.error("Game mode not available");
             }
 
             JsonObject hit = describeCrosshairTarget(client);
             JsonObject data = new JsonObject();
             data.add("hit", hit);
             data.addProperty("hit_type", hit.get("type").getAsString());
+            ItemStack heldItem = requestedHand == null
+                ? client.player.getMainHandItem()
+                : client.player.getItemInHand(requestedHand);
             data.addProperty("held_item", BuiltInRegistries.ITEM.getKey(
-                client.player.getMainHandItem().getItem()).toString());
+                heldItem.getItem()).toString());
 
-            client.options.keyUse.setDown(true);
+            if (requestedHand != null) {
+                InteractionResult interaction = client.gameMode.useItem(
+                    client.player, requestedHand);
+                if (!interaction.consumesAction()) {
+                    return CommandResult.error(
+                        "Item use was rejected for " + requestedHand.name());
+                }
+                data.addProperty("hand", requestedHand.name());
+                data.addProperty("interaction_result", interaction.toString());
+                addUseState(client.player, data);
+            }
+
             if (durationMs > 0) {
+                client.options.keyUse.setDown(true);
                 scheduleRelease(client, durationMs);
                 data.addProperty("holding", true);
                 data.addProperty("duration_ms", durationMs);
             } else {
-                scheduleRelease(client, 50);
+                // The explicit-hand call above already performed an instant
+                // use. Only the legacy automatic-hand route needs a key tap.
+                if (requiresKeyPulse(requestedHand, durationMs)) {
+                    client.options.keyUse.setDown(true);
+                    scheduleRelease(client, 50);
+                }
                 data.addProperty("used", true);
             }
             return CommandResult.success(data);
-        });
+        }).completeOnTimeout(
+            CommandResult.error("Timed out before item use reached the client thread"),
+            ACTION_SCHEDULE_TIMEOUT_SECONDS,
+            TimeUnit.SECONDS);
+    }
+
+    static InteractionHand requestedHand(JsonObject params) {
+        if (params == null || !params.has("hand")) {
+            return null;
+        }
+        String value = params.get("hand").getAsString().trim().toUpperCase();
+        return switch (value) {
+            case "MAIN_HAND" -> InteractionHand.MAIN_HAND;
+            case "OFF_HAND" -> InteractionHand.OFF_HAND;
+            default -> throw new IllegalArgumentException(
+                "hand must be MAIN_HAND or OFF_HAND");
+        };
+    }
+
+    static boolean requiresKeyPulse(InteractionHand requestedHand, int durationMs) {
+        return requestedHand == null || durationMs > 0;
+    }
+
+    static void addUseState(LocalPlayer player, JsonObject data) {
+        boolean usingItem = player.isUsingItem();
+        addUseState(
+            data,
+            usingItem,
+            player.isBlocking(),
+            usingItem ? player.getUsedItemHand() : null);
+    }
+
+    static void addUseState(JsonObject data, boolean usingItem, boolean blocking,
+            InteractionHand activeHand) {
+        data.addProperty("is_using_item", usingItem);
+        data.addProperty("is_blocking", blocking);
+        if (usingItem && activeHand != null) {
+            data.addProperty("active_hand", activeHand.name());
+        }
     }
 
     private void scheduleRelease(Minecraft client, int delayMs) {

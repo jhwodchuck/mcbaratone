@@ -396,6 +396,8 @@ def test_explicit_exact_boss_intent_permits_low_level_shared_action(
         calls.append((route, payload))
         if route == "get_state":
             return {
+                "dimension": "minecraft:the_end",
+                "game_mode": "survival",
                 "health": 20,
                 "food_level": 20,
                 "attack_cooldown": 1.0,
@@ -433,6 +435,8 @@ def test_explicit_exact_boss_intent_permits_low_level_shared_action(
         allow_boss=True,
     )
     state = {
+        "dimension": "minecraft:the_end",
+        "game_mode": "survival",
         "health": 20,
         "food_level": 20,
         "attack_cooldown": 1.0,
@@ -458,6 +462,149 @@ def test_explicit_exact_boss_intent_permits_low_level_shared_action(
 
     expected_route = "attack_entity" if action == "melee" else "use_item"
     assert any(route == expected_route for route, _payload in calls)
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        {
+            "dimension": "minecraft:the_end",
+            "game_mode": "creative",
+            "health": 20,
+            "food_level": 20,
+            "block_position": {"x": 0, "y": 64, "z": 0},
+        },
+        {
+            "dimension": "minecraft:overworld",
+            "game_mode": "survival",
+            "health": 20,
+            "food_level": 20,
+            "block_position": {"x": 0, "y": 64, "z": 0},
+        },
+    ),
+    ids=("creative_end", "survival_overworld"),
+)
+def test_authorized_boss_ranged_attack_rechecks_exact_survival_end_state(state):
+    dragon = _entity(99, "ender_dragon", 10, x=10, health=200)
+    calls = []
+
+    def dispatch(route, payload):
+        calls.append((route, payload))
+        if route == "get_state":
+            return state
+        if route == "get_inventory":
+            return {
+                "inventory": [
+                    {
+                        "id": "minecraft:bow",
+                        "count": 1,
+                        "slot": 0,
+                        "damage": 0,
+                        "max_damage": 384,
+                    },
+                    {"id": "minecraft:arrow", "count": 32, "slot": 1},
+                ],
+                "selected_slot": 0,
+            }
+        if route == "use_item":
+            raise AssertionError("boss attack escaped the fresh world/mode gate")
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    intent = CombatIntent.for_target(
+        dragon["id"],
+        purpose="explicit_dragon_test",
+        target_type=dragon["type"],
+        allow_boss=True,
+    )
+
+    with combat_intent(client, intent):
+        assert not combat_ranged.fire_best_ranged_attack(client, dragon)
+
+    assert not any(route == "use_item" for route, _payload in calls)
+
+
+@pytest.mark.parametrize("action", ("melee", "ranged"))
+@pytest.mark.parametrize(
+    ("authorized", "state"),
+    (
+        (
+            False,
+            {
+                "dimension": "minecraft:the_end",
+                "game_mode": "survival",
+                "health": 20,
+                "food_level": 20,
+                "attack_cooldown": 1.0,
+                "block_position": {"x": 0, "y": 64, "z": 0},
+            },
+        ),
+        (
+            True,
+            {
+                "dimension": "minecraft:overworld",
+                "game_mode": "survival",
+                "health": 20,
+                "food_level": 20,
+                "attack_cooldown": 1.0,
+                "block_position": {"x": 0, "y": 64, "z": 0},
+            },
+        ),
+    ),
+    ids=("missing_intent", "wrong_dimension"),
+)
+def test_end_crystal_actions_require_exact_boss_intent_and_survival_end(
+    action, authorized, state
+):
+    crystal = _entity(91, "end_crystal", 6, x=6)
+    calls = []
+
+    def dispatch(route, payload):
+        calls.append((route, payload))
+        if route == "get_state":
+            return state
+        if route == "get_inventory":
+            return {
+                "inventory": [
+                    {
+                        "id": "minecraft:bow",
+                        "count": 1,
+                        "slot": 0,
+                        "damage": 0,
+                        "max_damage": 384,
+                    },
+                    {"id": "minecraft:arrow", "count": 32, "slot": 1},
+                ],
+                "selected_slot": 0,
+            }
+        if route in {"use_item", "attack_entity"}:
+            raise AssertionError("End crystal mutation escaped boss admission")
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+
+    def attempt():
+        if action == "melee":
+            return combat_melee.execute_melee_strike(client, crystal, state).get(
+                "attacked"
+            ) is True
+        return combat_ranged.fire_best_ranged_attack(client, crystal)
+
+    if authorized:
+        intent = CombatIntent.for_target(
+            crystal["id"],
+            purpose="explicit_crystal_test",
+            target_type=crystal["type"],
+            allow_boss=True,
+        )
+        with combat_intent(client, intent):
+            assert not attempt()
+    else:
+        assert not attempt()
+
+    assert not any(
+        route in {"use_item", "attack_entity"} for route, _payload in calls
+    )
 
 
 @pytest.mark.parametrize("skipped_count", (1, "unknown"))
@@ -806,5 +953,8 @@ def test_shared_safe_combat_uses_ranged_strategy_for_distant_archer(monkeypatch)
         max_duration=3,
         target_metadata=skeleton,
     )
-    assert ("use_item", {"duration_ms": 1100}) in calls
+    assert (
+        "use_item",
+        {"hand": "MAIN_HAND", "duration_ms": 1100},
+    ) in calls
     assert not any(route == "attack_entity" for route, _payload in calls)

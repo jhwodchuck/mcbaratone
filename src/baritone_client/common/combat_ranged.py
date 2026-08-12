@@ -140,12 +140,19 @@ def _aim_point(target: dict) -> tuple[float, float, float] | None:
 
 def _boss_attack_authorized(client: Any, target: dict, state: dict) -> bool:
     """Require explicit, exact intent before a ranged boss attack."""
-    from .combat_intent import current_combat_intent
+    from .combat_intent import boss_action_context_allowed, current_combat_intent
     from .defense import AttackStyle, assess_threats
 
     assessments = assess_threats([target], state)
-    if not assessments or assessments[0].style != AttackStyle.BOSS:
+    target_type = normalize_mob_type(target.get("type"))
+    boss_action = bool(
+        (assessments and assessments[0].style == AttackStyle.BOSS)
+        or target_type == "end_crystal"
+    )
+    if not boss_action:
         return True
+    if not boss_action_context_allowed(target, state):
+        return False
     intent = current_combat_intent(client)
     return bool(
         intent is not None

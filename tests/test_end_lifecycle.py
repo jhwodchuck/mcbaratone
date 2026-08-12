@@ -62,6 +62,7 @@ def _complete_dragon_kit():
 def _ready_end_state(**updates):
     state = {
         "dimension": "minecraft:the_end",
+        "game_mode": "survival",
         "health": 20,
         "food_level": 20,
         "attack_cooldown": 1.0,
@@ -162,6 +163,13 @@ def test_dragon_fight_targets_entity_ids_and_requires_exit_portal(monkeypatch):
         if route == "get_block":
             return {"id": "minecraft:air"}
         if route == "find_blocks":
+            if payload["blocks"] == ["minecraft:iron_bars"]:
+                return {
+                    "found": [],
+                    "complete": True,
+                    "center": payload["center"],
+                    "dimension": "minecraft:the_end",
+                }
             return {
                 "found": [{"x": 0, "y": 64, "z": 0, "block": "minecraft:end_portal"}]
             }
@@ -237,7 +245,10 @@ def test_dragon_fight_charges_bow_through_shared_ranged_policy(monkeypatch):
     monkeypatch.setattr(end.time, "sleep", lambda _seconds: None)
 
     assert end.fight_ender_dragon(client, timeout=1)
-    assert ("use_item", {"duration_ms": 1100}) in calls
+    assert (
+        "use_item",
+        {"hand": "MAIN_HAND", "duration_ms": 1100},
+    ) in calls
     assert not any(route == "attack_entity" for route, _payload in calls)
 
 
@@ -251,6 +262,7 @@ def test_dragon_fight_stops_below_survival_margin(monkeypatch):
         if route == "get_state":
             return {
                 "dimension": "minecraft:the_end",
+                "game_mode": "survival",
                 "health": 5,
                 "food_level": 20,
                 "block_position": {"x": 0, "y": 64, "z": 0},
@@ -330,6 +342,7 @@ def test_failed_dragon_breath_escape_never_attacks(monkeypatch):
         if route == "get_state":
             return {
                 "dimension": "minecraft:the_end",
+                "game_mode": "survival",
                 "health": 20,
                 "food_level": 20,
                 "block_position": {"x": 0, "y": 64, "z": 0},
@@ -357,7 +370,230 @@ def test_failed_dragon_breath_escape_never_attacks(monkeypatch):
     assert not end.fight_ender_dragon(client, timeout=0.2)
     assert escape_attempts
     assert attack_attempts == []
+
+
+@pytest.mark.parametrize("game_mode", (None, "creative", "spectator"))
+def test_shared_dragon_controller_requires_exact_survival_mode(game_mode):
+    calls = []
+
+    def dispatch(route, payload):
+        calls.append((route, payload))
+        if route == "get_state":
+            state = {
+                "dimension": "minecraft:the_end",
+                "health": 20,
+                "food_level": 20,
+                "block_position": {"x": 0, "y": 64, "z": 0},
+            }
+            if game_mode is not None:
+                state["game_mode"] = game_mode
+            return state
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+
+    assert not end.fight_ender_dragon(client, timeout=1)
+    assert ("cancel", {}) in calls
+    assert not any(route == "get_entities" for route, _ in calls)
     assert not any(route in {"attack_entity", "use_item"} for route, _ in calls)
+
+
+@pytest.mark.parametrize(
+    "refreshed_state",
+    (
+        _ready_end_state(game_mode="creative"),
+        _ready_end_state(dimension="minecraft:overworld"),
+    ),
+    ids=("creative", "overworld"),
+)
+def test_dragon_action_state_rechecks_end_survival_after_refresh(
+    monkeypatch, refreshed_state
+):
+    states = iter((_ready_end_state(), refreshed_state))
+    calls = []
+
+    def dispatch(route, payload):
+        calls.append((route, payload))
+        if route == "get_state":
+            return next(states)
+        if route == "get_entities":
+            return {"entities": [], "skipped_count": 0}
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    monkeypatch.setattr(dragon_combat, "_live_dragon_kit_ready", lambda _client: True)
+    monkeypatch.setattr(dragon_combat, "defend_or_flee", lambda *_a, **_k: False)
+
+    assert dragon_combat.dragon_action_state(
+        client,
+        {"id": 99, "type": "minecraft:ender_dragon"},
+    ) is None
+    assert ("cancel", {}) in calls
+    assert not any(route == "get_entities" for route, _payload in calls)
+
+
+@pytest.mark.parametrize(
+    "refreshed_state",
+    (
+        _ready_end_state(
+            game_mode="creative",
+            block_position={"x": 1, "y": 65, "z": 2},
+        ),
+        _ready_end_state(
+            dimension="minecraft:overworld",
+            block_position={"x": 1, "y": 65, "z": 2},
+        ),
+    ),
+    ids=("creative", "overworld"),
+)
+def test_crystal_melee_refuses_mutation_after_world_or_mode_change(
+    monkeypatch, refreshed_state
+):
+    calls = []
+    strikes = []
+
+    def dispatch(route, payload):
+        calls.append((route, payload))
+        if route == "get_state":
+            return dict(refreshed_state)
+        if route == "get_entities":
+            return {
+                "entities": [
+                    {
+                        "id": 91,
+                        "type": "minecraft:end_crystal",
+                        "distance": 2,
+                        "position": {"x": 1, "y": 65, "z": 2},
+                    }
+                ],
+                "skipped_count": 0,
+            }
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    crystal = {
+        "id": 91,
+        "type": "minecraft:end_crystal",
+        "distance": 3,
+        "position": {"x": 1, "y": 65, "z": 2},
+    }
+    monkeypatch.setattr(dragon_combat, "ranged_attack_in_flight", lambda _c: False)
+    monkeypatch.setattr(dragon_combat, "_cage_blocks", lambda *_a: [])
+    monkeypatch.setattr(dragon_combat, "fire_best_ranged_attack", lambda *_a, **_k: False)
+    monkeypatch.setattr("baritone_client.common.navigation.goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        dragon_combat,
+        "execute_melee_strike",
+        lambda *_a, **_k: strikes.append(True) or {"attacked": True},
+    )
+
+    assert dragon_combat._attack_crystal(
+        client,
+        crystal,
+        _ready_end_state(),
+    ) == (True, False)
+    assert ("cancel", {}) in calls
+    assert strikes == []
+    assert not any(route == "get_entities" for route, _payload in calls)
+
+
+@pytest.mark.parametrize(
+    "refreshed_state",
+    (
+        _ready_end_state(game_mode="creative"),
+        _ready_end_state(dimension="minecraft:overworld"),
+    ),
+    ids=("creative", "overworld"),
+)
+def test_perched_dragon_melee_refuses_mutation_after_world_or_mode_change(
+    monkeypatch, refreshed_state
+):
+    calls = []
+    strikes = []
+
+    def dispatch(route, payload):
+        calls.append((route, payload))
+        if route == "get_state":
+            return dict(refreshed_state)
+        if route == "get_entities":
+            return {
+                "entities": [
+                    {
+                        "id": 99,
+                        "type": "minecraft:ender_dragon",
+                        "distance": 4,
+                        "position": {"x": 0, "y": 70, "z": 0},
+                    }
+                ],
+                "skipped_count": 0,
+            }
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    dragon = {
+        "id": 99,
+        "type": "minecraft:ender_dragon",
+        "distance": 4,
+        "position": {"x": 0, "y": 70, "z": 0},
+    }
+    monkeypatch.setattr("baritone_client.common.navigation.goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        dragon_combat,
+        "execute_melee_strike",
+        lambda *_a, **_k: strikes.append(True) or {"attacked": True},
+    )
+
+    assert dragon_combat._attack_dragon(client, dragon, _ready_end_state()) is False
+    assert ("cancel", {}) in calls
+    assert strikes == []
+    assert not any(route == "get_entities" for route, _payload in calls)
+
+
+@pytest.mark.parametrize(
+    "refreshed_state",
+    (
+        _ready_end_state(
+            game_mode="creative",
+            block_position={"x": 1, "y": 64, "z": 0},
+        ),
+        _ready_end_state(
+            dimension="minecraft:overworld",
+            block_position={"x": 1, "y": 64, "z": 0},
+        ),
+    ),
+    ids=("creative", "overworld"),
+)
+def test_crystal_cage_dig_refuses_mutation_after_world_or_mode_change(
+    monkeypatch, refreshed_state
+):
+    calls = []
+
+    def dispatch(route, payload):
+        calls.append((route, payload))
+        if route == "get_state":
+            return dict(refreshed_state)
+        if route == "get_block":
+            return {"id": "minecraft:air"}
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    monkeypatch.setattr("baritone_client.common.navigation.goto", lambda *_a, **_k: True)
+
+    assert not dragon_combat._open_crystal_cage(
+        client,
+        [(1, 64, 0)],
+        {
+            "id": 91,
+            "type": "minecraft:end_crystal",
+            "position": {"x": 1, "y": 65, "z": 2},
+        },
+        {
+            **_ready_end_state(),
+            "block_position": {"x": 0, "y": 64, "z": 0},
+        },
+    )
+    assert ("cancel", {}) in calls
+    assert not any(route == "dig_block" for route, _payload in calls)
 
 
 def test_crystal_melee_rechecks_survival_margin_after_approach(monkeypatch):
@@ -565,6 +801,98 @@ def test_shared_dragon_controller_rejects_three_incomplete_entity_frames(
     assert [route for route, _payload in calls].count("cancel") == 3
     assert not any(route == "get_inventory" for route, _payload in calls)
     assert attack_attempts == []
+
+
+def test_crystal_cage_search_is_centered_on_distant_crystal():
+    calls = []
+    crystal = {
+        "position": {"x": 80.4, "y": 75.2, "z": -31.7},
+    }
+
+    def dispatch(route, payload):
+        calls.append((route, payload))
+        return {
+            "center": {"x": 80, "y": 75, "z": -32},
+            "complete": True,
+            "dimension": "minecraft:the_end",
+            "found": [
+                {"x": 82, "y": 75, "z": -32, "block": "minecraft:iron_bars"},
+                {"x": 80, "y": 75, "z": -30, "block": "minecraft:iron_bars"},
+            ]
+        }
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    bars = dragon_combat._cage_blocks(client, crystal, _ready_end_state())
+
+    assert bars
+    assert calls == [
+        (
+            "find_blocks",
+            {
+                "blocks": ["minecraft:iron_bars"],
+                "center": {"x": 80, "y": 75, "z": -32},
+                "radius": 3,
+                "limit": 64,
+            },
+        )
+    ]
+
+
+def test_empty_crystal_cage_requires_complete_centered_coverage():
+    crystal = {"position": {"x": 80.4, "y": 75.2, "z": -31.7}}
+    responses = iter(
+        [
+            {"found": [], "complete": True},
+            {
+                "found": [],
+                "complete": False,
+                "center": {"x": 80, "y": 75, "z": -32},
+            },
+            {
+                "found": [],
+                "complete": True,
+                "center": {"x": 80, "y": 75, "z": -32},
+                "dimension": "minecraft:the_end",
+            },
+        ]
+    )
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda *_args: next(responses))
+    )
+
+    assert dragon_combat._cage_blocks(client, crystal, _ready_end_state()) is None
+    assert dragon_combat._cage_blocks(client, crystal, _ready_end_state()) is None
+    assert dragon_combat._cage_blocks(client, crystal, _ready_end_state()) == []
+
+
+def test_partial_crystal_cage_evidence_never_authorizes_ranged_attack():
+    crystal = {"position": {"x": 80, "y": 75, "z": -32}}
+    responses = iter(
+        [
+            {
+                "found": [
+                    {"x": 82, "y": 75, "z": -32, "block": "minecraft:iron_bars"}
+                ],
+                "complete": False,
+                "center": {"x": 80, "y": 75, "z": -32},
+                "dimension": "minecraft:the_end",
+            },
+            {
+                "found": [
+                    {"x": 82, "y": 75, "z": -32, "block": "minecraft:iron_bars"}
+                ],
+                "complete": True,
+                "center": {"x": 80, "y": 75, "z": -32},
+                "dimension": "minecraft:the_end",
+            },
+        ]
+    )
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda *_args: next(responses))
+    )
+
+    assert dragon_combat._cage_blocks(client, crystal, _ready_end_state()) is None
+    assert dragon_combat._cage_blocks(client, crystal, _ready_end_state()) == []
 
 
 def test_crystal_cage_opening_requires_verified_bar_removal(monkeypatch):
@@ -786,6 +1114,39 @@ def test_dragon_kit_provisioning_replaces_depleted_gear_and_raw_food():
         "minecraft:iron_sword": 2,
         "minecraft:arrow": 2,
         "minecraft:bread": 6,
+    }
+
+
+@pytest.mark.parametrize(
+    ("material", "damage", "expected_count"),
+    (
+        ("leather", 0, 1),
+        ("iron", 200, 2),
+    ),
+    ids=("full_non_iron", "full_nearly_broken_iron"),
+)
+def test_dragon_kit_provisioning_targets_replacement_armor(
+    material, damage, expected_count
+):
+    kit = _complete_dragon_kit()
+    kit["armor"] = [
+        {
+            "id": f"minecraft:{material}_{piece}",
+            "count": 1,
+            "damage": damage,
+            "max_damage": 250,
+        }
+        for piece in ("helmet", "chestplate", "leggings", "boots")
+    ]
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: kit if route == "get_inventory" else {}
+        )
+    )
+
+    assert dragon_combat.dragon_kit_provision_requirements(client) == {
+        f"minecraft:iron_{piece}": expected_count
+        for piece in ("helmet", "chestplate", "leggings", "boots")
     }
 
 

@@ -589,7 +589,7 @@ public class CommandDispatcher {
                 break;
 
             case "select_slot":
-                validations.put("slot", ParameterValidator.integer(0, 35));
+                validations.put("slot", ParameterValidator.integer(0, 8));
                 break;
 
             case "place_block":
@@ -604,6 +604,13 @@ public class CommandDispatcher {
                 break;
 
             case "use_item":
+                validations.put("duration_ms", ParameterValidator.integer(0, 60000));
+                validations.put("hand", ParameterValidator.oneOf(
+                    "MAIN_HAND", "OFF_HAND", "main_hand", "off_hand"));
+                validations.put("slot", ParameterValidator.integer(0, 35));
+                validations.put("quantity", ParameterValidator.integer(1, 64));
+                break;
+
             case "throw_item":
                 validations.put("slot", ParameterValidator.integer(0, 35));
                 validations.put("quantity", ParameterValidator.integer(1, 64));

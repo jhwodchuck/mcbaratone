@@ -66,7 +66,9 @@ class TestHungerSystem(unittest.TestCase):
         self.mock_client.transport.dispatch.assert_any_call("select_slot", {"slot": 8})
         
         # Verify use_item called
-        self.mock_client.transport.dispatch.assert_any_call("use_item", {"duration_ms": 1600})
+        self.mock_client.transport.dispatch.assert_any_call(
+            "use_item", {"hand": "MAIN_HAND", "duration_ms": 1600}
+        )
 
     def test_no_food_found(self):
         # Setup low hunger
@@ -90,7 +92,9 @@ class TestHungerSystem(unittest.TestCase):
         
         # Should NOT call use_item
         with self.assertRaises(AssertionError):
-            self.mock_client.transport.dispatch.assert_any_call("use_item", {"duration_ms": 1600})
+            self.mock_client.transport.dispatch.assert_any_call(
+                "use_item", {"hand": "MAIN_HAND", "duration_ms": 1600}
+            )
 
     def test_safety_system_signals_death_without_background_respawn(self):
         calls = []
@@ -190,7 +194,7 @@ class TestHungerSystem(unittest.TestCase):
         with exclusive_combat_action(self.mock_client, blocking=False) as acquired:
             self.assertTrue(acquired)
         self.mock_client.transport.dispatch.assert_any_call(
-            "use_item", {"duration_ms": 1600}
+            "use_item", {"hand": "MAIN_HAND", "duration_ms": 1600}
         )
 
     def test_combat_defers_through_ambiguous_healing_release(self):
@@ -238,7 +242,7 @@ class TestHungerSystem(unittest.TestCase):
         with exclusive_combat_action(self.mock_client, blocking=False) as acquired:
             self.assertTrue(acquired)
         self.mock_client.transport.dispatch.assert_any_call(
-            "use_item", {"duration_ms": 2500}
+            "use_item", {"hand": "MAIN_HAND", "duration_ms": 2500}
         )
 
     def test_malformed_present_snapshot_skip_count_fails_closed(self):

@@ -147,6 +147,7 @@ class BotReadiness:
             and self.health >= config.required_health
             and self.food >= config.required_food
             and self.has_weapon
+            and self.has_shield
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -243,11 +244,11 @@ class ExpeditionConfig:
     bot_names: Tuple[str, ...] = DEFAULT_BOTS
     eye_carrier: str = "Bot07"
     required_armor_pieces: int = 4
-    required_health: float = 12.0
-    required_food: int = 10
+    required_health: float = 18.0
+    required_food: int = 18
     required_eyes: int = 12
     required_archers: int = 2
-    required_arrows_per_archer: int = 8
+    required_arrows_per_archer: int = 32
     stale_threshold_seconds: float = 5.0
     movement_tolerance: float = 3.0
     navigation_timeout_seconds: float = 12.0
@@ -277,11 +278,11 @@ class ExpeditionConfig:
             bot_names=tuple(str(item) for item in value.get("bot_names", DEFAULT_BOTS)),
             eye_carrier=str(value.get("eye_carrier", "Bot07")),
             required_armor_pieces=int(value.get("required_armor_pieces", 4)),
-            required_health=float(value.get("required_health", 12)),
-            required_food=int(value.get("required_food", 10)),
+            required_health=float(value.get("required_health", 18)),
+            required_food=int(value.get("required_food", 18)),
             required_eyes=int(value.get("required_eyes", 12)),
             required_archers=int(value.get("required_archers", 2)),
-            required_arrows_per_archer=int(value.get("required_arrows_per_archer", 8)),
+            required_arrows_per_archer=int(value.get("required_arrows_per_archer", 32)),
             stale_threshold_seconds=float(value.get("stale_threshold_seconds", 5)),
             movement_tolerance=float(value.get("movement_tolerance", 3)),
             navigation_timeout_seconds=float(value.get("navigation_timeout_seconds", 12)),

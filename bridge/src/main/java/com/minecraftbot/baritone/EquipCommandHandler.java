@@ -18,16 +18,18 @@ import net.minecraft.world.item.ItemStack;
  * Handler for equip command.
  * Equips an armor/offhand item by moving it into the target slot.
  */
-public class EquipCommandHandler implements CommandHandler {
+public class EquipCommandHandler extends AsyncCommandHandler {
+
+    private static final int ACTION_SCHEDULE_TIMEOUT_SECONDS = 2;
 
     @Override
-    public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
-        if (client.player == null || client.gameMode == null) {
-            return CompletableFuture.completedFuture(CommandResult.error("Player not available"));
-        }
-
-        try {
-            CommandResult result = client.submit(() -> {
+    public CompletableFuture<CommandResult> execute(JsonObject params, Minecraft client,
+            IBaritone baritone, Socket clientSocket) {
+        return executeOnMainThread(client, () -> {
+            try {
+                if (client.player == null || client.gameMode == null) {
+                    return CommandResult.error("Player not available");
+                }
                 String slotName = params.has("slot") ? params.get("slot").getAsString().toLowerCase() : "";
                 String itemId = params.has("item") ? params.get("item").getAsString() : "";
 
@@ -49,7 +51,15 @@ public class EquipCommandHandler implements CommandHandler {
                     return CommandResult.error("Item not found in inventory: " + itemId);
                 }
 
-                AbstractContainerMenu handler = client.player.inventoryMenu;
+                AbstractContainerMenu handler = client.player.containerMenu;
+                if (handler != client.player.inventoryMenu) {
+                    return CommandResult.error(
+                        "Close the active container screen before equipping");
+                }
+                if (!handler.getCarried().isEmpty()) {
+                    return CommandResult.error(
+                        "Cannot equip while the inventory cursor is occupied");
+                }
                 Integer sourceSlotId = findScreenSlotId(handler, inv, sourceInventoryIndex);
                 Integer targetSlotId = findScreenSlotId(handler, inv, targetInventoryIndex);
 
@@ -60,21 +70,38 @@ public class EquipCommandHandler implements CommandHandler {
                 int syncId = handler.containerId;
                 client.gameMode.handleContainerInput(syncId, sourceSlotId, 0, ContainerInput.PICKUP, client.player);
                 client.gameMode.handleContainerInput(syncId, targetSlotId, 0, ContainerInput.PICKUP, client.player);
+                // PICKUP swaps an occupied target onto the cursor. Put that
+                // displaced stack back into the source slot before returning.
+                if (!handler.getCarried().isEmpty()) {
+                    client.gameMode.handleContainerInput(
+                        syncId, sourceSlotId, 0, ContainerInput.PICKUP, client.player);
+                }
+
+                ItemStack equipped = inv.getItem(targetInventoryIndex);
+                boolean targetVerified = !equipped.isEmpty()
+                    && BuiltInRegistries.ITEM.getKey(equipped.getItem()).equals(
+                        Identifier.parse(itemId));
+                if (!targetVerified || !handler.getCarried().isEmpty()) {
+                    return CommandResult.error(
+                        "Equip postcondition failed for " + slotName);
+                }
 
                 JsonObject data = new JsonObject();
                 data.addProperty("equipped", true);
                 data.addProperty("slot", slotName);
                 data.addProperty("item", itemId);
+                data.addProperty("cursor_empty", true);
                 return CommandResult.success(data);
-            }).get();
-
-            return CompletableFuture.completedFuture(result);
-        } catch (Exception e) {
-            return CompletableFuture.completedFuture(CommandResult.error("Equip failed: " + e.getMessage()));
-        }
+            } catch (Exception e) {
+                return CommandResult.error("Equip failed: " + e.getMessage());
+            }
+        }).completeOnTimeout(
+            CommandResult.error("Timed out before equip reached the client thread"),
+            ACTION_SCHEDULE_TIMEOUT_SECONDS,
+            java.util.concurrent.TimeUnit.SECONDS);
     }
 
-    private Integer getTargetInventoryIndex(String slotName) {
+    static Integer getTargetInventoryIndex(String slotName) {
         switch (slotName) {
             case "head":
             case "helmet":

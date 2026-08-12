@@ -1,9 +1,12 @@
 package com.minecraftbot.baritone;
 
 import com.google.gson.JsonObject;
+import net.minecraft.world.InteractionHand;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BridgeContractValidationTest {
@@ -55,5 +58,61 @@ class BridgeContractValidationTest {
 
         assertFalse(result.isSuccess());
         assertTrue(result.getErrorMessage().contains("non-negative"));
+    }
+
+    @Test
+    void useItemParsesExplicitHandsAndPreservesAutomaticDefault() {
+        assertNull(UseItemCommandHandler.requestedHand(new JsonObject()));
+
+        JsonObject main = new JsonObject();
+        main.addProperty("hand", "main_hand");
+        assertEquals(
+            InteractionHand.MAIN_HAND,
+            UseItemCommandHandler.requestedHand(main));
+
+        JsonObject offhand = new JsonObject();
+        offhand.addProperty("hand", "OFF_HAND");
+        assertEquals(
+            InteractionHand.OFF_HAND,
+            UseItemCommandHandler.requestedHand(offhand));
+        assertTrue(UseItemCommandHandler.requiresKeyPulse(null, 0));
+        assertTrue(UseItemCommandHandler.requiresKeyPulse(
+            InteractionHand.OFF_HAND, 900));
+        assertFalse(UseItemCommandHandler.requiresKeyPulse(
+            InteractionHand.MAIN_HAND, 0));
+    }
+
+    @Test
+    void useItemRejectsUnknownHandBeforeExecution() throws Exception {
+        JsonObject params = new JsonObject();
+        params.addProperty("hand", "left_hand");
+
+        CommandResult result = new UseItemCommandHandler()
+            .execute(params, null, null, null).get();
+
+        assertFalse(result.isSuccess());
+        assertTrue(result.getErrorMessage().contains("MAIN_HAND or OFF_HAND"));
+    }
+
+    @Test
+    void useItemReportsObservedOffhandBlockingState() {
+        JsonObject data = new JsonObject();
+
+        UseItemCommandHandler.addUseState(
+            data, true, true, InteractionHand.OFF_HAND);
+
+        assertTrue(data.get("is_using_item").getAsBoolean());
+        assertTrue(data.get("is_blocking").getAsBoolean());
+        assertEquals("OFF_HAND", data.get("active_hand").getAsString());
+    }
+
+    @Test
+    void combatSlotsAndEquipTargetsUsePlayerInventoryIndices() {
+        assertTrue(SelectSlotCommandHandler.validSlot(0));
+        assertTrue(SelectSlotCommandHandler.validSlot(8));
+        assertFalse(SelectSlotCommandHandler.validSlot(9));
+        assertEquals(40, EquipCommandHandler.getTargetInventoryIndex("offhand"));
+        assertEquals(39, EquipCommandHandler.getTargetInventoryIndex("helmet"));
+        assertNull(EquipCommandHandler.getTargetInventoryIndex("hotbar"));
     }
 }

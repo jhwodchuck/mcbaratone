@@ -11,20 +11,29 @@ import threading
 import time
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from ...common.combat import defend_or_flee, look_at_entity
+from ...common.combat import defend_or_flee
 from ...common.end import enter_end_portal
-from ...common.inventory import equip_best_weapon, reset_inventory_cache, select_item
+from ...common.dragon_readiness import (
+    dragon_kit_provision_requirements,
+    dragon_kit_ready,
+)
+from ...common.inventory import (
+    equip_best_armor,
+    equip_best_weapon,
+    has_durable_full_armor,
+    reset_inventory_cache,
+)
 from ...common.navigation import goto
 from ...common.resources import ensure_supplies
 from ..bridge_guard import NonOpClientGuard
 from ..camp_armor import provision_camp_armor
 from .end_sequence import (
-    DragonRole,
     DragonSupportCoordinator,
     DragonSupportOutcome,
     PortalSequence,
     inspect_portal,
 )
+from .dragon_actions import default_dragon_callback
 from .escort import (
     EscortDecision,
     EscortFleet,
@@ -193,12 +202,15 @@ def prepare_armor(
     minimum_torches = int(manifest.get("surface_expedition_safety", {}).get("minimum_torches", 0))
     for name in config.bot_names:
         readiness = evaluate_bot_readiness(bot_clients[name], name)
-        if readiness.armor_pieces >= config.required_armor_pieces:
+        if (
+            readiness.armor_pieces >= config.required_armor_pieces
+            and has_durable_full_armor(bot_clients[name], minimum_material="iron")
+        ):
             continue
         bot = manifest.get("bots", {}).get(name, {})
         crafting_table = expedition.get("crafting_table", bot["crafting_table"])
         furnace = expedition.get("furnace", bot["furnace"])
-        success, _detail = provision_camp_armor(
+        _success, _detail = provision_camp_armor(
             bot_clients[name],
             storage_sources=storage,
             furnace=tuple(int(axis) for axis in furnace),
@@ -206,12 +218,30 @@ def prepare_armor(
             target_pieces=config.required_armor_pieces,
             minimum_torches=minimum_torches,
         )
+        requirements = dragon_kit_provision_requirements(bot_clients[name])
+        armor_requirements = {
+            item_id: count
+            for item_id, count in (requirements or {}).items()
+            if item_id.startswith("minecraft:iron_")
+            and item_id.rsplit("_", 1)[-1]
+            in {"helmet", "chestplate", "leggings", "boots"}
+        }
+        if armor_requirements:
+            ensure_supplies(
+                bot_clients[name],
+                armor_requirements,
+                poll_interval=1.0,
+                timeout=180,
+            )
+            equip_best_armor(bot_clients[name])
         verified = evaluate_bot_readiness(bot_clients[name], name)
         if (
-            not success
-            or not verified.alive
+            not verified.alive
             or not verified.survival
             or verified.armor_pieces < config.required_armor_pieces
+            or not has_durable_full_armor(
+                bot_clients[name], minimum_material="iron"
+            )
         ):
             break
     return collect_readiness(bot_clients, config)
@@ -357,6 +387,20 @@ def prepare_expedition(
                 pass
         try:
             equip_best_weapon(bot_clients[name])
+        except Exception:
+            pass
+        try:
+            requirements = dragon_kit_provision_requirements(bot_clients[name])
+            if requirements:
+                supplied = ensure_supplies(
+                    bot_clients[name],
+                    requirements,
+                    poll_interval=1.0,
+                    timeout=180,
+                )
+                if supplied.success:
+                    equip_best_armor(bot_clients[name])
+                    equip_best_weapon(bot_clients[name])
         except Exception:
             pass
     return collect_readiness(bot_clients, config)
@@ -510,76 +554,6 @@ def build_escort_fleet(
     )
 
 
-def default_dragon_callback(
-    _name: str,
-    client: Any,
-    role: DragonRole,
-    target: Optional[Mapping[str, Any]],
-) -> bool:
-    """One bounded role tick; targeting is assigned centrally."""
-    if role in {DragonRole.CHILD_GUARD, DragonRole.RESERVE}:
-        defend_or_flee(client)
-        return True
-    if target is None:
-        return True
-    position = target.get("position", {})
-    if not isinstance(position, Mapping):
-        return False
-    if role is DragonRole.CRYSTAL_ARCHER:
-        if not select_item(client, "minecraft:bow", allow_swap=True):
-            return False
-        if not look_at_entity(client, dict(target)):
-            return False
-        response = _unwrap(
-            client.transport.dispatch(
-                "use_item",
-                {"hand": "MAIN_HAND", "duration_ms": 1100},
-            )
-        )
-        return bool(response.get("holding") or response.get("used"))
-    try:
-        dragon_x = float(position["x"])
-        dragon_y = float(position["y"])
-        dragon_z = float(position["z"])
-    except (KeyError, TypeError, ValueError):
-        return False
-    if abs(dragon_x) > 12 or abs(dragon_z) > 12 or dragon_y > 85:
-        return True
-    state = _unwrap(client.transport.dispatch("get_state", {}))
-    bot_position = _position(state)
-    if bot_position is None:
-        return False
-    center_distance = math.dist(
-        (bot_position.x, bot_position.y, bot_position.z),
-        (0.0, 64.0, 0.0),
-    )
-    if center_distance > 8.0:
-        before = bot_position
-        reached = goto(client, 0, 64, 0, timeout=8, tolerance=6.0)
-        if not reached:
-            after = _position(_unwrap(client.transport.dispatch("get_state", {})))
-            if (
-                after is None
-                or bool(getattr(client, "_last_navigation_survival_abort", False))
-                or math.dist((before.x, before.y, before.z), (after.x, after.y, after.z))
-                < 1.5
-            ):
-                return False
-        return True
-    if not look_at_entity(client, dict(target)) or not equip_best_weapon(client):
-        return False
-    target_id = target.get("id")
-    if target_id is None:
-        return False
-    response = _unwrap(
-        client.transport.dispatch(
-            "attack_entity",
-            {"entity_id": int(target_id), "min_cooldown": 0.9},
-        )
-    )
-    return response.get("attacked") is True or response.get("reason") == "cooldown"
-
-
 class ExpeditionCoordinator:
     """Fail-closed state machine controlled by explicit operator actions."""
 
@@ -713,6 +687,19 @@ class ExpeditionCoordinator:
         self.portal.request_entry()
         if not self.portal.entry_allowed(leader, leader_fresh=fresh, portal_active=inspection.active):
             return self.hold("leader must enter The End first")
+        report = collect_readiness(self.bot_clients, self.config)
+        strict_ready = all(
+            (readiness := report.by_name(name)) is not None
+            and readiness.online
+            and readiness.alive
+            and readiness.survival
+            and readiness.health >= 18.0
+            and readiness.food >= 18
+            and dragon_kit_ready(self.bot_clients[name])
+            for name in self.config.bot_names
+        )
+        if not strict_ready:
+            return self.hold("strict dragon readiness failed before End entry")
         self._set(ExpeditionPhase.ENTERING_END, "sequential entry authorized", leader_snapshot=leader, last_action=action)
         entered = self.portal.enter_bots(self.bot_clients, inspection.center)
         if set(entered) != set(self.config.bot_names):
@@ -755,11 +742,7 @@ class ExpeditionCoordinator:
                 leader_fresh=self.leader_tracker.is_fresh(leader),
             )
             if outcome is DragonSupportOutcome.HOLD:
-                return self._set(
-                    phase,
-                    "dragon support retrying",
-                    leader_snapshot=leader,
-                )
+                return self.hold("dragon support failed closed")
             if outcome is DragonSupportOutcome.COMPLETE:
                 return self._set(ExpeditionPhase.COMPLETE, "dragon defeated", leader_snapshot=leader)
             return self._set(phase, "dragon support running", leader_snapshot=leader)
@@ -782,7 +765,7 @@ def build_coordinator(
         tuple(protected_names) + (leader_tracker.leader_name,),
         required_archers=config.required_archers,
         required_arrows_per_archer=config.required_arrows_per_archer,
-        hold_on_callback_failure=False,
+        hold_on_callback_failure=True,
     )
     return ExpeditionCoordinator(config, store, leader_tracker, bot_clients, escort, tracker, portal, dragon)
 

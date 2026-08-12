@@ -71,12 +71,37 @@ def _prepare_ranged_shield(client, target, state, shield) -> bool:
     return bool(shield["ready"])
 
 
+def _verified_shield_hold(result) -> bool:
+    """Require bridge proof that the offhand shield began its held use."""
+    data = _inventory_payload(result)
+    return bool(
+        isinstance(data, dict)
+        and data.get("holding") is True
+        and data.get("hand") == "OFF_HAND"
+        and data.get("active_hand") == "OFF_HAND"
+        and data.get("held_item") == "minecraft:shield"
+        and data.get("is_using_item") is True
+    )
+
+
 def _boss_attack_authorized(client, target, state) -> bool:
     """Require explicit, exact intent before provoking a boss."""
     assessments = api.assess_threats([target], state)
-    if not assessments or assessments[0].style != api.AttackStyle.BOSS:
+    from .combat_intent import (
+        boss_action_context_allowed,
+        current_combat_intent,
+    )
+    from .combat_targeting import normalize_mob_type
+
+    target_type = normalize_mob_type(target.get("type"))
+    boss_action = bool(
+        (assessments and assessments[0].style == api.AttackStyle.BOSS)
+        or target_type == "end_crystal"
+    )
+    if not boss_action:
         return True
-    from .combat_intent import current_combat_intent
+    if not boss_action_context_allowed(target, state):
+        return False
 
     intent = current_combat_intent(client)
     return bool(
@@ -213,7 +238,25 @@ def _supervise_approach(
         with exclusive_combat_action(client) as acquired:
             if not acquired:
                 return False
-            dispatch_held_item_use(client, SHIELD_HOLD_MS)
+            result = dispatch_held_item_use(
+                client, SHIELD_HOLD_MS, hand="OFF_HAND"
+            )
+        if not _verified_shield_hold(result):
+            shield["ready"] = False
+            intervention["reason"] = "shield_use_unverified"
+            api.combat_telemetry.record_combat_action(
+                client,
+                "shield_hold",
+                outcome="unverified",
+                bridge_result=result,
+            )
+            return True
+        api.combat_telemetry.record_combat_action(
+            client,
+            "shield_hold",
+            outcome="started",
+            bridge_result=result,
+        )
         released_at = time.monotonic()
         shield["blocked_until"] = released_at
         shield["refresh_at"] = released_at + SHIELD_REFRESH_SECONDS
@@ -351,11 +394,10 @@ def execute_safe_combat(
 
         # Keep shielding ranged mobs even inside 4.5m. Live Bot16 bypassed its
         # shield when a spawner placed a blaze at 1.2m and burned to death.
-        ranged_approach["active"] = _prepare_ranged_shield(
-            client, target, state, shield
-        )
-        if ranged_approach["active"]:
-            navigation_watchdog()
+        ranged_approach["active"] = _prepare_ranged_shield(client, target, state, shield)
+        if ranged_approach["active"] and navigation_watchdog():
+            client.transport.dispatch("cancel", {})
+            return finish(str(intervention["reason"] or "shield_unavailable"))
 
         if distance < 4.5:
             if time.monotonic() < shield["blocked_until"]:

@@ -375,19 +375,17 @@ def equip_best_armor(client) -> int:
         if not candidates:
             continue
 
-        best_rank, best_remaining, best_item = max(
-            candidates, key=lambda entry: (entry[0], entry[1])
+        from .combat_loadout import choose_armor_replacement
+        selected = choose_armor_replacement(
+            candidates,
+            current_rank=current_rank,
+            current_remaining=current_remaining,
+            minimum_rank=_ARMOR_RANK["iron"],
+            minimum_remaining=MIN_COMBAT_ARMOR_DURABILITY,
         )
-        same_tier_replacement = (
-            best_rank == current_rank
-            and current_remaining is not None
-            and current_remaining < MIN_COMBAT_ARMOR_DURABILITY
-            and best_remaining > current_remaining
-        )
-        if best_rank < current_rank or (
-            best_rank == current_rank and not same_tier_replacement
-        ):
+        if selected is None:
             continue
+        _best_rank, _best_remaining, best_item = selected
 
         try:
             # QUICK_MOVE on a player-container slot is the same verified path
