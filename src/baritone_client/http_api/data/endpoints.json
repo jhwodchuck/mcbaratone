@@ -1,0 +1,378 @@
+[
+  {
+    "name": "login",
+    "category": "auth",
+    "method": "POST",
+    "path": "/api/login",
+    "description": "Create a session token for subsequent requests.",
+    "auth": "none",
+    "request_schema": {
+      "username": "string",
+      "password": "string"
+    },
+    "response_schema": {
+      "token": "string",
+      "expires_in": "integer"
+    }
+  },
+  {
+    "name": "logout",
+    "category": "auth",
+    "method": "POST",
+    "path": "/api/logout",
+    "description": "Invalidate the current token or session cookie.",
+    "auth": "token",
+    "request_schema": {},
+    "response_schema": {
+      "ok": "boolean"
+    }
+  },
+  {
+    "name": "session",
+    "category": "auth",
+    "method": "GET",
+    "path": "/api/session",
+    "description": "Return metadata about the active session, if any.",
+    "auth": "token",
+    "request_schema": {},
+    "response_schema": {
+      "user": "string",
+      "expires_at": "string",
+      "scopes": [
+        "control",
+        "settings",
+        "status"
+      ]
+    }
+  },
+  {
+    "name": "health",
+    "category": "meta",
+    "method": "GET",
+    "path": "/api/health",
+    "description": "Simple readiness/liveness probe.",
+    "auth": "optional",
+    "request_schema": {},
+    "response_schema": {
+      "ok": "boolean",
+      "uptime_ms": "integer"
+    }
+  },
+  {
+    "name": "status",
+    "category": "status",
+    "method": "GET",
+    "path": "/api/status",
+    "description": "Return the active goal, queued tasks, and player position.",
+    "auth": "token",
+    "request_schema": {},
+    "response_schema": {
+      "state": [
+        "idle",
+        "pathing",
+        "paused",
+        "stuck",
+        "cooldown"
+      ],
+      "position": {
+        "x": "number",
+        "y": "number",
+        "z": "number",
+        "dimension": "string"
+      },
+      "goal": {
+        "type": [
+          "coordinate",
+          "block",
+          "follow"
+        ],
+        "x": "number",
+        "y": "number",
+        "z": "number",
+        "dimension": "string"
+      },
+      "queued_operations": "array",
+      "paused": "boolean"
+    }
+  },
+  {
+    "name": "queue",
+    "category": "status",
+    "method": "GET",
+    "path": "/api/queue",
+    "description": "Inspect pending task queue and their states.",
+    "auth": "token",
+    "request_schema": {},
+    "response_schema": {
+      "current": "object",
+      "pending": "array",
+      "completed": "array"
+    }
+  },
+  {
+    "name": "operations-history",
+    "category": "status",
+    "method": "GET",
+    "path": "/api/operations/history",
+    "description": "Recent control operations and timestamps.",
+    "auth": "token",
+    "request_schema": {},
+    "response_schema": {
+      "recent": [
+        {
+          "name": "string",
+          "state": [
+            "submitted",
+            "running",
+            "succeeded",
+            "failed"
+          ],
+          "queued_at": "string"
+        }
+      ]
+    }
+  },
+  {
+    "name": "set-goal",
+    "category": "pathing",
+    "method": "POST",
+    "path": "/api/path/goal",
+    "description": "Set the pathing goal without immediately starting movement.",
+    "auth": "token",
+    "request_schema": {
+      "goal": {
+        "type": [
+          "coordinate",
+          "block",
+          "waypoint"
+        ],
+        "x": "number",
+        "y": "number",
+        "z": "number",
+        "dimension": "string"
+      },
+      "follow_best": "boolean"
+    },
+    "response_schema": {
+      "goal_id": "string",
+      "ack": "boolean"
+    }
+  },
+  {
+    "name": "goto",
+    "category": "pathing",
+    "method": "POST",
+    "path": "/api/path/goto",
+    "description": "Start navigating toward the provided goal immediately.",
+    "auth": "token",
+    "request_schema": {
+      "x": "number",
+      "y": "number",
+      "z": "number",
+      "dimension": "string",
+      "allow_break": "boolean",
+      "allow_place": "boolean"
+    },
+    "response_schema": {
+      "task_id": "string",
+      "state": [
+        "submitted",
+        "running"
+      ]
+    }
+  },
+  {
+    "name": "pause",
+    "category": "pathing",
+    "method": "POST",
+    "path": "/api/path/pause",
+    "description": "Pause the current pathing task.",
+    "auth": "token",
+    "request_schema": {
+      "reason": "string"
+    },
+    "response_schema": {
+      "state": [
+        "paused",
+        "idle"
+      ]
+    }
+  },
+  {
+    "name": "resume",
+    "category": "pathing",
+    "method": "POST",
+    "path": "/api/path/resume",
+    "description": "Resume a paused task using the last known goal.",
+    "auth": "token",
+    "request_schema": {
+      "task_id": "string"
+    },
+    "response_schema": {
+      "state": [
+        "running",
+        "idle"
+      ]
+    }
+  },
+  {
+    "name": "stop",
+    "category": "pathing",
+    "method": "POST",
+    "path": "/api/path/stop",
+    "description": "Cancel the active task and clear the goal.",
+    "auth": "token",
+    "request_schema": {
+      "reason": "string"
+    },
+    "response_schema": {
+      "state": "string"
+    }
+  },
+  {
+    "name": "mine",
+    "category": "commands",
+    "method": "POST",
+    "path": "/api/command/mine",
+    "description": "Mine a set of blocks and optionally stop when the target count is reached.",
+    "auth": "token",
+    "request_schema": {
+      "blocks": [
+        "string"
+      ],
+      "target_count": "integer"
+    },
+    "response_schema": {
+      "task_id": "string",
+      "accepted": "boolean"
+    }
+  },
+  {
+    "name": "farm",
+    "category": "commands",
+    "method": "POST",
+    "path": "/api/command/farm",
+    "description": "Harvest and replant crops around the player.",
+    "auth": "token",
+    "request_schema": {
+      "crops": [
+        "string"
+      ],
+      "radius": "number"
+    },
+    "response_schema": {
+      "task_id": "string",
+      "accepted": "boolean"
+    }
+  },
+  {
+    "name": "build",
+    "category": "commands",
+    "method": "POST",
+    "path": "/api/command/build",
+    "description": "Place blocks according to a schematic reference or macro.",
+    "auth": "token",
+    "request_schema": {
+      "schematic": "string",
+      "origin": {
+        "x": "number",
+        "y": "number",
+        "z": "number"
+      }
+    },
+    "response_schema": {
+      "task_id": "string",
+      "accepted": "boolean"
+    }
+  },
+  {
+    "name": "custom-command",
+    "category": "commands",
+    "method": "POST",
+    "path": "/api/command/custom",
+    "description": "Send a raw Baritone command string, like those typed in chat.",
+    "auth": "token",
+    "request_schema": {
+      "command": "string"
+    },
+    "response_schema": {
+      "task_id": "string",
+      "accepted": "boolean"
+    }
+  },
+  {
+    "name": "settings-list",
+    "category": "settings",
+    "method": "GET",
+    "path": "/api/settings",
+    "description": "List current setting values.",
+    "auth": "token",
+    "request_schema": {},
+    "response_schema": {
+      "settings": "object"
+    }
+  },
+  {
+    "name": "settings-get",
+    "category": "settings",
+    "method": "GET",
+    "path": "/api/settings/{name}",
+    "description": "Inspect a single setting including its constraints.",
+    "auth": "token",
+    "request_schema": {},
+    "response_schema": {
+      "name": "string",
+      "value": "any",
+      "default": "any",
+      "type": [
+        "boolean",
+        "integer",
+        "double",
+        "enum",
+        "string"
+      ],
+      "enum": "array"
+    }
+  },
+  {
+    "name": "settings-set",
+    "category": "settings",
+    "method": "PUT",
+    "path": "/api/settings/{name}",
+    "description": "Update a setting value.",
+    "auth": "token",
+    "request_schema": {
+      "value": "any"
+    },
+    "response_schema": {
+      "name": "string",
+      "value": "any"
+    }
+  },
+  {
+    "name": "events",
+    "category": "status",
+    "method": "GET",
+    "path": "/api/events",
+    "description": "Return a pollable list of server events such as progress updates.",
+    "auth": "token",
+    "request_schema": {
+      "since_id": "string"
+    },
+    "response_schema": {
+      "events": [
+        {
+          "id": "string",
+          "type": [
+            "progress",
+            "chat",
+            "error",
+            "heartbeat"
+          ],
+          "payload": "object",
+          "created_at": "string"
+        }
+      ]
+    }
+  }
+]
