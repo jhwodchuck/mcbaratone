@@ -56,18 +56,21 @@ def craft_emergency_bread_from_carried_wheat(
     client: Any,
     *,
     maximum_bread: int = 6,
-    minimum_reserve: int = 1,
+    minimum_reserve: Optional[int] = None,
 ) -> bool:
     """Turn carried wheat into enough bread for a verified food reserve."""
     from .inventory import count_item
 
+    maximum_bread = max(1, int(maximum_bread))
+    if minimum_reserve is None:
+        minimum_reserve = maximum_bread
     minimum_reserve = max(1, int(minimum_reserve))
     reserve = emergency_food_count(client)
     if reserve >= minimum_reserve:
         return True
     wheat = count_item(client, "minecraft:wheat")
     bread_to_craft = min(
-        max(1, int(maximum_bread)),
+        maximum_bread,
         wheat // 3,
         minimum_reserve - reserve,
     )
