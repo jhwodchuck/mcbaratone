@@ -78,13 +78,17 @@ class NonOpClientGuard:
             raise SafetyInterlockError(
                 "Protected player(s) are online: " + ", ".join(protected_online)
             )
-        if bool(state.get("is_dead")) or float(state.get("health", 0.0) or 0.0) <= 0:
+        try:
+            health = float(state.get("health", 0.0) or 0.0)
+        except (TypeError, ValueError) as error:
+            raise WorkerSafetyError("Bridge health attestation is invalid") from error
+        if bool(state.get("is_dead")) or health <= 0:
             raise WorkerSafetyError(f"{self.bot_name} has no health")
         self.require_survival(state)
         return state
 
     def require_survival(self, state: dict[str, Any] | None = None) -> None:
-        current = state or self.state()
+        current = self.require_safe() if state is None else state
         mode = str(current.get("game_mode", ""))
         if mode != "survival":
             raise SafetyInterlockError(

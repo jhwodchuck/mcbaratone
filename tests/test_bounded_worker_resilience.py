@@ -85,6 +85,7 @@ def test_non_op_guard_accepts_only_the_exact_attested_identity() -> None:
         ({"online_players": None}, "online-player"),
         ({"online_players": ["Bot18"]}, "online roster"),
         ({"health": 0.0}, "no health"),
+        ({"health": "unknown"}, "health attestation"),
     ],
 )
 def test_non_op_guard_fails_closed_on_incomplete_or_unsafe_attestation(
@@ -106,6 +107,11 @@ def test_non_op_guard_stops_when_a_protected_player_is_online() -> None:
 def test_position_read_revalidates_the_full_safety_attestation() -> None:
     with pytest.raises(SafetyInterlockError, match="Survival"):
         _guard(_safe_state(game_mode="creative")).position()
+
+
+def test_direct_survival_requirement_revalidates_identity_and_profile() -> None:
+    with pytest.raises(WorkerSafetyError, match="non_op_client"):
+        _guard(_safe_state(automation_profile="op_client")).require_survival()
 
 
 class _ScriptedTransport:
