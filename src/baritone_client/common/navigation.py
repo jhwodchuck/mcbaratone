@@ -19,8 +19,6 @@ _REGEN_FOOD_FLOOR = 18
 _MAX_CRITICAL_TRAVEL_DISTANCE = 48.0
 _MAX_CONSECUTIVE_STATE_MISSES = 2
 _VERIFIED_STATE_FRESH_SECONDS = 30.0
-
-
 class _UnsafeNavigationTelemetry(RuntimeError):
     """The bridge returned state that cannot safely supervise movement."""
 
