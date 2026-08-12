@@ -5,25 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-try:
-    from ..core.exceptions import BridgeResponseTimeout
-except ImportError:  # Removed once the typed transport-timeout change is merged.
-    from ..core.exceptions import TransportError
-
-    class BridgeResponseTimeout(TransportError):
-        """Compatibility type for branches predating typed bridge timeouts."""
-
-        def __init__(
-            self,
-            route: str,
-            *,
-            transport_type: str,
-            request_sent: bool,
-        ) -> None:
-            super().__init__(f"Timeout waiting for bridge response (route: {route})")
-            self.route = route
-            self.transport_type = transport_type
-            self.request_sent = request_sent
+from ..core.exceptions import BridgeResponseTimeout
 
 
 READ_ONLY_ROUTES = {
