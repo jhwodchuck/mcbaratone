@@ -393,6 +393,63 @@ def test_water_backfilling_a_cleared_chunk_is_not_treated_as_flat():
 
     assert result.success is False
     assert [0, 0] not in progress.get("completed_chunks", [])
+    # Bug 8 regression: apply_then_reflow re-floods every "#sel set" box it
+    # is given, including the clear step's own "#sel set air" -- so this
+    # chunk fails at the CLEAR stage (never successfully cleared at all),
+    # not the fill stage. reason_class must say "clear_liquid", not the
+    # bare "liquid" both verdict functions used to share.
+    assert progress["chunks"]["0,0"]["reason_class"] == "clear_liquid"
+
+
+def test_fill_stage_liquid_pit_is_distinguished_from_clear_stage_liquid():
+    """The counterpart to the test above: clearing genuinely succeeds (nothing
+    reclaims the clear-band "#sel set air"), but the fill step's placed
+    material gets reclaimed by water afterward -- a pit, strictly more
+    dangerous than untouched terrain, and it must report "fill_liquid" so
+    the two cases are distinguishable from reason_class alone.
+    """
+    world = FakeWorld(default_block="minecraft:air")
+    world.fill_box(-16, 40, -16, 31, 90, 31, "minecraft:stone")
+    honest = apply_honestly()
+
+    def pit_policy(world, box, block, attempt):
+        honest(world, box, block, attempt)
+        if block == "air":
+            return
+        (x1, y1, z1), (x2, y2, z2) = box
+        for x in range(min(x1, x2), max(x1, x2) + 1):
+            for y in range(min(y1, y2), max(y1, y2) + 1):
+                for z in range(min(z1, z2), max(z1, z2) + 1):
+                    world.set(x, y, z, "minecraft:water")
+
+    client = _client(world, fill_policy=pit_policy)
+    progress = {}
+
+    result = terraform_area(
+        client, center_x=0, center_z=0, target_y=64, radius_chunks=0,
+        clear_margin=30, fill_depth=12, progress=progress,
+    )
+
+    assert result.success is False
+    assert progress["chunks"]["0,0"]["reason_class"] == "fill_liquid"
+
+
+def test_clear_stage_liquid_and_fill_stage_liquid_report_distinct_reason_classes():
+    """Bug 8: clear_verdict/fill_verdict used to both return the bare
+    "liquid" reason_class. A clear-stage liquid means the chunk was never
+    touched (e.g. an untouched lake above target_y); a fill-stage liquid
+    means the fill excavated and failed to refill -- a pit. The two must be
+    distinguishable from reason_class alone, without cross-referencing which
+    band produced it.
+    """
+    clear_verdict, clear_reason = tv.clear_verdict("water", mode="strict")
+    fill_verdict, fill_reason = tv.fill_verdict("water", mode="strict")
+
+    assert clear_verdict == "fail_permanent"
+    assert fill_verdict == "fail_permanent"
+    assert clear_reason == "clear_liquid"
+    assert fill_reason == "fill_liquid"
+    assert clear_reason != fill_reason
 
 
 def test_regrowth_fails_in_strict_mode_but_passes_in_audit_mode():
@@ -478,6 +535,33 @@ def test_all_void_air_reads_are_unverified_not_done_and_not_failed():
     assert progress["chunks"]["0,0"]["status"] == "unverified"
 
 
+def test_a_single_unread_sample_prevents_a_pass_verdict():
+    """Review finding: verify_chunk_flat's verdict only checked
+    samples_failed > 0, never unknown_count -- a band that is entirely (or
+    partly) unread could still verdict "pass". One void_air among otherwise-
+    correct terrain must downgrade to "unverified", not slip through as a
+    silent success on the samples that WERE read.
+    """
+    world = _flat_world()
+    world.set(0, 65, 0, "minecraft:void_air")  # one anchor column, mid-scan gap
+    client = _client(world)
+
+    report = tv.verify_chunk_flat(client, 0, 0, target_y=64, profile="lean")
+
+    assert report.verdict == "unverified"
+    assert report.unknown_count >= 1
+    assert report.samples_failed == 0  # nothing was observed to be WRONG
+
+
+def test_target_y_near_the_world_ceiling_does_not_sample_out_of_world():
+    """Review finding: target_y itself was unclamped, so target_y+1/+2 could
+    exceed WORLD_MAX_Y and read guaranteed void_air -- an all-unknown clear
+    band that used to slip through as "pass" (fixed by the check above; this
+    pins the companion fix that the samples themselves stay in-world)."""
+    clear, _fill = tv.chunk_sample_positions(0, 0, target_y=319, clear_top=319 + 48, fill_bottom=300, profile="standard")
+    assert all(y <= tv.WORLD_MAX_Y for _x, y, _z in clear)
+
+
 def test_positive_control_short_circuits_before_the_full_pass():
     world = FakeWorld(default_block="minecraft:void_air")
     client = _client(world)
@@ -518,6 +602,66 @@ def test_unreadable_block_does_not_consume_a_retry_attempt():
     assert result.data.get("reason_class") in ("unloaded", "bridge_error")
 
 
+def test_unverified_does_not_burn_lifetime_attempt_budget():
+    """Bug 4 regression: the previous version of this test (above) never
+    actually checked the ledger's attempt count despite its name -- it
+    passed identically whether or not unverified spent lifetime budget.
+    An outcome that could not be observed (unloaded chunk, dropped bridge
+    read) is not evidence against the site and must never count toward the
+    same 5-attempt blacklist a genuinely observed-and-wrong failure does,
+    or a chunk that was never once successfully read could get permanently
+    blacklisted purely from chunk-loading lag.
+    """
+    def always_unloaded(client, x, z, target_y, **kw):
+        return TaskResult.fail(
+            "chunk not loaded", chunk=((x // 16) * 16, (z // 16) * 16),
+            retryable=True, reason_class="unloaded",
+        )
+
+    progress = {}
+    with patch("baritone_client.common.terraform.terraform_chunk", always_unloaded):
+        # More than DEFAULT_MAX_LIFETIME_ATTEMPTS (5) -- each call also
+        # re-sweeps the chunk a second time internally (Pass 2), so this is
+        # really 12 recorded unverified outcomes for the same chunk.
+        for _ in range(6):
+            terraform_area(
+                SimpleNamespace(), center_x=0, center_z=0, target_y=64,
+                radius_chunks=0, progress=progress,
+            )
+
+    entry = progress["chunks"]["0,0"]
+    assert entry["status"] == "unverified"
+    assert entry["attempts"] == 0
+    assert entry["retryable"] is not False
+
+
+def test_player_dead_is_classified_unverified_not_failed():
+    """Bug 5 regression: a dead bot never reached the world-read step, so
+    nothing was actually observed about the terrain -- the same as an
+    unloaded chunk or a dropped bridge call. It must land in the
+    "unverified" bucket, not "failed" (which means genuinely observed and
+    wrong), or a death mid-sweep would burn lifetime attempt budget for a
+    chunk nothing was ever learned about.
+    """
+    def dead_bot(client, x, z, target_y, **kw):
+        return TaskResult.fail(
+            "Bot is dead", chunk=((x // 16) * 16, (z // 16) * 16),
+            retryable=True, reason_class="player_dead",
+        )
+
+    progress = {}
+    with patch("baritone_client.common.terraform.terraform_chunk", dead_bot):
+        terraform_area(
+            SimpleNamespace(), center_x=0, center_z=0, target_y=64,
+            radius_chunks=0, progress=progress,
+        )
+
+    entry = progress["chunks"]["0,0"]
+    assert entry["status"] == "unverified"
+    assert entry["reason_class"] == "player_dead"
+    assert entry["attempts"] == 0
+
+
 def test_unrecognised_solid_block_passes_and_is_counted():
     world = _flat_world()
     world.set(8, 64, 8, "minecraft:some_future_block_nobody_has_seen")
@@ -526,6 +670,42 @@ def test_unrecognised_solid_block_passes_and_is_counted():
     report = tv.verify_chunk_flat(client, 0, 0, target_y=64, profile="lean", bands=("fill",))
 
     assert report.verdict == "pass"
+    # "and is counted" in this test's own name was never actually checked --
+    # the assertion above passed identically whether or not the block was
+    # tallied. It must show up in .tolerated so an operator auditing a
+    # "successful" sweep can see which chunks passed only because of an
+    # unrecognised material, not because the fill was verified exactly.
+    assert report.tolerated.get("unrecognised_fill_block") == 1
+
+
+def test_tolerated_unrecognised_fill_block_is_persisted_in_the_ledger():
+    """Bug 9 regression: verify_chunk_flat's `tolerated` dict used to be
+    computed and then dropped before it ever reached the ledger -- a
+    "successful" chunk gave no trace that anything unusual was tolerated to
+    get there. It must survive terraform_chunk's TaskResult and
+    terraform_ledger.record() into the persisted ledger entry.
+
+    apply_except leaves the pre-set unrecognised block untouched by the
+    real "#sel set stone" fill command -- apply_honestly (the default
+    policy) would otherwise legitimately overwrite it with plain stone
+    before verification ever re-reads it, which is exactly what happened
+    the first time this test was written and made it pass for the wrong
+    reason (there was nothing left to tolerate by the time verify ran).
+    """
+    world = _flat_world()
+    world.set(8, 64, 8, "minecraft:some_future_block_nobody_has_seen")
+    client = _client(world, fill_policy=apply_except([(8, 64, 8)]))
+    progress = {}
+
+    result = terraform_area(
+        client, center_x=0, center_z=0, target_y=64, radius_chunks=0,
+        clear_margin=10, fill_depth=12, progress=progress,
+    )
+
+    assert result.success, result.reason
+    entry = progress["chunks"]["0,0"]
+    assert entry["status"] == "done"
+    assert entry.get("tolerated", {}).get("unrecognised_fill_block") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -599,6 +779,63 @@ def test_three_consecutive_failures_trip_the_circuit_breaker():
 
     assert result.data.get("abort_scope") == "lap"
     assert len(calls) == 3
+
+
+def test_three_consecutive_unverified_chunks_trip_the_circuit_breaker():
+    """Wiring-level companion to the pure-unit breaker tests below: proves
+    sweep_pass actually calls breaker.observe with status="unverified" (not
+    folded into "failed"), so three unloaded chunks in a row still aborts
+    the lap instead of being silently swept through as if nothing were
+    wrong with the bridge/bot."""
+    def always_unloaded(client, x, z, target_y, **kw):
+        return TaskResult.fail(
+            "not loaded", chunk=((x // 16) * 16, (z // 16) * 16),
+            retryable=True, reason_class="unloaded",
+        )
+
+    with patch("baritone_client.common.terraform.terraform_chunk", always_unloaded):
+        result = terraform_area(
+            SimpleNamespace(), center_x=0, center_z=0, target_y=64,
+            radius_chunks=2, progress={},
+        )
+
+    assert result.data.get("abort_scope") == "lap"
+    # The abort's reason_class names the breaker BUCKET that tripped
+    # ("unobserved"), not the last chunk's own reason_class ("unloaded") --
+    # see CircuitBreaker.observe, which maps status/reason_class onto one
+    # of a handful of named buckets before counting.
+    assert result.data.get("reason_class") == "unobserved"
+
+
+def test_circuit_breaker_failed_and_unverified_use_separate_buckets():
+    """Bug 6 regression: before the fix, "failed" and "unverified" both fed
+    one shared "retryable_fail" bucket. Interleaved, 2 of each must NOT trip
+    a threshold-3 breaker -- neither status occurred 3 times on its own,
+    and the old shared-bucket code would have wrongly tripped on the 4th
+    call (2 + 2 == 4 >= 3)."""
+    breaker = CircuitBreaker()
+    assert breaker.observe("failed", "fill_incomplete") is False
+    assert breaker.observe("unverified", "unloaded") is False
+    assert breaker.observe("failed", "fill_incomplete") is False
+    assert breaker.observe("unverified", "unloaded") is False
+    assert breaker.tripped_on is None
+
+
+def test_circuit_breaker_trips_unverified_on_its_own_bucket():
+    breaker = CircuitBreaker()
+    assert breaker.observe("unverified", "unloaded") is False
+    assert breaker.observe("unverified", "unloaded") is False
+    assert breaker.observe("unverified", "unloaded") is True
+    assert breaker.tripped_on == "unobserved"
+
+
+def test_circuit_breaker_trips_player_dead_after_a_single_occurrence():
+    """player_dead's threshold is 1, not the shared retryable-fail default
+    of 3 -- one death is already enough to stop hammering a bot that cannot
+    currently be observed to be alive."""
+    breaker = CircuitBreaker()
+    assert breaker.observe("failed", "player_dead") is True
+    assert breaker.tripped_on == "player_dead"
 
 
 def test_circuit_breaker_counter_resets_on_a_done_chunk():

@@ -134,7 +134,12 @@ def clear_verdict(name: str, mode: str = "strict") -> Tuple[str, Optional[str]]:
         # time to regrow, so its presence there proves the clear never ran.
         return "pass", None
     if name in LIQUIDS:
-        return "fail_permanent", "liquid"
+        # Stage-qualified (clear_liquid, not fill_verdict's fill_liquid): a
+        # clear-stage liquid means the chunk was never touched; a fill-stage
+        # one means the fill excavated and then failed to refill -- the
+        # second is a pit, strictly more dangerous than untouched terrain,
+        # and the two must be distinguishable from reason_class alone.
+        return "fail_permanent", "clear_liquid"
     if name in UNBREAKABLE:
         return "fail_permanent", "unbreakable"
     if name in UNTOOLED:
@@ -159,7 +164,11 @@ def fill_verdict(
     if name in AIR:
         return "fail_retryable", "fill_incomplete"
     if name in LIQUIDS:
-        return "fail_permanent", "liquid"
+        # A pit: the fill excavated (or found) this hole and could not close
+        # it -- more dangerous than clear_verdict's untouched-terrain case,
+        # and reason_class must say so rather than share the bare "liquid"
+        # string both verdict functions used to return.
+        return "fail_permanent", "fill_liquid"
     if _is_non_solid(name):
         return "fail_retryable", "fill_incomplete"
     if _is_falling(name):
@@ -242,8 +251,19 @@ def chunk_sample_positions(
       "audit"    -- every column in the chunk, for periodic deep re-checks
                     (a re-verified "done" chunk, or a live acceptance gate).
     """
+    # target_y itself, not just clear_top/fill_bottom, must be clamped: every
+    # offset below (target_y+1, +2, +4, +8, ...) is computed FROM it, and an
+    # unclamped target_y near the world ceiling (a caller flattening close to
+    # the build limit, or one derived from a high player position) would
+    # otherwise put every clear-band sample at y>=320, which always reads
+    # void_air -- an all-unknown band that the caller must not mistake for a
+    # confirmed pass (see verify_chunk_flat's unknown_count check).
+    target_y = max(WORLD_MIN_Y, min(target_y, WORLD_MAX_Y))
     clear_top = min(clear_top, WORLD_MAX_Y)
     fill_bottom = max(fill_bottom, WORLD_MIN_Y)
+
+    def clamp_y(y: int) -> int:
+        return max(WORLD_MIN_Y, min(y, WORLD_MAX_Y))
 
     def abs_cols(cols: Sequence[Column]) -> List[Column]:
         return [(cx + dx, cz + dz) for dx, dz in cols]
@@ -256,7 +276,7 @@ def chunk_sample_positions(
 
     def add_pair(cols: Sequence[Column]) -> None:
         for x, z in cols:
-            clear_positions.append((x, target_y + 1, z))
+            clear_positions.append((x, clamp_y(target_y + 1), z))
             fill_positions.append((x, target_y, z))
 
     # Tier A -- gate, always sampled.
@@ -273,13 +293,13 @@ def chunk_sample_positions(
                 x, z = cx + dx, cz + dz
                 if (dx, dz) in _ANCHORS:
                     continue
-                clear_positions.append((x, target_y + 1, z))
+                clear_positions.append((x, clamp_y(target_y + 1), z))
                 fill_positions.append((x, target_y, z))
         for x, z in perimeter_abs:
             fill_positions.append((x, fill_bottom, z))
             rung = target_y + 4
             while rung <= clear_top:
-                clear_positions.append((x, rung, z))
+                clear_positions.append((x, clamp_y(rung), z))
                 rung *= 2
         return clear_positions, fill_positions
 
@@ -288,15 +308,15 @@ def chunk_sample_positions(
     lattice_only = [c for c in lattice_abs if c not in anchors_abs]
     add_pair(lattice_only)
     for x, z in lattice_abs:
-        clear_positions.append((x, target_y + 2, z))
+        clear_positions.append((x, clamp_y(target_y + 2), z))
     for x, z in anchors_abs:
         for extra in (target_y + 4, target_y + 8):
             if extra <= clear_top:
-                clear_positions.append((x, extra, z))
+                clear_positions.append((x, clamp_y(extra), z))
     for x, z in perimeter_abs:
         rung = target_y + 16
         while rung <= clear_top:
-            clear_positions.append((x, rung, z))
+            clear_positions.append((x, clamp_y(rung), z))
             rung *= 2
     # A couple of extra fill-band depths at the anchors, deduplicated against
     # what add_pair(anchors_abs) already added at target_y.
@@ -467,6 +487,19 @@ def verify_chunk_flat(
     if report.samples_failed > 0:
         report.verdict = "fail"
         report.retryable = report.retryable and True
+        return report
+
+    if report.unknown_count > 0:
+        # Every sample that came back "unknown" was never actually observed
+        # -- it contributes nothing toward "confirmed flat", whatever the
+        # known-good samples show. Treating this as a pass is exactly the
+        # defect this module exists to eliminate: an entirely-unread band
+        # (an unclamped target_y near the world ceiling, or read failures
+        # scattered through a scan) must not be recorded done having never
+        # actually been checked.
+        report.verdict = "unverified"
+        report.reason_class = report.reason_class or "unloaded"
+        report.retryable = True
         return report
 
     report.verdict = "pass"

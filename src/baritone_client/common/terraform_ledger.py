@@ -29,8 +29,17 @@ DEFAULT_MAX_LIFETIME_ATTEMPTS = 5
 
 # Consecutive occurrences before a lap aborts rather than continuing to bury
 # a systemic failure under identical entries. Reset to zero on every "done".
+#
+# "unobserved" (unverified: unloaded chunk, dropped read) is deliberately
+# separate from "retryable_fail" (failed: genuinely observed and wrong).
+# Three unloaded chunks in a row is often just normal chunk-loading lag
+# around the edge of render distance, not evidence of bad terrain -- folding
+# it into the same bucket as real terrain failures would trip the breaker on
+# a benign, self-resolving condition using the same signal that is supposed
+# to mean "something is actually broken".
 BREAKER_THRESHOLDS = {
     "retryable_fail": 3,
+    "unobserved": 3,
     "insufficient_materials": 2,
     "bridge_error": 2,
     "player_dead": 1,
@@ -86,7 +95,14 @@ def record(
 
     if result is not None:
         data = result.data or {}
-        if status != "skipped":
+        # Only a genuinely-observed outcome spends lifetime budget. "unverified"
+        # means nothing was actually read (unloaded chunk, dropped bridge
+        # call, a dead bot) -- it is not evidence against the site, so it
+        # must not count toward the same 5-attempt blacklist a real
+        # observed-and-wrong failure does. Without this, a chunk that was
+        # never once successfully read could still get permanently
+        # blacklisted after 5 unlucky reads.
+        if status in ("done", "failed"):
             entry["attempts"] = attempts + 1
         entry["reason_class"] = data.get("reason_class")
         entry["retryable"] = bool(data.get("retryable", status != "done"))
@@ -96,6 +112,9 @@ def record(
             entry["samples_checked"] = verification.get("samples_checked")
             entry["samples_failed"] = verification.get("samples_failed")
             entry["first_bad"] = verification.get("first_bad")
+            tolerated = verification.get("tolerated")
+            if tolerated:
+                entry["tolerated"] = tolerated
         entry["last_ts"] = time.time()
 
     if status == "done":
@@ -169,7 +188,9 @@ class CircuitBreaker:
             bucket = "bridge_error"
         elif reason_class == "player_dead":
             bucket = "player_dead"
-        elif status in ("failed", "unverified"):
+        elif status == "unverified":
+            bucket = "unobserved"
+        elif status == "failed":
             bucket = "retryable_fail"
 
         if bucket is None:

@@ -476,9 +476,14 @@ def sweep_pass(
             status = "done"
         else:
             reason_class = (result.data or {}).get("reason_class")
-            could_not_observe = reason_class in ("unloaded", "bridge_error") and (
-                result.data or {}
-            ).get("retryable")
+            # player_dead belongs here too: a dead bot never reached the
+            # world-read step, so nothing was actually observed -- the same
+            # as an unloaded chunk or a dropped bridge call, and it must not
+            # land in the same bucket as terrain genuinely observed to be
+            # wrong.
+            could_not_observe = reason_class in (
+                "unloaded", "bridge_error", "player_dead",
+            ) and (result.data or {}).get("retryable")
             status = "unverified" if could_not_observe else "failed"
 
         _record(progress, ledger, origin, result, status=status)
