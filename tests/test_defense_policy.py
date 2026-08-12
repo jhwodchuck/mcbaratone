@@ -212,7 +212,16 @@ class EscapeTransport:
             return {
                 "health": 20,
                 "world_time": 13000,
-                "block_position": {"x": -6, "y": 64, "z": 0},
+                "block_position": {"x": 0, "y": 64, "z": 0},
+            }
+        if route == "get_combat_snapshot":
+            return {
+                "player": {
+                    "health": 20,
+                    "block_position": {"x": -6, "y": 64, "z": 0},
+                },
+                "entities": [],
+                "skipped_count": 0,
             }
         if route == "get_entities":
             self.entity_reads += 1
@@ -299,6 +308,33 @@ def test_run_away_never_starts_broad_surface_scan_under_attack(monkeypatch):
 
     assert combat.run_away(client, threat, timeout=1) is False
     assert client._last_escape_failure_reason == "no_safe_endpoint"
+
+
+def test_escape_endpoint_does_not_confuse_named_solids_with_plants():
+    class Transport:
+        def __init__(self, feet):
+            self.feet = feet
+
+        def dispatch(self, route, payload, **_kwargs):
+            assert route == "get_block"
+            return {
+                "id": {
+                    63: "minecraft:dirt",
+                    64: self.feet,
+                    65: "minecraft:air",
+                }[payload["y"]]
+            }
+
+    for unsafe in (
+        "minecraft:grass_block",
+        "minecraft:snow_block",
+        "minecraft:powder_snow",
+    ):
+        client = SimpleNamespace(transport=Transport(unsafe))
+        assert not escape_recovery.destination_safe(client, 0, 64, 0)
+
+    client = SimpleNamespace(transport=Transport("minecraft:short_grass"))
+    assert escape_recovery.destination_safe(client, 0, 64, 0)
 
 
 def test_defense_remains_in_recovery_after_successful_escape(monkeypatch):

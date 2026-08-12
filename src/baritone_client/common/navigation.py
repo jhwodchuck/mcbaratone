@@ -35,8 +35,10 @@ def _refuse_critical_long_travel(client, x: int, y: int, z: int) -> bool:
     if not isinstance(state, dict):
         return False
     # Missing telemetry must not block navigation; assume healthy.
-    health = float(state.get("health", 20) or 20)
-    food = int(state.get("food", 20) or 20)
+    health_value = state.get("health", 20)
+    food_value = state.get("food_level", state.get("food", 20))
+    health = float(20 if health_value is None else health_value)
+    food = int(20 if food_value is None else food_value)
     if health >= _CRITICAL_TRAVEL_HEALTH or food >= _REGEN_FOOD_FLOOR:
         return False
 

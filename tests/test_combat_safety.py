@@ -2051,7 +2051,7 @@ def test_safe_combat_no_retreat_attacks_despite_low_health(monkeypatch):
     transport = CombatTransport(health=1.5)
     client = SimpleNamespace(transport=transport)
     target = {"id": 5, "type": "minecraft:zombie", "distance": 3.0}
-    monkeypatch.setattr(combat, "equip_best_weapon", lambda *_a, **_k: None)
+    monkeypatch.setattr(combat, "equip_best_weapon", lambda *_a, **_k: True)
     monkeypatch.setattr(combat, "_get_combat_snapshot", lambda *_a, **_k: None)
     monkeypatch.setattr(
         combat, "get_nearby_entities", lambda *_a, **_k: [target]

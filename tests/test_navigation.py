@@ -3,6 +3,20 @@ from types import SimpleNamespace
 from baritone_client.common import navigation
 
 
+def test_critical_travel_gate_reads_bridge_food_level():
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: {
+                "health": 5,
+                "food_level": 0,
+                "block_position": {"x": 0, "y": 64, "z": 0},
+            }
+        )
+    )
+
+    assert navigation._refuse_critical_long_travel(client, 100, 64, 0)
+
+
 def test_goto_fails_fast_when_goal_is_rejected_without_movement(monkeypatch):
     class Transport:
         def __init__(self):

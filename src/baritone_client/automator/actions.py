@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from ..common.combat_action import dispatch_held_item_use
+
 logger = logging.getLogger(__name__)
 
 
@@ -331,7 +333,7 @@ class EatAction(Action):
 
             # Eat (use item)
             # Duration for food is usually 32 ticks (1.6s)
-            client.transport.dispatch("use_item", {"duration_ms": 1600})
+            dispatch_held_item_use(client, 1600)
             
             self.status = ActionStatus.COMPLETED
             return ActionResult.ok(f"Ate {self.item_id}")

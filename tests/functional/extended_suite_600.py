@@ -6,6 +6,7 @@ T600-T621: Melee, Critical Hit, Shield, Ranged, Combat Mechanics
 import time
 
 from baritone_client.common.combat import safe_combat
+from baritone_client.common.combat_ranged import fire_best_ranged_attack
 from tests.functional.suite_utils import get_test_state
 
 from test_base import TestCase, TestSuite, TestContext
@@ -24,7 +25,6 @@ from utils.mc_harness import (
     select_hotbar_item,
     safe_dispatch,
     distance_to_entity,
-    count_item,
 )
 
 
@@ -125,32 +125,50 @@ def create_extended_suite_600() -> TestSuite:
         
         ctx.give_item("minecraft:bow", 1)
         ctx.give_item("minecraft:arrow", 64)
-        summon_near(ctx, "minecraft:zombie", dx=5, dy=0, dz=0, nbt="{NoAI:1b}")
+        # A zombie burns in the fixture's frozen daylight, which can make a
+        # health-delta assertion pass without the arrow ever landing.  Husks
+        # are sunlight-safe and persistence keeps target disappearance from
+        # masquerading as a ranged hit.
+        summon_near(
+            ctx,
+            "minecraft:husk",
+            dx=5,
+            dy=0,
+            dz=0,
+            nbt="{NoAI:1b,PersistenceRequired:1b}",
+        )
 
     def t603_step_shoot(ctx: TestContext) -> bool:
-        target = wait_for_entity(ctx, "minecraft:zombie", radius=10, timeout=4.0)
-        if not target: return False
-        
-        ctx.client.transport.dispatch("look_at", {"x": target["position"]["x"], "y": target["position"]["y"]+1.5, "z": target["position"]["z"]})
-        select_hotbar_item(ctx, "minecraft:bow")
-        
-        # Charge bow
-        ctx.client.transport.dispatch("use_item", {"duration_ms": 1100}) # >1s max charge
-        time.sleep(1.5) # Wait for arrow flight
-        return True
+        target = wait_for_entity(ctx, "minecraft:husk", radius=10, timeout=4.0)
+        if not target or target.get("health") is None:
+            return False
+        state = get_test_state(suite_state, "T603")
+        state["target_id"] = target["id"]
+        state["health_before"] = float(target.get("health", 20))
+        fired = fire_best_ranged_attack(ctx.client, target)
+        time.sleep(1.0)  # allow the released arrow to reach the stationary target
+        return fired
 
     def t603_assert_hit(ctx: TestContext):
-        # We can't easily verify damage without health readout on entity.
-        # But we can verify arrow entity exists or zombie killed (hard with one shot).
-        # Or verify arrow count decreased.
-        count = count_item(ctx, "minecraft:arrow")
-        # Started with 64.
-        return count == 63, f"Arrow count {count} (expected 63)"
+        state = get_test_state(suite_state, "T603")
+        observed = next(
+            (
+                entity
+                for entity in get_entities(ctx, radius=10)
+                if entity.get("id") == state.get("target_id")
+            ),
+            None,
+        )
+        if observed is None or observed.get("health") is None:
+            return False, "The exact ranged target was not observable after the shot"
+        health_after = float(observed["health"])
+        damaged = health_after < float(state.get("health_before", 20))
+        return damaged, f"Target health {state.get('health_before')} -> {health_after}"
 
     suite.add(TestCase(
         id="T603",
         name="Ranged Attack Bow",
-        description="Shoot arrow",
+        description="Damage a target through production charged-ranged combat",
         setup=t603_setup,
         steps=[t603_step_shoot],
         assertions=[t603_assert_hit],

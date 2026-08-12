@@ -8,6 +8,7 @@ from typing import Optional
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
 from ..common.landmark_scanner import scan_visible_landmarks
 from ..common.runtime_artifacts import runtime_artifact_path
+from ..common.combat_action import exclusive_client_action
 
 logger = logging.getLogger(__name__)
 
@@ -83,13 +84,16 @@ class SafetySystem(BackgroundSystem):
             
             # Check for death
             if health <= 0:
-                logger.warning("Player is dead. Triggering respawn!")
-                self.client.transport.dispatch("respawn", {})
+                # Foreground recovery owns respawn so it can retain grave
+                # evidence and coordinate item recovery.
+                logger.warning("Player is dead. Signaling foreground recovery.")
                 self.coordination.broadcast(SystemEvent(
                     event_type=EventType.PLAYER_DEATH,
                     source=self.name,
                     data={"death": True}
                 ))
+                self._last_health = health
+                return
             
             # Broadcast critical event if health is low
             elif health < self.low_health_threshold and self._last_health >= self.low_health_threshold:
@@ -225,6 +229,7 @@ class HungerSystem(BackgroundSystem):
         except Exception as e:
             logger.error(f"Hunger Check Failed: {e}")
 
+    @exclusive_client_action
     def try_eat(self, current_food: int):
         """Attempt to find food and eat it."""
         from .actions import EatAction

@@ -104,18 +104,10 @@ class InventoryAction(BaseAction):
         return equipped
 
     def equip_best_weapon(self, context: ActionContext) -> bool:
-        """Equip best available weapon/tool."""
-        weapons = [
-            "minecraft:netherite_sword", "minecraft:diamond_sword", "minecraft:iron_sword", "minecraft:stone_sword", "minecraft:golden_sword", "minecraft:wooden_sword",
-            "minecraft:netherite_axe", "minecraft:diamond_axe", "minecraft:iron_axe", "minecraft:stone_axe", "minecraft:golden_axe", "minecraft:wooden_axe",
-            "minecraft:netherite_pickaxe", "minecraft:diamond_pickaxe", "minecraft:iron_pickaxe", "minecraft:stone_pickaxe", "minecraft:wooden_pickaxe"
-        ]
-        
-        for weapon in weapons:
-            if self.select_item(context, weapon, allow_swap=True):
-                return True
-                
-        return False
+        """Equip through the canonical shared combat loadout policy."""
+        from baritone_client.common.inventory import equip_best_weapon
+
+        return equip_best_weapon(context.client)
 
     def drop_items(self, context: ActionContext, item_ids: List[str]) -> int:
         """Drop specified items from inventory to clear space."""
