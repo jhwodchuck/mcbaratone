@@ -90,12 +90,17 @@ def test_postgame_verifiers_require_completed_persisted_operations(tmp_path):
         "progress_complete": True,
         "chunks_completed": 9,
         "chunks_total": 9,
+        "chunks_failed": 0,
+        "chunks_unverified": 0,
         "progress_entries_total": 9,
         "terraform_plan": {"center": [0, 0], "target_y": 64},
     }
+    # terraform_progress accumulates ledger-wide across every retry this
+    # phase has ever made -- deliberately left with a stale entry here to
+    # prove the gate reads the scoped payload counts, not this mirror.
     state.custom_data["terraform_progress"] = {
         "next_index": 9, "total": 9,
-        "counts": {"done": 9, "failed": 0, "unverified": 0, "skipped": 0},
+        "counts": {"done": 8, "failed": 1, "unverified": 0, "skipped": 0},
     }
     assert verifier.verify(
         Phase.TERRAFORM, TaskResult.ok("done", **terraform_data)
@@ -105,15 +110,10 @@ def test_postgame_verifiers_require_completed_persisted_operations(tmp_path):
     # chunks are still failed/unverified -- that must not pass the gate even
     # though next_index == total, which is the exact case that used to slip
     # through when this check only compared the cursor to the total.
-    state.custom_data["terraform_progress"]["counts"] = {
-        "done": 8, "failed": 1, "unverified": 0, "skipped": 0,
-    }
+    still_failing = dict(terraform_data, chunks_failed=1)
     assert not verifier.verify(
-        Phase.TERRAFORM, TaskResult.ok("swept but incomplete", **terraform_data)
+        Phase.TERRAFORM, TaskResult.ok("swept but incomplete", **still_failing)
     ).success
-    state.custom_data["terraform_progress"]["counts"] = {
-        "done": 9, "failed": 0, "unverified": 0, "skipped": 0,
-    }
 
     incomplete = dict(terraform_data, chunks_completed=8)
     assert not verifier.verify(

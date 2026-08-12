@@ -134,6 +134,14 @@ class TerraformingHandler(PhaseHandler):
             "progress_complete": True,
             "chunks_completed": chunks_completed,
             "chunks_total": chunks_total,
+            # Scoped to this call's own area (terraform_area computes these
+            # from area_keys, not the whole ledger) -- unlike
+            # terraform_progress.counts, which accumulates across every
+            # retry this phase has ever made and would keep a stale failure
+            # from an abandoned earlier attempt (different plan, different
+            # radius) failing the gate forever even after a clean re-run.
+            "chunks_failed": int(result.data.get("chunks_failed", 0) or 0),
+            "chunks_unverified": int(result.data.get("chunks_unverified", 0) or 0),
             "progress_entries_total": progress_entries_total,
             "skipped_chunks": result.data.get("skipped_chunks", []),
             "center": [center_x, center_z],

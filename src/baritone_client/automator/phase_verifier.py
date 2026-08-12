@@ -524,9 +524,17 @@ def _postgame_specs() -> Dict[Phase, _Spec]:
                 # ledger with zero failed and zero unverified entries is the
                 # replacement: it is the one thing record-and-continue can no
                 # longer guarantee for free.
+                #
+                # Reads the payload's own chunks_failed/chunks_unverified
+                # (scoped by terraform_area to this call's own chunks), NOT
+                # terraform_progress.counts -- that mirror sums the WHOLE
+                # ledger across every retry this phase has ever made, so a
+                # stale failure left over from an abandoned earlier attempt
+                # (a different plan, a different radius) would fail this
+                # gate forever even after a fully clean re-run.
                 "terraform progress has no failed or unverified chunks",
-                lambda e: int(e.custom("terraform_progress", "counts", "failed", default=-1)) == 0
-                and int(e.custom("terraform_progress", "counts", "unverified", default=-1)) == 0,
+                lambda e: int(e.payload(Phase.TERRAFORM).get("chunks_failed", -1)) == 0
+                and int(e.payload(Phase.TERRAFORM).get("chunks_unverified", -1)) == 0,
             ),
             _check(
                 "terraform plan persisted",
