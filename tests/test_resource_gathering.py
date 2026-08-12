@@ -1216,6 +1216,66 @@ def test_wood_gather_relocates_before_resuming_after_aquatic_stop(monkeypatch):
     assert len(starts) == 2
 
 
+def test_wood_gather_resumes_from_verified_dry_shore_without_relocation(monkeypatch):
+    from baritone_client.common import combat
+
+    class SurfacedTransport(RecordingTransport):
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "world_time": 1000,
+                    "health": 20.0,
+                    "food_level": 20,
+                    "is_pathing": True,
+                    "block_position": {"x": -437, "y": 9, "z": 14},
+                }
+            if route == "get_block":
+                block_y = int(payload["y"])
+                return {
+                    "id": "minecraft:stone" if block_y == 8 else "minecraft:air"
+                }
+            return {}
+
+    transport = SurfacedTransport()
+    client = SimpleNamespace(transport=transport)
+    inventory = {"minecraft:oak_log": 0}
+    starts = []
+    interventions = []
+
+    monkeypatch.setattr(
+        resources,
+        "count_item",
+        lambda _client, item_id: inventory.get(item_id, 0),
+    )
+    monkeypatch.setattr(resources, "_reserve_gathering_inventory", lambda _c: True)
+    monkeypatch.setattr(resources, "free_inventory_slots", lambda _c: 32)
+    monkeypatch.setattr(resources, "_ensure_outdoor_daylight", lambda *_args: True)
+
+    def start_mining(*_args):
+        starts.append(True)
+        if len(starts) == 2:
+            inventory["minecraft:oak_log"] = 3
+
+    def aquatic_stop(_client, _state):
+        interventions.append(True)
+        return len(interventions) == 1
+
+    monkeypatch.setattr(resources, "_start_mine_process", start_mining)
+    monkeypatch.setattr(combat, "survival_tick", aquatic_stop)
+    monkeypatch.setattr(combat, "defend_or_flee", lambda _client: False)
+    monkeypatch.setattr(
+        resources,
+        "_relocate_to_dry_stone_terrain",
+        lambda _client: (_ for _ in ()).throw(
+            AssertionError("already-dry shore must not force horizontal relocation")
+        ),
+    )
+
+    assert resources.gather_wood(client, count=3, timeout=30)
+    assert len(starts) == 2
+
+
 def test_missing_mining_pickaxe_is_replaced(monkeypatch):
     transport = RecordingTransport()
     client = SimpleNamespace(transport=transport)

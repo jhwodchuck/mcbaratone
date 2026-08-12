@@ -6,6 +6,34 @@ from typing import Any, Optional, Sequence
 
 
 AQUATIC_STOP = "after aquatic safety intervention"
+_PASSABLE_DRY_BLOCKS = ("air", "grass", "fern", "flower", "snow", "vine")
+_NON_GROUND_BLOCKS = ("air", "water", "lava", "cave_air", "void_air")
+
+
+def _verified_dry_standing_position(client: Any, state: dict) -> bool:
+    """Require readable dry feet/head blocks and solid support after surfacing."""
+    position = state.get("block_position", state.get("position", {})) or {}
+    if not all(axis in position for axis in ("x", "y", "z")):
+        return False
+    x, y, z = (int(position[axis]) for axis in ("x", "y", "z"))
+    blocks = []
+    for block_y in (y, y + 1, y - 1):
+        try:
+            response = client.transport.dispatch(
+                "get_block", {"x": x, "y": block_y, "z": z}
+            )
+        except Exception:
+            return False
+        block_id = response.get("id", response.get("block")) if response else None
+        if not block_id:
+            return False
+        blocks.append(str(block_id).lower())
+    feet, head, below = blocks
+    return (
+        any(token in feet for token in _PASSABLE_DRY_BLOCKS)
+        and any(token in head for token in _PASSABLE_DRY_BLOCKS)
+        and not any(token in below for token in _NON_GROUND_BLOCKS)
+    )
 
 
 def required_log_count(client: Any, count: int) -> Optional[int]:
@@ -114,18 +142,33 @@ def recover_after_aquatic_stop(
     quantity: int,
     movement_watchdogs: Sequence[Any],
 ) -> bool:
-    """Relocate to verified dry terrain before restarting a wood mine."""
+    """Resume on verified dry ground, otherwise relocate before restarting."""
     from . import resources as api
 
-    if reason != AQUATIC_STOP or not api._relocate_to_dry_stone_terrain(client):
+    if reason != AQUATIC_STOP:
         return False
     state = api._read_state_optional(
         client,
         retries=3,
-        label="Wood gather dry relocation",
+        label="Wood gather post-surface state",
     )
     if state is None:
         return False
+    if _verified_dry_standing_position(client, state):
+        print(
+            "DEBUG: Aquatic defense reached verified dry ground; "
+            "resuming wood gather"
+        )
+    else:
+        if not api._relocate_to_dry_stone_terrain(client):
+            return False
+        state = api._read_state_optional(
+            client,
+            retries=3,
+            label="Wood gather dry relocation",
+        )
+        if state is None:
+            return False
     api._start_mine_process(client, api.LOG_BLOCKS, quantity)
     for watchdog in movement_watchdogs:
         watchdog.reset(state)
