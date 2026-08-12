@@ -172,6 +172,7 @@ class BoundedForester:
         )
         self.camp = block_position(self.manifest["camp_anchor"], "camp_anchor")
         self.protected_players = tuple(self.manifest.get("protected_players", ()))
+        self.expected_dimension = str(self.manifest["dimension"]).strip()
         expedition_safety = self.manifest.get("surface_expedition_safety", {})
         self.minimum_armor_points = int(
             expedition_safety.get("minimum_armor_points", 0)
@@ -243,7 +244,12 @@ class BoundedForester:
             raise ValueError("forestry max_navigation_leg must be between 8 and 64")
 
     def guard(self, client: Any) -> NonOpClientGuard:
-        return NonOpClientGuard(client, self.bot_name, self.protected_players)
+        return NonOpClientGuard(
+            client,
+            self.bot_name,
+            self.protected_players,
+            expected_dimension=self.expected_dimension,
+        )
 
     def require_safe_server(self, client: Any) -> None:
         self.guard(client).require_safe()

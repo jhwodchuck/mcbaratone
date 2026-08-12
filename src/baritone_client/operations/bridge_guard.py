@@ -31,12 +31,20 @@ class NonOpClientGuard:
         client: Any,
         bot_name: str,
         protected_players: Iterable[str] = (),
+        *,
+        expected_dimension: str | None = None,
     ) -> None:
         self.client = client
         self.bot_name = str(bot_name)
         self.protected_players = {
             str(name).casefold() for name in protected_players if str(name).strip()
         }
+        self.expected_dimension: str | None = None
+        if expected_dimension is not None:
+            normalized_dimension = str(expected_dimension).strip()
+            if not normalized_dimension:
+                raise ValueError("expected_dimension must not be empty")
+            self.expected_dimension = normalized_dimension
 
     def __enter__(self) -> "NonOpClientGuard":
         self.require_safe()
@@ -78,6 +86,16 @@ class NonOpClientGuard:
             raise SafetyInterlockError(
                 "Protected player(s) are online: " + ", ".join(protected_online)
             )
+        if self.expected_dimension is not None:
+            dimension_value = state.get("dimension")
+            if not isinstance(dimension_value, str) or not dimension_value.strip():
+                raise WorkerSafetyError("Bridge dimension attestation is unavailable")
+            dimension = dimension_value.strip()
+            if dimension != self.expected_dimension:
+                raise SafetyInterlockError(
+                    f"{self.bot_name} must remain in {self.expected_dimension}, "
+                    f"found {dimension!r}"
+                )
         try:
             health = float(state.get("health", 0.0) or 0.0)
         except (TypeError, ValueError) as error:

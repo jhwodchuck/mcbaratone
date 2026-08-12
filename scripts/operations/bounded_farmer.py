@@ -122,6 +122,7 @@ class BoundedFarmer:
         self.produce = tuple(str(v) for v in farm["produce"])
         self.planting_items = tuple(str(v) for v in farm["planting_items"])
         self.protected_players = tuple(self.manifest.get("protected_players", ()))
+        self.expected_dimension = str(self.manifest["dimension"]).strip()
         self.crop_scan_cursor = 0
         expedition_safety = self.manifest.get("surface_expedition_safety", {})
         self.minimum_armor_points = int(
@@ -137,7 +138,12 @@ class BoundedFarmer:
             raise ValueError("farm center is outside the protected farm")
 
     def guard(self, client: Any) -> NonOpClientGuard:
-        return NonOpClientGuard(client, self.bot_name, self.protected_players)
+        return NonOpClientGuard(
+            client,
+            self.bot_name,
+            self.protected_players,
+            expected_dimension=self.expected_dimension,
+        )
 
     def require_safe_server(self, client: Any) -> None:
         self.guard(client).require_safe()

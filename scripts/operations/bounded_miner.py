@@ -122,6 +122,7 @@ def main() -> int:
     protected = [list(map(int, box)) for box in mining["protected_boxes"]]
     max_radius = float(mining["max_distance_from_landing"])
     protected_players = tuple(manifest["protected_players"])
+    expected_dimension = str(manifest["dimension"]).strip()
 
     run_dir = REPO / bot["worker"]["working_directory"]
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -144,7 +145,12 @@ def main() -> int:
     cycles = banked_stacks = 0
     detail = "starting"
 
-    with NonOpClientGuard(client, args.bot, protected_players) as guard:
+    with NonOpClientGuard(
+        client,
+        args.bot,
+        protected_players,
+        expected_dimension=expected_dimension,
+    ) as guard:
 
         def require_safe() -> None:
             guard.require_safe()

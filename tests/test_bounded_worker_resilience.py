@@ -53,6 +53,7 @@ def _safe_state(**updates: Any) -> dict[str, Any]:
         "player_name": "Bot17",
         "online_players": ["Bot17", "Bot18"],
         "game_mode": "survival",
+        "dimension": "minecraft:overworld",
         "is_dead": False,
         "health": 20.0,
         "position": {"x": 1, "y": 64, "z": 2},
@@ -61,9 +62,19 @@ def _safe_state(**updates: Any) -> dict[str, Any]:
     return state
 
 
-def _guard(state: dict[str, Any], protected: tuple[str, ...] = ()) -> NonOpClientGuard:
+def _guard(
+    state: dict[str, Any],
+    protected: tuple[str, ...] = (),
+    *,
+    expected_dimension: str | None = None,
+) -> NonOpClientGuard:
     client = type("Client", (), {"transport": _StateTransport(state)})()
-    return NonOpClientGuard(client, "Bot17", protected)
+    return NonOpClientGuard(
+        client,
+        "Bot17",
+        protected,
+        expected_dimension=expected_dimension,
+    )
 
 
 def test_non_op_guard_accepts_only_the_exact_attested_identity() -> None:
@@ -102,6 +113,37 @@ def test_non_op_guard_stops_when_a_protected_player_is_online() -> None:
             _safe_state(online_players=["Bot17", "ProtectedPlayer"]),
             ("protectedplayer",),
         ).require_safe()
+
+
+def test_non_op_guard_requires_the_exact_expected_dimension() -> None:
+    expected = "minecraft:overworld"
+    state = _guard(
+        _safe_state(), expected_dimension=f"  {expected}  "
+    ).require_safe()
+
+    assert state["dimension"] == expected
+
+    with pytest.raises(SafetyInterlockError, match="minecraft:overworld"):
+        _guard(
+            _safe_state(dimension="minecraft:the_end"),
+            expected_dimension=expected,
+        ).require_safe()
+
+
+@pytest.mark.parametrize("dimension", [None, "", "   ", 0])
+def test_non_op_guard_fails_closed_without_dimension_attestation(
+    dimension: Any,
+) -> None:
+    with pytest.raises(WorkerSafetyError, match="dimension attestation"):
+        _guard(
+            _safe_state(dimension=dimension),
+            expected_dimension="minecraft:overworld",
+        ).require_safe()
+
+
+def test_non_op_guard_rejects_an_empty_expected_dimension() -> None:
+    with pytest.raises(ValueError, match="expected_dimension"):
+        _guard(_safe_state(), expected_dimension="  ")
 
 
 def test_position_read_revalidates_the_full_safety_attestation() -> None:
@@ -339,6 +381,50 @@ def test_all_bounded_workers_use_only_non_operator_safety_wiring() -> None:
             offenders.append(f"{path.name}: missing require_survival")
         if "set_mode" in names | attributes:
             offenders.append(f"{path.name}: misleading set_mode")
+
+    assert not offenders, offenders
+
+
+def test_all_bounded_workers_wire_manifest_dimension_into_guard() -> None:
+    offenders = []
+    for path in WORKER_PATHS:
+        tree = _worker_tree(path)
+        dimension_targets = {
+            ast.unparse(target)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(value, ast.Subscript)
+                and isinstance(value.slice, ast.Constant)
+                and value.slice.value == "dimension"
+                for value in ast.walk(node.value)
+            )
+            for target in node.targets
+        }
+        guard_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "NonOpClientGuard"
+        ]
+        if len(guard_calls) != 1:
+            offenders.append(f"{path.name}: expected one NonOpClientGuard call")
+            continue
+        expected = next(
+            (
+                keyword.value
+                for keyword in guard_calls[0].keywords
+                if keyword.arg == "expected_dimension"
+            ),
+            None,
+        )
+        if expected is None:
+            offenders.append(f"{path.name}: missing expected_dimension wiring")
+        elif ast.unparse(expected) not in dimension_targets:
+            offenders.append(
+                f"{path.name}: expected_dimension is not sourced from manifest dimension"
+            )
 
     assert not offenders, offenders
 
