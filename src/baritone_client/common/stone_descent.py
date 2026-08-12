@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Collection, Optional
 
 from .movement_recovery import block_position
 from .navigation import goto
@@ -15,6 +15,12 @@ _OPEN_BLOCKS = ("air",)
 _INSET_SUPPORT_BLOCKS = ("mud",)
 _MAX_SAFE_FALL_BLOCKS = 6
 _CARDINAL_OFFSETS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+_WATER_SEAL_BLOCKS = (
+    "minecraft:cobblestone",
+    "minecraft:cobbled_deepslate",
+    "minecraft:stone",
+    "minecraft:dirt",
+)
 
 
 def read_block_optional(
@@ -42,6 +48,255 @@ def read_block_optional(
         f"({x}, {y}, {z}) after {max(1, retries)} attempts"
     )
     return None
+
+
+def read_block_snapshot_optional(
+    client: Any,
+    x: int,
+    y: int,
+    z: int,
+    *,
+    retries: int = 5,
+) -> Optional[dict[str, Any]]:
+    """Read a block ID and state through bounded transient failures."""
+    for attempt in range(max(1, retries)):
+        try:
+            response = client.transport.dispatch(
+                "get_block", {"x": x, "y": y, "z": z}
+            )
+            data = response.get("data", response)
+            if isinstance(data, dict) and data.get("id"):
+                return data
+        except Exception:
+            pass
+        if attempt + 1 < retries:
+            time.sleep(0.5)
+    print(
+        "DEBUG: Block snapshot unavailable at "
+        f"({x}, {y}, {z}) after {max(1, retries)} attempts"
+    )
+    return None
+
+
+def drain_breathable_water_pocket(client: Any, state: dict) -> Optional[bool]:
+    """Seal and bucket a source block occupying the player's feet.
+
+    Deep staircases can intersect a one-block aquifer while leaving the
+    player's head in air. Baritone will not mine a route out of that source
+    cell, and an exact break immediately refills from an adjacent source. Seal
+    cardinal inflows first, then collect the occupied source with an empty
+    bucket. ``None`` means this recovery does not apply; ``False`` means the
+    pocket was recognized but could not be drained safely.
+    """
+    from . import resources as api
+    from .inventory import count_item, select_item
+
+    px, py, pz = block_position(state)
+    current = read_block_snapshot_optional(client, px, py, pz, retries=2)
+    head = read_block_snapshot_optional(client, px, py + 1, pz, retries=2)
+    if current is None or head is None:
+        return None
+    if "water" not in str(current.get("id", "")):
+        return None
+    if "air" not in str(head.get("id", "")):
+        print("Y navigation: water pocket reaches the player's head; refusing drain")
+        return False
+
+    level = str((current.get("state") or {}).get("level", "0"))
+    if level != "0":
+        print(
+            "Y navigation: occupied water is flowing, not a collectible source; "
+            "refusing an unverified bucket action"
+        )
+        return False
+    if count_item(client, "minecraft:bucket") < 1:
+        print("Y navigation: source-water pocket found but no empty bucket is carried")
+        return False
+
+    water_neighbors: list[tuple[int, int]] = []
+    for dx, dz in _CARDINAL_OFFSETS:
+        nx, nz = px + dx, pz + dz
+        adjacent = read_block_snapshot_optional(client, nx, py, nz, retries=2)
+        if adjacent is None:
+            return False
+        if "water" in str(adjacent.get("id", "")):
+            water_neighbors.append((nx, nz))
+
+    filler = next(
+        (
+            item_id
+            for item_id in _WATER_SEAL_BLOCKS
+            if count_item(client, item_id) >= len(water_neighbors)
+        ),
+        None,
+    )
+    if water_neighbors and filler is None:
+        print(
+            "Y navigation: source-water pocket found but not enough sealing "
+            "blocks are carried"
+        )
+        return False
+
+    for nx, nz in water_neighbors:
+        assert filler is not None
+        if not select_item(client, filler, allow_swap=True):
+            return False
+        response = client.transport.dispatch(
+            "place_block",
+            {"x": nx, "y": py, "z": nz, "block": filler},
+        )
+        data = response.get("data", response)
+        if response.get("error") or not bool(data.get("placed", False)):
+            print(
+                "Y navigation: could not seal adjacent water at "
+                f"({nx}, {py}, {nz})"
+            )
+            return False
+        for _ in range(8):
+            sealed = read_block_optional(client, nx, py, nz, retries=1)
+            if sealed == filler:
+                break
+            time.sleep(0.1)
+        else:
+            print(
+                "Y navigation: water seal acknowledgement lacked a world "
+                f"postcondition at ({nx}, {py}, {nz})"
+            )
+            return False
+
+    water_buckets_before = count_item(client, "minecraft:water_bucket")
+    if not select_item(client, "minecraft:bucket", allow_swap=True):
+        return False
+    client.transport.dispatch(
+        "look_at",
+        {"x": px + 0.5, "y": py + 0.25, "z": pz + 0.5},
+    )
+    time.sleep(0.2)
+    client.transport.dispatch("use_item", {"duration_ms": 0})
+    for _ in range(12):
+        after = read_block_optional(client, px, py, pz, retries=1)
+        if (
+            after is not None
+            and "water" not in after
+            and count_item(client, "minecraft:water_bucket")
+            > water_buckets_before
+        ):
+            api.equip_best_pickaxe(client)
+            print(
+                "Y navigation: sealed adjacent inflow and drained the "
+                "breathable source-water pocket"
+            )
+            return True
+        time.sleep(0.1)
+
+    api.equip_best_pickaxe(client)
+    print("Y navigation: bucket action did not drain the occupied water source")
+    return False
+
+
+def mine_step_block(
+    client: Any,
+    x: int,
+    y: int,
+    z: int,
+    *,
+    read_block: Callable[[int, int, int], str],
+    air_blocks: Collection[str],
+    unsafe_blocks: Collection[str],
+    baritone_fallback_blocks: Collection[str],
+) -> bool:
+    """Mine one verified staircase cell with the best available primitive."""
+    from . import resources as api
+    from ..core.exceptions import CommandError, TransportError
+
+    current = read_block(x, y, z)
+    if current in air_blocks:
+        return True
+    if current in unsafe_blocks or not api._ensure_mining_pickaxe(client):
+        return False
+
+    # Bridge 1.0.27+ exposes a tick-driven exact mining primitive that works
+    # underfoot and on deepslate. The older Baritone builder can acknowledge a
+    # break without changing the block, which caused A1's Y=4 deadlock.
+    try:
+        response = api._serialized_dispatch(
+            client,
+            "dig_block",
+            {"x": x, "y": y, "z": z, "face": "UP", "max_ticks": 240},
+            post_delay_seconds=api._BARITONE_MINE_SETUP_SECONDS,
+        )
+    except (CommandError, TransportError):
+        response = {}
+
+    dig_acknowledged = (
+        response.get("started")
+        and not response.get("error")
+        and response.get("x") == x
+        and response.get("y") == y
+        and response.get("z") == z
+    )
+    if dig_acknowledged:
+        deadline = time.monotonic() + 12.0
+        while time.monotonic() < deadline:
+            if read_block(x, y, z) in air_blocks:
+                api._serialized_dispatch(
+                    client,
+                    "cancel",
+                    {},
+                    post_delay_seconds=api._BARITONE_CANCEL_GRACE_SECONDS,
+                )
+                return True
+            state, _ = api._read_state_with_retry(
+                client,
+                retries=2,
+                label="Y navigation wait for progressive block break",
+            )
+            if state is None:
+                time.sleep(0.25)
+                continue
+            if state.get("is_dead", False) or float(
+                state.get("health", 20) or 0
+            ) <= 0:
+                return False
+            time.sleep(0.25)
+        api._serialized_dispatch(
+            client,
+            "cancel",
+            {},
+            post_delay_seconds=api._BARITONE_CANCEL_GRACE_SECONDS,
+        )
+
+    # Compatibility fallback for older bridges. Dense deepslate is delegated
+    # to the guarded one-block Baritone goal because the legacy builder is
+    # known to false-acknowledge it.
+    if current in baritone_fallback_blocks:
+        return False
+    response = api._serialized_dispatch(
+        client,
+        "break_block",
+        {"x": x, "y": y, "z": z},
+        post_delay_seconds=api._BARITONE_MINE_SETUP_SECONDS,
+    )
+    if response.get("error"):
+        return False
+    deadline = time.monotonic() + 12.0
+    while time.monotonic() < deadline:
+        if read_block(x, y, z) in air_blocks:
+            api._serialized_dispatch(
+                client,
+                "cancel",
+                {},
+                post_delay_seconds=api._BARITONE_BUILD_CLEANUP_SECONDS,
+            )
+            return True
+        time.sleep(0.25)
+    api._serialized_dispatch(
+        client,
+        "cancel",
+        {},
+        post_delay_seconds=api._BARITONE_BUILD_CLEANUP_SECONDS,
+    )
+    return False
 
 
 def choose_descent_offset(

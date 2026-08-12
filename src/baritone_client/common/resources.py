@@ -1345,9 +1345,9 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
             "minecraft:barrel", "minecraft:furnace", "minecraft:crafting_table",
             UNREADABLE,
         }
-        # The bridge's exact builder has repeatedly reported success without
-        # changing deepslate. Normal Baritone path excavation handles it, so do
-        # not spend twelve seconds per block waiting on the broken primitive.
+        # Dense deepslate is used to prioritize the verified vertical route.
+        # The tick-driven ``dig_block`` primitive now performs exact mining;
+        # normal Baritone excavation remains a compatibility fallback.
         baritone_excavation_blocks = {"minecraft:deepslate"}
 
         read_flags = {"unreadable": False}
@@ -1370,56 +1370,19 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                 read_flags["unreadable"] = True
                 return UNREADABLE
 
+        from .stone_descent import mine_step_block
+
         def break_for_step(x: int, by: int, z: int) -> bool:
-            current = block_id(x, by, z)
-            if current in air_blocks:
-                return True
-            if current in unsafe_blocks:
-                return False
-            if not _ensure_mining_pickaxe(client):
-                return False
-            response = _serialized_dispatch(
+            return mine_step_block(
                 client,
-                "break_block",
-                {"x": x, "y": by, "z": z},
-                post_delay_seconds=_BARITONE_MINE_SETUP_SECONDS,
+                x,
+                by,
+                z,
+                read_block=block_id,
+                air_blocks=air_blocks,
+                unsafe_blocks=unsafe_blocks,
+                baritone_fallback_blocks=baritone_excavation_blocks,
             )
-            if response.get("error"):
-                return False
-            deadline = time.monotonic() + 12.0
-            while time.monotonic() < deadline:
-                if block_id(x, by, z) in air_blocks:
-                    # The bridge implements exact block breaking through a
-                    # short-lived Baritone build process.  The world block can
-                    # become air before that process is removed from Baritone's
-                    # tick list.  Explicit cancellation plus a cleanup grace
-                    # prevents the next head/foot break from mutating that list
-                    # while the render thread is still iterating it.
-                    _serialized_dispatch(
-                        client,
-                        "cancel",
-                        {},
-                        post_delay_seconds=_BARITONE_BUILD_CLEANUP_SECONDS,
-                    )
-                    return True
-                state, _ = _read_state_with_retry(
-                    client,
-                    retries=2,
-                    label="Y navigation wait for block break",
-                )
-                if state is None:
-                    time.sleep(0.25)
-                    continue
-                if state.get("is_dead", False) or float(state.get("health", 20) or 0) <= 0:
-                    return False
-                time.sleep(0.25)
-            _serialized_dispatch(
-                client,
-                "cancel",
-                {},
-                post_delay_seconds=_BARITONE_BUILD_CLEANUP_SECONDS,
-            )
-            return False
 
         def safe_anchor_candidates(px: int, current_y: int, pz: int):
             """Yield nearby same-level columns with two stable support blocks."""
@@ -1631,6 +1594,17 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                     # excavate. Yield this bounded descent attempt for a clean
                     # retry instead of entering an unbounded supply loop.
                     return False
+
+            # A staircase can intersect a source-water cell while the bot's
+            # head remains in air. Baritone cannot excavate out of that cell,
+            # and newly broken blocks immediately refill. Seal cardinal inflow
+            # and bucket the occupied source before selecting the next step.
+            from .stone_descent import drain_breathable_water_pocket
+
+            water_recovery = drain_breathable_water_pocket(client, state)
+            if water_recovery is True:
+                unreadable_retries = 0
+                continue
             
             if current_y <= y + 3:
                 print(f"DEBUG: Reached target Y={y}!")
@@ -1677,19 +1651,11 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                 # deepslate. If that happens, retain the verified solid floor
                 # and let the guarded one-block Baritone goal excavate the two
                 # already-vetted, ordinary mineable blocks.
-                head_cleared = (
-                    head_id in air_blocks
-                    or (
-                        head_id not in baritone_excavation_blocks
-                        and break_for_step(target_x, target_y + 1, target_z)
-                    )
+                head_cleared = head_id in air_blocks or break_for_step(
+                    target_x, target_y + 1, target_z
                 )
-                foot_cleared = (
-                    foot_id in air_blocks
-                    or (
-                        foot_id not in baritone_excavation_blocks
-                        and break_for_step(target_x, target_y, target_z)
-                    )
+                foot_cleared = foot_id in air_blocks or break_for_step(
+                    target_x, target_y, target_z
                 )
                 head_after = block_id(target_x, target_y + 1, target_z)
                 foot_after = block_id(target_x, target_y, target_z)
@@ -1750,12 +1716,8 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                         f"DEBUG: Vertical step Y={current_y}->{break_y} at "
                         f"({px}, {break_y}, {pz})"
                     )
-                    block_cleared = (
-                        break_id in air_blocks
-                        or (
-                            break_id not in baritone_excavation_blocks
-                            and break_for_step(px, break_y, pz)
-                        )
+                    block_cleared = break_id in air_blocks or break_for_step(
+                        px, break_y, pz
                     )
                     break_after = block_id(px, break_y, pz)
                     land_after = block_id(px, land_y, pz)

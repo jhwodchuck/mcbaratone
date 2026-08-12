@@ -1274,6 +1274,79 @@ def test_y_descent_prefers_verified_vertical_step_in_dense_deepslate(monkeypatch
     assert gotos[0] == {"x": 0, "y": 2, "z": 0}
 
 
+def test_y_descent_uses_progressive_exact_mining_for_deepslate(monkeypatch):
+    """The shared descent must use bridge dig_block before a Baritone goal."""
+    from baritone_client.common import resources
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.player = (0, 4, 0)
+            self.dug = set()
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "block_position": {
+                        "x": self.player[0],
+                        "y": self.player[1],
+                        "z": self.player[2],
+                    },
+                    "health": 20,
+                    "food_level": 20,
+                }
+            if route == "get_inventory":
+                return {
+                    "inventory": [
+                        {
+                            "id": "minecraft:iron_pickaxe",
+                            "count": 1,
+                            "damage": 0,
+                            "max_damage": 250,
+                        }
+                    ],
+                    "armor": [],
+                    "offhand": [],
+                }
+            if route == "get_block":
+                key = (payload["x"], payload["y"], payload["z"])
+                if key in self.dug:
+                    return {"id": "minecraft:air"}
+                if key in {(1, 3, 0), (1, 4, 0)}:
+                    return {"id": "minecraft:deepslate"}
+                if key == (1, 2, 0):
+                    return {"id": "minecraft:stone"}
+                if key in {(0, 4, 0), (0, 5, 0)}:
+                    return {"id": "minecraft:air"}
+                return {"id": "minecraft:bedrock"}
+            if route == "dig_block":
+                self.dug.add((payload["x"], payload["y"], payload["z"]))
+                return {
+                    "started": True,
+                    "x": payload["x"],
+                    "y": payload["y"],
+                    "z": payload["z"],
+                }
+            if route == "goto" and payload == {"x": 1, "y": 3, "z": 0}:
+                self.player = (1, 3, 0)
+                return {"started": True}
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources.go_to_y_level(client, 0, timeout=10)
+    dug = {
+        (payload["x"], payload["y"], payload["z"])
+        for route, payload in transport.calls
+        if route == "dig_block"
+    }
+    assert dug == {(1, 3, 0), (1, 4, 0)}
+    assert not any(route == "break_block" for route, _ in transport.calls)
+
+
 def test_y_descent_relocates_out_of_gravel_collar(monkeypatch):
     """Bot08 must tunnel sideways to stable support, never dig down through gravel."""
     from baritone_client.common import resources
