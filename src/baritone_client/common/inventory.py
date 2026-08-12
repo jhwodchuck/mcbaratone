@@ -1046,6 +1046,17 @@ def craft(client, item_id: str, count: int = 1) -> bool:
     """
     from . import harness_ops
 
+    # Crafting tables are a player-grid bootstrap recipe.  Guarantee their
+    # four-plank input here, at the shared craft boundary, so every caller
+    # (including a resumed deep-mining phase) can recover from carrying only a
+    # partial plank stack.  Keep this outside ``_MANUAL_GRID_RECIPES``: routing
+    # the table through the 3x3 recipe path would require a table to make one.
+    if item_id == "minecraft:crafting_table" and not _ensure_raw_planks(
+        client, 4 * max(1, count)
+    ):
+        print("  [Craft Debug] could not prepare planks for minecraft:crafting_table")
+        return False
+
     if not _ensure_wooden_tool_ingredients(client, item_id, count):
         print(f"  [Craft Debug] could not prepare wooden tool ingredients for {item_id}")
         return False
