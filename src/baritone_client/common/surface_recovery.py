@@ -142,6 +142,32 @@ def _loaded_breathing_level_above(
     return None
 
 
+def _loaded_two_block_air_level_above(
+    client: Any,
+    position: tuple[int, int, int],
+    *,
+    scan_height: int = 32,
+) -> Optional[int]:
+    """Return the first loaded feet level with open feet and head blocks."""
+    x, y, z = position
+    for feet_y in range(y + 1, y + max(2, int(scan_height))):
+        try:
+            feet = client.transport.dispatch(
+                "get_block", {"x": x, "y": feet_y, "z": z}
+            ).get("id", "")
+            head = client.transport.dispatch(
+                "get_block", {"x": x, "y": feet_y + 1, "z": z}
+            ).get("id", "")
+        except Exception:
+            return None
+        if (
+            str(feet).split(":")[-1] in _OPEN_PLAYER_BLOCKS
+            and str(head).split(":")[-1] in _OPEN_PLAYER_BLOCKS
+        ):
+            return feet_y
+    return None
+
+
 def _start_loaded_column_ascent(
     client: Any,
     position: tuple[int, int, int],
@@ -149,14 +175,13 @@ def _start_loaded_column_ascent(
     require_stable_support: bool = False,
 ) -> bool:
     """Prefer an upward-only Y goal when the water surface is already loaded."""
-    target_y = _loaded_breathing_level_above(client, position)
+    target_y = (
+        _loaded_two_block_air_level_above(client, position)
+        if require_stable_support
+        else _loaded_breathing_level_above(client, position)
+    )
     if target_y is None or target_y <= position[1]:
         return False
-    if require_stable_support:
-        # The ordinary breathing target puts the player's head in air while
-        # their feet may remain in the top water block. Stable recovery needs
-        # the feet in the air block above so it can install support beneath.
-        target_y += 1
     return _start_y_level_ascent(client, target_y)
 
 

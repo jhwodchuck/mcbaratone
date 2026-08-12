@@ -420,6 +420,34 @@ def test_stable_loaded_ascent_targets_feet_air_above_water():
     assert ("goal", {"type": "yLevel", "value": 9}) in transport.calls
 
 
+def test_stable_loaded_ascent_skips_one_block_air_gap_below_support():
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_block":
+                block_y = int(payload["y"])
+                return {
+                    "id": {
+                        7: "minecraft:air",
+                        8: "minecraft:dirt",
+                        9: "minecraft:air",
+                        10: "minecraft:air",
+                    }.get(block_y, "minecraft:water")
+                }
+            return {}
+
+    transport = Transport()
+    assert surface_recovery._start_loaded_column_ascent(
+        SimpleNamespace(transport=transport),
+        (-437, 4, 14),
+        require_stable_support=True,
+    )
+    assert ("goal", {"type": "yLevel", "value": 9}) in transport.calls
+
+
 def test_stable_surface_places_carried_support_below_air_pocket(monkeypatch):
     from baritone_client.common import harness_ops, inventory
 
