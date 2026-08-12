@@ -2285,6 +2285,66 @@ def test_manual_escape_descent_can_break_safe_floor_without_pickaxe(monkeypatch)
     assert any(route == "dig_block" for route, _payload in transport.calls)
 
 
+def test_breathable_source_water_pocket_is_sealed_then_bucketed(monkeypatch):
+    """A1's shared descent recovery drains its feet without flooding again."""
+    blocks = {
+        (0, 4, 0): {"id": "minecraft:water", "state": {"level": "0"}},
+        (0, 5, 0): {"id": "minecraft:air", "state": {}},
+        (0, 4, -1): {"id": "minecraft:water", "state": {"level": "0"}},
+        (0, 4, 1): {"id": "minecraft:deepslate", "state": {}},
+        (-1, 4, 0): {"id": "minecraft:diorite", "state": {}},
+        (1, 4, 0): {"id": "minecraft:deepslate", "state": {}},
+    }
+    counts = {
+        "minecraft:bucket": 1,
+        "minecraft:water_bucket": 3,
+        "minecraft:cobblestone": 64,
+    }
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_block":
+                return blocks.get(
+                    (payload["x"], payload["y"], payload["z"]),
+                    {"id": "minecraft:stone", "state": {}},
+                )
+            if route == "place_block":
+                key = (payload["x"], payload["y"], payload["z"])
+                blocks[key] = {"id": payload["block"], "state": {}}
+                return {"placed": True}
+            if route == "use_item":
+                blocks[(0, 4, 0)] = {"id": "minecraft:air", "state": {}}
+                counts["minecraft:bucket"] = 0
+                counts["minecraft:water_bucket"] = 4
+                return {"used": True}
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(
+        inventory,
+        "count_item",
+        lambda _client, item_id: counts.get(item_id, 0),
+    )
+    monkeypatch.setattr(inventory, "select_item", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(resources, "equip_best_pickaxe", lambda _client: True)
+    monkeypatch.setattr(stone_descent.time, "sleep", lambda _seconds: None)
+
+    result = stone_descent.drain_breathable_water_pocket(
+        client,
+        {"block_position": {"x": 0, "y": 4, "z": 0}},
+    )
+
+    assert result is True
+    assert blocks[(0, 4, -1)]["id"] == "minecraft:cobblestone"
+    assert blocks[(0, 4, 0)]["id"] == "minecraft:air"
+    assert any(route == "use_item" for route, _payload in transport.calls)
+
+
 def test_supported_descent_breaks_inset_mud_at_player_y(monkeypatch):
     class MudTransport(RecordingTransport):
         def __init__(self):
