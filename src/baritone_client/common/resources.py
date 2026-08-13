@@ -1370,7 +1370,8 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                 read_flags["unreadable"] = True
                 return UNREADABLE
 
-        from .stone_descent import mine_step_block
+        from . import descent_recovery
+        from .stone_descent import drain_breathable_water_pocket, mine_step_block
 
         def break_for_step(x: int, by: int, z: int) -> bool:
             return mine_step_block(
@@ -1429,6 +1430,7 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
             state: dict,
             *,
             label: str,
+            require_horizontal: bool = False,
         ) -> str:
             """Ask Baritone to enter one verified step and classify the result."""
             response = _serialized_dispatch(
@@ -1479,7 +1481,13 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                     )
                     print(f"Y navigation safety abort during {label}")
                     return "unsafe"
-                if moved_y <= target_y:
+                if descent_recovery.cleared_step_reached(
+                    moved_pos,
+                    target_x=target_x,
+                    target_y=target_y,
+                    target_z=target_z,
+                    require_horizontal=require_horizontal,
+                ):
                     _serialized_dispatch(
                         client,
                         "cancel",
@@ -1599,12 +1607,34 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
             # head remains in air. Baritone cannot excavate out of that cell,
             # and newly broken blocks immediately refill. Seal cardinal inflow
             # and bucket the occupied source before selecting the next step.
-            from .stone_descent import drain_breathable_water_pocket
-
             water_recovery = drain_breathable_water_pocket(client, state)
             if water_recovery is True:
                 unreadable_retries = 0
                 continue
+            if water_recovery is False:
+                sidestep_result = descent_recovery.attempt_water_pocket_sidestep(
+                    state=state,
+                    directions=directions,
+                    air_blocks=air_blocks,
+                    unsafe_blocks=unsafe_blocks,
+                    read_block=block_id,
+                    break_for_step=break_for_step,
+                    walk_to_step=walk_to_cleared_step,
+                )
+                if sidestep_result == "unsafe":
+                    return False
+                if sidestep_result == "moved":
+                    unreadable_retries = 0
+                    continue
+                if descent_recovery.recover_low_altitude_column(
+                    client,
+                    current_y=current_y,
+                    target_y=y,
+                ):
+                    unreadable_retries = 0
+                    continue
+                print("Y navigation stalled in an undrainable source-water pocket")
+                return False
             
             if current_y <= y + 3:
                 print(f"DEBUG: Reached target Y={y}!")
@@ -1857,6 +1887,13 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                         f"({unreadable_retries}/5); re-scanning descent"
                     )
                     time.sleep(1.0)
+                    continue
+                if descent_recovery.recover_low_altitude_column(
+                    client,
+                    current_y=current_y,
+                    target_y=y,
+                ):
+                    unreadable_retries = 0
                     continue
                 print(f"Y navigation stalled: no safe staircase step from Y={current_y}")
                 return False
