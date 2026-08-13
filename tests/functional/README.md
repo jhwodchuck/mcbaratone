@@ -68,6 +68,16 @@ Stop a profile cleanly through RCON, or recreate its world and client state:
 `runs/functional`, after resolving and checking that exact path. The recreated
 profile is stopped until `Start` is requested.
 
+## Spawn-to-dragon lab
+
+The same lifecycle engine also defines non-op `dragon-a` and `dragon-b`
+profiles. They use a separate `runs/dragon-lab` root and are operated through
+[`scripts/dragon_lab.ps1`](../../scripts/dragon_lab.ps1), not through the
+legacy suite runner. They execute the production `spawn_to_dragon.py` and use
+read-only Suite 1200 gates as evidence. See
+[the dragon-lab guide](../../docs/dragon-lab.md) for its no-cheat and snapshot
+rules.
+
 ## Layout
 
 ```text
