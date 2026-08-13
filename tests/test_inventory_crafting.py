@@ -6,13 +6,15 @@ from baritone_client.actions.crafting import CraftingAction
 from types import SimpleNamespace
 import json
 
+import pytest
+
 
 class DummyTransport:
     def __init__(self, responses=None):
         self.responses = responses or {}
         self.calls = []
 
-    def dispatch(self, route, payload):
+    def dispatch(self, route, payload, **_kwargs):
         self.calls.append((route, payload))
         return self.responses.get(route, {"status": "ok", "data": {}})
 
@@ -1483,8 +1485,8 @@ def test_craft_recipe_manual_uses_bridge_place_recipe(monkeypatch):
     calls = []
 
     class DummyTransport:
-        def dispatch(self, route, payload):
-            calls.append((route, payload))
+        def dispatch(self, route, payload, **kwargs):
+            calls.append((route, payload, kwargs))
             if route == "place_recipe":
                 return {"data": {"crafted": True, "crafts_completed": 1}}
             return {}
@@ -1511,6 +1513,139 @@ def test_craft_recipe_manual_uses_bridge_place_recipe(monkeypatch):
         "expected_count": 1,
         "crafts": 1,
     }
+    assert calls[0][2] == {"timeout": 32.0}
+
+
+def test_place_recipe_splits_large_batch_into_bounded_requests():
+    calls = []
+
+    class DummyTransport:
+        def dispatch(self, route, payload, **kwargs):
+            calls.append((route, payload, kwargs))
+            return {
+                "data": {
+                    "crafted": True,
+                    "crafts_completed": payload["crafts"],
+                }
+            }
+
+    client = DummyClient(DummyTransport())
+
+    assert harness_ops.place_recipe(
+        client,
+        "minecraft:bread",
+        [("minecraft:wheat", 1), ("minecraft:wheat", 2), ("minecraft:wheat", 3)],
+        crafts=11,
+    )
+    assert [payload["crafts"] for _route, payload, _kwargs in calls] == [3, 3, 3, 2]
+    assert all(kwargs == {"timeout": 32.0} for _route, _payload, kwargs in calls)
+
+
+def test_place_recipe_rejects_nonpositive_batch_without_dispatch():
+    class DummyTransport:
+        def dispatch(self, _route, _payload, **_kwargs):
+            raise AssertionError("invalid recipe batch must not be dispatched")
+
+    assert not harness_ops.place_recipe(
+        DummyClient(DummyTransport()),
+        "minecraft:bread",
+        [("minecraft:wheat", 1)],
+        crafts=0,
+    )
+
+
+def test_place_recipe_timeout_never_falls_back_to_duplicate_clicks(monkeypatch):
+    from baritone_client.core.exceptions import BridgeResponseTimeout
+
+    class DummyTransport:
+        def dispatch(self, route, _payload, **_kwargs):
+            assert route == "place_recipe"
+            raise BridgeResponseTimeout(
+                route,
+                transport_type="tcp",
+                request_sent=True,
+            )
+
+    fallback_called = False
+
+    def fallback(*_args, **_kwargs):
+        nonlocal fallback_called
+        fallback_called = True
+        return True
+
+    monkeypatch.setattr(
+        harness_ops,
+        "_load",
+        lambda: {
+            "ensure_crafting_output_space": lambda _ctx: True,
+            "craft_recipe_manual": fallback,
+            "TestContext": lambda client: type(
+                "Context", (), {"client": client, "log_event": lambda *_args: None}
+            )(),
+        },
+    )
+
+    with pytest.raises(BridgeResponseTimeout):
+        harness_ops.craft_recipe_manual(
+            DummyClient(DummyTransport()),
+            "minecraft:bread",
+            [("minecraft:wheat", 1), ("minecraft:wheat", 2), ("minecraft:wheat", 3)],
+            crafts=3,
+        )
+    assert fallback_called is False
+
+
+def test_place_recipe_partial_batch_never_falls_back_to_duplicate_clicks(monkeypatch):
+    calls = 0
+
+    class DummyTransport:
+        def dispatch(self, route, payload, **_kwargs):
+            nonlocal calls
+            assert route == "place_recipe"
+            calls += 1
+            if calls == 1:
+                return {
+                    "data": {
+                        "crafted": True,
+                        "crafts_completed": payload["crafts"],
+                    }
+                }
+            return {
+                "data": {
+                    "crafted": False,
+                    "crafts_completed": 0,
+                    "error": "no_output",
+                }
+            }
+
+    fallback_called = False
+
+    def fallback(*_args, **_kwargs):
+        nonlocal fallback_called
+        fallback_called = True
+        return True
+
+    monkeypatch.setattr(
+        harness_ops,
+        "_load",
+        lambda: {
+            "ensure_crafting_output_space": lambda _ctx: True,
+            "craft_recipe_manual": fallback,
+            "TestContext": lambda client: type(
+                "Context", (), {"client": client, "log_event": lambda *_args: None}
+            )(),
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="3/5 confirmed crafts"):
+        harness_ops.craft_recipe_manual(
+            DummyClient(DummyTransport()),
+            "minecraft:bread",
+            [("minecraft:wheat", 1), ("minecraft:wheat", 2), ("minecraft:wheat", 3)],
+            crafts=5,
+        )
+    assert calls == 2
+    assert fallback_called is False
 
 
 def test_craft_recipe_manual_bridge_fallback(monkeypatch):
@@ -1651,7 +1786,7 @@ def test_harness_fallback_does_not_submit_atomic_recipe_twice(monkeypatch):
     calls = []
 
     class DummyTransport:
-        def dispatch(self, route, payload):
+        def dispatch(self, route, payload, **_kwargs):
             calls.append((route, payload))
             if route == "place_recipe":
                 return {"data": {"crafted": False, "error": "output_not_collected"}}

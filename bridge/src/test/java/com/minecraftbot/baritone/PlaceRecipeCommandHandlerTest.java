@@ -9,12 +9,38 @@ import net.minecraft.client.Minecraft;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 
 class PlaceRecipeCommandHandlerTest {
+    @Test
+    void rejectsOversizedBatchBeforeSchedulingAnyClicks() throws Exception {
+        Minecraft client = mock(Minecraft.class);
+        JsonObject placement = new JsonObject();
+        placement.addProperty("selector", "minecraft:wheat");
+        placement.addProperty("grid_slot", 1);
+        JsonArray placements = new JsonArray();
+        placements.add(placement);
+        JsonObject params = new JsonObject();
+        params.add("placements", placements);
+        params.addProperty("expected_output", "minecraft:bread");
+        params.addProperty(
+                "crafts",
+                PlaceRecipeCommandHandler.MAX_CRAFTS_PER_REQUEST + 1);
+
+        CommandResult result = new PlaceRecipeCommandHandler()
+                .execute(params, client, mock(IBaritone.class), null)
+                .get();
+
+        assertFalse(result.isSuccess());
+        assertEquals(
+                "'crafts' must be between 1 and 3; split larger recipe jobs into bounded requests",
+                result.getErrorMessage());
+    }
+
     @Test
     void cancelledFutureDoesNotBeginQueuedCraft() {
         Minecraft client = mock(Minecraft.class);

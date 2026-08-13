@@ -18,6 +18,7 @@ from baritone_client.core.exceptions import (
 )
 from baritone_client.transport import transport as transport_module
 from baritone_client.transport.transport import TcpTransport, WebSocketTransport
+from baritone_client.transport.tcp_protocol import is_traced_command
 
 
 class _DummySocket:
@@ -100,6 +101,10 @@ def test_mutating_route_never_retries(monkeypatch, tcp):
     with pytest.raises(TransportError):
         tcp.dispatch("goto", {"x": 1, "y": 64, "z": 1})
     assert calls == ["goto"]
+
+
+def test_place_recipe_emits_mutation_lifecycle_telemetry():
+    assert is_traced_command("place_recipe") is True
 
 
 def test_player_not_available_error_is_retried_on_read_route(monkeypatch, tcp):

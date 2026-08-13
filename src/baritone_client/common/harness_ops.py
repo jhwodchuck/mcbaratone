@@ -23,6 +23,8 @@ be used by the autonomous survival controller - do not add them here.
 import os
 import sys
 
+from .recipe_bridge import try_place_recipe as _try_bridge_place_recipe
+
 _harness = None          # dict of resolved callables once loaded
 _import_error = None
 
@@ -379,46 +381,6 @@ def craft_recipe_manual(
             try_bridge=False,
         )
     )
-
-
-def _try_bridge_place_recipe(
-    client,
-    result_id: str,
-    placements,
-    crafts: int = 1,
-    output_per_recipe: int = 1,
-) -> bool:
-    """Try the bridge-native place_recipe command.  Returns True on verified
-    success, False if the bridge doesn't support it or the craft failed
-    (caller should fall back to the Python path)."""
-    try:
-        payload = {
-            "placements": [
-                {"selector": sel, "grid_slot": slot}
-                for sel, slot in placements
-            ],
-            "expected_output": result_id,
-            "expected_count": output_per_recipe,
-            "crafts": crafts,
-        }
-        resp = client.transport.dispatch("place_recipe", payload)
-        data = resp.get("data", resp) if isinstance(resp, dict) else {}
-        if data.get("crafted"):
-            return True
-        # Bridge returned a structured error (e.g. missing_ingredient,
-        # no_output) — fall through to Python path.
-        detail = data.get("error") or (
-            resp.get("error") if isinstance(resp, dict) else None
-        )
-        print(
-            f"  [Craft Debug] place_recipe did not craft {result_id}: "
-            f"{detail or data or resp}"
-        )
-        return False
-    except Exception as exc:
-        # Command not recognised by older bridge, transport error, etc.
-        print(f"  [Craft Debug] place_recipe failed for {result_id}: {exc}")
-        return False
 
 
 def place_recipe(

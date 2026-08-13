@@ -40,8 +40,15 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(PlaceRecipeCommandHandler.class);
 
-    /** Maximum crafts per single command to avoid runaway timeouts. */
-    private static final int MAX_CRAFTS = 64;
+    /**
+     * Maximum crafts per request.
+     *
+     * One craft can spend roughly four seconds waiting for server-confirmed
+     * output and collection. Keeping this at three guarantees the handler's
+     * own worst-case polling budget stays below the default 15-second Python
+     * transport deadline. Callers must split larger jobs into bounded chunks.
+     */
+    static final int MAX_CRAFTS_PER_REQUEST = 3;
 
     /** Delay between craft iterations (ms). */
     private static final int CRAFT_ITER_DELAY_MS = 80;
@@ -165,9 +172,12 @@ public class PlaceRecipeCommandHandler extends AsyncCommandHandler {
         int crafts = params.has("crafts")
                 ? params.get("crafts").getAsInt() : 1;
 
-        if (crafts <= 0 || crafts > MAX_CRAFTS) {
+        if (crafts <= 0 || crafts > MAX_CRAFTS_PER_REQUEST) {
             return CompletableFuture.completedFuture(
-                    CommandResult.error("'crafts' must be between 1 and " + MAX_CRAFTS));
+                    CommandResult.error(
+                            "'crafts' must be between 1 and "
+                                    + MAX_CRAFTS_PER_REQUEST
+                                    + "; split larger recipe jobs into bounded requests"));
         }
 
         // Slot updates from a multiplayer server arrive on the Minecraft main

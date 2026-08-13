@@ -34,6 +34,7 @@ def is_traced_command(route: str) -> bool:
         "break_block",
         "set_fast_break",
         "craft",
+        "place_recipe",
         "smelt",
         "open_container",
         "open_chest",
