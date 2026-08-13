@@ -48,7 +48,7 @@ from ...common.husbandry import (
     visit_known_herd_for_loot,
 )
 from .iron_age_food import persisted_food_source, remember_food_source
-from . import iron_age_progress
+from . import iron_age_progress, iron_age_provisioning
 
 class FoodAndIronHandler(PhaseHandler):
     """Phase 2: Iron & Diamond mining - Hour 1-2."""
@@ -817,16 +817,12 @@ class FoodAndIronHandler(PhaseHandler):
         chest_pos = self._resolve_initial_iron_supply_chest(client, state)
         if chest_pos is None:
             return False
-        result = withdraw_required_from_chest(
+        return iron_age_provisioning.withdraw_banked_iron(
+            self,
             client,
+            state,
             chest_pos,
-            {
-                "minecraft:iron_ingot": self._IRON_BANK_TARGET,
-                "minecraft:raw_iron": self._IRON_BANK_TARGET,
-            },
-            state=state,
         )
-        return result >= 0
 
     def _bank_mining_progression(
         self,
@@ -931,60 +927,11 @@ class FoodAndIronHandler(PhaseHandler):
         return True
 
     def _reestablish_supply_chest(self, client, chest_pos: Tuple[int, int, int]) -> bool:
-        """Re-place the supply chest if its checkpointed block is genuinely
-        gone. Returns True only when a chest verifiably occupies chest_pos."""
-        cx, cy, cz = (int(v) for v in chest_pos)
-
-        block = client.transport.dispatch(
-            "get_block", {"x": cx, "y": cy, "z": cz}
-        ).get("id", "")
-        if "chest" in block:
-            return True
-
-        # Get within interaction range so the block read reflects a loaded
-        # chunk, not a void_air placeholder, before deciding it's really gone.
-        state = self._read_state(client, "Reestablish supply chest distance check")
-        if state is None:
-            return False
-        pos = state.get("block_position", state.get("position", {}))
-        near = all(axis in pos for axis in ("x", "y", "z")) and (
-            (float(pos["x"]) - cx) ** 2
-            + (float(pos["y"]) - cy) ** 2
-            + (float(pos["z"]) - cz) ** 2
-        ) ** 0.5 <= 4.5
-        if not near and not harness_ops.move_near(client, cx, cy, cz, timeout=30.0):
-            print("  Could not reach supply-chest location to re-place it.")
-            return False
-
-        block = client.transport.dispatch(
-            "get_block", {"x": cx, "y": cy, "z": cz}
-        ).get("id", "")
-        if "chest" in block:
-            return True
-        if block == "minecraft:void_air":
-            # Chunk still not loaded -- do not conclude the chest is gone.
-            return False
-
-        if count_item(client, "minecraft:chest") < 1 and not craft(
-            client, "minecraft:chest", 1
-        ):
-            print("  No chest available and could not craft one to re-place.")
-            return False
-
-        print(f"  Re-placing missing supply chest at {(cx, cy, cz)}.")
-        client.transport.dispatch("chat", {"message": "#set allowBreak false"})
-        try:
-            harness_ops.place_block_exact(
-                client, cx, cy, cz, "minecraft:chest", allow_break=False
-            )
-        finally:
-            client.transport.dispatch("cancel", {})
-            client.transport.dispatch("chat", {"message": "#set allowBreak true"})
-
-        block = client.transport.dispatch(
-            "get_block", {"x": cx, "y": cy, "z": cz}
-        ).get("id", "")
-        return "chest" in block
+        return iron_age_provisioning.reestablish_supply_chest(
+            self,
+            client,
+            chest_pos,
+        )
 
     def _normalize_position(self, value) -> Optional[Tuple[int, int, int]]:
         if not isinstance(value, (list, tuple)) or len(value) != 3:
@@ -1488,3 +1435,12 @@ class FoodAndIronHandler(PhaseHandler):
             "minecraft:iron_axe": 1,
             "minecraft:iron_shovel": 1,
         }).success
+
+    def _bake_durable_food(self, client) -> bool:
+        return iron_age_provisioning.bake_durable_food(self, client)
+
+    def _harvest_persisted_crop_farm(self, client) -> bool:
+        return iron_age_provisioning.harvest_persisted_crop_farm(self, client)
+
+    def _craft_shield(self, client) -> bool:
+        return iron_age_provisioning.craft_shield(client)

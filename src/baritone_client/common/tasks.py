@@ -129,12 +129,23 @@ class ActionTask(Task):
                 reason=normalized.reason,
             )
             return normalized
-        except (PlayerDeathDetected, SurvivalRecoveryRequired) as exc:
-            reason = (
-                "player_death"
-                if isinstance(exc, PlayerDeathDetected)
-                else "survival_recovery"
-            )
+        except (
+            PlayerDeathDetected,
+            SurvivalRecoveryRequired,
+            ProgressRecoveryRequired,
+            IncrementalProgressRequired,
+            PacingHoldRequired,
+        ) as exc:
+            if isinstance(exc, PlayerDeathDetected):
+                reason = "player_death"
+            elif isinstance(exc, SurvivalRecoveryRequired):
+                reason = "survival_recovery"
+            elif isinstance(exc, ProgressRecoveryRequired):
+                reason = "progress_recovery"
+            elif isinstance(exc, IncrementalProgressRequired):
+                reason = "incremental_progress"
+            else:
+                reason = "pacing_hold"
             end_operation(operation, "interrupted", reason=reason)
             raise
         except Exception as e:

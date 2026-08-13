@@ -1927,7 +1927,11 @@ def test_deposit_replaces_missing_supply_chest_then_deposits(monkeypatch):
         deposit_attempts.append(chest_pos)
         return 2 if block_state["placed"] else -1
     monkeypatch.setattr(iron_age, "deposit_excess_to_chest", deposit)
-    monkeypatch.setattr(iron_age, "count_item", lambda _c, _i: 1)  # carries a chest
+    monkeypatch.setattr(
+        iron_age.iron_age_provisioning,
+        "count_item",
+        lambda _c, _i: 1,
+    )  # carries a chest
     def place(_c, x, y, z, item, allow_break=True):
         block_state["placed"] = True
         return True

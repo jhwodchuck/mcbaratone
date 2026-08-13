@@ -222,6 +222,8 @@ def build_phase_tasks(
             ActionTask("Craft full iron armor", handler._craft_iron_armor),
             ActionTask("Equip and verify iron armor", handler._equip_iron_armor),
             ActionTask("Craft iron tools", handler._craft_iron_tools),
+            ActionTask("Bake durable prepared food", handler._bake_durable_food),
+            ActionTask("Craft shield", handler._craft_shield),
             ActionTask(
                 "Bank progression loot at home",
                 lambda client: handler._bank_progression_at_home(client, state),
