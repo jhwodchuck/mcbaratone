@@ -20,8 +20,20 @@ def run_crop_opportunity(
     traveler: Callable[..., bool] = goto,
     block_finder: Callable[..., Any] = find_nearby_block,
     sleeper: Callable[[float], None] = time.sleep,
+    state: Any = None,
 ) -> tuple[bool, str, int, int]:
-    """Farm once, accepting only a harvest or world-verified replant delta."""
+    """Farm once, accepting only a harvest or world-verified replant delta.
+
+    The Baritone ``#farm`` command above only replants tiles that are
+    already farmland -- it does not till new soil. Confirmed live on A1
+    2026-08-14: a farm harvested down to bare ground (soil itself gone in
+    one tile, plain grass_block instead of farmland in the rest) left every
+    later cycle reporting "no harvest or planting change" forever, since
+    there was nothing left for ``#farm`` to act on. Falling back to
+    ``establish_wheat_farm`` -- already idempotent, already used to build
+    this same farm the first time -- re-tills and replants from scratch
+    when the quick path finds nothing.
+    """
     location = opportunity.location
     if location is None or not traveler(client, *location, timeout=90, tolerance=5.0):
         return False, "crop patch was unreachable", 0, 0
@@ -46,4 +58,10 @@ def run_crop_opportunity(
             client.transport.dispatch("cancel", {})
         except Exception:
             pass
-    return False, "no harvest or planting change was observed", before, after
+
+    from ...common.farming import establish_wheat_farm
+
+    rebuilt = establish_wheat_farm(client, *location, state=state)
+    if rebuilt is not None:
+        return True, "no mature crop; re-tilled and replanted the patch", before, after
+    return False, "no harvest, planting, or rebuild change was observed", before, after
