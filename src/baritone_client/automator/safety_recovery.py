@@ -2,10 +2,33 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+import time
+from typing import Any, Callable, Optional
 
-from ..common.combat import defend_or_flee
+from ..common.combat import _defense_runtime, defend_or_flee
+from ..common.defense import DefenseMode
 from .local_opportunity import LocalOpportunity, OpportunityKind
+
+# `defend_or_flee` advances the shared defense state machine by exactly one
+# tick. Its EVADE branch is explicitly written on the assumption that a
+# threat still present after a failed escape gets retried "immediately on
+# the next tick" (see combat.py, next to should_escalate_to_combat) -- that
+# is how DefenseRuntime.consecutive_evade_failures is meant to reach its
+# escalation threshold. Every other caller of defend_or_flee in this
+# codebase loops it tightly inside one continuous action, so that
+# assumption holds for them. This opportunity handler was the exception: the
+# adaptive scheduler only reaches SELF_DEFENSE once per outer cycle
+# (observed 10-14s, gated by opportunity priority against everything else),
+# so a single call here starved the escalation counter of the fast retries
+# it needs -- a bot could spend minutes alternating between a live threat
+# and ordinary fleet work, only ever escalating to fight-back once health
+# separately dropped into the unrelated critical-health recovery gate.
+# Retrying here, inside this one bounded opportunity call, gives the state
+# machine the "next tick" it already assumes, without changing the shared
+# state machine, its thresholds, or any other (already tightly-looping)
+# caller's behavior.
+_MAX_TICKS = 6
+_TICK_BUDGET_SECONDS = 20.0
 
 
 def select_self_defense(signals: object) -> LocalOpportunity | None:
@@ -23,19 +46,47 @@ def select_self_defense(signals: object) -> LocalOpportunity | None:
     )
 
 
+def _resolved_mode(client: Any) -> Optional[DefenseMode]:
+    """Best-effort peek at the shared runtime's mode after acting.
+
+    Returns None for client doubles with no ``transport`` (unit tests that
+    monkeypatch ``defend_or_flee`` directly and never touch the real state
+    machine); callers must treat None as "unknown", not "clear".
+    """
+    try:
+        return _defense_runtime(client).mode
+    except AttributeError:
+        return None
+
+
 def run_self_defense(
     client: Any, observe: Callable[[], Any]
 ) -> tuple[bool, str, int, int]:
-    """Run one defensive state-machine tick and measure its local effect."""
+    """Run bounded defensive state-machine ticks and measure their effect."""
     before = int(getattr(observe(), "nearby_hostiles", 0) or 0)
-    intervened = defend_or_flee(client, allow_safe_recovery_movement=True)
+    deadline = time.monotonic() + _TICK_BUDGET_SECONDS
+    intervened = False
+    for _ in range(_MAX_TICKS):
+        acted = defend_or_flee(client, allow_safe_recovery_movement=True)
+        intervened = intervened or acted
+        if not acted or time.monotonic() >= deadline:
+            break
     after = int(getattr(observe(), "nearby_hostiles", 0) or 0)
-    success = bool(intervened and after < before)
-    detail = (
-        f"nearby hostiles reduced {before}->{after}"
-        if after < before
-        else f"defensive recovery attempted; nearby hostiles {before}->{after}"
-    )
+    # `nearby_hostiles` is a 24m-radius entity count, but a verified evade
+    # (escape_recovery.run_away) only needs to clear a much shorter
+    # separation before the state machine calls it resolved (RECOVER) --
+    # a threat can still sit inside the wider count after a real, working
+    # escape. Trusting the count delta alone mislabeled that as "deferred".
+    # Prefer the state machine's own resolution when it's observable.
+    mode = _resolved_mode(client)
+    resolved = mode in (DefenseMode.CLEAR, DefenseMode.RECOVER)
+    success = bool(intervened and (resolved or after < before))
+    if after < before:
+        detail = f"nearby hostiles reduced {before}->{after}"
+    elif resolved and mode is not None:
+        detail = f"defensive recovery resolved ({mode.value}); nearby hostiles {before}->{after}"
+    else:
+        detail = f"defensive recovery attempted; nearby hostiles {before}->{after}"
     return success, detail, before, after
 
 

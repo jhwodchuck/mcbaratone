@@ -372,6 +372,21 @@ def assess_threats(
     return sorted(assessments, key=lambda item: (-item.score, item.distance))
 
 
+# A threat that stays outside the 10m action radius and never closes (see
+# the ALERT branch below) produces zero action every single tick it is
+# re-observed in that state. Live proof from dragon-lab's dragon-a run
+# (controller/monitor/bot.log): a skeleton parked at 11.2m held the bot in
+# ALERT for six consecutive self-defense opportunity cycles (~60s, no
+# DEFENSE: line printed at all) while the nearby-hostile count climbed
+# 1->2->3. ALERT is meant to be a "keep watching" state, not a place a
+# threat can sit forever -- once a standoff has already been watched for a
+# full dwell window without resolving on its own, stop watching and evade.
+# Moving away from a distant, non-closing threat is always a safe action
+# regardless of what is making closing_speed read this low; this dwell
+# timer does not change (or attempt to diagnose) that underlying reading.
+_ALERT_DWELL_LIMIT_SECONDS = 15.0
+
+
 def choose_defense_action(
     threats: Sequence[ThreatAssessment],
     *,
@@ -411,6 +426,15 @@ def choose_defense_action(
         )
     primary = urgent[0] if urgent else threats[0]
     if not urgent and primary.closing_speed <= 0.15:
+        if (
+            runtime.mode is DefenseMode.ALERT
+            and now - runtime.entered_at >= _ALERT_DWELL_LIMIT_SECONDS
+        ):
+            return DefenseDecision(
+                DefenseMode.EVADE,
+                "threat stalled in alert range too long; forcing evasion",
+                primary,
+            )
         return DefenseDecision(
             DefenseMode.ALERT,
             "threat outside action radius",
