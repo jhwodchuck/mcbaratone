@@ -1393,6 +1393,136 @@ def test_y_descent_relocates_out_of_gravel_collar(monkeypatch):
     assert not any(route == "break_block" for route, _payload in transport.calls)
 
 
+def test_y_descent_uses_low_altitude_manual_recover_before_returning_stall(monkeypatch):
+    """A bot stuck at the same low-altitude position for 6 iterations
+    recovers via a guarded column descent -- diagnosed from a live A1
+    event-log trace of a stuck "Dig to diamond level Y-58" task, not
+    covered by the water-pocket-specific or no-safe-step recovery paths.
+    """
+    from baritone_client.common import descent_recovery, resources, stone_descent
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.position = {"x": 0, "y": 4, "z": 0}
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "block_position": dict(self.position),
+                    "health": 20,
+                    "food_level": 20,
+                }
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    fallback_calls = []
+
+    # Always report the water pocket as already handled so the loop spins
+    # purely on the position-repeat detector, never touching the sidestep
+    # or per-step staircase code this test isn't exercising.
+    monkeypatch.setattr(
+        stone_descent, "drain_breathable_water_pocket", lambda *_a, **_kw: True
+    )
+
+    def fake_low_altitude_recovery(_client, current_y, target_y, **_kwargs):
+        fallback_calls.append((current_y, target_y))
+        transport.position["y"] = 2
+        return True
+
+    monkeypatch.setattr(
+        descent_recovery, "recover_low_altitude_column", fake_low_altitude_recovery
+    )
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources.go_to_y_level(client, 0, timeout=10)
+    assert fallback_calls == [(4, 0)]
+
+
+def test_y_descent_fails_fast_when_low_altitude_position_stalls(monkeypatch, capsys):
+    from baritone_client.common import descent_recovery, resources, stone_descent
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.position = {"x": -434, "y": -1, "z": 20}
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "block_position": dict(self.position),
+                    "health": 20,
+                    "food_level": 20,
+                }
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    calls = []
+
+    monkeypatch.setattr(
+        stone_descent, "drain_breathable_water_pocket", lambda *_a, **_kw: True
+    )
+    monkeypatch.setattr(
+        descent_recovery,
+        "recover_low_altitude_column",
+        lambda _client, current_y, target_y, **_kwargs: calls.append(
+            (current_y, target_y)
+        )
+        or False,
+    )
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources.go_to_y_level(client, -58, timeout=10) is False
+    output = capsys.readouterr().out
+    assert "Y navigation stalled: no descent delta at low altitude" in output
+    assert calls and calls[0][0] <= 8
+
+
+def test_y_descent_recovered_after_repeated_position_stall(monkeypatch):
+    """The general (any-altitude) detector catches a stall the low-altitude
+    one cannot: it fires at Y=20, well above the low-altitude gate.
+    """
+    from baritone_client.common import descent_recovery, resources, stone_descent
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.position = {"x": 2, "y": 20, "z": 3}
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "block_position": dict(self.position),
+                    "health": 20,
+                    "food_level": 20,
+                }
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    helper_calls = []
+
+    monkeypatch.setattr(
+        stone_descent, "drain_breathable_water_pocket", lambda *_a, **_kw: True
+    )
+
+    def fake_recovery(_client, current_y, target_y, **kwargs):
+        helper_calls.append((current_y, target_y, kwargs.get("maximum_altitude", 8)))
+        transport.position["y"] = target_y
+        return True
+
+    monkeypatch.setattr(descent_recovery, "recover_low_altitude_column", fake_recovery)
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources.go_to_y_level(client, -58, timeout=12)
+    assert helper_calls == [(20, -58, None)]
+
+
 def test_armor_phase_fails_closed_until_full_set_is_equipped(monkeypatch):
     client = SimpleNamespace()
     monkeypatch.setattr(iron_age, "equip_best_armor", lambda _client: 3)

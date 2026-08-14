@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Collection
+from typing import Any, Callable, Collection, Optional
 
 from .movement_recovery import block_position
 
@@ -93,17 +93,27 @@ def recover_low_altitude_column(
     *,
     current_y: int,
     target_y: int,
-    maximum_altitude: int = 8,
+    maximum_altitude: Optional[int] = 8,
     maximum_steps: int = 12,
+    reason: str = "low-altitude stall",
 ) -> bool:
-    """Use the guarded column descent only for a low-altitude deadlock."""
-    if target_y >= current_y or current_y > maximum_altitude:
+    """Guarded column descent for a detected navigation stall.
+
+    ``maximum_altitude=None`` lifts the low-altitude-only gate for callers
+    recovering a stall detected at any elevation (e.g. a general repeated-
+    position deadlock, not specifically a low-altitude one) -- same
+    fallback-target math and same recovery call either way, just without
+    the deadlock being altitude-qualified first.
+    """
+    if target_y >= current_y:
+        return False
+    if maximum_altitude is not None and current_y > maximum_altitude:
         return False
     fallback_target = max(target_y, current_y - maximum_steps)
     if fallback_target >= current_y:
         return False
     print(
-        f"Y navigation: low-altitude stall at Y={current_y}, "
+        f"Y navigation: {reason} at Y={current_y}, "
         f"trying guarded column recovery to Y={fallback_target}"
     )
     from .stone_descent import manual_column_descend

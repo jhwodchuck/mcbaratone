@@ -1331,6 +1331,16 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
         overall_start = time.time()
         preferred_direction = 0
         unreadable_retries = 0
+        # Two independent repeated-position stall detectors, layered on top
+        # of the water-pocket and no-safe-step recovery above: a bot can get
+        # stuck at the exact same (x, y, z) for reasons neither of those
+        # cover. Diagnosed live from a stuck "Dig to diamond level Y-58" A1
+        # task. Low-altitude gets a tighter budget (6 vs 8 iterations)
+        # because there is less room to maneuver near bedrock.
+        descent_stall_retries = 0
+        descent_stall_position: tuple[int, int, int] | None = None
+        low_altitude_stall_retries = 0
+        low_altitude_stall_position: tuple[int, int, int] | None = None
         directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
         air_blocks = {"", "minecraft:air", "minecraft:cave_air", "minecraft:void_air"}
         # A block we could not read (bridge stalled under fleet load) is treated
@@ -1524,6 +1534,29 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                 continue
             pos = state.get("block_position", state.get("position", {}))
             px, current_y, pz = int(pos.get("x", 0)), int(pos.get("y", 64)), int(pos.get("z", 0))
+            descent_position = (px, current_y, pz)
+            if descent_position == descent_stall_position:
+                descent_stall_retries += 1
+            else:
+                descent_stall_position = descent_position
+                descent_stall_retries = 0
+            if descent_stall_retries >= 8:
+                if descent_recovery.recover_low_altitude_column(
+                    client,
+                    current_y=current_y,
+                    target_y=y,
+                    maximum_altitude=None,
+                    reason="repeated descent stall",
+                ):
+                    unreadable_retries = 0
+                    descent_stall_retries = 0
+                    low_altitude_stall_retries = 0
+                    continue
+                print(
+                    "Y navigation stalled: no descent delta at same position "
+                    f"{descent_position}; aborting"
+                )
+                return False
 
             # Relocation is a bounded recovery at one elevation, not a budget
             # for the whole surface-to-deepslate journey. Bot07 exhausted the
@@ -1536,6 +1569,41 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
             if state.get("is_dead", False) or float(state.get("health", 20) or 0) <= 0:
                 print("Y navigation aborted: player is dead")
                 return False
+
+            # Stop immediately once the target band is reached so the stall
+            # detectors above and below never get a chance to classify a
+            # deep but successful descent as stuck.
+            if current_y <= y + 3:
+                print(f"DEBUG: Reached target Y={y}!")
+                client.transport.dispatch("cancel", {})
+                return True
+
+            if current_y <= 8:
+                low_altitude_position = (px, current_y, pz)
+                if low_altitude_position == low_altitude_stall_position:
+                    low_altitude_stall_retries += 1
+                else:
+                    low_altitude_stall_retries = 0
+                    low_altitude_stall_position = low_altitude_position
+                if low_altitude_stall_retries >= 6:
+                    if descent_recovery.recover_low_altitude_column(
+                        client,
+                        current_y=current_y,
+                        target_y=y,
+                    ):
+                        unreadable_retries = 0
+                        low_altitude_stall_retries = 0
+                        continue
+                    print(
+                        "Y navigation stalled: no descent delta at "
+                        f"low altitude (Y={current_y}) after repeated goals at "
+                        f"{low_altitude_position}; aborting"
+                    )
+                    return False
+            else:
+                low_altitude_stall_retries = 0
+                low_altitude_stall_position = (px, current_y, pz)
+
             health = float(state.get("health", 20) or 0)
             if health < 12.0:
                 from .combat import recover_health
@@ -1635,11 +1703,6 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                     continue
                 print("Y navigation stalled in an undrainable source-water pocket")
                 return False
-            
-            if current_y <= y + 3:
-                print(f"DEBUG: Reached target Y={y}!")
-                client.transport.dispatch("cancel", {})
-                return True
 
             read_flags["unreadable"] = False
             step_succeeded = False
