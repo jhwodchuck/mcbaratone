@@ -25,6 +25,7 @@ class OpportunityKind(str, Enum):
     END_CITY_ROUTE = "end_city_route"
     STORAGE_MAINTENANCE = "storage_maintenance"
     ARMOR_UPKEEP = "armor_upkeep"
+    HOUSE_UPKEEP = "house_upkeep"
     CLEAR_HOSTILES_AID = "clear_hostiles_aid"
     SELF_DEFENSE = "self_defense"
 

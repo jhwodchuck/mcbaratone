@@ -584,6 +584,61 @@ def test_crop_opportunity_verifies_produce_increase(monkeypatch):
     assert ("cancel", {}) in calls
 
 
+def test_crop_opportunity_rebuilds_farm_when_nothing_to_harvest_or_replant(monkeypatch):
+    """A farm harvested down to bare ground has nothing for #farm to act on.
+
+    Confirmed live on A1 2026-08-14: soil gone in one tile, plain
+    grass_block (never tilled) in the rest -- every cycle reported "no
+    harvest or planting change" forever. run_crop_opportunity must fall
+    back to rebuilding the patch instead of retrying the same no-op.
+    """
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
+    state = SimpleNamespace(custom_data={})
+    scheduler = AdaptiveScheduler(client, SimpleNamespace(), state)
+    monkeypatch.setattr(adaptive, "get_inventory", lambda _client: {"minecraft:wheat": 0})
+    monkeypatch.setattr(adaptive, "goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(adaptive.time, "sleep", lambda _seconds: None)
+
+    rebuild_calls = []
+
+    def fake_establish(client_arg, x, y, z, size=5, state=None):
+        rebuild_calls.append((client_arg, x, y, z, state))
+        return (x, y, z)
+
+    monkeypatch.setattr(
+        "baritone_client.common.farming.establish_wheat_farm", fake_establish
+    )
+    opportunity = LocalOpportunity(
+        OpportunityKind.CROP_FARM, 80, "test crops", location=(5, 64, 5),
+    )
+
+    result = scheduler.run_local_opportunity(opportunity, crop_timeout=0.1)
+
+    assert result.success
+    assert result.detail == "no mature crop; re-tilled and replanted the patch"
+    assert rebuild_calls == [(client, 5, 64, 5, state)]
+
+
+def test_crop_opportunity_fails_when_rebuild_also_finds_nothing(monkeypatch):
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
+    scheduler = AdaptiveScheduler(client, SimpleNamespace(), _state())
+    monkeypatch.setattr(adaptive, "get_inventory", lambda _client: {"minecraft:wheat": 0})
+    monkeypatch.setattr(adaptive, "goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(adaptive.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        "baritone_client.common.farming.establish_wheat_farm",
+        lambda *_a, **_k: None,
+    )
+    opportunity = LocalOpportunity(
+        OpportunityKind.CROP_FARM, 80, "test crops", location=(5, 64, 5),
+    )
+
+    result = scheduler.run_local_opportunity(opportunity, crop_timeout=0.1)
+
+    assert not result.success
+    assert result.detail == "no harvest, planting, or rebuild change was observed"
+
+
 def test_wood_opportunity_records_banked_log_progress(monkeypatch):
     state = _state()
     scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
