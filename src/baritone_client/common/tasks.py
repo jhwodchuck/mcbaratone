@@ -129,7 +129,13 @@ class ActionTask(Task):
                 reason=normalized.reason,
             )
             return normalized
-        except (PlayerDeathDetected, SurvivalRecoveryRequired) as exc:
+        except (
+            PlayerDeathDetected,
+            SurvivalRecoveryRequired,
+            PacingHoldRequired,
+            IncrementalProgressRequired,
+            ProgressRecoveryRequired,
+        ) as exc:
             reason = (
                 "player_death"
                 if isinstance(exc, PlayerDeathDetected)
