@@ -1445,8 +1445,8 @@ def test_recovered_house_progress_can_complete_base_without_rebuild(monkeypatch)
     monkeypatch.setattr(base_construction, "wait_for_safe_daylight", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(base_construction, "build_good_house", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
-        base_construction.BaseConstructionHandler,
-        "_summarize_starter_house_progress",
+        base,
+        "summarize_house_progress",
         lambda *_args, **_kwargs: {
             "floor": 46,
             "shell": 64,
@@ -1570,8 +1570,8 @@ def test_unrecoverable_house_returns_retry_required(monkeypatch):
     monkeypatch.setattr(base_construction, "wait_for_safe_daylight", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(base_construction, "build_good_house", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
-        base_construction.BaseConstructionHandler,
-        "_summarize_starter_house_progress",
+        base,
+        "summarize_house_progress",
         lambda *_args, **_kwargs: {
             "floor": 10,
             "shell": 1,

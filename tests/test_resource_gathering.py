@@ -2,7 +2,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from baritone_client.common import inventory, resources, shelf_escape, stone_descent
+from baritone_client.common import (
+    descent_recovery,
+    inventory,
+    resources,
+    shelf_escape,
+    stone_descent,
+)
 
 
 class RecordingTransport:
@@ -2343,6 +2349,109 @@ def test_breathable_source_water_pocket_is_sealed_then_bucketed(monkeypatch):
     assert blocks[(0, 4, -1)]["id"] == "minecraft:cobblestone"
     assert blocks[(0, 4, 0)]["id"] == "minecraft:air"
     assert any(route == "use_item" for route, _payload in transport.calls)
+
+
+def test_same_level_sidestep_requires_horizontal_position_postcondition():
+    target = {"x": 11, "y": 4, "z": -7}
+
+    assert not descent_recovery.cleared_step_reached(
+        {"x": 10, "y": 4, "z": -7},
+        target_x=11,
+        target_y=4,
+        target_z=-7,
+        require_horizontal=True,
+    )
+    assert not descent_recovery.cleared_step_reached(
+        {"y": 4},
+        target_x=11,
+        target_y=4,
+        target_z=-7,
+        require_horizontal=True,
+    )
+    assert descent_recovery.cleared_step_reached(
+        target,
+        target_x=11,
+        target_y=4,
+        target_z=-7,
+        require_horizontal=True,
+    )
+
+
+def test_water_pocket_sidestep_clears_head_first_and_requires_lateral_move():
+    blocks = {
+        (1, 3, 0): "minecraft:stone",
+        (1, 4, 0): "minecraft:deepslate",
+        (1, 5, 0): "minecraft:deepslate",
+    }
+    breaks = []
+    walks = []
+
+    def read_block(x, y, z):
+        return blocks.get((x, y, z), "minecraft:water")
+
+    def break_for_step(x, y, z):
+        breaks.append((x, y, z))
+        blocks[(x, y, z)] = "minecraft:air"
+        return True
+
+    def walk_to_step(*args, **kwargs):
+        walks.append((args, kwargs))
+        return "moved"
+
+    result = descent_recovery.attempt_water_pocket_sidestep(
+        state={"block_position": {"x": 0, "y": 4, "z": 0}},
+        directions=[(1, 0)],
+        air_blocks={"minecraft:air"},
+        unsafe_blocks={"minecraft:water", "minecraft:lava"},
+        read_block=read_block,
+        break_for_step=break_for_step,
+        walk_to_step=walk_to_step,
+    )
+
+    assert result == "moved"
+    assert breaks == [(1, 5, 0), (1, 4, 0)]
+    assert walks[0][1]["require_horizontal"] is True
+
+
+def test_water_pocket_sidestep_refuses_an_unsafe_floor():
+    walked = []
+
+    result = descent_recovery.attempt_water_pocket_sidestep(
+        state={"block_position": {"x": 0, "y": 4, "z": 0}},
+        directions=[(1, 0)],
+        air_blocks={"minecraft:air"},
+        unsafe_blocks={"minecraft:water", "minecraft:lava"},
+        read_block=lambda _x, y, _z: (
+            "minecraft:water" if y == 3 else "minecraft:air"
+        ),
+        break_for_step=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("unsafe sidestep must not break blocks")
+        ),
+        walk_to_step=lambda *_args, **_kwargs: walked.append(True),
+    )
+
+    assert result == "blocked"
+    assert walked == []
+
+
+def test_low_altitude_column_recovery_is_bounded(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        stone_descent,
+        "manual_column_descend",
+        lambda _client, **kwargs: calls.append(kwargs) or True,
+    )
+
+    assert descent_recovery.recover_low_altitude_column(
+        object(), current_y=8, target_y=-58
+    )
+    assert calls == [{"target_y": -4, "max_steps": 12}]
+
+    calls.clear()
+    assert not descent_recovery.recover_low_altitude_column(
+        object(), current_y=9, target_y=-58
+    )
+    assert calls == []
 
 
 def test_supported_descent_breaks_inset_mud_at_player_y(monkeypatch):

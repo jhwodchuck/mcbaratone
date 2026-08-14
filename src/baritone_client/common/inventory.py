@@ -1820,6 +1820,96 @@ def deposit_progression_to_chest(
     )
 
 
+def _clear_occluded_chest_face(client, chest_pos: Tuple[int, int, int], block_id: str) -> None:
+    """Dig out any solid block occupying a chest's interactive face.
+
+    A container has no interactable face on its top or bottom, and a chest in
+    particular opens only through the horizontal face the player targets. When
+    base construction leaves a crafting table / wall block directly in front of
+    a chest, ``interact_block`` on the chest block fails because the click lands
+    on the occluder rather than the chest. This digs the block in the player's
+    approach column (the horizontal neighbor nearest the player, plus the head
+    slot above it) so the open can succeed. Idempotent: passable blocks are
+    left untouched so we do not disturb legitimate builds.
+
+    'break_block' is issued directly (allowBreak is off for storage approach, so
+    Baritone will not tunnel it for us).
+    """
+    cx, cy, cz = (int(v) for v in chest_pos)
+    try:
+        state = client.transport.dispatch("get_state", {})
+        pos = state.get("data", state).get("block_position") or state.get(
+            "data", state
+        ).get("position", {})
+        px = int(round(float(pos["x"])))
+        py = int(round(float(pos["y"])))
+        pz = int(round(float(pos["z"])))
+    except (KeyError, TypeError, ValueError):
+        print("STORAGE: could not read position to clear an occluded chest face")
+        return
+
+    # Horizontal axis the player approaches along (ignore y for the face).
+    dx = 0 if cx == px else (1 if px < cx else -1)
+    dz = 0 if cz == pz else (1 if pz < cz else -1)
+
+    # Candidate occluder blocks: the chest's neighbor on the approach axis, and
+    # the head-slot above it. A chest face is occluded when either is solid.
+    candidates = []
+    if dx != 0:
+        candidates.append((cx - dx, cy, cz))
+        candidates.append((cx - dx, cy + 1, cz))
+    if dz != 0:
+        candidates.append((cx, cy, cz - dz))
+        candidates.append((cx, cy + 1, cz - dz))
+
+    # A chest also refuses to open when a solid block sits directly on top of
+    # it ("buried"). Add the block immediately above the chest to the candidates.
+    candidates.append((cx, cy + 1, cz))
+
+    for (bx, by, bz) in candidates:
+        try:
+            b = client.transport.dispatch("get_block", {"x": bx, "y": by, "z": bz}).get(
+                "id", ""
+            )
+        except Exception:
+            continue
+        if not b or b in ("minecraft:air", "minecraft:cave_air", "minecraft:void_air"):
+            continue
+        # Never dig another container (double chest face) or the chest itself.
+        if _is_storage_container(b):
+            continue
+        print(
+            f"STORAGE: chest at {(cx, cy, cz)} face {(bx, by, bz)} is "
+            f"occluded by {b}; clearing it"
+        )
+        try:
+            client.transport.dispatch(
+                "look_at", {"x": bx + 0.5, "y": by + 0.5, "z": bz + 0.5}
+            )
+            client.transport.dispatch(
+                "break_block", {"x": bx, "y": by, "z": bz}
+            )
+        except Exception as exc:
+            print(f"STORAGE: could not clear occluded chest face: {exc}")
+        # Give the break a moment; each face is cleared best-effort. Poll for a
+        # short window so a slow break isn't followed by an immediate re-open.
+        deadline = time.time() + 6.0
+        while time.time() < deadline:
+            time.sleep(0.4)
+            try:
+                after = client.transport.dispatch(
+                    "get_block", {"x": bx, "y": by, "z": bz}
+                ).get("id", "")
+            except Exception:
+                after = ""
+            if not after or after in (
+                "minecraft:air",
+                "minecraft:cave_air",
+                "minecraft:void_air",
+            ):
+                break
+
+
 def withdraw_required_from_chest(
     client,
     chest_pos: Tuple[int, int, int],
@@ -1848,9 +1938,6 @@ def withdraw_required_from_chest(
 
     cx, cy, cz = (int(value) for value in chest_pos)
     position = (cx, cy, cz)
-    if not storage_retry_ready(client, position):
-        print(f"STORAGE: skipping recently failed supply container at {position}")
-        return -1
     block = client.transport.dispatch(
         "get_block", {"x": cx, "y": cy, "z": cz}
     ).get("id", "")
@@ -1858,27 +1945,120 @@ def withdraw_required_from_chest(
         print(f"STORAGE: expected container is missing at {(cx, cy, cz)}")
         _forget_missing_container(client, (cx, cy, cz), state)
         return -1
+    # Only honour the "recently failed" cooldown when the container is actually
+    # gone. A block that is still a real chest must always be re-approached —
+    # the cooldown was meant to stop re-travelling to a *destroyed* container,
+    # but it was also short-circuiting a present-but-hard-to-reach chest and
+    # deadlocking the phase forever.
+    if not storage_retry_ready(client, position):
+        print(f"STORAGE: clearing stale cooldown for present container at {position}")
+        cooldowns = getattr(client, "_unreachable_storage_until", {})
+        cooldowns.pop(position, None)
+        client._unreachable_storage_until = cooldowns
 
+    # A chest can only open via the face the player interacts with. If that
+    # face is occluded by a solid block (e.g. a crafting table placed in front
+    # of the chest during base construction, or a cave-in), ``interact_block``
+    # silently fails and the phase loops "supply chest screen did not open"
+    # forever. Clear the blocking block along the player->chest axis first.
+    _clear_occluded_chest_face(client, (cx, cy, cz), block)
+
+    # Stand at a real adjacent floor tile. Merely being within four blocks is
+    # insufficient: the harness open path is a stub that reports success, and
+    # interact_block only opens the chest when the player is on a horizontal
+    # face at the chest's own y-level (not standing on top of / above it).
+    from .navigation import goto as _goto
+    for sx, sy, sz in (
+        (cx + 1, cy, cz),
+        (cx + 1, cy, cz + 1),
+        (cx, cy, cz + 1),
+        (cx - 1, cy, cz),
+        (cx, cy, cz - 1),
+        (cx - 1, cy, cz - 1),
+    ):
+        stand_block = client.transport.dispatch(
+            "get_block", {"x": sx, "y": sy, "z": sz}
+        ).get("id", "")
+        floor_block = client.transport.dispatch(
+            "get_block", {"x": sx, "y": sy - 1, "z": sz}
+        ).get("id", "")
+        if "air" not in stand_block or "air" in floor_block:
+            continue
+        _goto(
+            client,
+            sx,
+            sy,
+            sz,
+            timeout=20,
+            check_interval=0.25,
+            tolerance=0.5,
+        )
+        break
+
+    # Open the chest for real. The harness wrapper resolves to a placeholder
+    # ``do_open_container`` that always returns True without opening a screen,
+    # so we must verify an actual container screen (63 or 90 total slots) and,
+    # failing that, fall back to a native interact_block + screen poll. This is
+    # the same proven sequence ``deposit_excess_to_chest`` uses; the withdraw
+    # path previously trusted only the stub and looped forever on the cooldown.
+    screen = {}
+    opened = False
     try:
-        client.transport.dispatch("close_screen", {})
-        opened = harness_ops.open_container(
+        if harness_ops.available() and harness_ops.open_container(
             client,
             (cx, cy, cz),
             timeout=4.0,
             attempts=open_attempts,
             allow_recovery_access=allow_recovery_access,
-        )
+        ):
+            screen = client.transport.dispatch("get_screen", {})
+            data = screen.get("data", screen)
+            total_slots = int(
+                data.get("total_slots") or len(data.get("slots", []))
+            )
+            opened = total_slots in (63, 90)
     except Exception as exc:
-        print(f"STORAGE: could not open supply chest ({exc})")
-        remember_unreachable_storage(client, position)
-        return -1
+        print(f"STORAGE: verified chest opener failed ({exc}); retrying natively")
+
+    if not opened:
+        for _attempt in range(3):
+            try:
+                client.transport.dispatch(
+                    "look_at", {"x": cx + 0.5, "y": cy + 0.5, "z": cz + 0.5}
+                )
+                time.sleep(0.2)
+            except Exception:
+                pass
+            try:
+                client.transport.dispatch(
+                    "interact_block", {"x": cx, "y": cy, "z": cz}
+                )
+            except Exception as exc:
+                print(f"STORAGE: native interact_block failed ({exc})")
+                continue
+            for _ in range(20):
+                try:
+                    screen = client.transport.dispatch("get_screen", {})
+                except Exception:
+                    break
+                data = screen.get("data", screen)
+                total_slots = int(
+                    data.get("total_slots") or len(data.get("slots", []))
+                )
+                if total_slots in (63, 90):
+                    opened = True
+                    break
+                time.sleep(0.1)
+            if opened:
+                break
+            client.transport.dispatch("close_screen", {})
+
     if not opened:
         print("STORAGE: supply chest screen did not open")
         remember_unreachable_storage(client, position)
         return -1
 
     try:
-        screen = client.transport.dispatch("get_screen", {})
         data = screen.get("data", screen)
         slots = data.get("slots", [])
         total_slots = int(data.get("total_slots") or len(slots))

@@ -1393,6 +1393,136 @@ def test_y_descent_relocates_out_of_gravel_collar(monkeypatch):
     assert not any(route == "break_block" for route, _payload in transport.calls)
 
 
+def test_y_descent_uses_low_altitude_manual_recover_before_returning_stall(monkeypatch):
+    """A bot stuck at the same low-altitude position for 6 iterations
+    recovers via a guarded column descent -- diagnosed from a live A1
+    event-log trace of a stuck "Dig to diamond level Y-58" task, not
+    covered by the water-pocket-specific or no-safe-step recovery paths.
+    """
+    from baritone_client.common import descent_recovery, resources, stone_descent
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.position = {"x": 0, "y": 4, "z": 0}
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "block_position": dict(self.position),
+                    "health": 20,
+                    "food_level": 20,
+                }
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    fallback_calls = []
+
+    # Always report the water pocket as already handled so the loop spins
+    # purely on the position-repeat detector, never touching the sidestep
+    # or per-step staircase code this test isn't exercising.
+    monkeypatch.setattr(
+        stone_descent, "drain_breathable_water_pocket", lambda *_a, **_kw: True
+    )
+
+    def fake_low_altitude_recovery(_client, current_y, target_y, **_kwargs):
+        fallback_calls.append((current_y, target_y))
+        transport.position["y"] = 2
+        return True
+
+    monkeypatch.setattr(
+        descent_recovery, "recover_low_altitude_column", fake_low_altitude_recovery
+    )
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources.go_to_y_level(client, 0, timeout=10)
+    assert fallback_calls == [(4, 0)]
+
+
+def test_y_descent_fails_fast_when_low_altitude_position_stalls(monkeypatch, capsys):
+    from baritone_client.common import descent_recovery, resources, stone_descent
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.position = {"x": -434, "y": -1, "z": 20}
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "block_position": dict(self.position),
+                    "health": 20,
+                    "food_level": 20,
+                }
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    calls = []
+
+    monkeypatch.setattr(
+        stone_descent, "drain_breathable_water_pocket", lambda *_a, **_kw: True
+    )
+    monkeypatch.setattr(
+        descent_recovery,
+        "recover_low_altitude_column",
+        lambda _client, current_y, target_y, **_kwargs: calls.append(
+            (current_y, target_y)
+        )
+        or False,
+    )
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources.go_to_y_level(client, -58, timeout=10) is False
+    output = capsys.readouterr().out
+    assert "Y navigation stalled: no descent delta at low altitude" in output
+    assert calls and calls[0][0] <= 8
+
+
+def test_y_descent_recovered_after_repeated_position_stall(monkeypatch):
+    """The general (any-altitude) detector catches a stall the low-altitude
+    one cannot: it fires at Y=20, well above the low-altitude gate.
+    """
+    from baritone_client.common import descent_recovery, resources, stone_descent
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.position = {"x": 2, "y": 20, "z": 3}
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "block_position": dict(self.position),
+                    "health": 20,
+                    "food_level": 20,
+                }
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    helper_calls = []
+
+    monkeypatch.setattr(
+        stone_descent, "drain_breathable_water_pocket", lambda *_a, **_kw: True
+    )
+
+    def fake_recovery(_client, current_y, target_y, **kwargs):
+        helper_calls.append((current_y, target_y, kwargs.get("maximum_altitude", 8)))
+        transport.position["y"] = target_y
+        return True
+
+    monkeypatch.setattr(descent_recovery, "recover_low_altitude_column", fake_recovery)
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources.go_to_y_level(client, -58, timeout=12)
+    assert helper_calls == [(20, -58, None)]
+
+
 def test_armor_phase_fails_closed_until_full_set_is_equipped(monkeypatch):
     client = SimpleNamespace()
     monkeypatch.setattr(iron_age, "equip_best_armor", lambda _client: 3)
@@ -1927,7 +2057,11 @@ def test_deposit_replaces_missing_supply_chest_then_deposits(monkeypatch):
         deposit_attempts.append(chest_pos)
         return 2 if block_state["placed"] else -1
     monkeypatch.setattr(iron_age, "deposit_excess_to_chest", deposit)
-    monkeypatch.setattr(iron_age, "count_item", lambda _c, _i: 1)  # carries a chest
+    monkeypatch.setattr(
+        iron_age.iron_age_provisioning,
+        "count_item",
+        lambda _c, _i: 1,
+    )  # carries a chest
     def place(_c, x, y, z, item, allow_break=True):
         block_state["placed"] = True
         return True
@@ -2538,3 +2672,67 @@ def test_clear_doorway_entry_is_a_noop_when_already_open(monkeypatch):
 
     assert handler._clear_doorway_entry(client, (87, 64, 164))
     assert not any(r == "dig_block" for r, _ in transport.calls)
+
+
+def test_resolve_iron_supply_chest_prefers_bootstrap_base_over_phantom_house(
+    monkeypatch,
+):
+    """A starter_house supply_chest that collides with the bot's own standing
+    block must not win over the verified bootstrap_base chest. Diagnosed
+    live on A1: starter_house.supply_chest is a fixed build-time offset,
+    never re-verified, so a degraded/incomplete house can leave it pointing
+    at plain ground the bot happens to be standing on."""
+    handler = iron_age.FoodAndIronHandler()
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                # Bot standing in block (-412, 79, -13).
+                return {"block_position": {"x": -412.0, "y": 79.0, "z": -13.0}}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    state = SimpleNamespace(
+        custom_data={
+            "structures": {
+                "bootstrap_base": {
+                    "supply_chest": [-432, 78, 2],
+                    "verified": True,
+                },
+                "starter_house": {
+                    # Phantom: same column the bot is standing in.
+                    "supply_chest": [-412, 79, -13],
+                },
+            }
+        }
+    )
+    assert handler._resolve_initial_iron_supply_chest(client, state) == (-432, 78, 2)
+
+
+def test_resolve_iron_supply_chest_skips_self_occupied_house_position(
+    monkeypatch,
+):
+    """When only a phantom starter_house chest exists and it points at the bot's
+    feet, the resolver must not return it; it falls through to storage resolve."""
+    handler = iron_age.FoodAndIronHandler()
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                return {"block_position": {"x": -412.0, "y": 79.0, "z": -13.0}}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    state = SimpleNamespace(
+        custom_data={
+            "structures": {
+                "starter_house": {"supply_chest": [-412, 79, -13]},
+            }
+        }
+    )
+    monkeypatch.setattr(
+        iron_age,
+        "resolve_storage_location",
+        lambda *_args, **_kwargs: (-99, 70, 99),
+    )
+    assert handler._resolve_initial_iron_supply_chest(client, state) == (-99, 70, 99)

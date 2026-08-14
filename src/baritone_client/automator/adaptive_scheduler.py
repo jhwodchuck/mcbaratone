@@ -23,7 +23,7 @@ from .end_readiness import (
     role_focused_candidates,
 )
 from .fleet_coverage import borrowed_specialty_roles, configured_specialty_roles
-from . import aid_response, armor_upkeep, camp_breaker, food_opportunity, mutual_aid
+from . import aid_response, armor_upkeep, camp_breaker, food_opportunity, house_upkeep, mutual_aid
 from .common.role_opportunities import run_role_opportunity
 from .common.crop_opportunity import run_crop_opportunity
 from .iron_scheduler import run_scheduled_iron_cycle
@@ -440,6 +440,9 @@ class AdaptiveScheduler:
         OpportunityKind.END_CITY_ROUTE: 300.0,
         OpportunityKind.STORAGE_MAINTENANCE: 120.0,
         OpportunityKind.ARMOR_UPKEEP: 120.0,
+        # A full survey is 168 get_block round-trips; unlike armour this is
+        # not urgent survival work, so it can wait far longer between checks.
+        OpportunityKind.HOUSE_UPKEEP: 600.0,
     }
     _BORROWED_SPECIALTY_COOLDOWN = 300.0
 
@@ -582,6 +585,14 @@ class AdaptiveScheduler:
         # Armour is survival work, offered in every role and phase.
         if (armor := armor_upkeep.select_armor_opportunity(self.client, signals, self._cooldown_ready(OpportunityKind.ARMOR_UPKEEP, current_time))) is not None:
             specialty_candidates.append(armor)
+        # Same reasoning as armour: the starter house is a one-time build
+        # with no other owner, so it is offered in every role and phase too.
+        if (
+            house := house_upkeep.select_house_upkeep_opportunity(
+                self.state, signals, self._cooldown_ready(OpportunityKind.HOUSE_UPKEEP, current_time)
+            )
+        ) is not None:
+            specialty_candidates.append(house)
         if specialty_candidates and role is not FleetRole.BALANCED:
             return max(specialty_candidates, key=lambda candidate: candidate.score)
         if role is not FleetRole.BALANCED:
@@ -667,6 +678,7 @@ class AdaptiveScheduler:
                         self.client, opportunity, crop_timeout,
                         inventory_reader=get_inventory, traveler=goto,
                         block_finder=find_nearby_block, sleeper=time.sleep,
+                        state=self.state,
                     )
                 )
             elif opportunity.kind is OpportunityKind.WOOD_FARM:
@@ -709,6 +721,8 @@ class AdaptiveScheduler:
                 )
             elif opportunity.kind is OpportunityKind.ARMOR_UPKEEP:
                 result = OpportunityResult(opportunity, *armor_upkeep.run_armor_upkeep(self.client, self.state))
+            elif opportunity.kind is OpportunityKind.HOUSE_UPKEEP:
+                result = OpportunityResult(opportunity, *house_upkeep.run_house_upkeep(self.client, self.state))
             elif opportunity.kind is OpportunityKind.SELF_DEFENSE:
                 result = OpportunityResult(opportunity, *run_self_defense(self.client, self.observe))
             elif opportunity.kind is OpportunityKind.CLEAR_HOSTILES_AID:

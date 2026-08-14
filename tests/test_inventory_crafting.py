@@ -751,7 +751,11 @@ def test_withdraw_required_uses_chest_slots_and_leaves_other_storage(monkeypatch
     ]
 
 
-def test_withdraw_cools_down_supply_chest_when_ui_does_not_open(monkeypatch):
+def test_withdraw_reattempts_present_chest_that_failed_to_open(monkeypatch):
+    # A chest that is still present must be re-approached on every withdraw,
+    # not skipped by the "recently failed" cooldown. The cooldown exists to
+    # stop re-travelling to a *destroyed* container; applying it to a present
+    # chest deadlocked FOOD_AND_IRON forever (skip -> fail -> cooldown -> skip).
     client = DummyClient(
         DummyTransport(
             {
@@ -776,7 +780,9 @@ def test_withdraw_cools_down_supply_chest_when_ui_does_not_open(monkeypatch):
         (1, 65, 1),
         {"minecraft:bread": 6},
     ) == -1
-    assert opens == [True]
+    # Both calls re-approached the still-present chest rather than the second
+    # being short-circuited by the cooldown.
+    assert opens == [True, True]
 
 
 def test_catalog_withdraw_prefers_known_item_container(monkeypatch):
@@ -2138,3 +2144,74 @@ def test_harness_hotbar_failure_does_not_break_selection(monkeypatch):
     monkeypatch.setattr(inventory.time, "sleep", lambda _s: None)
 
     assert inventory.select_item(client, "minecraft:torch", allow_swap=True) is False
+
+
+def test_clear_occluded_chest_face_breaks_front_and_head_occluders(monkeypatch):
+    """A chest whose front face + head slot get dug via break_block, and the
+    solid block directly on top of the chest (which buries it) is cleared too."""
+    from baritone_client.common import inventory as inv
+
+    state = {
+        "block_position": {"x": -432.0, "y": 78.0, "z": -1.0},
+    }
+    blocks = {
+        (-432, 78, 1): "minecraft:crafting_table",  # front face toward player
+        (-432, 79, 1): "minecraft:dirt",            # head slot above front
+        (-432, 79, 2): "minecraft:dirt",            # directly on top (buries chest)
+        (-432, 78, 2): "minecraft:chest",           # the chest itself
+    }
+    broken = []
+    looked = []
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                return {"data": state}
+            if route == "get_block":
+                key = (payload["x"], payload["y"], payload["z"])
+                # Simulate the block clearing after break_block.
+                if key in broken:
+                    return {"id": "minecraft:air"}
+                return {"id": blocks.get(key, "minecraft:air")}
+            if route == "break_block":
+                broken.append((payload["x"], payload["y"], payload["z"]))
+                return {}
+            if route == "look_at":
+                looked.append(payload)
+                return {}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    inv._clear_occluded_chest_face(client, (-432, 78, 2), "minecraft:chest")
+
+    assert (-432, 78, 1) in broken, "front-face crafting table must be broken"
+    assert (-432, 79, 1) in broken, "head-slot dirt must be broken"
+    assert (-432, 79, 2) in broken, "block directly above the chest must be broken"
+
+
+def test_clear_occluded_chest_face_never_digs_another_container(monkeypatch):
+    """A double-chest neighbour must not be treated as an occluder."""
+    from baritone_client.common import inventory as inv
+
+    state = {"block_position": {"x": -432.0, "y": 78.0, "z": -1.0}}
+    blocks = {
+        (-432, 78, 1): "minecraft:chest",  # the adjacent half of a double chest
+    }
+    broken = []
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                return {"data": state}
+            if route == "get_block":
+                return {"id": blocks.get(
+                    (payload["x"], payload["y"], payload["z"]),
+                    "minecraft:air",
+                )}
+            if route == "break_block":
+                broken.append((payload["x"], payload["y"], payload["z"]))
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    inv._clear_occluded_chest_face(client, (-432, 78, 2), "minecraft:chest")
+    assert broken == [], "must not break an adjacent container"

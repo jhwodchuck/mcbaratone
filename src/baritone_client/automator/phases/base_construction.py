@@ -184,7 +184,7 @@ class BaseConstructionHandler(PhaseHandler):
         house_built = False
         base_setup_complete = False
         if repair_attempt >= 3:
-            existing_progress = self._summarize_starter_house_progress(client, x, y, z)
+            existing_progress = house_utils.summarize_house_progress(client, x, y, z)
             if self._should_continue_from_recovered_house(
                 existing_progress, repair_attempt
             ):
@@ -210,7 +210,7 @@ class BaseConstructionHandler(PhaseHandler):
             )
             repair_attempt += 1
             state.custom_data["base_construction_repair_attempts"] = repair_attempt
-            house_progress = self._summarize_starter_house_progress(client, x, y, z)
+            house_progress = house_utils.summarize_house_progress(client, x, y, z)
             print(
                 "  Starter house build status: "
                 f"floor={house_progress['floor']}/{house_progress['floor_total']} "
@@ -574,45 +574,6 @@ class BaseConstructionHandler(PhaseHandler):
                 )
         state.save_checkpoint(inventory_summary or {})
         raise SurvivalRecoveryRequired(reason)
-
-    def _summarize_starter_house_progress(self, client, x: int, y: int, z: int) -> dict[str, int | bool]:
-        """Return current starter-house completion state by block role."""
-        # A reconnect can land the player back at base before the chunk
-        # finishes streaming in; querying it too early misreads an intact
-        # or partial house as void_air ("missing"), wasting a rebuild
-        # attempt. Give it a moment to load first.
-        house_utils.wait_for_chunk_loaded(client, x, y, z)
-        plan = house_utils._good_house_plan(x, y, z)
-        floor_total = 0
-        floor_ok = 0
-        shell_total = 0
-        shell_ok = 0
-        roof_total = 0
-        roof_ok = 0
-
-        for tx, ty, tz, role in plan:
-            role_id = house_utils._house_block_id(client, tx, ty, tz)
-            if role == "floor":
-                floor_total += 1
-                floor_ok += int(house_utils._matches_house_role(role_id, "floor"))
-            elif role == "shell":
-                shell_total += 1
-                shell_ok += int(house_utils._matches_house_role(role_id, "shell"))
-            elif role == "roof":
-                roof_total += 1
-                roof_ok += int(house_utils._matches_house_role(role_id, "roof"))
-
-        door_x = x + 3
-        door_present = house_utils._house_door_aligned(client, door_x, y + 1, z)
-        return {
-            "floor": floor_ok,
-            "shell": shell_ok,
-            "roof": roof_ok,
-            "floor_total": floor_total,
-            "shell_total": shell_total,
-            "roof_total": roof_total,
-            "door_present": door_present,
-        }
 
     @staticmethod
     def _should_continue_from_recovered_house(progress: dict[str, int | bool], attempt: int) -> bool:
