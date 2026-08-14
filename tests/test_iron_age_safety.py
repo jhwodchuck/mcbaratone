@@ -2672,3 +2672,67 @@ def test_clear_doorway_entry_is_a_noop_when_already_open(monkeypatch):
 
     assert handler._clear_doorway_entry(client, (87, 64, 164))
     assert not any(r == "dig_block" for r, _ in transport.calls)
+
+
+def test_resolve_iron_supply_chest_prefers_bootstrap_base_over_phantom_house(
+    monkeypatch,
+):
+    """A starter_house supply_chest that collides with the bot's own standing
+    block must not win over the verified bootstrap_base chest. Diagnosed
+    live on A1: starter_house.supply_chest is a fixed build-time offset,
+    never re-verified, so a degraded/incomplete house can leave it pointing
+    at plain ground the bot happens to be standing on."""
+    handler = iron_age.FoodAndIronHandler()
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                # Bot standing in block (-412, 79, -13).
+                return {"block_position": {"x": -412.0, "y": 79.0, "z": -13.0}}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    state = SimpleNamespace(
+        custom_data={
+            "structures": {
+                "bootstrap_base": {
+                    "supply_chest": [-432, 78, 2],
+                    "verified": True,
+                },
+                "starter_house": {
+                    # Phantom: same column the bot is standing in.
+                    "supply_chest": [-412, 79, -13],
+                },
+            }
+        }
+    )
+    assert handler._resolve_initial_iron_supply_chest(client, state) == (-432, 78, 2)
+
+
+def test_resolve_iron_supply_chest_skips_self_occupied_house_position(
+    monkeypatch,
+):
+    """When only a phantom starter_house chest exists and it points at the bot's
+    feet, the resolver must not return it; it falls through to storage resolve."""
+    handler = iron_age.FoodAndIronHandler()
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_state":
+                return {"block_position": {"x": -412.0, "y": 79.0, "z": -13.0}}
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    state = SimpleNamespace(
+        custom_data={
+            "structures": {
+                "starter_house": {"supply_chest": [-412, 79, -13]},
+            }
+        }
+    )
+    monkeypatch.setattr(
+        iron_age,
+        "resolve_storage_location",
+        lambda *_args, **_kwargs: (-99, 70, 99),
+    )
+    assert handler._resolve_initial_iron_supply_chest(client, state) == (-99, 70, 99)

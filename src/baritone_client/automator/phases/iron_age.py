@@ -941,6 +941,28 @@ class FoodAndIronHandler(PhaseHandler):
         except (TypeError, ValueError):
             return None
 
+    def _is_self_occupied_position(self, client, position: Tuple[int, int, int]) -> bool:
+        """True when a candidate block position is just the bot's own feet.
+
+        A starter_house.supply_chest is recorded as a fixed offset from the
+        house origin at build time -- it is never re-verified afterward (see
+        house_upkeep.py). A degraded or still-repairing house can leave that
+        offset pointing at plain ground the bot happens to be standing on
+        rather than an actual chest, which this catches before it's trusted.
+        """
+        try:
+            state = client.transport.dispatch("get_state", {})
+        except Exception:
+            return False
+        if not isinstance(state, dict):
+            return False
+        pos = state.get("block_position", state.get("position", {}))
+        try:
+            here = (int(pos["x"]), int(pos["y"]), int(pos["z"]))
+        except (KeyError, TypeError, ValueError):
+            return False
+        return here == position
+
     def _resolve_initial_iron_supply_chest(
         self,
         client,
@@ -953,8 +975,15 @@ class FoodAndIronHandler(PhaseHandler):
         structures = current_state.custom_data.get("structures", {})
         house = structures.get("starter_house", {})
         explicit = self._normalize_position(house.get("supply_chest"))
-        if explicit is not None:
+        if explicit is not None and not self._is_self_occupied_position(client, explicit):
             return explicit
+
+        bootstrap = structures.get("bootstrap_base", {})
+        if bootstrap.get("verified"):
+            bootstrap_chest = self._normalize_position(bootstrap.get("supply_chest"))
+            if bootstrap_chest is not None:
+                return bootstrap_chest
+
         return resolve_storage_location(client, state=current_state, verify=True)
 
     def _withdraw_initial_iron_supplies(self, client) -> None:
