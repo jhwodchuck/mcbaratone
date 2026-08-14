@@ -5,6 +5,7 @@ import pytest
 
 from baritone_client.automator.phases import iron_age
 from baritone_client.common import resources
+from baritone_client.common import stone_descent
 from baritone_client.common.tasks import SurvivalRecoveryRequired
 
 
@@ -1391,6 +1392,226 @@ def test_y_descent_relocates_out_of_gravel_collar(monkeypatch):
     gotos = [payload for route, payload in transport.calls if route == "goto"]
     assert {"x": 2, "y": 66, "z": 0} in gotos
     assert not any(route == "break_block" for route, _payload in transport.calls)
+
+
+def test_y_descent_sidesteps_from_unrecoverable_water_pocket(monkeypatch):
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.position = {"x": 0, "y": 4, "z": 0}
+            self.dug = set()
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "block_position": dict(self.position),
+                    "health": 20,
+                    "food_level": 20,
+                }
+            if route == "get_block":
+                key = (payload["x"], payload["y"], payload["z"])
+                if key == (0, 4, 0):
+                    return {"id": "minecraft:water", "state": {"level": "0"}}
+                if key == (0, 5, 0):
+                    return {"id": "minecraft:air", "state": {}}
+                if key in self.dug:
+                    return {"id": "minecraft:air", "state": {}}
+                # Escape direction (x=1): same-level dry footing.
+                if key in {(1, 4, 0), (1, 5, 0)}:
+                    return {"id": "minecraft:air", "state": {}}
+                if key == (1, 3, 0):
+                    return {"id": "minecraft:stone", "state": {}}
+                if key == (2, 3, 0):
+                    return {"id": "minecraft:deepslate", "state": {}}
+                if key == (2, 2, 0):
+                    return {"id": "minecraft:stone", "state": {}}
+                if key == (2, 4, 0):
+                    return {"id": "minecraft:air", "state": {}}
+                return {"id": "minecraft:stone", "state": {}}
+            if route == "dig_block":
+                self.dug.add((payload["x"], payload["y"], payload["z"]))
+                return {
+                    "started": True,
+                    "x": payload["x"],
+                    "y": payload["y"],
+                    "z": payload["z"],
+                }
+            if route == "goto":
+                self.position = dict(payload)
+                return {"started": True}
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+
+    monkeypatch.setattr(resources, "_ensure_mining_pickaxe", lambda _client: True)
+    def fake_drain_breathable_water_pocket(_client, state):
+        if tuple(state.get("block_position", {}).values()) == (0, 4, 0):
+            return False
+        return None
+
+    monkeypatch.setattr(
+        stone_descent,
+        "drain_breathable_water_pocket",
+        fake_drain_breathable_water_pocket,
+    )
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources.go_to_y_level(client, 0, timeout=10)
+    gotos = [payload for route, payload in transport.calls if route == "goto"]
+    assert {"x": 1, "y": 4, "z": 0} in gotos
+    assert {"x": 2, "y": 3, "z": 0} in gotos
+
+
+def test_y_descent_uses_low_altitude_manual_recover_before_returning_stall(monkeypatch):
+    from baritone_client.common import resources
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.position = {"x": 0, "y": 4, "z": 0}
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "block_position": dict(self.position),
+                    "health": 20,
+                    "food_level": 20,
+                }
+            if route == "get_block":
+                return {"id": "minecraft:air"}
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+    fallback_calls = []
+
+    def fake_low_altitude_recovery(_client, current_y: int, target_y: int, **_kwargs) -> bool:
+        fallback_calls.append((current_y, target_y))
+        # Simulate dropping just below the low-altitude recover threshold.
+        transport.position["y"] = 2
+        return True
+
+    monkeypatch.setattr(resources, "_recover_descent_stalled_column", fake_low_altitude_recovery)
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources.go_to_y_level(client, 0, timeout=10)
+    assert fallback_calls == [(4, 0)]
+    routes = [route for route, _ in transport.calls]
+    assert "goto" not in routes
+    assert "break_block" not in routes
+
+
+def test_y_descent_fails_fast_when_low_altitude_position_stalls(monkeypatch, capsys):
+    from baritone_client.common import resources, stone_descent
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "block_position": {"x": -434, "y": -1, "z": 20},
+                    "health": 20,
+                    "food_level": 20,
+                }
+            if route == "get_block":
+                return {"id": "minecraft:stone"}
+            if route == "cancel":
+                return {}
+            if route in {"break_block", "goto"}:
+                return {"started": True}
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+
+    calls = []
+
+    monkeypatch.setattr(
+        stone_descent,
+        "drain_breathable_water_pocket",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        resources,
+        "_attempt_water_pocket_sidestep",
+        # "blocked" is the real sentinel _attempt_water_pocket_sidestep
+        # returns when every direction fails -- using anything else here
+        # would only accidentally exercise the fallthrough.
+        lambda *_args, **_kwargs: "blocked",
+    )
+    monkeypatch.setattr(
+        resources,
+        "_recover_descent_stalled_column",
+        lambda _client, current_y, target_y, **_kwargs: calls.append((current_y, target_y)) or False,
+    )
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources.go_to_y_level(client, -58, timeout=10) is False
+    output = capsys.readouterr().out
+    assert "Y navigation stalled: no descent delta at low altitude" in output
+    assert calls and calls[0][0] <= 8
+
+
+def test_y_descent_recovered_after_repeated_position_stall(monkeypatch):
+    from baritone_client.common import resources, stone_descent
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+            self.position = {"x": 2, "y": 20, "z": 3}
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "block_position": dict(self.position),
+                    "health": 20,
+                    "food_level": 20,
+                }
+            if route == "get_block":
+                return {"id": "minecraft:stone"}
+            if route == "dig_block":
+                return {"x": payload["x"], "y": payload["y"], "z": payload["z"]}
+            if route == "cancel":
+                return {}
+            return {}
+
+    transport = Transport()
+    client = SimpleNamespace(transport=transport)
+
+    helper_calls = []
+
+    monkeypatch.setattr(
+        resources,
+        "_recover_descent_stalled_column",
+        lambda _client, current_y, target_y, **_kwargs: helper_calls.append(
+            (current_y, target_y)
+        )
+        or transport.position.__setitem__("y", target_y)
+        or True,
+    )
+    monkeypatch.setattr(
+        stone_descent,
+        "drain_breathable_water_pocket",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        resources,
+        "_attempt_water_pocket_sidestep",
+        lambda *_args, **_kwargs: "moved",
+    )
+    monkeypatch.setattr(resources.time, "sleep", lambda _seconds: None)
+
+    assert resources.go_to_y_level(client, -58, timeout=12)
+    assert helper_calls
+    assert helper_calls[0][0] == 20
+    assert helper_calls[0][1] == -58
 
 
 def test_armor_phase_fails_closed_until_full_set_is_equipped(monkeypatch):

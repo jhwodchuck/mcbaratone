@@ -1303,6 +1303,100 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
         return False
 
 
+def _attempt_water_pocket_sidestep(
+    client,
+    block_id,
+    break_for_step,
+    walk_to_cleared_step,
+    state,
+    *,
+    px: int,
+    current_y: int,
+    pz: int,
+    directions: list[tuple[int, int]],
+    air_blocks: set[str],
+    unsafe_blocks: set[str],
+) -> str:
+    for dx, dz in directions:
+        target_x = px + dx
+        target_y = current_y
+        target_z = pz + dz
+        floor_id = block_id(target_x, current_y - 1, target_z)
+        foot_id = block_id(target_x, current_y, target_z)
+        head_id = block_id(target_x, current_y + 1, target_z)
+        if (
+            floor_id in air_blocks
+            or floor_id in unsafe_blocks
+            or foot_id in unsafe_blocks
+            or head_id in unsafe_blocks
+        ):
+            continue
+        if foot_id not in air_blocks and not break_for_step(
+            target_x, target_y, target_z
+        ):
+            continue
+        if head_id not in air_blocks and not break_for_step(
+            target_x, current_y + 1, target_z
+        ):
+            continue
+        if (
+            block_id(target_x, current_y, target_z) in unsafe_blocks
+            or block_id(target_x, current_y + 1, target_z) in unsafe_blocks
+        ):
+            continue
+        move_result = walk_to_cleared_step(
+            target_x,
+            target_y,
+            target_z,
+            current_y,
+            state,
+            label="water pocket sidestep",
+        )
+        if move_result == "unsafe":
+            return "unsafe"
+        if move_result == "moved":
+            return "moved"
+
+    print(
+        "Y navigation: could not sidestep out of a source-water "
+        "pocket before descent failed"
+    )
+    return "blocked"
+
+
+def _recover_descent_stalled_column(
+    client,
+    *,
+    current_y: int,
+    target_y: int,
+    max_altitude: int | None = None,
+    reason: str = "repeated descent stall",
+) -> bool:
+    """Attempt one manual column descent after a detected navigation stall.
+
+    ``max_altitude`` lets a caller restrict this to low-altitude stalls only
+    (the two callers that used to be separate ``..._low_altitude_...`` and
+    ``..._stalled_column`` functions differed only in this gate and their
+    print wording -- same fallback-target math and same recovery call).
+    """
+    if target_y >= current_y:
+        return False
+    if max_altitude is not None and current_y > max_altitude:
+        return False
+    fallback_target = max(target_y, current_y - 12)
+    if fallback_target >= current_y:
+        return False
+    print(
+        f"Y navigation: {reason} at Y={current_y}, "
+        f"trying manual column recovery to Y={fallback_target}"
+    )
+    return _manual_column_descend(
+        client,
+        target_y=fallback_target,
+        max_steps=current_y - fallback_target,
+    )
+
+
 def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
     """Carve and walk a verified one-block-at-a-time staircase."""
     downward_enabled = False
@@ -1327,10 +1421,14 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
             _serialized_dispatch(client, "chat", {"message": s}, post_delay_seconds=0.1)
             if s == "#set allowDownward true":
                 downward_enabled = True
-        
+
         overall_start = time.time()
         preferred_direction = 0
         unreadable_retries = 0
+        descent_stall_retries = 0
+        descent_stall_position: tuple[int, int, int] | None = None
+        low_altitude_stall_retries = 0
+        low_altitude_stall_position: tuple[int, int, int] | None = None
         directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
         air_blocks = {"", "minecraft:air", "minecraft:cave_air", "minecraft:void_air"}
         # A block we could not read (bridge stalled under fleet load) is treated
@@ -1516,6 +1614,27 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                 continue
             pos = state.get("block_position", state.get("position", {}))
             px, current_y, pz = int(pos.get("x", 0)), int(pos.get("y", 64)), int(pos.get("z", 0))
+            descent_position = (px, current_y, pz)
+            if descent_position == descent_stall_position:
+                descent_stall_retries += 1
+            else:
+                descent_stall_position = descent_position
+                descent_stall_retries = 0
+            if descent_stall_retries >= 8:
+                if _recover_descent_stalled_column(
+                    client,
+                    current_y=current_y,
+                    target_y=y,
+                ):
+                    unreadable_retries = 0
+                    descent_stall_retries = 0
+                    low_altitude_stall_retries = 0
+                    continue
+                print(
+                    "Y navigation stalled: no descent delta at same position "
+                    f"{descent_position}; aborting"
+                )
+                return False
 
             # Relocation is a bounded recovery at one elevation, not a budget
             # for the whole surface-to-deepslate journey. Bot07 exhausted the
@@ -1528,6 +1647,42 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
             if state.get("is_dead", False) or float(state.get("health", 20) or 0) <= 0:
                 print("Y navigation aborted: player is dead")
                 return False
+
+            # Stop immediately once the target band is reached so recovery
+            # branches don't classify a deep but successful descent as a stall.
+            if current_y <= y + 3:
+                print(f"DEBUG: Reached target Y={y}!")
+                client.transport.dispatch("cancel", {})
+                return True
+
+            if current_y <= 8:
+                current_position = (px, current_y, pz)
+                if current_position == low_altitude_stall_position:
+                    low_altitude_stall_retries += 1
+                else:
+                    low_altitude_stall_retries = 0
+                    low_altitude_stall_position = current_position
+                if low_altitude_stall_retries >= 6:
+                    if _recover_descent_stalled_column(
+                        client,
+                        current_y=current_y,
+                        target_y=y,
+                        max_altitude=8,
+                        reason="low-altitude stall",
+                    ):
+                        unreadable_retries = 0
+                        low_altitude_stall_retries = 0
+                        continue
+                    print(
+                        "Y navigation stalled: no descent delta at "
+                        f"low altitude (Y={current_y}) after repeated goals at "
+                        f"{current_position}; aborting"
+                    )
+                    return False
+            else:
+                low_altitude_stall_retries = 0
+                low_altitude_stall_position = (px, current_y, pz)
+
             health = float(state.get("health", 20) or 0)
             if health < 12.0:
                 from .combat import recover_health
@@ -1605,12 +1760,39 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
             if water_recovery is True:
                 unreadable_retries = 0
                 continue
+            if water_recovery is False:
+                sidestep_result = _attempt_water_pocket_sidestep(
+                    client,
+                    block_id,
+                    break_for_step,
+                    walk_to_cleared_step,
+                    state,
+                    px=px,
+                    current_y=current_y,
+                    pz=pz,
+                    directions=directions,
+                    air_blocks=air_blocks,
+                    unsafe_blocks=unsafe_blocks,
+                )
+                if sidestep_result == "unsafe":
+                    return False
+                if sidestep_result == "moved":
+                    unreadable_retries = 0
+                    continue
+                if _recover_descent_stalled_column(
+                    client,
+                    current_y=current_y,
+                    target_y=y,
+                    max_altitude=8,
+                    reason="low-altitude stall",
+                ):
+                    continue
+                print(
+                    "Y navigation: could not sidestep out of a source-water "
+                    "pocket before descent failed"
+                )
+                continue
             
-            if current_y <= y + 3:
-                print(f"DEBUG: Reached target Y={y}!")
-                client.transport.dispatch("cancel", {})
-                return True
-
             read_flags["unreadable"] = False
             step_succeeded = False
             ordered_directions = [
@@ -1857,6 +2039,15 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
                         f"({unreadable_retries}/5); re-scanning descent"
                     )
                     time.sleep(1.0)
+                    continue
+                if _recover_descent_stalled_column(
+                    client,
+                    current_y=current_y,
+                    target_y=y,
+                    max_altitude=8,
+                    reason="low-altitude stall",
+                ):
+                    unreadable_retries = 0
                     continue
                 print(f"Y navigation stalled: no safe staircase step from Y={current_y}")
                 return False
