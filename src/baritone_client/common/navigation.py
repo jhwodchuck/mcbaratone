@@ -222,6 +222,7 @@ def goto(
         start = time.time()
         last_position = None
         idle_unpathing_checks = 0
+        no_move_checks = 0
         while time.time() - start < timeout:
             if on_tick:
                 on_tick()
@@ -252,8 +253,23 @@ def goto(
                 idle_unpathing_checks = 1
             else:
                 idle_unpathing_checks = 0
+            # Independent no-movement watchdog: abort when the body has not
+            # moved at all for a sustained window, regardless of Baritone's
+            # self-reported `is_pathing` flag. Baritone can stay in "pathing"
+            # state indefinitely while the client never actually executes the
+            # path (observed live: A1Bot frozen 28 blocks from base for ~12h
+            # while goto() kept returning started:true). Gating only on
+            # is_pathing == False misses that failure mode entirely.
+            if current_position == last_position:
+                no_move_checks += 1
+            else:
+                no_move_checks = 0
             last_position = current_position
             if idle_unpathing_checks >= 3:
+                _cancel_once(client, cancelled)
+                return False
+            # ~30s of zero movement (default check_interval 2s x 15 samples).
+            if no_move_checks >= 15:
                 _cancel_once(client, cancelled)
                 return False
             time.sleep(min(float(check_interval), defense_check_interval))
@@ -340,8 +356,19 @@ def goto_xz(
                 idle_unpathing_checks = 1
             else:
                 idle_unpathing_checks = 0
+            # Independent no-movement watchdog: abort when the body has not
+            # moved at all for a sustained window, regardless of Baritone's
+            # self-reported `is_pathing` flag (which can stay True while the
+            # client never executes the path).
+            if current_position == last_position:
+                no_move_checks += 1
+            else:
+                no_move_checks = 0
             last_position = current_position
             if idle_unpathing_checks >= 3:
+                _cancel_once(client, cancelled)
+                return False
+            if no_move_checks >= 15:
                 _cancel_once(client, cancelled)
                 return False
             time.sleep(min(float(check_interval), defense_check_interval))

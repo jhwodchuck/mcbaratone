@@ -32,6 +32,8 @@ class MovementAction(BaseAction):
             self.run_command(context, "goto", {"x": x, "y": y, "z": z})
             
             start = time.time()
+            last_position = None
+            no_move_checks = 0
             while time.time() - start < timeout:
                 if on_tick:
                     on_tick()
@@ -46,6 +48,20 @@ class MovementAction(BaseAction):
                 if distance <= tolerance:
                     self.run_command(context, "cancel", {})
                     return True
+                
+                current_position = (float(px), float(py), float(pz))
+                # Independent no-movement watchdog: abort when the body has not
+                # moved at all for a sustained window, regardless of Baritone's
+                # self-reported `is_pathing` flag which can stay True while the
+                # client never executes the path.
+                if current_position == last_position:
+                    no_move_checks += 1
+                else:
+                    no_move_checks = 0
+                last_position = current_position
+                if no_move_checks >= 15:
+                    self.run_command(context, "cancel", {})
+                    return False
                 
                 time.sleep(check_interval)
             
