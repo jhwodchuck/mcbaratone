@@ -15,6 +15,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence, Tuple
 
+# Block ids that prove nothing about a coordinate: the bridge answers
+# "minecraft:void_air" for anything in an unloaded chunk, and an empty id when
+# the read itself failed. Kept local so the catalog can enforce its own
+# precondition without importing the inventory module back.
+_UNREADABLE_BLOCK_IDS = frozenset({"", "minecraft:void_air"})
+
 from .warehouse_catalog import (
     WAREHOUSE_SCHEMA,
     WarehouseCatalogMixin,
@@ -402,8 +408,21 @@ class StorageCatalog(WarehouseCatalogMixin, AidRequestCatalogMixin):
         position: Tuple[int, int, int],
         *,
         dimension: str,
+        observed_block_id: object = None,
     ) -> None:
-        """Record that a loaded, readable coordinate no longer has a container."""
+        """Record that a loaded, readable coordinate no longer has a container.
+
+        "Loaded, readable" is a hard precondition, not advice. Retirement is
+        effectively permanent: ``list_containers``, ``find_item`` and
+        ``item_count`` all filter ``status!='missing'``, so nothing ever
+        re-probes an entry once it is written off. Pass ``observed_block_id``
+        so this refuses the write when the read proves nothing -- the bridge
+        answers ``minecraft:void_air`` for any coordinate in an unloaded chunk,
+        and A1Bot retired 29 of its 49 containers that way on 2026-08-16,
+        including one it had opened successfully an hour earlier.
+        """
+        if observed_block_id is not None and str(observed_block_id or "") in _UNREADABLE_BLOCK_IDS:
+            return
         self.register_container(
             position,
             dimension=dimension,

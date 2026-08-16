@@ -236,7 +236,7 @@ def test_missing_container_is_forgotten_so_it_is_not_re_walked(monkeypatch):
     marked = []
 
     class FakeCatalog:
-        def mark_missing(self, position, *, dimension):
+        def mark_missing(self, position, *, dimension, observed_block_id=None):
             marked.append((position, dimension))
 
     class Transport:

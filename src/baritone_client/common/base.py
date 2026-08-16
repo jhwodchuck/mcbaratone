@@ -1227,37 +1227,24 @@ def build_emergency_shelter(client) -> bool:
         print("Building EMERGENCY SHELTER!")
         # Ensure we are not sinking in water
         establish_dry_footing(client)
-        # 1. Dig down 3 blocks
         pos = get_player_pos(client)
         x, y, z = int(pos[0]), int(pos[1]), int(pos[2])
-        
-        # Dig under feet
-        client.transport.dispatch("mine", {"blocks": ["minecraft:dirt", "minecraft:grass_block", "minecraft:stone"], "quantity": 1})
-        time.sleep(2)
-        # Drop down? Baritone might resist. simpler is to build UP walls.
-        # Let's simple "surround" via blocks.
-        
-        # New Strategy: 3x3x3 dirt box around player.
-        # Needs blocks.
+
         if count_item(client, "minecraft:dirt") < 20 and count_item(client, "minecraft:cobblestone") < 20:
-             print("Not enough blocks for shelter. Digging down...")
-             client.transport.dispatch("mine", {"x": x, "y": y-1, "z": z, "quantity": 1})
-             time.sleep(1)
-             client.transport.dispatch("mine", {"x": x, "y": y-2, "z": z, "quantity": 1})
-             time.sleep(1)
-             client.transport.dispatch("mine", {"x": x, "y": y-3, "z": z, "quantity": 1})
-             time.sleep(1)
-             client.transport.dispatch("goto", {"x": x, "y": y-3, "z": z})
-             time.sleep(2)
-             # Cover top
-             from .automation_utils import place_block as select_and_place
-             if not select_and_place(client, x, y, z, "minecraft:cobblestone"):
-                 return False
-             return True
-             
+            # No stock to build with, so dig a hole and cap it with the spoil.
+            # This previously fired a coordinate-less Baritone `mine` (which
+            # could walk the bot away), dug three unverified blocks, and then
+            # capped with a hardcoded cobblestone it did not own -- so an
+            # empty-handed bot ended up standing in an open three-deep shaft,
+            # cornered and unable to flee, while the function reported failure.
+            print("Not enough blocks for shelter. Digging down...")
+            from .night_shelter import dig_and_seal_night_hole
+
+            return dig_and_seal_night_hole(client)
+
         # Build box
         return build_dirt_shelter(client, x-1, y, z-1, size=1)
-        
+
     except Exception as e:
         print(f"Emergency shelter failed: {e}")
         return False

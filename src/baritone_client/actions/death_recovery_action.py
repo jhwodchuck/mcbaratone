@@ -16,6 +16,7 @@ from ..common.combat import (
 )
 from ..common.inventory import get_inventory, reset_inventory_cache
 from ..common.surface_recovery import position_is_aquatic
+from .rearm_safety import survivable_bootstrap_window
 from ..automator.state_manager import Phase
 from .death_recovery_state import (
     abandon_repeated_unsafe_pending_recovery,
@@ -227,20 +228,19 @@ def _death_details(client, state: Dict) -> Tuple[Dict, str, bool]:
 def _bootstrap_starter_pickaxe(client) -> bool:
     """Re-craft a minimum wooden pickaxe after a lost grave.
 
-    A death drops the whole toolkit.  When the grave despawns (5-minute timer)
-    or is unreachable, returning ``fail`` here leaves the bot permanently naked
-    -- no pickaxe means it cannot mine, so its phase loops forever re-attempting
-    stone gathering with nothing in hand.  The wooden-tool craft chain already
-    gathers wood -> planks -> sticks from scratch, so driving it restores the
-    one tool progression cannot proceed without.  Returns True if a pickaxe is
-    now carried (already-had counts as success).
-    """
+    A death drops the whole toolkit, and when the grave despawns (5-minute
+    timer) or is unreachable, failing here leaves the bot permanently naked --
+    no pickaxe means it cannot mine. Returns True if a pickaxe is now carried
+    (already-had counts). The gather is a 300s outdoor walk, so
+    ``survivable_bootstrap_window`` decides whether it may start."""
     from ..common.inventory import count_item
     from ..common.resources import PICKAXE_ITEMS, ensure_supplies
 
     try:
         if any(count_item(client, item_id) > 0 for item_id in PICKAXE_ITEMS):
             return True
+        if not survivable_bootstrap_window(client):
+            return False
         print("RECOVERY: grave lost; bootstrapping a wooden pickaxe from scratch...")
         result = ensure_supplies(
             client, {"minecraft:wooden_pickaxe": 1}, timeout=300
