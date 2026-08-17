@@ -79,6 +79,37 @@ def dig_and_seal_night_hole(client, depth: int = 3) -> bool:
         print(f"Night hole: cannot determine player position: {exc}")
         return False
 
+    # Standing in liquid defeats the whole method: water holds the body up, so
+    # removing the block underneath never drops it and the descent check can
+    # never pass -- and the shaft would flood anyway. Observed live on
+    # dragon-b 2026-08-17, which respawned with its feet in water and logged
+    # "body did not fall into the shaft" on ground that was perfectly good
+    # dirt. Get to dry land first; if that is impossible, say so rather than
+    # digging a hole that cannot work.
+    feet = str(_house_block_id(client, x, feet_y, z) or "")
+    if any(token in feet for token in ("water", "lava")):
+        print(f"Night hole: standing in {feet}; seeking dry ground before digging")
+        from .navigation import goto
+        from .surface_recovery import reach_dry_surface
+
+        try:
+            landed = reach_dry_surface(
+                client, origin=(x, feet_y, z), expected_y=feet_y, goto=goto
+            )
+        except Exception as exc:
+            print(f"Night hole: dry-surface recovery failed ({exc})")
+            landed = None
+        if not landed:
+            print("Night hole: could not reach dry ground; refusing to dig in liquid")
+            return False
+        try:
+            state = client.transport.dispatch("get_state", {})
+            position = state.get("block_position", state.get("position", {}))
+            x, z = int(position["x"]), int(position["z"])
+            feet_y = int(position["y"])
+        except Exception:
+            return False
+
     dug = 0
     while dug < max(1, int(depth)):
         floor_y = feet_y - 1
