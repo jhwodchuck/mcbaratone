@@ -313,3 +313,112 @@ def test_digs_after_reaching_dry_ground(monkeypatch):
     assert night_shelter.dig_and_seal_night_hole(_client(world), depth=2) is True
     assert moved.get("called"), "never attempted to leave the water"
     assert world.broken, "reached dry ground but still did not dig"
+
+
+# ---------------------------------------------------------------------------
+# stone, the other ground that stopped a shelter cold
+# ---------------------------------------------------------------------------
+class _MountainWorld(_World):
+    """Stone underfoot, with a patch of dirt a few blocks away.
+
+    dragon-a respawned at [1, 163, -7] on a mountain and logged
+    "minecraft:stone at y=152 is not hand-mineable; stopping descent" -- it had
+    no pickaxe, because rebuilding one is the whole point of the recovery.
+    """
+
+    DIRT_AT = (2, -6)  # (x, z) of the diggable patch
+
+    def __init__(self):
+        super().__init__(ground="minecraft:stone", feet_y=163)
+        self.x = 1
+        self.z = -7
+
+    def dispatch(self, route, payload=None):
+        payload = payload or {}
+        if route == "get_state":
+            return {
+                "block_position": {"x": self.x, "y": self.feet_y, "z": self.z},
+                "position": {"x": self.x, "y": self.feet_y, "z": self.z},
+                "world_time": self.day_time,
+                "is_dead": False,
+            }
+        if route == "get_block":
+            bx, by, bz = int(payload["x"]), int(payload["y"]), int(payload["z"])
+            if (bx, by, bz) in self.broken:
+                return {"id": "minecraft:air"}
+            if by >= self.feet_y:
+                return {"id": "minecraft:air"}
+            return {
+                "id": "minecraft:dirt"
+                if (bx, bz) == self.DIRT_AT
+                else "minecraft:stone"
+            }
+        if route == "dig_block":
+            bx, by, bz = int(payload["x"]), int(payload["y"]), int(payload["z"])
+            self.broken.append((bx, by, bz))
+            self.feet_y = by
+            self.inventory.append({"id": "minecraft:dirt", "count": 1})
+            return {}
+        if route == "get_inventory":
+            return {"inventory": list(self.inventory)}
+        return {}
+
+
+def test_stone_underfoot_moves_to_diggable_ground(monkeypatch):
+    """THE dragon-a failure: it gave up on a mountain instead of stepping aside."""
+    world = _MountainWorld()
+    went = {}
+
+    def _goto(_c, x, y, z, **_k):
+        went["to"] = (x, z)
+        world.x, world.z = x, z
+        return True
+
+    monkeypatch.setattr(night_shelter, "robust_place", lambda *_a, **_k: True)
+    monkeypatch.setattr(night_shelter, "_has_existing_enclosure", lambda *_a, **_k: True)
+    monkeypatch.setattr("baritone_client.common.navigation.goto", _goto)
+
+    assert night_shelter.dig_and_seal_night_hole(_client(world), depth=2) is True
+    assert went.get("to") == _MountainWorld.DIRT_AT, (
+        f"moved to {went.get('to')}, expected the dirt patch "
+        f"{_MountainWorld.DIRT_AT}"
+    )
+    assert world.broken, "reached diggable ground but never dug"
+
+
+def test_solid_stone_everywhere_still_refuses(monkeypatch):
+    """No diggable ground in range is a real refusal, not an excuse to flail."""
+
+    class _AllStone(_MountainWorld):
+        DIRT_AT = (9999, 9999)
+
+    world = _AllStone()
+    monkeypatch.setattr(night_shelter, "robust_place", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.goto",
+        lambda *_a, **_k: pytest.fail("walked off toward ground that does not exist"),
+    )
+
+    assert night_shelter.dig_and_seal_night_hole(_client(world)) is False
+    assert world.broken == [], "tried to hand-mine stone"
+
+
+def test_the_search_never_wanders_far_in_the_dark(monkeypatch):
+    """A long night walk with no armour is worse than no shelter."""
+    world = _MountainWorld()
+    probed = []
+    real = night_shelter._house_block_id
+    monkeypatch.setattr(
+        night_shelter, "_house_block_id",
+        lambda c, x, y, z: (probed.append((x, z)), real(c, x, y, z))[1],
+    )
+
+    night_shelter._nearest_diggable_column(_client(world), 1, 163, -7)
+
+    worst = max(
+        max(abs(px - 1), abs(pz - (-7))) for px, pz in probed
+    )
+    assert worst <= night_shelter.DIGGABLE_SEARCH_RADIUS, (
+        f"probed {worst} blocks out, past the {night_shelter.DIGGABLE_SEARCH_RADIUS} "
+        "block search radius"
+    )

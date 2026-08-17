@@ -46,6 +46,40 @@ _HAND_MINEABLE_GROUND = (
 _UNSAFE_SHELTER_GROUND = ("lava", "water", "bedrock")
 
 
+#: How far to look for diggable ground when the floor underfoot is stone. Kept
+#: small: this runs at night with no armour, so a long walk is worse than no
+#: shelter, and each candidate column costs a bridge read.
+DIGGABLE_SEARCH_RADIUS = 3
+
+
+def _nearest_diggable_column(client, x: int, feet_y: int, z: int):
+    """Nearest standable column whose floor can be broken by hand, or None.
+
+    A bot that respawns on a mountain has stone underfoot and no pickaxe --
+    which is the very tool it is trying to rebuild -- so the shaft cannot be
+    started where it stands. Dirt or sand a few blocks away is usually enough.
+    Candidates are searched nearest-first so the bot moves as little as
+    possible in the dark.
+    """
+    candidates = sorted(
+        (dx * dx + dz * dz, x + dx, z + dz)
+        for dx in range(-DIGGABLE_SEARCH_RADIUS, DIGGABLE_SEARCH_RADIUS + 1)
+        for dz in range(-DIGGABLE_SEARCH_RADIUS, DIGGABLE_SEARCH_RADIUS + 1)
+        if dx or dz
+    )
+    for _distance, cx, cz in candidates:
+        floor = str(_house_block_id(client, cx, feet_y - 1, cz) or "")
+        if floor not in _HAND_MINEABLE_GROUND:
+            continue
+        # The bot has to be able to stand there, and it must not be another
+        # puddle -- water would defeat the descent exactly as it did before.
+        standing = str(_house_block_id(client, cx, feet_y, cz) or "")
+        if "air" not in standing:
+            continue
+        return (cx, feet_y, cz)
+    return None
+
+
 def dig_and_seal_night_hole(client, depth: int = 3) -> bool:
     """Enclose a bot that owns nothing by mining the blocks that seal it in.
 
@@ -111,6 +145,7 @@ def dig_and_seal_night_hole(client, depth: int = 3) -> bool:
             return False
 
     dug = 0
+    relocated = False
     while dug < max(1, int(depth)):
         floor_y = feet_y - 1
         ground = str(_house_block_id(client, x, floor_y, z) or "")
@@ -118,8 +153,37 @@ def dig_and_seal_night_hole(client, depth: int = 3) -> bool:
             print(f"Night hole: refusing to dig into {ground} at y={floor_y}")
             break
         if ground not in _HAND_MINEABLE_GROUND:
-            # Stone, ore, or an unloaded read. Without a pickaxe this cannot be
-            # broken by hand, so stop here rather than flail at it.
+            # Stone, ore, or an unloaded read: not breakable by hand, and the
+            # pickaxe that would fix that is what this whole recovery is trying
+            # to rebuild. Before giving up, look for diggable ground nearby --
+            # dragon-a respawned on a mountain and refused to shelter at all
+            # over exactly this, on a night it had no other option.
+            #
+            # Only worth doing before the first dig. Once a shaft is started,
+            # hitting stone partway down is a reason to cap where we are (the
+            # loop below already does that), not to wander off mid-hole.
+            if dug == 0 and not relocated:
+                spot = _nearest_diggable_column(client, x, feet_y, z)
+                if spot is not None:
+                    from .navigation import goto
+
+                    print(
+                        f"Night hole: {ground} underfoot is not hand-mineable; "
+                        f"moving to diggable ground at {spot}"
+                    )
+                    relocated = True
+                    if goto(client, spot[0], spot[1], spot[2], timeout=30, tolerance=1.5):
+                        try:
+                            state = client.transport.dispatch("get_state", {})
+                            landed = state.get(
+                                "block_position", state.get("position", {})
+                            )
+                            x, z = int(landed["x"]), int(landed["z"])
+                            feet_y = int(landed["y"])
+                            continue
+                        except Exception:
+                            pass
+                    print("Night hole: could not reach the diggable ground")
             print(
                 f"Night hole: {ground or 'unreadable block'} at y={floor_y} "
                 "is not hand-mineable; stopping descent"
