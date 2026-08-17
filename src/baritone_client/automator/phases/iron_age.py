@@ -10,6 +10,7 @@ from ..resource_manager import ResourceManager
 from ..state_manager import StateManager
 from ...common import TaskResult
 from ...common.tasks import SurvivalRecoveryRequired
+from ...common.terraform_verify import classify_block
 from ...common.resources import (
     _craft_with_table,
     _read_state_with_retry,
@@ -871,7 +872,18 @@ class FoodAndIronHandler(PhaseHandler):
                 "get_block",
                 {"x": chest_pos[0], "y": chest_pos[1], "z": chest_pos[2]},
             )
-            if "chest" not in str(block.get("id", "")):
+            observed = str(block.get("id", ""))
+            if classify_block(observed) == "unknown":
+                # An unloaded chunk reads void_air, which is not proof the
+                # outpost chest is gone. Discarding the pointer here placed a
+                # brand new chest and overwrote the saved coordinate, so every
+                # trip that started out of render distance abandoned the real
+                # outpost and built another one beside the bot.
+                print(
+                    f"  Mining outpost chest at {tuple(chest_pos)} is in an "
+                    "unloaded chunk; keeping the saved coordinate"
+                )
+            elif "chest" not in observed:
                 chest_pos = None
 
         if chest_pos is None:

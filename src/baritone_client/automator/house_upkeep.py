@@ -116,10 +116,20 @@ def run_house_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
         )
         return total, progress
 
-    before, _ = _survey()
+    remote_before, _ = _survey()
     if not goto(client, x + 3, y + 1, z - 2, timeout=60, tolerance=4.0):
-        return False, "could not reach the starter house to repair it", before, before
+        return (
+            False,
+            "could not reach the starter house to repair it",
+            remote_before,
+            remote_before,
+        )
 
+    # Re-survey now that the chunk is certainly loaded. Measured from across
+    # the map every block reads void_air, so the remote survey scored 0 of 169
+    # and the closing `after > before` test then reported a successful repair
+    # for a house that was already standing and had not been touched.
+    before, _ = _survey()
     complete = house_utils.build_good_house(client, x, y, z)
     after, progress = _survey()
     if complete:

@@ -37,3 +37,20 @@ def position(value: Any) -> Tuple[int, int, int] | None:
     except (KeyError, TypeError, ValueError):
         return None
     return None
+
+
+def unreadable_note(positions: Any) -> str:
+    """Describe coordinates that were in unloaded chunks, for a failure reason.
+
+    The bridge answers ``void_air`` for anything the client has not loaded, so
+    a predicate can "fail" without having observed the world at all. Saying so
+    in the reason is what lets a reader tell a demolished base apart from one
+    that was simply out of render distance.
+    """
+    coordinates = list(positions or ())
+    if not coordinates:
+        return ""
+    return (
+        f" [{len(coordinates)} coordinate(s) were in unloaded chunks, "
+        f"first {coordinates[0]}]"
+    )

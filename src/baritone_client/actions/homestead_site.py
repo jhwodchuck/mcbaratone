@@ -260,3 +260,26 @@ def relocate_homestead(
         record.pop("verified_positions", None)
     print(f"  Homestead relocated to {new_anchor}")
     return True
+
+
+def read_block_counting_unloaded(client: Any, position: Any) -> tuple[str, bool]:
+    """Read one block id, and report whether the read proved anything.
+
+    ``void_air`` means the chunk was never loaded and an empty id means the
+    read itself failed. Neither shows the block is gone, but every homestead
+    check is two-valued, so an unread coordinate scores exactly like a
+    demolished one -- which sent bots to rebuild houses, farms and torch rings
+    that were intact and merely out of render distance.
+    """
+    from ..common.terraform_verify import classify_block
+
+    try:
+        value = str(
+            client.transport.dispatch(
+                "get_block",
+                {"x": int(position[0]), "y": int(position[1]), "z": int(position[2])},
+            ).get("id", "")
+        )
+    except Exception:
+        value = ""
+    return value, classify_block(value) == "unknown"

@@ -47,7 +47,7 @@ ANCHOR_UNREACHABLE = "anchor_unreachable"
 # Upper bound on re-home attempts for one checkpoint. Guard against an
 # infinite reselect loop if every candidate anchor is also unreachable.
 MAX_ANCHOR_REHOME_ATTEMPTS = 2
-from .homestead_site import carry_site_state  # noqa: E402
+from .homestead_site import carry_site_state, read_block_counting_unloaded  # noqa: E402
 LOG_ITEMS = (
     "minecraft:oak_log",
     "minecraft:birch_log",
@@ -161,6 +161,7 @@ class IncrementalHomestead:
         re-opening them would deadlock the run again.
         """
         anchor = self._coordinate(homestead.get("anchor"))
+        self._unreadable_reads = 0
         lighting_live = self._live_lighting(
             self.step(homestead, "light_perimeter")
         )
@@ -173,6 +174,10 @@ class IncrementalHomestead:
             "micro_farm": self._live_farm(anchor),
             "light_perimeter": lighting_live,
         }
+        if self._unreadable_reads:
+            # Re-opening on an unloaded read rebuilds a homestead still standing.
+            print(f"HOMESTEAD: stale-check skipped; {self._unreadable_reads} unloaded")
+            return
         for name, live in checks.items():
             record = self.step(homestead, name)
             if record.get("degraded"):
@@ -925,15 +930,10 @@ class IncrementalHomestead:
         return self.client.transport.dispatch("get_state", {})
 
     def _block_at(self, position: Sequence[int]) -> str:
-        try:
-            return str(
-                self.client.transport.dispatch(
-                    "get_block",
-                    {"x": int(position[0]), "y": int(position[1]), "z": int(position[2])},
-                ).get("id", "")
-            )
-        except Exception:
-            return ""
+        value, unloaded = read_block_counting_unloaded(self.client, position)
+        if unloaded:
+            self._unreadable_reads = getattr(self, "_unreadable_reads", 0) + 1
+        return value
 
     def _dry_ground(self, anchor: Sequence[int]) -> bool:
         ground = self._block_at((anchor[0], anchor[1] - 1, anchor[2]))
