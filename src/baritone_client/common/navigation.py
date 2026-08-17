@@ -387,81 +387,6 @@ def goto_xz(
         raise
 
 
-def staged_goto(
-    client,
-    target: tuple[int, int, int],
-    origin: tuple[int, int, int],
-    *,
-    maximum_leg: float = 32.0,
-    navigate=None,
-) -> bool:
-    """Approach a distant exact goal through bounded horizontal legs."""
-    navigate = navigate or goto
-    current_x, current_y, current_z = origin
-    target_x, target_y, target_z = target
-    horizontal = math.hypot(target_x - current_x, target_z - current_z)
-    if horizontal <= 48:
-        return False
-    stages = max(1, int(horizontal // maximum_leg))
-    for index in range(1, stages + 1):
-        ratio = min(1.0, (index * maximum_leg) / horizontal)
-        nominal_y = round(current_y + (target_y - current_y) * ratio)
-        waypoint = (
-            round(current_x + (target_x - current_x) * ratio),
-            _loaded_stage_y(
-                client,
-                round(current_x + (target_x - current_x) * ratio),
-                nominal_y,
-                round(current_z + (target_z - current_z) * ratio),
-            ),
-            round(current_z + (target_z - current_z) * ratio),
-        )
-        print(f"  Staging home approach via {waypoint}...")
-        if not navigate(
-            client,
-            waypoint[0],
-            waypoint[1],
-            waypoint[2],
-            timeout=90,
-            check_interval=1.0,
-            tolerance=6.0,
-        ):
-            print(
-                "  Exact staging height was rejected; retrying the column "
-                "without pinning Y..."
-            )
-            if not goto_xz(
-                client,
-                waypoint[0],
-                waypoint[2],
-                timeout=90,
-                tolerance=6.0,
-            ):
-                return False
-    if navigate(
-        client,
-        target_x,
-        target_y,
-        target_z,
-        timeout=180,
-        check_interval=1.0,
-        tolerance=2.0,
-    ):
-        return True
-    # Load the final column before retrying its exact height.
-    if not goto_xz(client, target_x, target_z, timeout=120, tolerance=6.0):
-        return False
-    return navigate(
-        client,
-        target_x,
-        target_y,
-        target_z,
-        timeout=90,
-        check_interval=1.0,
-        tolerance=2.0,
-    )
-
-
 def _loaded_stage_y(client, x: int, nominal_y: int, z: int) -> int:
     """Use the top of a loaded column instead of an arbitrary exact Y."""
     for y in range(nominal_y + 16, nominal_y - 33, -1):
@@ -824,3 +749,12 @@ def safe_return(
         ascent_success=ascent_success,
         arrival_success=arrival_success,
     )
+
+
+# staged_goto lives in staged_approach (navigation.py is over its size budget).
+# Re-exported here because callers and tests import it from this module.
+from .staged_approach import (  # noqa: E402
+    ARRIVAL_RADIUS,
+    _horizontal_gap_to,
+    staged_goto,
+)
