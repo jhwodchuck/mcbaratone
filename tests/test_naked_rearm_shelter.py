@@ -243,3 +243,73 @@ def test_bootstrap_does_not_gather_when_the_window_is_unsurvivable(monkeypatch):
     )
 
     assert recovery._bootstrap_starter_pickaxe(_recovery_client(16359)) is False
+
+
+# ---------------------------------------------------------------------------
+# water, which defeated the whole method live
+# ---------------------------------------------------------------------------
+class _WaterWorld(_World):
+    """Feet in water over perfectly good dirt: digging can never drop the body."""
+
+    def dispatch(self, route, payload=None):
+        payload = payload or {}
+        if route == "get_block":
+            y = int(payload.get("y", 0))
+            if y == self.feet_y:
+                return {"id": "minecraft:water"}
+        return super().dispatch(route, payload)
+
+
+def test_refuses_to_dig_while_standing_in_liquid(monkeypatch):
+    """THE dragon-b failure: it dug good dirt and never fell, because water held it.
+
+    Water buoys the body, so removing the block underneath does not drop it and
+    the descent check can never pass -- and the shaft would flood regardless.
+    The live log said "body did not fall into the shaft" on ground that was
+    dirt all the way down.
+    """
+    world = _WaterWorld()
+    monkeypatch.setattr(night_shelter, "robust_place", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "baritone_client.common.surface_recovery.reach_dry_surface",
+        lambda *_a, **_k: None,
+    )
+
+    assert night_shelter.dig_and_seal_night_hole(_client(world)) is False
+    assert world.broken == [], (
+        f"dug {world.broken} while standing in water; the body cannot fall"
+    )
+
+
+def test_digs_after_reaching_dry_ground(monkeypatch):
+    """Water is a reason to move, not a reason to give up."""
+
+    class _DryableWorld(_World):
+        def __init__(self):
+            super().__init__()
+            self.in_water = True
+
+        def dispatch(self, route, payload=None):
+            payload = payload or {}
+            if route == "get_block" and self.in_water:
+                if int(payload.get("y", 0)) == self.feet_y:
+                    return {"id": "minecraft:water"}
+            return super().dispatch(route, payload)
+
+    world = _DryableWorld()
+    moved = {}
+
+    def _dry(*_a, **_k):
+        moved["called"] = True
+        world.in_water = False
+        return (0, world.feet_y, 0)
+
+    monkeypatch.setattr(night_shelter, "robust_place", lambda *_a, **_k: True)
+    monkeypatch.setattr(night_shelter, "_has_existing_enclosure", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "baritone_client.common.surface_recovery.reach_dry_surface", _dry
+    )
+
+    assert night_shelter.dig_and_seal_night_hole(_client(world), depth=2) is True
+    assert moved.get("called"), "never attempted to leave the water"
+    assert world.broken, "reached dry ground but still did not dig"
