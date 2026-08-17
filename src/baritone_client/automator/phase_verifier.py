@@ -11,14 +11,15 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from math import dist
-from typing import Any, Callable, Dict, Iterable, Mapping, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 from .state_manager import Phase, StateManager
 from .resource_manager import ResourceManager
 from .phase_verifier_support import FOOD_ITEMS, IRON_ARMOR, SHULKER_BOXES, STONE_TOOLS
-from .phase_verifier_support import position as _position
+from .phase_verifier_support import position as _position, unreadable_note
 from ..common.iron_farm import verify_farm_structure_witnesses
 from ..common.storage_catalog import catalog_for
+from ..common.terraform_verify import classify_block
 from ..common.tasks import TaskResult
 
 
@@ -29,6 +30,9 @@ class VerificationResult:
     success: bool
     reason: str
     gate_ids: Tuple[str, ...] = ()
+    #: A failure may mean "not looked at" rather than "not there"; callers that
+    #: would *revoke* something on a failure must not do so when this is True.
+    evidence_unreadable: bool = False
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,8 @@ class _Evidence:
         self.manager = state
         self.candidate = candidate
         self.result = result
+        #: Unloaded coordinates: a "no" from one observed nothing at all.
+        self.unreadable_positions: List[Tuple[int, int, int]] = []
         self.state = self._unwrap(client.transport.dispatch("get_state", {}))
         current = resources.refresh_inventory()
         self.current_inventory = {
@@ -136,13 +142,18 @@ class _Evidence:
     def block_id(self, position: Sequence[int]) -> str:
         if len(position) != 3:
             return ""
+        coordinate = (int(position[0]), int(position[1]), int(position[2]))
         response = self._unwrap(
             self.client.transport.dispatch(
-                "get_block",
-                {"x": int(position[0]), "y": int(position[1]), "z": int(position[2])},
+                "get_block", {"x": coordinate[0], "y": coordinate[1], "z": coordinate[2]}
             )
         )
-        return str(response.get("id") or response.get("type") or response.get("block") or "")
+        value = str(response.get("id") or response.get("type") or response.get("block") or "")
+        # void_air means the chunk was not loaded, and the predicates below
+        # are two-valued, so an unread coordinate scores as "absent".
+        if classify_block(value) == "unknown":
+            self.unreadable_positions.append(coordinate)
+        return value
 
     def entities(self, radius: int = 32) -> Tuple[Dict[str, Any], ...]:
         """Capture the registered get_entities route's real schema lazily."""
@@ -775,10 +786,13 @@ class PhaseVerifier:
                 if not passed:
                     missing.append(check.description)
         if missing:
+            unreadable = list(evidence.unreadable_positions)
             return VerificationResult(
                 False,
-                f"Missing evidence for {', '.join(spec.gate_ids)}: {'; '.join(missing)}",
+                f"Missing evidence for {', '.join(spec.gate_ids)}: "
+                f"{'; '.join(missing)}{unreadable_note(unreadable)}",
                 spec.gate_ids,
+                evidence_unreadable=bool(unreadable),
             )
         return VerificationResult(True, f"{', '.join(spec.gate_ids)} postconditions satisfied", spec.gate_ids)
 

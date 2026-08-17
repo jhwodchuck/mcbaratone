@@ -689,6 +689,7 @@ class EndGameAutomator:
             if phase in completed
         }
         removed = []
+        retained = []
         for objective in self.planner.objectives:
             phase = objective.phase
             if phase not in completed or phase in valid:
@@ -705,8 +706,20 @@ class EndGameAutomator:
             )
             if verification.success:
                 valid.add(phase)
+            elif verification.evidence_unreadable:
+                # The world could not be read, so nothing was actually
+                # observed. Revoking a finished objective on a coordinate in
+                # an unloaded chunk is how a bot that logged out away from
+                # base wiped its own progression graph and rebuilt work it had
+                # already done. Keep the credit and re-check when it is nearer.
+                valid.add(phase)
+                retained.append((phase, verification.reason))
             else:
                 removed.append((phase, verification.reason))
+        if retained:
+            print("CHECKPOINT AUDIT: kept objectives whose evidence was unreadable:")
+            for phase, reason in retained:
+                print(f"  - {phase.name}: {reason}")
         if not removed:
             return
         self.planner.restore(

@@ -161,7 +161,13 @@ def test_each_dimension_gets_a_distinct_warehouse_identity(tmp_path, monkeypatch
 def test_void_backed_unplaced_warehouse_is_rehomed_without_rewriting_history(
     tmp_path, monkeypatch
 ):
-    """A stale floating anchor must not permanently block Quartermaster work."""
+    """A stale floating anchor must not permanently block Quartermaster work.
+
+    The bot stands beside the anchor here on purpose. ``void_air`` only means
+    "genuinely nothing there" for a chunk that is actually loaded; at distance
+    it means "not looked at", and retiring an immutable layout on that reading
+    deleted warehouses that were merely out of render distance.
+    """
     catalog = StorageCatalog(Path(tmp_path) / "catalog.sqlite3", "world-a")
     catalog.register_warehouse(
         "warehouse_01",
@@ -187,8 +193,16 @@ def test_void_backed_unplaced_warehouse_is_rehomed_without_rewriting_history(
         lambda _client, **_kwargs: ((10, 64, 10), (11, 64, 10)),
     )
 
+    standing_beside_the_anchor = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda _route, _payload=None: {
+                "block_position": {"x": -28, "y": 80, "z": -3}
+            }
+        )
+    )
+
     replacement, _layout = organizer.ensure_warehouse_layout(
-        SimpleNamespace(), catalog, "minecraft:overworld"
+        standing_beside_the_anchor, catalog, "minecraft:overworld"
     )
 
     retired = catalog.get_warehouse("warehouse_01")
@@ -528,3 +542,64 @@ def test_restart_does_not_adopt_a_catalog_confirmed_partial_chest(
         "warehouse_01", "category", "ores", 0
     )
     assert reservation["state"] == "blocked"
+
+
+def test_a_warehouse_out_of_render_distance_is_never_retired(tmp_path, monkeypatch):
+    """THE bug: distance alone was enough to delete an immutable layout.
+
+    Every read of an unloaded chunk answers "minecraft:void_air", which
+    satisfies `"air" in target` and is not a solid support -- so a warehouse
+    the bot had simply walked away from scored as "never placed". Its layout
+    was retired and a replacement registered wherever the bot was standing.
+    """
+    catalog = StorageCatalog(Path(tmp_path) / "catalog.sqlite3", "world-a")
+    catalog.register_warehouse(
+        "warehouse_01",
+        dimension="minecraft:overworld",
+        anchor=(-28, 80, -1),
+        facing="north",
+        expansion_direction="positive_local_x",
+        aisle_width=3,
+    )
+    catalog.reserve_slot(
+        "warehouse_01", "intake", "intake", 0,
+        paired_coordinates=((-28, 80, -1), (-27, 80, -1)),
+        canonical_coordinate=(-28, 80, -1), state="blocked",
+    )
+    monkeypatch.setattr(
+        organizer.harness_ops, "_block_at", lambda *_args: "minecraft:void_air"
+    )
+    monkeypatch.setattr(
+        organizer.harness_ops, "find_double_chest_spot",
+        lambda _client, **_kwargs: ((10, 64, 10), (11, 64, 10)),
+    )
+    far_away = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda _route, _payload=None: {
+                "block_position": {"x": -400, "y": 70, "z": 300}
+            }
+        )
+    )
+
+    warehouse, _layout = organizer.ensure_warehouse_layout(
+        far_away, catalog, "minecraft:overworld"
+    )
+
+    assert warehouse["warehouse_id"] == "warehouse_01", (
+        f"retired the layout as {warehouse['warehouse_id']} from 500+ blocks "
+        "away, having observed nothing"
+    )
+    assert catalog.get_warehouse("warehouse_01")["metadata"].get(
+        "lifecycle", "active"
+    ) != "retired"
+
+
+def test_an_unreadable_position_never_marks_a_slot_blocked(monkeypatch):
+    """`blocked` is persisted reservation state, so it must need real evidence."""
+    monkeypatch.setattr(
+        organizer.harness_ops, "_block_at", lambda *_args: "minecraft:void_air"
+    )
+
+    assert organizer.planned_slot_is_obstructed(
+        SimpleNamespace(), ((5, 64, 5), (6, 64, 5))
+    ) is False

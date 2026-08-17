@@ -270,11 +270,44 @@ def store_surplus_in_chest(
         free_inventory_slots,
     )
 
+    from .space_reclaim import (
+        SPACE_RECLAIM_RETAIN_COUNTS,
+        carried_items,
+        space_reclaim_deposit_items,
+    )
+
     selected_items = EARLY_GAME_EXCESS_ITEMS | OVERFLOW_BULK_ITEMS
     if deposit_items:
         selected_items |= set(deposit_items)
     selected_retains = dict(OVERFLOW_RETAIN_COUNTS)
     selected_retains.update(retain_counts or {})
+
+    # An allow-list can only bank what it named in advance, and a bot picks up
+    # whatever it happens to mine. A1Bot ended up with 33 carried item types of
+    # which exactly one was listed, so every deposit freed at most a single
+    # slot and the inventory never fell below full.
+    #
+    # The test is whether the named set can free ENOUGH slots, not whether it
+    # can move anything at all: A1Bot carried 3 leaf_litter, which is on the
+    # list, so a "can it move something" check would have passed while still
+    # leaving 1 of the 3 required slots free and the deadlock intact.
+    carried = carried_items(client)
+    allow_list_slots = sum(
+        1
+        for item_id, count in carried.items()
+        if item_id in selected_items
+        and int(count or 0) > selected_retains.get(item_id, 0)
+    )
+    if carried and allow_list_slots < required:
+        reclaim = space_reclaim_deposit_items(carried)
+        if reclaim:
+            print(
+                f"  STORAGE: allow-list frees only {allow_list_slots}/{required} "
+                f"slot(s); banking {len(reclaim)} unprotected item type(s) too"
+            )
+            selected_items |= reclaim
+            for item_id, floor in SPACE_RECLAIM_RETAIN_COUNTS.items():
+                selected_retains.setdefault(item_id, floor)
 
     def deposit(position) -> int:
         return deposit_excess_to_chest(

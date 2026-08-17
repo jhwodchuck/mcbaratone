@@ -150,6 +150,66 @@ def reestablish_supply_chest(
     return "chest" in block_id()
 
 
+# The starter farm is a small 5x5 patch. When its wheat keeps failing to
+# mature fast enough for the T1204 food target, sitting in an endless
+# pacing hold is the same starvation loop the older micro_farm deadlock
+# caused. Instead of yielding forever, expand the farm: re-establish the
+# same center at a larger size after a bounded streak of fruitless holds.
+# Herd hunting is deliberately NOT a fallback here -- a hunted herd is a
+# herd we later want alive for breeding.
+_CROP_HOLD_HARD_CAP = 6
+_FARM_SIZE_START = 5
+_FARM_SIZE_MAX = 9
+_FARM_SIZE_STEP = 2
+
+
+def _crop_hold_budget(state) -> dict:
+    """Return (and lazily create) the crop-hold escalation ledger."""
+    custom = getattr(state, "custom_data", None)
+    if not isinstance(custom, dict):
+        custom = {}
+        state.custom_data = custom
+    ledger = custom.setdefault("crop_hold", {})
+    if not isinstance(ledger, dict):
+        ledger = {}
+        custom["crop_hold"] = ledger
+    ledger.setdefault("hold_streak", 0)
+    ledger.setdefault("expansions", 0)
+    return ledger
+
+
+def _farm_size_for(state) -> int:
+    ledger = _crop_hold_budget(state)
+    current = int(ledger.get("farm_size") or _FARM_SIZE_START)
+    return max(_FARM_SIZE_START, min(_FARM_SIZE_MAX, current))
+
+
+def _expand_crop_farm(handler: "FoodAndIronHandler", client, farm_location) -> bool:
+    """Re-establish the existing farm center at a larger size.
+
+    Returns True when the expansion actually tilled/planted new soil
+    (farm_size grew), False when it is already at the size ceiling or the
+    center cannot be located/expanded.
+    """
+    from ...common.farming import establish_wheat_farm
+
+    if not isinstance(farm_location, (list, tuple)) or len(farm_location) != 3:
+        return False
+    ledger = _crop_hold_budget(handler.state)
+    size = _farm_size_for(handler.state)
+    if size >= _FARM_SIZE_MAX:
+        return False
+    next_size = size + _FARM_SIZE_STEP
+    x, y, z = (int(value) for value in farm_location)
+    established = establish_wheat_farm(client, x, y, z, size=next_size, state=handler.state)
+    if established is None:
+        return False
+    ledger["farm_size"] = next_size
+    ledger["expansions"] = int(ledger.get("expansions", 0)) + 1
+    print(f"  Crop farm expanded to {next_size}x{next_size} at {(x, y, z)}.")
+    return True
+
+
 def bake_durable_food(handler: "FoodAndIronHandler", client) -> bool:
     """Advance durable provisions without spending retries on crop growth."""
     target = 16
@@ -165,20 +225,35 @@ def bake_durable_food(handler: "FoodAndIronHandler", client) -> bool:
 
     wheat = count_item(client, "minecraft:wheat")
     if wheat < 3:
-        print(
-            f"  Durable food: {bread} bread, {wheat} wheat — nothing more "
-            "to bake yet (farm needs time to regrow)."
-        )
         source = persisted_food_source(handler.state)
         farm_location = (
             handler.state.custom_data.get("farm_location")
             if handler.state is not None
             else None
         )
-        if source or (
+        has_farm = (
             isinstance(farm_location, (list, tuple))
             and len(farm_location) == 3
-        ):
+        )
+        if has_farm and handler.state is not None:
+            ledger = _crop_hold_budget(handler.state)
+            ledger["hold_streak"] = int(ledger.get("hold_streak", 0)) + 1
+            streak = int(ledger.get("hold_streak", 0))
+            at_ceiling = _farm_size_for(handler.state) >= _FARM_SIZE_MAX
+            if streak >= _CROP_HOLD_HARD_CAP and not at_ceiling:
+                # Expand before yielding again. Iterative expansion means the
+                # buddget resets only on success; a failed expansion attempt
+                # is credit toward the next escalation rather than a stall.
+                if _expand_crop_farm(handler, client, farm_location):
+                    ledger["hold_streak"] = 0
+                    raise PacingHoldRequired(
+                        "renewable crop maturation before T1204 (farm expanded)"
+                    )
+            print(
+                f"  Durable food: {bread} bread, {wheat} wheat — nothing more "
+                "to bake yet (farm needs time to regrow)."
+            )
+        if source or has_farm:
             raise PacingHoldRequired("renewable crop maturation before T1204")
         return False
 

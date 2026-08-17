@@ -301,7 +301,12 @@ class TcpTransport(Transport):
 
         bridge_cmd = translate_route(route, payload)
         bridge_cmd["id"] = req_id
-        bridge_cmd["seq"] = seq
+        # The bridge protocol keys the request by `request_seq` (it echoes back
+        # `request_seq` and `server_seq` in its response envelope). Sending a
+        # `seq` field leaves the request malformed and the bridge rejects it
+        # with "Missing command", which surfaces as a read timeout on every
+        # route. Match the bridge's expected field name.
+        bridge_cmd["request_seq"] = seq
 
         q = queue.Queue()
         with self._lock:

@@ -7,6 +7,7 @@ from typing import Any, Mapping, Sequence, Tuple
 
 from . import harness_ops
 from .storage_catalog import StorageCatalog
+from .terraform_verify import classify_block
 from .storage_warehouse import WarehouseLayout
 
 
@@ -54,16 +55,52 @@ def _replacement_warehouse_id(
     return f"{base}_rehome_{index}"
 
 
+#: How close the bot must be for an absent block read to mean "nothing is
+#: there" rather than "that chunk is not loaded". Four chunks sits well inside
+#: any server's render distance, so a void read within it is trustworthy.
+LOADED_EVIDENCE_RADIUS = 64.0
+
+
+def _within_loaded_radius(client: Any, coordinates: Sequence[Position]) -> bool:
+    """Return whether every coordinate is near enough to have been observed."""
+    try:
+        state = client.transport.dispatch("get_state", {})
+        position = state.get("block_position", state.get("position", {}))
+        px = float(position["x"])
+        py = float(position["y"])
+        pz = float(position["z"])
+    except Exception:
+        # No position means no way to know whether anything was loaded, and a
+        # retirement here is permanent. Withhold the evidence.
+        return False
+    for x, y, z in coordinates:
+        distance = ((px - x) ** 2 + (py - y) ** 2 + (pz - z) ** 2) ** 0.5
+        if distance > LOADED_EVIDENCE_RADIUS:
+            return False
+    return True
+
+
 def _pair_is_unplaced_and_unsupported(client: Any, coordinates: Sequence[Position]) -> bool:
     """Prove this planned chest pair was never placed on usable ground.
 
     This is intentionally stricter than a failed placement check: a normal
     empty pair above solid ground is a valid unfinished warehouse and must not
     be retired.  Both target blocks must still be placeable air and both
-    supports must be absent/non-solid, as happens for an unloaded or void
-    anchor.  A chest, any other block, or a solid support leaves the immutable
-    layout in place for an operator to investigate.
+    supports must be absent/non-solid.  A chest, any other block, or a solid
+    support leaves the immutable layout in place for an operator to
+    investigate.
+
+    ``void_air`` is ambiguous: it means "genuinely nothing there" for a loaded
+    chunk and "not looked at" for an unloaded one. Distance is what separates
+    them, so a void read only counts as evidence while the bot is close enough
+    for the chunk to be loaded. Without that gate every warehouse merely out of
+    render distance scored as "never placed" -- ``ensure_warehouse_layout``
+    calls this on every layout load without travelling to the anchor first --
+    and the whole immutable layout was retired, with a replacement registered
+    wherever the bot happened to be standing.
     """
+    if not _within_loaded_radius(client, coordinates):
+        return False
     for position in coordinates:
         target = harness_ops._block_at(client, *position)
         support = harness_ops._block_at(client, position[0], position[1] - 1, position[2])
@@ -213,10 +250,19 @@ def planned_slot_is_obstructed(
     *,
     allowed_existing: Sequence[Position] = (),
 ) -> bool:
-    """Return whether an exact pair is occupied or lacks solid support."""
+    """Return whether an exact pair is occupied or lacks solid support.
+
+    An unloaded read reports "not obstructed". That is deliberate: callers
+    persist a positive as ``blocked`` reservation state, and a slot retired on
+    a coordinate nobody looked at stays retired. Being wrong the other way is
+    cheap and self-correcting -- the placement is attempted, ``place_block_exact``
+    verifies it, and a genuine obstruction simply fails that attempt.
+    """
     allowed = {tuple(position) for position in allowed_existing}
     for position in coordinates:
         block_id = harness_ops._block_at(client, *position)
+        if classify_block(block_id) == "unknown":
+            return False
         if block_id == "minecraft:chest":
             if tuple(position) in allowed:
                 continue
@@ -228,6 +274,8 @@ def planned_slot_is_obstructed(
         support = harness_ops._block_at(
             client, position[0], position[1] - 1, position[2]
         )
+        if classify_block(support) == "unknown":
+            return False
         if not harness_ops._is_solid_support_block(support):
             return True
     return False

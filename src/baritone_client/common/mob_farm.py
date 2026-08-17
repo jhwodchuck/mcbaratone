@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from .combat import entity_position, get_nearby_entities, safe_combat
 from .navigation import goto
+from .terraform_verify import classify_block
 
 
 HOSTILE_TYPES = {
@@ -79,9 +80,17 @@ def grind_xp_at_location(
     """Fight spawned hostiles until the live player level reaches the target."""
     location = (int(x), int(y), int(z))
     target_level = max(0, int(target_level))
-    if _block_id(client, location) != "minecraft:spawner":
+    # Check after arriving, not before. A spawner outside render distance
+    # reads void_air, so refusing here meant a known spawner could never be
+    # used at all -- the refusal prevented the very travel that would have
+    # made the read meaningful. A spawner is also a fixed world feature the
+    # fleet cannot destroy, so a negative read at distance is almost always
+    # an unloaded chunk rather than a real absence.
+    if classify_block(_block_id(client, location)) not in {"unknown", "spawner"}:
         return None
     if not goto(client, *location, timeout=180, tolerance=7.0):
+        return None
+    if _block_id(client, location) != "minecraft:spawner":
         return None
 
     start_level, start_total = _experience(client)

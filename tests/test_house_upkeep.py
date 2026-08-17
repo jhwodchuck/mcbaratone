@@ -77,8 +77,13 @@ def test_run_house_upkeep_improves_and_marks_incomplete_house_unrepaired(monkeyp
     state = _house_state(origin=origin)
     client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
 
+    # Three surveys: one from wherever the bot was standing (which may be an
+    # unloaded chunk), then the authoritative baseline taken on arrival, then
+    # the result. Only the last two may be compared for a delta.
     progress_calls = iter(
         [
+            {"floor": 0, "shell": 0, "roof": 0, "floor_total": 49,
+             "shell_total": 70, "roof_total": 49, "door_present": False},
             {"floor": 30, "shell": 40, "roof": 0, "floor_total": 49,
              "shell_total": 70, "roof_total": 49, "door_present": False},
             {"floor": 49, "shell": 68, "roof": 30, "floor_total": 49,
@@ -168,3 +173,38 @@ def test_summarize_house_progress_counts_by_role():
     assert progress["roof"] == 0
     assert progress["roof_total"] == 49
     assert progress["door_present"] is True
+
+
+def test_a_house_surveyed_from_an_unloaded_chunk_is_not_reported_repaired(monkeypatch):
+    """THE bug: the baseline was measured before walking to the house.
+
+    From across the map every block of the house reads void_air, so the
+    "before" survey scored 0 of 169. The house was then found intact on
+    arrival and the closing `after > before` test reported a successful
+    repair for a building nobody had touched -- inflating upkeep progress
+    with work that never happened.
+    """
+    state = _house_state(origin=(10, 64, 20))
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
+    intact = {
+        "floor": 49, "shell": 70, "roof": 49, "floor_total": 49,
+        "shell_total": 70, "roof_total": 49, "door_present": True,
+    }
+    unloaded = {
+        "floor": 0, "shell": 0, "roof": 0, "floor_total": 49,
+        "shell_total": 70, "roof_total": 49, "door_present": False,
+    }
+    surveys = iter([unloaded, intact, intact])
+    monkeypatch.setattr(base, "summarize_house_progress", lambda *_a: next(surveys))
+    monkeypatch.setattr(base, "build_good_house", lambda *_a: True)
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.goto", lambda *_a, **_k: True
+    )
+
+    success, _detail, before, after = house_upkeep.run_house_upkeep(client, state)
+
+    assert before == after, (
+        f"before={before} after={after}; the baseline came from the unloaded "
+        "survey, so an untouched house looks like 169 blocks of repair"
+    )
+    assert not success, "claimed a repair on a house that was already intact"

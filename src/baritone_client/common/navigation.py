@@ -222,6 +222,7 @@ def goto(
         start = time.time()
         last_position = None
         idle_unpathing_checks = 0
+        no_move_checks = 0
         while time.time() - start < timeout:
             if on_tick:
                 on_tick()
@@ -252,8 +253,23 @@ def goto(
                 idle_unpathing_checks = 1
             else:
                 idle_unpathing_checks = 0
+            # Independent no-movement watchdog: abort when the body has not
+            # moved at all for a sustained window, regardless of Baritone's
+            # self-reported `is_pathing` flag. Baritone can stay in "pathing"
+            # state indefinitely while the client never actually executes the
+            # path (observed live: A1Bot frozen 28 blocks from base for ~12h
+            # while goto() kept returning started:true). Gating only on
+            # is_pathing == False misses that failure mode entirely.
+            if current_position == last_position:
+                no_move_checks += 1
+            else:
+                no_move_checks = 0
             last_position = current_position
             if idle_unpathing_checks >= 3:
+                _cancel_once(client, cancelled)
+                return False
+            # ~30s of zero movement (default check_interval 2s x 15 samples).
+            if no_move_checks >= 15:
                 _cancel_once(client, cancelled)
                 return False
             time.sleep(min(float(check_interval), defense_check_interval))
@@ -340,8 +356,19 @@ def goto_xz(
                 idle_unpathing_checks = 1
             else:
                 idle_unpathing_checks = 0
+            # Independent no-movement watchdog: abort when the body has not
+            # moved at all for a sustained window, regardless of Baritone's
+            # self-reported `is_pathing` flag (which can stay True while the
+            # client never executes the path).
+            if current_position == last_position:
+                no_move_checks += 1
+            else:
+                no_move_checks = 0
             last_position = current_position
             if idle_unpathing_checks >= 3:
+                _cancel_once(client, cancelled)
+                return False
+            if no_move_checks >= 15:
                 _cancel_once(client, cancelled)
                 return False
             time.sleep(min(float(check_interval), defense_check_interval))
@@ -358,81 +385,6 @@ def goto_xz(
         if goal_active:
             _cancel_once(client, cancelled)
         raise
-
-
-def staged_goto(
-    client,
-    target: tuple[int, int, int],
-    origin: tuple[int, int, int],
-    *,
-    maximum_leg: float = 32.0,
-    navigate=None,
-) -> bool:
-    """Approach a distant exact goal through bounded horizontal legs."""
-    navigate = navigate or goto
-    current_x, current_y, current_z = origin
-    target_x, target_y, target_z = target
-    horizontal = math.hypot(target_x - current_x, target_z - current_z)
-    if horizontal <= 48:
-        return False
-    stages = max(1, int(horizontal // maximum_leg))
-    for index in range(1, stages + 1):
-        ratio = min(1.0, (index * maximum_leg) / horizontal)
-        nominal_y = round(current_y + (target_y - current_y) * ratio)
-        waypoint = (
-            round(current_x + (target_x - current_x) * ratio),
-            _loaded_stage_y(
-                client,
-                round(current_x + (target_x - current_x) * ratio),
-                nominal_y,
-                round(current_z + (target_z - current_z) * ratio),
-            ),
-            round(current_z + (target_z - current_z) * ratio),
-        )
-        print(f"  Staging home approach via {waypoint}...")
-        if not navigate(
-            client,
-            waypoint[0],
-            waypoint[1],
-            waypoint[2],
-            timeout=90,
-            check_interval=1.0,
-            tolerance=6.0,
-        ):
-            print(
-                "  Exact staging height was rejected; retrying the column "
-                "without pinning Y..."
-            )
-            if not goto_xz(
-                client,
-                waypoint[0],
-                waypoint[2],
-                timeout=90,
-                tolerance=6.0,
-            ):
-                return False
-    if navigate(
-        client,
-        target_x,
-        target_y,
-        target_z,
-        timeout=180,
-        check_interval=1.0,
-        tolerance=2.0,
-    ):
-        return True
-    # Load the final column before retrying its exact height.
-    if not goto_xz(client, target_x, target_z, timeout=120, tolerance=6.0):
-        return False
-    return navigate(
-        client,
-        target_x,
-        target_y,
-        target_z,
-        timeout=90,
-        check_interval=1.0,
-        tolerance=2.0,
-    )
 
 
 def _loaded_stage_y(client, x: int, nominal_y: int, z: int) -> int:
@@ -797,3 +749,12 @@ def safe_return(
         ascent_success=ascent_success,
         arrival_success=arrival_success,
     )
+
+
+# staged_goto lives in staged_approach (navigation.py is over its size budget).
+# Re-exported here because callers and tests import it from this module.
+from .staged_approach import (  # noqa: E402
+    ARRIVAL_RADIUS,
+    _horizontal_gap_to,
+    staged_goto,
+)

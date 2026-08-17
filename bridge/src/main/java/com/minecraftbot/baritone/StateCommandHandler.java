@@ -167,6 +167,22 @@ public class StateCommandHandler extends AsyncCommandHandler {
                 boolean isPathing = baritone.getPathingBehavior().isPathing();
                 data.addProperty("is_pathing", isPathing);
 
+                // is_pathing alone cannot distinguish "walking a route" from
+                // "holding a goal it never found a path to". Baritone reports
+                // true for both, so a wedged bot looks identical to a working
+                // one -- A1Bot sat frozen for 15+ hours with is_pathing true, a
+                // live GoalBlock, and zero movement, and nothing in the wire
+                // protocol contradicted it. getPath() is null when no route
+                // exists, which is the missing bit. This was already computed
+                // by BaritoneAPIBridge.handleGetPathInfo and never routed
+                // anywhere, so no caller could reach it.
+                data.addProperty(
+                    "path_available", baritone.getPathingBehavior().getPath() != null);
+                data.addProperty(
+                    "path_calculating",
+                    baritone.getPathingBehavior().isPathing()
+                        && baritone.getPathingBehavior().getPath() == null);
+
                 if (isPathing && baritone.getPathingBehavior().getGoal() != null) {
                     data.addProperty("pathing_goal", true);
                     data.addProperty(
@@ -425,7 +441,24 @@ public class StateCommandHandler extends AsyncCommandHandler {
                 .orElse("unknown");
             entityData.addProperty("profession", profession);
             entityData.addProperty("level", villagerData.level());
-            entityData.addProperty("offers_count", villager.getOffers().size());
+            // getOffers() is server-only: on a client entity it throws
+            // IllegalStateException("Cannot load Villager offers on the
+            // client"). Unguarded, that escaped serializeEntity and the caller
+            // dropped the WHOLE villager, so every villager within the scan
+            // radius was invisible to the controller and no trading or
+            // breeding objective could ever see one. Live 2026-08-17 A1Bot sat
+            // beside a village returning 2 bats and a player from
+            // get_entities, with both villagers in serialization_errors, and
+            // logged the exception 1640 times in six hours.
+            //
+            // Offers legitimately readable only while a merchant menu is open;
+            // GetScreenCommandHandler reads them there. Absent that, omit the
+            // field rather than lose the entity.
+            try {
+                entityData.addProperty("offers_count", villager.getOffers().size());
+            } catch (Exception e) {
+                entityData.addProperty("offers_available", false);
+            }
         }
 
         if (entity instanceof net.minecraft.world.entity.projectile.FishingHook bobber) {

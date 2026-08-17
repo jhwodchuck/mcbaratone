@@ -1293,11 +1293,12 @@ def resolve_storage_location(
             continue
         if "chest" in block_id:
             return position
-        # The bridge reports void_air for coordinates in an unloaded chunk.
-        # That is not proof that a persisted chest was removed. Return the
-        # landmark so the caller can path there, load the chunk, and perform
-        # the stronger open-container verification.
-        if block_id == "minecraft:void_air":
+        # The bridge reports void_air for coordinates in an unloaded chunk,
+        # and an empty id when the read itself yielded nothing. Neither is
+        # proof that a persisted chest was removed. Return the landmark so the
+        # caller can path there, load the chunk, and perform the stronger
+        # open-container verification.
+        if _classify_container_read(block_id) == "unknown":
             print(f"STORAGE: saved chest at {position} is in an unloaded chunk; retaining landmark")
             if unloaded_candidate is None:
                 unloaded_candidate = position
@@ -1312,6 +1313,7 @@ def resolve_storage_location(
             catalog_for(client, state).mark_missing(
                 position,
                 dimension=str(dimension),
+                observed_block_id=block_id,
             )
         except Exception as exc:
             print(f"STORAGE: missing-container catalog update deferred ({exc})")
@@ -1535,40 +1537,17 @@ PROGRESSION_RETAIN_COUNTS = {
 }
 
 
-# Every block the storage catalog is allowed to register. Testing for "chest"
-# alone rejected the barrels the catalog happily stores, so a bot would walk to
-# a verified barrel, decide the chest was missing, and walk to the next entry.
-_STORAGE_CONTAINER_TOKENS = ("chest", "barrel", "shulker_box")
-
-
-def _is_storage_container(block_id: object) -> bool:
-    """Return whether a live block id is a container the catalog tracks."""
-    value = str(block_id or "")
-    return any(token in value for token in _STORAGE_CONTAINER_TOKENS)
-
-
-def _forget_missing_container(client, position, state=None) -> None:
-    """Mark a catalogued coordinate that no longer holds a container.
-
-    Without this the entry is offered again on the very next pass, so a bot
-    walks 15-38m to a phantom chest, finds nothing, walks to the next one and
-    round again -- and because the catalog is shared, every bot in the fleet
-    repeats the same tour. Live 2026-08-01 all four bots were doing exactly
-    that: mostly stationary, a handful of log lines per minute, no work done.
-    """
-    try:
-        from .storage_catalog import catalog_for
-
-        dimension = client.transport.dispatch("get_state", {}).get(
-            "dimension", "minecraft:overworld"
-        )
-        catalog_for(client, state).mark_missing(
-            tuple(int(axis) for axis in position),
-            dimension=str(dimension),
-        )
-        print(f"STORAGE: forgetting missing container at {tuple(position)}")
-    except Exception as exc:
-        print(f"STORAGE: missing-container catalog update deferred ({exc})")
+# Container-read classification and retirement live in container_reads so the
+# "void_air means unloaded, not absent" rule has one home; see that module for
+# why retiring an entry on an unproven read is effectively irreversible.
+from .container_reads import (  # noqa: E402
+    _STORAGE_CONTAINER_TOKENS,
+    _UNREADABLE_BLOCK_IDS,
+    classify_container_read as _classify_container_read,
+    resolve_container_block as _resolve_container_block,
+    forget_missing_container as _forget_missing_container,
+    is_storage_container as _is_storage_container,
+)
 
 
 def deposit_excess_to_chest(
@@ -1608,26 +1587,12 @@ def deposit_excess_to_chest(
     except Exception:
         pass
 
-    block = client.transport.dispatch(
-        "get_block", {"x": cx, "y": cy, "z": cz}
-    ).get("id", "")
-    if block == "minecraft:void_air":
-        # A persisted home outside render distance is not missing. Path close
-        # enough to load its chunk before deciding whether the chest survived.
-        # Long returns can legitimately exceed one navigation timeout, so keep
-        # issuing bounded legs while each leg makes meaningful progress.  This
-        # avoids both abandoning a real distant base and waiting forever on an
-        # unreachable target.
-        print(f"STORAGE: loading saved chest chunk at {(cx, cy, cz)}")
-        if not load_storage_chunk(client, (cx, cy, cz), goto):
-            print("STORAGE: could not reach saved chest chunk")
-            return -1
-        block = client.transport.dispatch(
-            "get_block", {"x": cx, "y": cy, "z": cz}
-        ).get("id", "")
+    block = _resolve_container_block(client, (cx, cy, cz))
+    if block is None:
+        return -1
     if not _is_storage_container(block):
         print(f"STORAGE: expected container is missing at {(cx, cy, cz)}")
-        _forget_missing_container(client, (cx, cy, cz), state)
+        _forget_missing_container(client, (cx, cy, cz), state, block_id=block)
         return -1
 
     live_state = client.transport.dispatch("get_state", {})
@@ -1938,12 +1903,12 @@ def withdraw_required_from_chest(
 
     cx, cy, cz = (int(value) for value in chest_pos)
     position = (cx, cy, cz)
-    block = client.transport.dispatch(
-        "get_block", {"x": cx, "y": cy, "z": cz}
-    ).get("id", "")
+    block = _resolve_container_block(client, (cx, cy, cz))
+    if block is None:
+        return -1
     if not _is_storage_container(block):
         print(f"STORAGE: expected container is missing at {(cx, cy, cz)}")
-        _forget_missing_container(client, (cx, cy, cz), state)
+        _forget_missing_container(client, (cx, cy, cz), state, block_id=block)
         return -1
     # Only honour the "recently failed" cooldown when the container is actually
     # gone. A block that is still a real chest must always be re-approached —

@@ -134,6 +134,66 @@ def test_missing_supply_chest_gathers_wood_and_retries(monkeypatch):
     assert withdrawals == [(1, 2, 3), (1, 2, 3)]
 
 
+def test_crop_hold_expands_farm_after_streak_cap(monkeypatch):
+    handler = _handler(
+        {"farm_location": [-429, 79, 2]},
+    )
+    counts = {"minecraft:bread": 11, "minecraft:wheat": 0}
+    monkeypatch.setattr(provisioning, "count_item", lambda _client, item: counts.get(item, 0))
+    monkeypatch.setattr(provisioning, "harvest_persisted_crop_farm", lambda *_args: False)
+
+    established = []
+
+    def fake_establish(client, x, y, z, size=5, state=None):
+        established.append((x, y, z, size))
+        return (x, y, z)
+
+    monkeypatch.setattr(
+        "baritone_client.common.farming.establish_wheat_farm",
+        fake_establish,
+    )
+
+    # The first _CROP_HOLD_HARD_CAP-1 holds are plain pacing holds.
+    for _ in range(provisioning._CROP_HOLD_HARD_CAP - 1):
+        with pytest.raises(PacingHoldRequired, match="renewable crop maturation"):
+            handler._bake_durable_food(SimpleNamespace())
+    assert established == []
+    assert handler.state.custom_data["crop_hold"]["hold_streak"] == provisioning._CROP_HOLD_HARD_CAP - 1
+
+    # The Nth hold expands the farm instead of yielding idly.
+    with pytest.raises(PacingHoldRequired, match="farm expanded"):
+        handler._bake_durable_food(SimpleNamespace())
+    assert established == [(-429, 79, 2, 7)]
+    assert handler.state.custom_data["crop_hold"]["farm_size"] == 7
+    assert handler.state.custom_data["crop_hold"]["expansions"] == 1
+    # Expansion resets the streak.
+    assert handler.state.custom_data["crop_hold"]["hold_streak"] == 0
+
+
+def test_crop_hold_does_not_expand_at_size_ceiling(monkeypatch):
+    handler = _handler(
+        {"farm_location": [-429, 79, 2]},
+    )
+    handler.state.custom_data["crop_hold"] = {
+        "hold_streak": provisioning._CROP_HOLD_HARD_CAP,
+        "farm_size": provisioning._FARM_SIZE_MAX,
+        "expansions": 1,
+    }
+    counts = {"minecraft:bread": 11, "minecraft:wheat": 0}
+    monkeypatch.setattr(provisioning, "count_item", lambda _client, item: counts.get(item, 0))
+    monkeypatch.setattr(provisioning, "harvest_persisted_crop_farm", lambda *_args: False)
+
+    expanded = []
+    monkeypatch.setattr(
+        "baritone_client.common.farming.establish_wheat_farm",
+        lambda *a, **k: expanded.append(a) or a,
+    )
+
+    with pytest.raises(PacingHoldRequired, match="renewable crop maturation"):
+        handler._bake_durable_food(SimpleNamespace())
+    assert expanded == []  # no expansion at the ceiling
+
+
 def test_shield_uses_plank_family_helper_and_fails_closed(monkeypatch):
     monkeypatch.setattr(provisioning, "count_item", lambda _client, _item: 0)
     ensured = []
