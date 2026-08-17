@@ -59,7 +59,7 @@ public class GotoCommandHandler extends AsyncCommandHandler {
                 baritone.getCustomGoalProcess().setGoalAndPath(new GoalBlock(x, y, z));
             }
 
-            JsonObject data = appliedData(client);
+            JsonObject data = appliedData(client, baritone);
             data.addProperty("x", x);
             data.addProperty("y", y);
             data.addProperty("z", z);
@@ -76,7 +76,7 @@ public class GotoCommandHandler extends AsyncCommandHandler {
             }
             BlockPos targetPos = client.player.blockPosition();
             baritone.getCustomGoalProcess().setGoalAndPath(new GoalBlock(targetPos));
-            JsonObject data = appliedData(client);
+            JsonObject data = appliedData(client, baritone);
             data.addProperty("target_x", targetPos.getX());
             data.addProperty("target_y", targetPos.getY());
             data.addProperty("target_z", targetPos.getZ());
@@ -100,12 +100,41 @@ public class GotoCommandHandler extends AsyncCommandHandler {
     }
 
     private JsonObject appliedData(Minecraft client) {
+        return appliedData(client, null);
+    }
+
+    /**
+     * Report that the goal was set, and -- when a Baritone handle is available
+     * -- whether a route to it actually exists yet.
+     *
+     * <p>"started"/"accepted"/"applied" only ever meant "the goal was handed to
+     * Baritone". They are true even when no path can be found, which made a
+     * wedged bot indistinguishable from a walking one over the wire: A1Bot
+     * spent 15+ hours frozen while every goto returned started=true. The goal
+     * really was applied, so those flags stay as they are for compatibility;
+     * "path_available" is the field that says whether anything will come of it.
+     * Callers should treat a persistent path_available=false as a refusal
+     * rather than waiting out a movement timeout.
+     */
+    private JsonObject appliedData(Minecraft client, IBaritone baritone) {
         JsonObject data = new JsonObject();
         data.addProperty("started", true);
         data.addProperty("accepted", true);
         data.addProperty("applied", true);
         if (client.level != null) {
             data.addProperty("applied_tick", client.level.getGameTime());
+        }
+        if (baritone != null) {
+            try {
+                data.addProperty(
+                    "path_available", baritone.getPathingBehavior().getPath() != null);
+                data.addProperty(
+                    "is_pathing", baritone.getPathingBehavior().isPathing());
+            } catch (Exception e) {
+                // A pathing handle that cannot be read is not a reason to fail
+                // a goal that was genuinely set.
+                data.addProperty("path_available", false);
+            }
         }
         return data;
     }
