@@ -325,3 +325,17 @@ def dig_and_seal_night_hole(client, depth: int = 3) -> bool:
         return False
     print(f"Night hole: sealed {dug} blocks down under {material} at y={cap_y}")
     return True
+
+
+def shelter_in_place(client) -> bool:
+    """Dig in when there is nowhere to run and nothing to fight with.
+
+    The caller is in a closed loop -- work blocked by a health floor, healing
+    by having no food, food by a hostile, fleeing by terrain, fighting by
+    having no weapon -- and this is the one exit that needs none of those.
+    """
+    print("RECOVERY: cannot flee and no enclosure; digging in instead")
+    if not dig_and_seal_night_hole(client):
+        return False
+    print("RECOVERY: sealed in; holding until the threat disperses")
+    return True

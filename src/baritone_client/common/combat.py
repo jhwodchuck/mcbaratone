@@ -726,6 +726,13 @@ def acquire_emergency_food(
                     client.transport.dispatch("get_state", {})
                 )
                 continue
+            # Closed loop: work blocked by the health floor, healing by no
+            # food, food by this branch, fleeing by run_away, fighting by no
+            # weapon. Digging in needs none of those (live dragon-a: 300s here).
+            from .night_shelter import shelter_in_place
+            if shelter_in_place(client):
+                time.sleep(5)
+                continue
             print("RECOVERY: hostile nearby and no enclosure; aborting food run")
             return False
 
