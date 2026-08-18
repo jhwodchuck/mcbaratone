@@ -48,7 +48,9 @@ class _World:
         if route == "get_state":
             return {
                 "block_position": {"x": 0, "y": self.feet_y, "z": 0},
-                "position": {"x": 0, "y": self.feet_y, "z": 0},
+                # Block-centred, as a standing player actually is: an integer
+                # precise position means straddling a boundary.
+                "position": {"x": 0.5, "y": self.feet_y, "z": 0.5},
                 "world_time": self.day_time,
                 "is_dead": False,
                 "dimension": "minecraft:overworld",
@@ -338,7 +340,9 @@ class _MountainWorld(_World):
         if route == "get_state":
             return {
                 "block_position": {"x": self.x, "y": self.feet_y, "z": self.z},
-                "position": {"x": self.x, "y": self.feet_y, "z": self.z},
+                "position": {
+                    "x": self.x + 0.5, "y": self.feet_y, "z": self.z + 0.5
+                },
                 "world_time": self.day_time,
                 "is_dead": False,
             }
@@ -441,4 +445,78 @@ def test_an_empty_search_says_so(monkeypatch, capsys):
     printed = capsys.readouterr().out
     assert "no hand-mineable ground within" in printed, (
         f"search failure was silent; log said only: {printed!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# straddling, which held the body up over a dug hole
+# ---------------------------------------------------------------------------
+def test_the_footprint_spans_every_column_the_body_rests_on():
+    """A 0.6-wide hitbox off-centre sits on up to four columns."""
+    # dragon-a's live position when the descent stalled.
+    assert night_shelter._footprint_columns(-1.894, 19.882) == [
+        (-3, 19), (-3, 20), (-2, 19), (-2, 20)
+    ]
+    # Block-centred is the ordinary case and touches exactly one.
+    assert night_shelter._footprint_columns(-1.5, 19.5) == [(-2, 19)]
+
+
+def test_digs_out_every_supporting_column(monkeypatch):
+    """THE dragon-a stall: one column dug, three snow blocks still holding it.
+
+    Live at x=-1.894, z=19.882 the floor under block_position was already air
+    while (-3,153,19), (-3,153,20) and (-2,153,20) were snow_block. The body
+    had nothing to fall into and the descent aborted on ground that was
+    entirely hand-mineable.
+    """
+
+    class _StraddleWorld(_World):
+        def __init__(self):
+            super().__init__(ground="minecraft:snow_block", feet_y=154)
+
+        def dispatch(self, route, payload=None):
+            payload = payload or {}
+            if route == "get_state":
+                return {
+                    "block_position": {"x": -2, "y": self.feet_y, "z": 19},
+                    "position": {"x": -1.894, "y": self.feet_y, "z": 19.882},
+                    "world_time": self.day_time,
+                    "is_dead": False,
+                }
+            if route == "get_block":
+                bx, by, bz = (
+                    int(payload["x"]), int(payload["y"]), int(payload["z"])
+                )
+                if (bx, by, bz) in self.broken:
+                    return {"id": "minecraft:air"}
+                return {
+                    "id": "minecraft:snow_block" if by < self.feet_y
+                    else "minecraft:air"
+                }
+            if route == "dig_block":
+                self.broken.append(
+                    (int(payload["x"]), int(payload["y"]), int(payload["z"]))
+                )
+                self.inventory.append({"id": "minecraft:dirt", "count": 1})
+                # The body only drops once nothing is left holding it.
+                floor_y = self.feet_y - 1
+                supports = [
+                    c for c in night_shelter._footprint_columns(-1.894, 19.882)
+                    if (c[0], floor_y, c[1]) not in self.broken
+                ]
+                if not supports:
+                    self.feet_y = floor_y
+                return {}
+            if route == "get_inventory":
+                return {"inventory": list(self.inventory)}
+            return {}
+
+    world = _StraddleWorld()
+    monkeypatch.setattr(night_shelter, "robust_place", lambda *_a, **_k: True)
+    monkeypatch.setattr(night_shelter, "_has_existing_enclosure", lambda *_a, **_k: True)
+
+    assert night_shelter.dig_and_seal_night_hole(_client(world), depth=1) is True
+    dug_columns = {(bx, bz) for bx, _by, bz in world.broken}
+    assert dug_columns == {(-3, 19), (-3, 20), (-2, 19), (-2, 20)}, (
+        f"only cleared {sorted(dug_columns)}; the rest still support the body"
     )

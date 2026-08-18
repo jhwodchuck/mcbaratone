@@ -16,6 +16,7 @@ mining produced.
 from __future__ import annotations
 
 import time
+from math import floor
 
 from .base import (
     _has_existing_enclosure,
@@ -80,6 +81,43 @@ def _nearest_diggable_column(client, x: int, feet_y: int, z: int):
     return None
 
 
+def _read_position(client):
+    """Return (x, feet_y, z, precise_x, precise_z), or None if unreadable."""
+    try:
+        state = client.transport.dispatch("get_state", {})
+        block = state.get("block_position", state.get("position", {}))
+        precise = state.get("position", block)
+        return (
+            int(block["x"]),
+            int(block["y"]),
+            int(block["z"]),
+            float(precise.get("x", block["x"])),
+            float(precise.get("z", block["z"])),
+        )
+    except Exception:
+        return None
+
+
+def _footprint_columns(precise_x: float, precise_z: float):
+    """Every column the player's collision box rests on.
+
+    The hitbox is 0.6 wide, so a player is very often straddling two columns
+    on each axis and is held up by as many as four. Digging only the column
+    under ``block_position`` leaves the others supporting the body, which never
+    falls -- exactly what stalled dragon-a at x=-1.894, z=19.882, where the one
+    column that got dug went to air while three snow blocks kept holding it.
+    ``shelf_escape._supporting_column`` resolves the same footprint for the
+    same reason.
+    """
+    return sorted(
+        {
+            (floor(precise_x + dx), floor(precise_z + dz))
+            for dx in (-0.3, 0.3)
+            for dz in (-0.3, 0.3)
+        }
+    )
+
+
 def dig_and_seal_night_hole(client, depth: int = 3) -> bool:
     """Enclose a bot that owns nothing by mining the blocks that seal it in.
 
@@ -104,14 +142,11 @@ def dig_and_seal_night_hole(client, depth: int = 3) -> bool:
     """
     from .shelf_escape import _first_placeable_item
 
-    try:
-        state = client.transport.dispatch("get_state", {})
-        position = state.get("block_position", state.get("position", {}))
-        x, z = int(position["x"]), int(position["z"])
-        feet_y = int(position["y"])
-    except Exception as exc:
-        print(f"Night hole: cannot determine player position: {exc}")
+    start = _read_position(client)
+    if start is None:
+        print("Night hole: cannot determine player position")
         return False
+    x, feet_y, z, precise_x, precise_z = start
 
     # Standing in liquid defeats the whole method: water holds the body up, so
     # removing the block underneath never drops it and the descent check can
@@ -136,98 +171,98 @@ def dig_and_seal_night_hole(client, depth: int = 3) -> bool:
         if not landed:
             print("Night hole: could not reach dry ground; refusing to dig in liquid")
             return False
-        try:
-            state = client.transport.dispatch("get_state", {})
-            position = state.get("block_position", state.get("position", {}))
-            x, z = int(position["x"]), int(position["z"])
-            feet_y = int(position["y"])
-        except Exception:
+        dried = _read_position(client)
+        if dried is None:
             return False
+        x, feet_y, z, precise_x, precise_z = dried
 
     dug = 0
     relocated = False
     while dug < max(1, int(depth)):
         floor_y = feet_y - 1
-        ground = str(_house_block_id(client, x, floor_y, z) or "")
-        if any(token in ground for token in _UNSAFE_SHELTER_GROUND):
-            print(f"Night hole: refusing to dig into {ground} at y={floor_y}")
+        # Every column under the collision box has to go, or the body simply
+        # stands on whichever one is left.
+        columns = _footprint_columns(precise_x, precise_z)
+        grounds = {
+            column: str(_house_block_id(client, column[0], floor_y, column[1]) or "")
+            for column in columns
+        }
+        blocking = {
+            column: ground
+            for column, ground in grounds.items()
+            if "air" not in ground
+        }
+        if any(
+            token in ground
+            for ground in blocking.values()
+            for token in _UNSAFE_SHELTER_GROUND
+        ):
+            print(f"Night hole: refusing to dig into {sorted(set(blocking.values()))}")
             break
-        if ground not in _HAND_MINEABLE_GROUND:
-            # Stone, ore, or an unloaded read: not breakable by hand, and the
-            # pickaxe that would fix that is what this whole recovery is trying
-            # to rebuild. Before giving up, look for diggable ground nearby --
-            # dragon-a respawned on a mountain and refused to shelter at all
-            # over exactly this, on a night it had no other option.
-            #
-            # Only worth doing before the first dig. Once a shaft is started,
-            # hitting stone partway down is a reason to cap where we are (the
-            # loop below already does that), not to wander off mid-hole.
+        undiggable = {
+            column: ground
+            for column, ground in blocking.items()
+            if ground not in _HAND_MINEABLE_GROUND
+        }
+        if undiggable:
             if dug == 0 and not relocated:
                 spot = _nearest_diggable_column(client, x, feet_y, z)
                 if spot is None:
-                    # Say so explicitly. Without this the log is identical
-                    # whether the search ran and found nothing or the code was
-                    # never loaded at all, which made the fix undiagnosable
-                    # from a log tail the first time it fired live.
                     print(
                         "Night hole: no hand-mineable ground within "
                         f"{DIGGABLE_SEARCH_RADIUS} blocks"
                     )
-                if spot is not None:
+                else:
                     from .navigation import goto
 
                     print(
-                        f"Night hole: {ground} underfoot is not hand-mineable; "
-                        f"moving to diggable ground at {spot}"
+                        f"Night hole: {sorted(set(undiggable.values()))} underfoot "
+                        f"cannot be hand-mined; moving to diggable ground at {spot}"
                     )
                     relocated = True
                     if goto(client, spot[0], spot[1], spot[2], timeout=30, tolerance=1.5):
-                        try:
-                            state = client.transport.dispatch("get_state", {})
-                            landed = state.get(
-                                "block_position", state.get("position", {})
-                            )
-                            x, z = int(landed["x"]), int(landed["z"])
-                            feet_y = int(landed["y"])
+                        refreshed = _read_position(client)
+                        if refreshed is not None:
+                            x, feet_y, z, precise_x, precise_z = refreshed
                             continue
-                        except Exception:
-                            pass
                     print("Night hole: could not reach the diggable ground")
             print(
-                f"Night hole: {ground or 'unreadable block'} at y={floor_y} "
+                f"Night hole: {sorted(set(undiggable.values()))} at y={floor_y} "
                 "is not hand-mineable; stopping descent"
             )
             break
 
-        client.transport.dispatch(
-            "dig_block",
-            {"x": x, "y": floor_y, "z": z, "face": "UP", "max_ticks": 160},
-        )
-        deadline = time.monotonic() + 8.0
-        broke = False
-        while time.monotonic() < deadline:
-            time.sleep(0.3)
-            if "air" in str(_house_block_id(client, x, floor_y, z) or ""):
-                broke = True
+        for column, ground in blocking.items():
+            client.transport.dispatch(
+                "dig_block",
+                {"x": column[0], "y": floor_y, "z": column[1], "face": "UP",
+                 "max_ticks": 160},
+            )
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline:
+                time.sleep(0.3)
+                if "air" in str(
+                    _house_block_id(client, column[0], floor_y, column[1]) or ""
+                ):
+                    break
+            else:
+                print(
+                    f"Night hole: dig_block did not verify a break at {column}; "
+                    "stopping descent"
+                )
+                blocking = None
                 break
-        if not broke:
-            print("Night hole: dig_block did not verify a break; stopping descent")
+        if blocking is None:
             break
 
         settled = time.monotonic() + 5.0
         while time.monotonic() < settled:
             time.sleep(0.3)
-            try:
-                after = client.transport.dispatch("get_state", {})
-            except Exception:
+            refreshed = _read_position(client)
+            if refreshed is None:
                 continue
-            landed = after.get("block_position", after.get("position", {}))
-            try:
-                new_y = int(landed["y"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if new_y <= feet_y - 1:
-                feet_y = new_y
+            if refreshed[1] <= feet_y - 1:
+                x, feet_y, z, precise_x, precise_z = refreshed
                 dug += 1
                 break
         else:
@@ -235,8 +270,6 @@ def dig_and_seal_night_hole(client, depth: int = 3) -> bool:
             break
 
         if _first_placeable_item(client) is None:
-            # The drop did not land in inventory (full hotbar, or a block that
-            # dropped something else). Deeper is strictly worse without a lid.
             print("Night hole: no placeable block recovered from the dig; stopping")
             break
 
