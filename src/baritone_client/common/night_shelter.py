@@ -25,26 +25,62 @@ from .base import (
 )
 
 
-# Ground that breaks bare-handed and drops a placeable block. A bot with an
-# empty inventory can mine these with nothing in hand, which is what makes a
-# self-financing shelter possible. Gravel is excluded on purpose: it can drop
-# flint instead of itself, so it cannot be relied on to pay for the cap.
+# Ground that a bot with an empty inventory can mine AND that pays for the lid.
+# Both halves matter, and the second is easy to get wrong: the shaft is only
+# worth digging if what comes out of it can be placed back overhead.
+#
+# Deliberately excluded, each for a different reason:
+#   gravel      - drops flint roughly a tenth of the time, and falls
+#   sand        - falls, so a cap placed overhead lands back on the bot's head
+#   clay        - drops four clay BALLS, which are items, not a block
+#   snow_block  - needs a shovel to drop anything at all, and drops snowballs
+#
+# The last two cost a live night each. dragon-a dug a full four-column shaft
+# out of snow on 2026-08-17, fell in correctly, and then reported "nothing
+# placeable to cap the shaft with" -- the snow had yielded nothing to place.
 _HAND_MINEABLE_GROUND = (
+    "minecraft:dirt",          # drops itself
+    "minecraft:grass_block",   # drops dirt
+    "minecraft:podzol",        # drops dirt
+    "minecraft:mycelium",      # drops dirt
+    "minecraft:coarse_dirt",   # drops itself
+    "minecraft:rooted_dirt",   # drops itself
+    "minecraft:mud",           # drops itself
+)
+
+# What may be placed as the lid: solid, full-height, and crucially not subject
+# to gravity. shelf_escape._first_placeable_item covers a narrower set aimed at
+# temporary supports, so the spoil from a legitimate dig (coarse_dirt, mud) was
+# not recognised as a cap at all.
+_CAP_ITEMS = (
     "minecraft:dirt",
-    "minecraft:grass_block",
     "minecraft:coarse_dirt",
     "minecraft:rooted_dirt",
-    "minecraft:podzol",
-    "minecraft:mycelium",
     "minecraft:mud",
-    "minecraft:sand",
-    "minecraft:red_sand",
-    "minecraft:soul_sand",
-    "minecraft:soul_soil",
-    "minecraft:clay",
-    "minecraft:snow_block",
+    "minecraft:cobblestone",
+    "minecraft:oak_planks",
+    "minecraft:birch_planks",
+    "minecraft:spruce_planks",
+    "minecraft:oak_log",
+    "minecraft:birch_log",
+    "minecraft:spruce_log",
 )
 _UNSAFE_SHELTER_GROUND = ("lava", "water", "bedrock")
+
+
+def _first_cap_item(client):
+    """A carried block that can safely seal the shaft overhead, or None."""
+    try:
+        response = client.transport.dispatch("get_inventory", {})
+    except Exception:
+        return None
+    data = response.get("data", response)
+    counts = {}
+    for item in data.get("inventory", []) or []:
+        item_id = item.get("id")
+        if item_id:
+            counts[item_id] = counts.get(item_id, 0) + int(item.get("count", 0) or 0)
+    return next((item for item in _CAP_ITEMS if counts.get(item, 0) > 0), None)
 
 
 #: How far to look for diggable ground when the floor underfoot is stone. Kept
@@ -58,7 +94,7 @@ def _nearest_diggable_column(client, x: int, feet_y: int, z: int):
 
     A bot that respawns on a mountain has stone underfoot and no pickaxe --
     which is the very tool it is trying to rebuild -- so the shaft cannot be
-    started where it stands. Dirt or sand a few blocks away is usually enough.
+    started where it stands. A patch of dirt a few blocks away is enough.
     Candidates are searched nearest-first so the bot moves as little as
     possible in the dark.
     """
@@ -131,17 +167,15 @@ def dig_and_seal_night_hole(client, depth: int = 3) -> bool:
     up permanently.
 
     This breaks that circularity by inverting the order: hand-mine first, then
-    place what the mining produced. Dirt, sand and the rest of
-    ``_HAND_MINEABLE_GROUND`` break with an empty hand and drop themselves, so
-    the shaft pays for its own lid.
+    place what the mining produced. ``_HAND_MINEABLE_GROUND`` is restricted to
+    ground that both breaks with an empty hand and drops a block that can be
+    placed back overhead, so the shaft pays for its own lid.
 
     A block is only dug once the previous one is verified gone and the body is
     verified to have fallen, and the first block is dug before committing to
     depth so the cap material is in hand before the hole is deep enough to
     trap anything. Returns True only when a solid cap is confirmed overhead.
     """
-    from .shelf_escape import _first_placeable_item
-
     start = _read_position(client)
     if start is None:
         print("Night hole: cannot determine player position")
@@ -269,14 +303,14 @@ def dig_and_seal_night_hole(client, depth: int = 3) -> bool:
             print("Night hole: body did not fall into the shaft; stopping descent")
             break
 
-        if _first_placeable_item(client) is None:
+        if _first_cap_item(client) is None:
             print("Night hole: no placeable block recovered from the dig; stopping")
             break
 
     if dug <= 0:
         return False
 
-    material = _first_placeable_item(client)
+    material = _first_cap_item(client)
     if material is None:
         print("Night hole: nothing placeable to cap the shaft with")
         return False
