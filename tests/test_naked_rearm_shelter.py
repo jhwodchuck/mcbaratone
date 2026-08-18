@@ -465,14 +465,17 @@ def test_digs_out_every_supporting_column(monkeypatch):
     """THE dragon-a stall: one column dug, three snow blocks still holding it.
 
     Live at x=-1.894, z=19.882 the floor under block_position was already air
-    while (-3,153,19), (-3,153,20) and (-2,153,20) were snow_block. The body
+    while (-3,153,19), (-3,153,20) and (-2,153,20) were still solid. The body
     had nothing to fall into and the descent aborted on ground that was
-    entirely hand-mineable.
+    entirely diggable.
     """
 
     class _StraddleWorld(_World):
         def __init__(self):
-            super().__init__(ground="minecraft:snow_block", feet_y=154)
+            # dirt, not the snow dragon-a actually stood on: snow is now
+            # correctly refused for a different reason (it pays for no lid),
+            # and this test is about the geometry, not the material.
+            super().__init__(ground="minecraft:dirt", feet_y=154)
 
         def dispatch(self, route, payload=None):
             payload = payload or {}
@@ -490,7 +493,7 @@ def test_digs_out_every_supporting_column(monkeypatch):
                 if (bx, by, bz) in self.broken:
                     return {"id": "minecraft:air"}
                 return {
-                    "id": "minecraft:snow_block" if by < self.feet_y
+                    "id": "minecraft:dirt" if by < self.feet_y
                     else "minecraft:air"
                 }
             if route == "dig_block":
@@ -520,3 +523,59 @@ def test_digs_out_every_supporting_column(monkeypatch):
     assert dug_columns == {(-3, 19), (-3, 20), (-2, 19), (-2, 20)}, (
         f"only cleared {sorted(dug_columns)}; the rest still support the body"
     )
+
+
+# ---------------------------------------------------------------------------
+# the spoil has to be able to become the lid
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "ground, why",
+    [
+        ("minecraft:snow_block", "needs a shovel, and drops snowballs"),
+        ("minecraft:clay", "drops clay balls, which are items not blocks"),
+        ("minecraft:sand", "falls, so a cap lands back on the bot's head"),
+        ("minecraft:red_sand", "falls"),
+        ("minecraft:gravel", "drops flint sometimes, and falls"),
+    ],
+)
+def test_ground_that_cannot_pay_for_the_lid_is_not_dug(ground, why):
+    """THE dragon-a snow shaft: dug four columns, fell in, then had no cap.
+
+    A shaft is only worth digging if the spoil can be placed back overhead.
+    """
+    assert ground not in night_shelter._HAND_MINEABLE_GROUND, (
+        f"{ground} is listed as diggable but {why}"
+    )
+
+
+@pytest.mark.parametrize(
+    "ground", ["minecraft:dirt", "minecraft:grass_block", "minecraft:podzol"]
+)
+def test_dirt_family_is_still_diggable(ground):
+    """The fix must not narrow the list into uselessness."""
+    assert ground in night_shelter._HAND_MINEABLE_GROUND
+
+
+def test_every_diggable_ground_yields_a_usable_cap():
+    """Each listed ground must drop something in _CAP_ITEMS.
+
+    grass/podzol/mycelium drop plain dirt; the rest drop themselves.
+    """
+    drops = {
+        "minecraft:grass_block": "minecraft:dirt",
+        "minecraft:podzol": "minecraft:dirt",
+        "minecraft:mycelium": "minecraft:dirt",
+    }
+    for ground in night_shelter._HAND_MINEABLE_GROUND:
+        produced = drops.get(ground, ground)
+        assert produced in night_shelter._CAP_ITEMS, (
+            f"digging {ground} yields {produced}, which cannot cap the shaft"
+        )
+
+
+def test_no_cap_item_falls_under_gravity():
+    """A falling cap drops back through the hole onto the bot."""
+    for item in night_shelter._CAP_ITEMS:
+        assert "sand" not in item and "gravel" not in item, (
+            f"{item} obeys gravity and cannot hold a roof"
+        )
