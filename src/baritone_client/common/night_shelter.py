@@ -164,6 +164,15 @@ def dig_and_seal_night_hole(client, depth: int = 3) -> bool:
             # loop below already does that), not to wander off mid-hole.
             if dug == 0 and not relocated:
                 spot = _nearest_diggable_column(client, x, feet_y, z)
+                if spot is None:
+                    # Say so explicitly. Without this the log is identical
+                    # whether the search ran and found nothing or the code was
+                    # never loaded at all, which made the fix undiagnosable
+                    # from a log tail the first time it fired live.
+                    print(
+                        "Night hole: no hand-mineable ground within "
+                        f"{DIGGABLE_SEARCH_RADIUS} blocks"
+                    )
                 if spot is not None:
                     from .navigation import goto
 

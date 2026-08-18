@@ -422,3 +422,23 @@ def test_the_search_never_wanders_far_in_the_dark(monkeypatch):
         f"probed {worst} blocks out, past the {night_shelter.DIGGABLE_SEARCH_RADIUS} "
         "block search radius"
     )
+
+
+def test_an_empty_search_says_so(monkeypatch, capsys):
+    """A silent fall-through is indistinguishable from the fix not running.
+
+    That ambiguity cost a live diagnosis: dragon-a's log showed only "not
+    hand-mineable", which reads the same whether the search found nothing or
+    the code was never loaded.
+    """
+
+    class _AllStone(_MountainWorld):
+        DIRT_AT = (9999, 9999)
+
+    monkeypatch.setattr(night_shelter, "robust_place", lambda *_a, **_k: True)
+    night_shelter.dig_and_seal_night_hole(_client(_AllStone()))
+
+    printed = capsys.readouterr().out
+    assert "no hand-mineable ground within" in printed, (
+        f"search failure was silent; log said only: {printed!r}"
+    )
