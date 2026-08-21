@@ -2346,15 +2346,17 @@ def _ensure_flamethrower_ready(client, qty: int = 1) -> bool:
     return True
 
 
-def _craft_shortfall_with_table(client, item_id: str, shortfall: int) -> bool:
-    """Craft ``shortfall`` more of ``item_id`` on top of what is carried.
+def _absolute_requirement(client, item_id: str, shortfall: int) -> int:
+    """Recover ``ensure_supplies``' original absolute requirement.
 
-    ``ensure_supplies`` hands every strategy a *shortfall* (``_missing_requirements``
-    returns ``required - current``), but ``_craft_with_table`` takes an *absolute*
-    carried target and early-returns True when ``count_item(item_id) >= qty``.
-    Feeding the shortfall straight in makes any well-stocked item a silent
-    no-op that still reports success, so ``ensure_supplies`` re-checks, finds
-    the same shortfall, and spins until it times out.
+    ``_missing_requirements`` reports ``required - current``, so adding the
+    carried count back reconstructs ``required`` exactly. Every acquisition
+    helper below (``_craft_with_table``, ``gather_wood``, ``gather_stone``,
+    ``gather_ores``) takes an *absolute carried target* and early-returns True
+    once ``carried >= target``. Handing those an unconverted shortfall makes a
+    well-stocked item a silent no-op that still reports success, so
+    ``ensure_supplies`` re-checks, finds the same shortfall, and spins until it
+    times out.
 
     Live on A1 2026-08-21: carrying 14 bread and needing 15, the shortfall of 1
     satisfied ``14 >= 1`` instantly. FOOD_AND_IRON logged the same
@@ -2362,18 +2364,29 @@ def _craft_shortfall_with_table(client, item_id: str, shortfall: int) -> bool:
     600s window, failed "Bake durable prepared food", retried the phase, and
     repeated on an ~11.5 minute cycle for days.
 
-    Callers outside this strategy map pass real absolute targets and must keep
-    calling ``_craft_with_table`` directly.
+    The gatherers' ``max(qty, N)`` floors do not protect against this. They set
+    a low bar a stocked inventory clears trivially: needing 30 cobblestone while
+    carrying 20 yields a shortfall of 10, and ``max(10, 16)`` is 16, which 20
+    already satisfies.
+
+    Callers outside this strategy map pass real absolute targets already and
+    must keep calling those helpers directly.
     """
-    carried = count_item(client, item_id)
-    return _craft_with_table(client, item_id, carried + max(1, int(shortfall)))
+    return count_item(client, item_id) + max(1, int(shortfall))
+
+
+def _craft_shortfall_with_table(client, item_id: str, shortfall: int) -> bool:
+    """Craft ``shortfall`` more of ``item_id`` on top of what is carried."""
+    return _craft_with_table(
+        client, item_id, _absolute_requirement(client, item_id, shortfall)
+    )
 
 
 DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
-    "minecraft:oak_log": lambda client, qty: gather_wood(client, count=max(qty, 16)),
-    "minecraft:cobblestone": lambda client, qty: gather_stone(client, count=max(qty, 16)),
+    "minecraft:oak_log": lambda client, qty: gather_wood(client, count=max(_absolute_requirement(client, "minecraft:oak_log", qty), 16)),
+    "minecraft:cobblestone": lambda client, qty: gather_stone(client, count=max(_absolute_requirement(client, "minecraft:cobblestone", qty), 16)),
     "minecraft:iron_ingot": lambda client, qty: _smelt_requirement_shortfall(client, "minecraft:iron_ingot", qty),
-    "minecraft:diamond": lambda client, qty: gather_ores(client, "diamond", count=max(qty, 4)),
+    "minecraft:diamond": lambda client, qty: gather_ores(client, "diamond", count=max(_absolute_requirement(client, "minecraft:diamond", qty), 4)),
     "minecraft:gold_ingot": lambda client, qty: _smelt_requirement_shortfall(client, "minecraft:gold_ingot", qty),
     "minecraft:obsidian": lambda client, qty: _default_mine(client, "minecraft:obsidian", qty),
     "minecraft:crafting_table": lambda client, qty: craft(client, "minecraft:crafting_table", qty) or True,
@@ -2406,7 +2419,7 @@ DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
     "minecraft:arrow": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:arrow", max(qty, 32)),
     "minecraft:string": lambda client, qty: hunt_mobs(client, ["spider", "cave_spider"], {"minecraft:string": qty}, search_radius=64, timeout=300).success,
     "minecraft:feather": lambda client, qty: hunt_mobs(client, ["chicken"], {"minecraft:feather": qty}, search_radius=50, timeout=300).success,
-    "minecraft:flint": lambda client, qty: gather_gravel(client, count=qty),
+    "minecraft:flint": lambda client, qty: gather_gravel(client, count=_absolute_requirement(client, "minecraft:flint", qty)),
     "minecraft:shield": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:shield", qty),
     "minecraft:bucket": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:bucket", qty),
     "minecraft:water_bucket": lambda client, qty: gather_water(client, count=qty),

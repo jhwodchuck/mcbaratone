@@ -1784,6 +1784,73 @@ def test_craft_strategies_treat_their_quantity_as_a_shortfall(monkeypatch):
     )
 
 
+def test_gather_strategies_treat_their_quantity_as_a_shortfall(monkeypatch):
+    """gather_wood/gather_stone/gather_ores share the craft units mismatch.
+
+    Each takes an absolute carried target and early-returns True on
+    ``carried >= count``, but ensure_supplies hands them a shortfall. Their
+    ``max(qty, N)`` floors do not mask this -- they set a low bar that a
+    well-stocked inventory clears trivially, so the gatherer reports success
+    without gathering and ensure_supplies spins until it times out.
+
+    Carrying 20 cobblestone and needing 30 gives a shortfall of 10;
+    ``max(10, 16)`` is 16, and ``20 >= 16`` returns True having mined nothing.
+    """
+    carried = {
+        "minecraft:cobblestone": 20,
+        "minecraft:cobbled_deepslate": 0,
+        "minecraft:oak_log": 18,
+        "minecraft:diamond": 4,
+        "minecraft:flint": 4,
+    }
+    monkeypatch.setattr(
+        resources, "count_item", lambda _client, item: carried.get(item, 0)
+    )
+
+    seen = {}
+    monkeypatch.setattr(
+        resources,
+        "gather_stone",
+        lambda _client, count=16, **_kw: seen.__setitem__("stone", count) or True,
+    )
+    monkeypatch.setattr(
+        resources,
+        "gather_wood",
+        lambda _client, count=16, **_kw: seen.__setitem__("wood", count) or True,
+    )
+    monkeypatch.setattr(
+        resources,
+        "gather_ores",
+        lambda _client, _ore, count=4, **_kw: seen.__setitem__("ore", count) or True,
+    )
+    monkeypatch.setattr(
+        resources,
+        "gather_gravel",
+        lambda _client, count, **_kw: seen.__setitem__("gravel", count) or True,
+    )
+
+    strategies = resources.DEFAULT_REQUIREMENT_STRATEGIES
+    strategies["minecraft:cobblestone"](object(), 10)
+    strategies["minecraft:oak_log"](object(), 2)
+    strategies["minecraft:diamond"](object(), 2)
+    strategies["minecraft:flint"](object(), 1)
+
+    assert seen["stone"] >= 30, (
+        f"20 carried + shortfall 10 must request at least 30, got {seen['stone']}"
+    )
+    assert seen["wood"] >= 20, (
+        f"18 carried + shortfall 2 must request at least 20, got {seen['wood']}"
+    )
+    assert seen["ore"] >= 6, (
+        f"4 carried + shortfall 2 must request at least 6, got {seen['ore']}"
+    )
+    # gather_gravel has no max(qty, N) floor at all, so an unconverted
+    # shortfall deadlocks it the moment any flint is carried.
+    assert seen["gravel"] >= 5, (
+        f"4 carried + shortfall 1 must request at least 5, got {seen['gravel']}"
+    )
+
+
 def test_gathering_capacity_guard_requests_three_free_slots(monkeypatch):
     requested = []
     monkeypatch.setattr(resources, "free_inventory_slots", lambda _client: 0)
