@@ -288,7 +288,22 @@ def _checkpointed_retreat(state) -> Optional[Tuple[int, int, int]]:
 
 
 def _guard_grave_approach(client) -> None:
-    """Abort a naked grave route as soon as survival needs intervention."""
+    """Abort a naked grave route as soon as survival needs intervention.
+
+    Must not raise: goto()'s on_tick has no channel for a callback to signal
+    "stop" other than an exception, but goto()'s own exception handling only
+    special-cases PlayerDeathDetected and _UnsafeNavigationTelemetry -- a
+    bare RuntimeError falls into its catch-all `except Exception: raise` and
+    escapes uncaught, skipping the graceful "reach grave failed" -> bootstrap
+    starter tools fallback entirely (confirmed live: a routine phantom
+    encounter -- always_evade=True, so any nearby phantom trips this --
+    escalated straight to a terminal Stopping automation. instead of
+    prompting the same bootstrap-from-scratch recovery a lethal grave route
+    already gets). cancel_unsafe_storage_travel already has the correct
+    shape for this: set the flag, cancel the active path, return normally.
+    goto()'s own idle-pathing stall detection then notices the cancelled
+    path within its next few ticks and returns False on its own.
+    """
     state = client.transport.dispatch("get_state", {})
     health = float(state.get("health", 20) or 0)
     food = int(state.get("food_level", 20) or 0)
@@ -306,7 +321,6 @@ def _guard_grave_approach(client) -> None:
         )
     client._last_navigation_survival_abort = True
     client.transport.dispatch("cancel", {})
-    raise RuntimeError("unsafe grave approach interrupted")
 
 
 def _reach_overworld_grave(

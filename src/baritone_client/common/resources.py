@@ -223,36 +223,26 @@ def _find_blocks_optional(
     client,
     payload: Dict[str, Any],
     *,
-    retries: int = 3,
     label: str = "find_blocks",
 ) -> Optional[Dict[str, Any]]:
-    """Read-block search with transient retry and non-fatal fallback."""
-    attempts = 0
-    while attempts < retries:
-        attempts += 1
-        try:
-            return client.transport.dispatch("find_blocks", payload)
-        except (TransportError, CommandError) as exc:
-            message = str(exc).lower()
-            if (
-                attempts < retries
-                and (
-                    isinstance(exc, TransportError)
-                    or "player not available" in message
-                    or "not connected" in message
-                    or "connection lost" in message
-                    or "connection reset" in message
-                )
-            ):
-                print(
-                    f"{label}: find_blocks failed (attempt {attempts}/{retries}); "
-                    f"retrying"
-                )
-                time.sleep(0.5)
-                continue
-            print(f"{label}: find_blocks hard-failed: {exc}")
-            return None
-    return None
+    """Read-block search with a non-fatal ``None`` fallback on failure.
+
+    ``find_blocks`` is a READ_ONLY_ROUTE, so ``Transport.dispatch()`` already
+    retries it internally (up to 3 attempts) for these exact transient
+    conditions. This used to wrap that with its own independent 3x retry
+    loop on top, so one slow/contended bridge-side scan could balloon into
+    up to 9 raw dispatch attempts -- each up to the transport's ~15s
+    timeout, multiple minutes total -- while every attempt kept re-queuing
+    onto the bridge's single-threaded find_blocks scan executor and
+    delaying whichever caller (this one, or MappingSystem's background
+    landmark scan) got there first. Let the transport layer own retrying;
+    only add the graceful fallback here.
+    """
+    try:
+        return client.transport.dispatch("find_blocks", payload)
+    except (TransportError, CommandError) as exc:
+        print(f"{label}: find_blocks hard-failed: {exc}")
+        return None
 
 
 def _ensure_mining_pickaxe(client) -> bool:

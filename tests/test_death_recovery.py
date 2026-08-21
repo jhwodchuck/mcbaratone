@@ -935,6 +935,16 @@ def test_death_recovery_defers_respawn_while_killer_remains(monkeypatch):
 
 
 def test_grave_approach_aborts_after_first_combat_intervention(monkeypatch):
+    """_guard_grave_approach must not raise: the real goto() only converts
+    PlayerDeathDetected/_UnsafeNavigationTelemetry to a clean False and
+    re-raises everything else, so a bare exception here would escape
+    uncaught and skip the bootstrap-starter-tools fallback entirely (this
+    is exactly the bug fixed live -- a routine phantom encounter escalated
+    straight to a terminal stop instead of the graceful path a lethal grave
+    route already gets). Mirrors what the real goto() does after an on_tick
+    callback cancels the path without raising: its own idle-pathing stall
+    detection notices within a few ticks and returns False.
+    """
     transport = RecoveryTransport({})
     transport.dead = False
     client = SimpleNamespace(transport=transport)
@@ -947,14 +957,12 @@ def test_grave_approach_aborts_after_first_combat_intervention(monkeypatch):
         raising=False,
     )
 
-    def guarded_goto(_client, *_args, on_tick=None, **_kwargs):
+    def guarded_goto(active_client, *_args, on_tick=None, **_kwargs):
         approaches.append(True)
         assert on_tick is not None
-        try:
-            on_tick()
-        except RuntimeError:
-            return False
-        return True
+        on_tick()  # must return normally, not raise
+        assert active_client._last_navigation_survival_abort is True
+        return False
 
     monkeypatch.setattr(death_recovery_action, "goto", guarded_goto)
 
