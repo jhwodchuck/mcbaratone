@@ -24,6 +24,7 @@ from .movement_recovery import (
     recover_stalled_gathering,
 )
 from .mining_safety import run_mining_defense
+from .requirement_crafting import absolute_requirement as _absolute_requirement, craft_shortfall_with_table as _craft_shortfall_impl
 from .ore_gather_recovery import OreStallRecovery
 from .surface_egress import try_lower_surface_egress
 from .storage_safety import (
@@ -2276,19 +2277,17 @@ def _ensure_flamethrower_ready(client, qty: int = 1) -> bool:
 
 def _craft_shortfall_with_table(client, item_id: str, shortfall: int) -> bool:
     """Translate an ``ensure_supplies`` shortfall to an absolute target."""
-    from .requirement_crafting import craft_shortfall_with_table
-
-    return craft_shortfall_with_table(
+    return _craft_shortfall_impl(
         client, item_id, shortfall,
         count_item=count_item, craft_with_table=_craft_with_table,
     )
 
 
 DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
-    "minecraft:oak_log": lambda client, qty: gather_wood(client, count=max(qty, 16)),
-    "minecraft:cobblestone": lambda client, qty: gather_stone(client, count=max(qty, 16)),
+    "minecraft:oak_log": lambda client, qty: gather_wood(client, count=max(_absolute_requirement(client, "minecraft:oak_log", qty, count_item=count_item), 16)),
+    "minecraft:cobblestone": lambda client, qty: gather_stone(client, count=max(_absolute_requirement(client, "minecraft:cobblestone", qty, count_item=count_item), 16)),
     "minecraft:iron_ingot": lambda client, qty: _smelt_requirement_shortfall(client, "minecraft:iron_ingot", qty),
-    "minecraft:diamond": lambda client, qty: gather_ores(client, "diamond", count=max(qty, 4)),
+    "minecraft:diamond": lambda client, qty: gather_ores(client, "diamond", count=max(_absolute_requirement(client, "minecraft:diamond", qty, count_item=count_item), 4)),
     "minecraft:gold_ingot": lambda client, qty: _smelt_requirement_shortfall(client, "minecraft:gold_ingot", qty),
     "minecraft:obsidian": lambda client, qty: _default_mine(client, "minecraft:obsidian", qty),
     "minecraft:crafting_table": lambda client, qty: craft(client, "minecraft:crafting_table", qty) or True,
@@ -2321,7 +2320,7 @@ DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
     "minecraft:arrow": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:arrow", max(qty, 32)),
     "minecraft:string": lambda client, qty: hunt_mobs(client, ["spider", "cave_spider"], {"minecraft:string": qty}, search_radius=64, timeout=300).success,
     "minecraft:feather": lambda client, qty: hunt_mobs(client, ["chicken"], {"minecraft:feather": qty}, search_radius=50, timeout=300).success,
-    "minecraft:flint": lambda client, qty: gather_gravel(client, count=qty),
+    "minecraft:flint": lambda client, qty: gather_gravel(client, count=_absolute_requirement(client, "minecraft:flint", qty, count_item=count_item)),
     "minecraft:shield": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:shield", qty),
     "minecraft:bucket": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:bucket", qty),
     "minecraft:water_bucket": lambda client, qty: gather_water(client, count=qty),
