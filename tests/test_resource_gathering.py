@@ -1785,15 +1785,15 @@ def test_craft_strategies_treat_their_quantity_as_a_shortfall(monkeypatch):
 
 
 def test_gather_strategies_treat_their_quantity_as_a_shortfall(monkeypatch):
-    """gather_wood/gather_stone/gather_ores share the craft units mismatch.
+    """The gatherers share _craft_with_table's absolute-target contract.
 
-    Each takes an absolute carried target and early-returns True on
-    ``carried >= count``, but ensure_supplies hands them a shortfall. Their
-    ``max(qty, N)`` floors do not mask this -- they set a low bar that a
-    well-stocked inventory clears trivially, so the gatherer reports success
-    without gathering and ensure_supplies spins until it times out.
+    gather_wood/gather_stone/gather_ores/gather_gravel each early-return True
+    on ``carried >= count``, but ensure_supplies hands them a shortfall. Their
+    ``max(qty, N)`` floors do not mask this -- they set a low bar a stocked
+    inventory clears trivially, so the gatherer reports success without
+    gathering and ensure_supplies spins until it times out.
 
-    Carrying 20 cobblestone and needing 30 gives a shortfall of 10;
+    Needing 30 cobblestone while carrying 20 gives a shortfall of 10;
     ``max(10, 16)`` is 16, and ``20 >= 16`` returns True having mined nothing.
     """
     carried = {
