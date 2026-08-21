@@ -82,10 +82,7 @@ class Transport(abc.ABC):
 
 
 class TcpTransport(Transport):
-    """Minimal TCP transport used by tests. It implements a small subset of the real
-    protocol (craft, smelt, get_state, get_inventory) and a simple request/response
-    queue keyed by request id.
-    """
+    """TCP bridge transport with request-id response correlation."""
 
     def __init__(self, host: str = "localhost", port: int = 5555, timeout: float = 15.0, event_manager: Optional[EventManager] = None) -> None:
         super().__init__(event_manager)
@@ -147,13 +144,9 @@ class TcpTransport(Transport):
                 exc_info=True,
             )
             return False
-    # Read-only routes are safe to re-send verbatim: a duplicated query cannot
-    # mutate the world, unlike goto/mine/place/craft commands, which must
-    # never be silently replayed. One transient bridge stall (server lag,
-    # chunk generation) previously burned a whole phase retry.
+
+    # Read-only queries may be replayed; mutations must remain single-shot.
     _READ_ONLY_RETRY_ROUTES = READ_ONLY_ROUTES
-    # Best-effort commands that may time out under bridge lag; they are safe to
-    # retry and should never abort the whole mission.
     _BEST_EFFORT_RETRY_ROUTES = BEST_EFFORT_ROUTES
     _READ_RETRY_ATTEMPTS = 3
     _READ_RETRY_PAUSE_SECONDS = 0.5
@@ -329,8 +322,6 @@ class TcpTransport(Transport):
                     original_error=exc,
                 ) from exc
 
-            # Determine effective timeout: prefer per-call timeout if provided,
-            # otherwise apply short per-route overrides for non-critical calls.
             effective_timeout = self.timeout if timeout is None else timeout
             if timeout is None:
                 if route == "get_inventory":
@@ -362,7 +353,11 @@ class TcpTransport(Transport):
                 return {}
             if route == "get_inventory":
                 return {"inventory": [], "armor": [], "offhand": []}
-            if route in self._READ_ONLY_RETRY_ROUTES and request_socket:
+            with self._lock:
+                peer_inflight = any(
+                    peer_id != req_id for peer_id in self._response_queues
+                )
+            if route in self._READ_ONLY_RETRY_ROUTES and request_socket and not peer_inflight:
                 self._reconnect_after_failure(request_socket, route)
             raise BridgeResponseTimeout(
                 route,

@@ -307,7 +307,10 @@ class MappingSystem(BackgroundSystem):
         self.path_history = []  # List of (x, z)
         self.last_update = 0
         self.landmark_scan_interval = max(5.0, float(landmark_scan_interval))
-        self.last_landmark_scan = 0.0
+        # Landmark discovery is passive, expensive work.  Delay the first scan
+        # so controller startup and resumed phase work own the bridge first.
+        self.last_landmark_scan = time.time()
+        self.last_landmark_chunk: Optional[tuple[int, int]] = None
         self.map_file = runtime_artifact_path("world_map.md", state_manager)
 
     def tick(self):
@@ -343,10 +346,17 @@ class MappingSystem(BackgroundSystem):
                  self._write_map_file(px, py, pz, state.get("dimension", "Overworld"))
                  self.last_update = time.time()
 
-            if time.time() - self.last_landmark_scan >= self.landmark_scan_interval:
-                # Throttle failures too; a transient bridge/catalog error must
-                # not turn this low-frequency scan into a five-second hot loop.
-                self.last_landmark_scan = time.time()
+            now = time.time()
+            current_chunk = (chunk_x, chunk_z)
+            if (
+                current_chunk != self.last_landmark_chunk
+                and now - self.last_landmark_scan >= self.landmark_scan_interval
+            ):
+                # Record the attempted chunk before dispatch.  A transient or
+                # bounded scan failure must not repeatedly monopolize the
+                # bridge while the foreground controller is stationary.
+                self.last_landmark_scan = now
+                self.last_landmark_chunk = current_chunk
                 found = scan_visible_landmarks(self.client, self.state_manager)
                 if found:
                     logger.info("MappingSystem recorded %d visible landmark blocks", found)

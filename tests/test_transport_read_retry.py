@@ -165,6 +165,38 @@ def test_tcp_send_failure_is_not_a_response_timeout(tcp):
     assert isinstance(raised.value.original_error, OSError)
 
 
+def test_tcp_timeout_preserves_socket_needed_by_peer_request(monkeypatch, tcp):
+    """One slow read must not strand another request on the shared socket."""
+    reconnects = []
+    tcp.timeout = 0
+    tcp._response_queues["still-waiting"] = object()
+    monkeypatch.setattr(
+        tcp,
+        "_reconnect_after_failure",
+        lambda *_args: reconnects.append(True),
+    )
+
+    with pytest.raises(BridgeResponseTimeout):
+        tcp._dispatch_once("get_block", {"x": 0, "y": 64, "z": 0})
+
+    assert reconnects == []
+
+
+def test_tcp_sole_timed_out_request_may_reconnect(monkeypatch, tcp):
+    reconnects = []
+    tcp.timeout = 0
+    monkeypatch.setattr(
+        tcp,
+        "_reconnect_after_failure",
+        lambda *_args: reconnects.append(True),
+    )
+
+    with pytest.raises(BridgeResponseTimeout):
+        tcp._dispatch_once("get_block", {"x": 0, "y": 64, "z": 0})
+
+    assert reconnects == [True]
+
+
 def test_websocket_timeout_records_logical_route_and_confirmed_send(monkeypatch):
     with patch.object(WebSocketTransport, "_connect", lambda self: None):
         transport = WebSocketTransport(
