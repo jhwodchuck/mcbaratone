@@ -751,7 +751,9 @@ def test_withdraw_required_uses_chest_slots_and_leaves_other_storage(monkeypatch
     ]
 
 
-def test_withdraw_reattempts_present_chest_that_failed_to_open(monkeypatch):
+def test_withdraw_reattempts_present_chest_that_failed_to_open(
+    monkeypatch, advancing_clock
+):
     # A chest that is still present must be re-approached on every withdraw,
     # not skipped by the "recently failed" cooldown. The cooldown exists to
     # stop re-travelling to a *destroyed* container; applying it to a present
@@ -765,6 +767,9 @@ def test_withdraw_reattempts_present_chest_that_failed_to_open(monkeypatch):
         )
     )
     opens = []
+    monkeypatch.setattr(
+        "baritone_client.common.container_reads.time", advancing_clock()
+    )
     monkeypatch.setattr(
         "baritone_client.common.harness_ops.open_container",
         lambda *_args, **_kwargs: opens.append(True) or False,

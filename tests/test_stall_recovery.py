@@ -318,7 +318,7 @@ def test_default_rearm_cooldown_keeps_idle_time_bounded():
     ) == ["BOOT_SEQUENCE"], "and must retry once the default cooldown expires"
 
 
-def test_cooldown_stall_is_not_reported_as_terminal(monkeypatch):
+def test_cooldown_stall_is_not_reported_as_terminal(monkeypatch, advancing_clock):
     """scripts/monitor/autonomous_run.py treats the exact string "Automation
     stalled: no runnable objective remains." as a terminal safety stop and
     refuses to relaunch. rearm_any_abandoned_objectives is rate limited, so
@@ -358,8 +358,8 @@ def test_cooldown_stall_is_not_reported_as_terminal(monkeypatch):
         lambda _c: "holding",
     )
     monkeypatch.setattr(
-        "baritone_client.automator.automator.time.time",
-        lambda: 1_000_000.0 + cooldown / 2.0,
+        "baritone_client.automator.automator.time",
+        advancing_clock(start=1_000_000.0 + cooldown / 2.0),
     )
 
     buf = io.StringIO()
@@ -373,7 +373,7 @@ def test_cooldown_stall_is_not_reported_as_terminal(monkeypatch):
     assert "recoverable" in out
 
 
-def test_truly_dead_graph_still_reports_terminal_stall(monkeypatch):
+def test_truly_dead_graph_still_reports_terminal_stall(monkeypatch, advancing_clock):
     """A graph with nothing left to re-open is genuinely stuck and must still
     surface the terminal string so the supervisor stops relaunching."""
     import io, contextlib
@@ -400,6 +400,9 @@ def test_truly_dead_graph_still_reports_terminal_stall(monkeypatch):
     monkeypatch.setattr(
         "baritone_client.automator.stall_recovery.maintain_stalled_survival",
         lambda _c: "holding",
+    )
+    monkeypatch.setattr(
+        "baritone_client.automator.automator.time", advancing_clock()
     )
 
     buf = io.StringIO()

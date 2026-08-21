@@ -55,11 +55,22 @@ def test_long_route_refused_at_critical_health_without_regen():
     )
 
 
-def test_short_route_still_allowed_at_critical_health():
+def test_short_route_still_allowed_at_critical_health(monkeypatch, advancing_clock):
     """Local moves must stay available; the bot still needs to reach food."""
-    client = _client(health=2.1, food=5, position=(0, 64, 0))
+    from baritone_client.common import combat
 
-    navigation.goto(client, 10, 64, 0, timeout=1)
+    client = _client(health=2.1, food=5, position=(0, 64, 0))
+    monkeypatch.setattr(navigation, "time", advancing_clock())
+    monkeypatch.setattr(combat, "survival_tick", lambda *_args, **_kwargs: False)
+
+    navigation.goto(
+        client,
+        10,
+        64,
+        0,
+        timeout=1,
+        on_defense=lambda: False,
+    )
 
     assert "goto" in client.transport.routes(), (
         "gate blocked a short local move and would strand the bot"

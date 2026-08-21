@@ -470,6 +470,10 @@ def test_boot_infrastructure_falls_back_locally_when_house_is_unreachable(
 
 def test_boot_wood_check_counts_real_plank_ids(monkeypatch):
     monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.durable_boot_capabilities",
+        lambda _context: False,
+    )
+    monkeypatch.setattr(
         "baritone_client.actions.boot_sequence.count_item",
         lambda _client, item_id: 16 if item_id == "minecraft:dark_oak_planks" else 0,
     )
@@ -488,6 +492,10 @@ def test_boot_wood_check_counts_real_plank_ids(monkeypatch):
 
 
 def test_boot_wood_check_counts_carried_logs_as_convertible_planks(monkeypatch):
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.durable_boot_capabilities",
+        lambda _context: False,
+    )
     def count(_client, item_id):
         if item_id == "minecraft:spruce_log":
             return 2
@@ -517,6 +525,11 @@ def test_boot_plank_crafting_uses_mangrove_logs_detected_by_wood_check(monkeypat
     crafted = []
 
     monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.durable_boot_capabilities",
+        lambda _context: False,
+    )
+
+    monkeypatch.setattr(
         "baritone_client.actions.boot_sequence.count_item",
         lambda _client, item_id: 4 if item_id == "minecraft:mangrove_log" else 0,
     )
@@ -534,6 +547,10 @@ def test_boot_plank_crafting_uses_mangrove_logs_detected_by_wood_check(monkeypat
 
 
 def test_boot_wood_check_defers_reserve_on_ledge_with_nearby_table(monkeypatch):
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.durable_boot_capabilities",
+        lambda _context: False,
+    )
     def count(_client, item_id):
         if item_id == "minecraft:spruce_log":
             return 2
@@ -896,6 +913,14 @@ def test_stone_tool_action_gathers_raw_cobble_before_crafting(monkeypatch):
     inventory = {"minecraft:cobblestone": 0}
     calls = []
     monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.durable_boot_capabilities",
+        lambda _context: False,
+    )
+    monkeypatch.setattr(
+        "baritone_client.actions.boot_sequence.has_durable_tool_set",
+        lambda _client: False,
+    )
+    monkeypatch.setattr(
         "baritone_client.actions.boot_sequence.count_item",
         lambda _client, item_id: inventory.get(item_id, 0),
     )
@@ -1038,7 +1063,9 @@ def test_final_sleep_waits_safely_when_no_bed_is_available(monkeypatch):
     assert waited == [True]
 
 
-def test_optional_boot_hunts_are_deferred_at_low_hunger(monkeypatch):
+def test_optional_boot_hunts_are_deferred_at_low_hunger(
+    monkeypatch, advancing_clock
+):
     class Transport:
         def dispatch(self, route, payload):
             if route == "get_state":
@@ -1046,6 +1073,9 @@ def test_optional_boot_hunts_are_deferred_at_low_hunger(monkeypatch):
             return {}
 
     client = SimpleNamespace(transport=Transport())
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.time", advancing_clock()
+    )
     monkeypatch.setattr(
         "baritone_client.actions.boot_sequence.hunt_passive_mobs",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(

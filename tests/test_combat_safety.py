@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from baritone_client.common import combat, combat_melee
+from baritone_client.common import combat, combat_melee, inventory
 from baritone_client.common.tasks import PlayerDeathDetected
 
 
@@ -824,7 +824,9 @@ def test_emergency_food_explores_until_passive_target_loads(monkeypatch):
     assert ("chat", {"message": "#stop"}) in transport.calls
 
 
-def test_emergency_food_does_not_treat_full_health_low_hunger_as_recovered(monkeypatch):
+def test_emergency_food_does_not_treat_full_health_low_hunger_as_recovered(
+    monkeypatch, advancing_clock
+):
     class HungryTransport(CombatTransport):
         def dispatch(self, route, payload):
             self.calls.append((route, payload))
@@ -838,6 +840,9 @@ def test_emergency_food_does_not_treat_full_health_low_hunger_as_recovered(monke
             return {}
 
     client = SimpleNamespace(transport=HungryTransport(health=20.0))
+    clock = advancing_clock()
+    monkeypatch.setattr(combat, "time", clock)
+    monkeypatch.setattr(inventory, "time", clock)
     monkeypatch.setattr(combat, "recover_health", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(combat, "scan_for_threats", lambda *_args, **_kwargs: [])
 
@@ -861,7 +866,9 @@ def test_emergency_food_does_not_treat_full_health_low_hunger_as_recovered(monke
         )
 
 
-def test_emergency_food_refuses_blind_underground_exploration(monkeypatch):
+def test_emergency_food_refuses_blind_underground_exploration(
+    monkeypatch, advancing_clock
+):
     class UndergroundTransport(CombatTransport):
         def dispatch(self, route, payload):
             self.calls.append((route, payload))
@@ -876,6 +883,9 @@ def test_emergency_food_refuses_blind_underground_exploration(monkeypatch):
             return {}
 
     client = SimpleNamespace(transport=UndergroundTransport())
+    clock = advancing_clock()
+    monkeypatch.setattr(combat, "time", clock)
+    monkeypatch.setattr(inventory, "time", clock)
     surface_checks = []
     monkeypatch.setattr(combat, "recover_health", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
@@ -901,7 +911,7 @@ def test_emergency_food_refuses_blind_underground_exploration(monkeypatch):
 
 
 def test_emergency_food_rechecks_dry_surface_after_exploration_enters_water(
-    monkeypatch,
+    monkeypatch, advancing_clock
 ):
     dry = {
         "health": 20.0,
@@ -925,6 +935,9 @@ def test_emergency_food_rechecks_dry_surface_after_exploration_enters_water(
             return {}
 
     client = SimpleNamespace(transport=WetAfterStartTransport())
+    clock = advancing_clock()
+    monkeypatch.setattr(combat, "time", clock)
+    monkeypatch.setattr(inventory, "time", clock)
     surface_checks = []
 
     class RecheckedSurface(Exception):
@@ -2477,10 +2490,14 @@ def test_relocate_heads_directly_away_using_a_y_agnostic_goal(monkeypatch):
     assert goals == ["#goto -28 0"]
 
 
-def test_relocate_reports_failure_when_separation_never_grows(monkeypatch):
+def test_relocate_reports_failure_when_separation_never_grows(
+    monkeypatch, advancing_clock
+):
     """A bot pinned in place must report failure so the caller can try
     something else, rather than silently claiming it escaped."""
-    monkeypatch.setattr(combat.time, "sleep", lambda _s: None)
+    from baritone_client.common import escape_recovery
+
+    monkeypatch.setattr(escape_recovery, "time", advancing_clock())
     transport = _RelocateTransport([0])  # never moves
     client = SimpleNamespace(transport=transport)
     threat = {"id": 5, "type": "minecraft:creeper", "position": {"x": 5, "y": 64, "z": 0}}
@@ -2632,14 +2649,16 @@ def test_aquatic_approach_window_scales_with_distance(monkeypatch):
     assert seen["timeout"] <= 45.0, "and stay bounded"
 
 
-def test_aquatic_follow_abandons_a_target_that_never_gets_closer(monkeypatch):
+def test_aquatic_follow_abandons_a_target_that_never_gets_closer(
+    monkeypatch, advancing_clock
+):
     """A fish in a sealed flooded chamber is not reachable, and burning the
     whole follow window on it starves the bot. Live: Bot07 reported "safely
     hunting tropical_fish at 46.4m" repeatedly with the distance frozen to the
     decimal, never moving, at 8 health."""
     monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [])
     monkeypatch.setattr(combat, "_submerged_too_long", lambda *_a, **_k: False)
-    monkeypatch.setattr(combat.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(combat, "time", advancing_clock())
     # Distance never shrinks.
     monkeypatch.setattr(
         combat,

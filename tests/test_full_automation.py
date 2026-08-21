@@ -215,7 +215,12 @@ class TestFullAutomation(unittest.TestCase):
         self.client = EnhancedMockClient()
         self.resources = ResourceManager(self.client)
         self.state_manager = StateManager(checkpoint_dir=self.checkpoint_dir.name)
-        self.executor = PhaseExecutor(self.client, self.resources, self.state_manager)
+        self.executor = PhaseExecutor(
+            self.client,
+            self.resources,
+            self.state_manager,
+            retry_delay=0.0,
+        )
 
         # Register stub handlers for all phases to test orchestration logic
         phase_handlers = [
@@ -292,7 +297,12 @@ class TestFullAutomation(unittest.TestCase):
         failing_client = EnhancedMockClient()
         failing_resources = ResourceManager(failing_client)
         failing_state_manager = StateManager(checkpoint_dir=self.checkpoint_dir.name)
-        failing_executor = PhaseExecutor(failing_client, failing_resources, failing_state_manager)
+        failing_executor = PhaseExecutor(
+            failing_client,
+            failing_resources,
+            failing_state_manager,
+            retry_delay=0.0,
+        )
 
         # Register the failing handler
         failing_handler = FailingStubHandler("Failing Phase", Phase.FOOD_AND_IRON)

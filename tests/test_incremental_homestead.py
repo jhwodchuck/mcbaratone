@@ -399,7 +399,9 @@ def test_boot_light_perimeter_failed_placement_not_persisted_as_verified(monkeyp
         # now allowed to build; see require_construction_pacing.
     ],
 )
-def test_boot_construction_pacing_blocks_unsafe_or_underequipped(monkeypatch, food_level, health, day_time, edible_counts):
+def test_boot_construction_pacing_blocks_unsafe_or_underequipped(
+    monkeypatch, advancing_clock, food_level, health, day_time, edible_counts
+):
     state = _state_with_payloads({
         "homestead": {
             "anchor": [0, 64, 0],
@@ -425,6 +427,9 @@ def test_boot_construction_pacing_blocks_unsafe_or_underequipped(monkeypatch, fo
     )
     handler = BootSequenceHandler()
     monkeypatch.setattr(
+        "baritone_client.common.inventory.time", advancing_clock()
+    )
+    monkeypatch.setattr(
         handler,
         "_plant_crops",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -448,6 +453,7 @@ def test_boot_construction_pacing_blocks_unsafe_or_underequipped(monkeypatch, fo
 @pytest.mark.parametrize("food_level,health", [(10, 20), (20, 11)])
 def test_boot_construction_uses_survival_recovery_for_critical_margin(
     monkeypatch,
+    advancing_clock,
     food_level,
     health,
 ):
@@ -479,6 +485,9 @@ def test_boot_construction_uses_survival_recovery_for_critical_margin(
     monkeypatch.setattr(
         "baritone_client.actions.homestead.count_item",
         lambda *_args: 1,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.time", advancing_clock()
     )
 
     with pytest.raises(SurvivalRecoveryRequired):

@@ -874,6 +874,7 @@ def test_bulk_mining_prioritizes_diamond_then_collects_smelting_inputs(monkeypat
         )
         or True,
     )
+    monkeypatch.setattr(iron_age, "count_item", lambda *_args: 0)
 
     assert iron_age.FoodAndIronHandler()._bulk_mine(client)
     assert gathered == [("diamond", 5), ("iron", 30)]
@@ -1093,7 +1094,9 @@ def test_return_to_base_accepts_verified_operational_chest_in_interaction_range(
     assert handler._return_to_base(client, state)
 
 
-def test_return_to_base_uses_checkpointed_house_not_mutable_waypoint(monkeypatch):
+def test_return_to_base_uses_checkpointed_house_not_mutable_waypoint(
+    monkeypatch, advancing_clock
+):
     class Transport:
         def dispatch(self, route, _payload):
             if route == "get_state":
@@ -1133,7 +1136,7 @@ def test_return_to_base_uses_checkpointed_house_not_mutable_waypoint(monkeypatch
         if route == "get_block"
         else {}
     )
-    monkeypatch.setattr(iron_age.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(iron_age, "time", advancing_clock())
 
     assert iron_age.FoodAndIronHandler()._return_to_base(client, state)
     assert destinations == [(-6, 79, -124), (-6, 79, -121)]
@@ -2144,12 +2147,17 @@ def test_deposit_does_not_brick_phase_when_chest_unrecoverable(monkeypatch):
     monkeypatch.setattr(iron_age, "count_item", lambda _c, _i: 0)  # no chest carried
     monkeypatch.setattr(iron_age, "craft", lambda *_a, **_k: False)  # cannot craft one
     monkeypatch.setattr(iron_age.harness_ops, "move_near", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        handler, "_reestablish_supply_chest", lambda *_args, **_kwargs: False
+    )
 
     # Must return True (continue), not False (brick the phase).
     assert handler._deposit_excess_at_home(client, handler.state) is True
 
 
-def test_stabilize_hunger_falls_back_to_farm_when_local_search_fails(monkeypatch):
+def test_stabilize_hunger_falls_back_to_farm_when_local_search_fails(
+    monkeypatch, advancing_clock
+):
     """When the local bounded emergency-food search fails (as it always will
     in an animal-sparse biome), the established wheat farm must be tried
     before degrading to a low-hunger floor or failing outright. Confirmed
@@ -2163,6 +2171,9 @@ def test_stabilize_hunger_falls_back_to_farm_when_local_search_fails(monkeypatch
 
     client = SimpleNamespace(transport=Transport())
     handler = iron_age.FoodAndIronHandler()
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.time", advancing_clock()
+    )
     handler.state = SimpleNamespace(
         custom_data={"wheat_farm": {"origin": [10, 70, 20]}}
     )
@@ -2196,7 +2207,9 @@ def test_stabilize_hunger_falls_back_to_farm_when_local_search_fails(monkeypatch
     assert handler._stabilize_hunger_failures == 0
 
 
-def test_stabilize_hunger_falls_back_to_known_herd_when_no_farm_established(monkeypatch):
+def test_stabilize_hunger_falls_back_to_known_herd_when_no_farm_established(
+    monkeypatch, advancing_clock
+):
     """A verified persisted herd is reusable when no farm is established."""
     class Transport:
         def dispatch(self, route, _payload):
@@ -2206,6 +2219,9 @@ def test_stabilize_hunger_falls_back_to_known_herd_when_no_farm_established(monk
 
     client = SimpleNamespace(transport=Transport())
     handler = iron_age.FoodAndIronHandler()
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.time", advancing_clock()
+    )
     handler.state = SimpleNamespace(
         custom_data={
             "structures": {
@@ -2303,7 +2319,9 @@ def test_ensure_supplies_yields_before_handler_at_critical_health(monkeypatch):
     assert "cancel" in calls
 
 
-def test_stabilize_hunger_still_degrades_when_farm_and_herd_both_fail(monkeypatch):
+def test_stabilize_hunger_still_degrades_when_farm_and_herd_both_fail(
+    monkeypatch, advancing_clock
+):
     """If the farm/herd fallback also fails, existing degraded-floor and
     failure-counter behavior must still apply unchanged."""
     class Transport:
@@ -2314,6 +2332,9 @@ def test_stabilize_hunger_still_degrades_when_farm_and_herd_both_fail(monkeypatc
 
     client = SimpleNamespace(transport=Transport())
     handler = iron_age.FoodAndIronHandler()
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.time", advancing_clock()
+    )
     handler.state = SimpleNamespace(custom_data={})
 
     monkeypatch.setattr(iron_age, "eat_until_hunger", lambda *_a, **_k: False)
@@ -2327,7 +2348,9 @@ def test_stabilize_hunger_still_degrades_when_farm_and_herd_both_fail(monkeypatc
     assert handler._stabilize_hunger_failures == 1
 
 
-def test_stabilize_hunger_health_branch_falls_back_to_known_sources(monkeypatch):
+def test_stabilize_hunger_health_branch_falls_back_to_known_sources(
+    monkeypatch, advancing_clock
+):
     """A critically low-health bot whose local emergency search fails must try
     the persisted farm/herd before yielding, not starve in place. Confirmed
     live: Bot10 died here because the health-critical branch never consulted
@@ -2346,6 +2369,9 @@ def test_stabilize_hunger_health_branch_falls_back_to_known_sources(monkeypatch)
 
     client = SimpleNamespace(transport=Transport())
     handler = iron_age.FoodAndIronHandler()
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.time", advancing_clock()
+    )
     handler.state = SimpleNamespace(
         custom_data={"wheat_farm": {"origin": [10, 70, 20]}}
     )
@@ -2376,7 +2402,9 @@ def test_stabilize_hunger_health_branch_falls_back_to_known_sources(monkeypatch)
     assert handler._stabilize_hunger_failures == 0
 
 
-def test_stabilize_hunger_health_branch_still_yields_when_no_food_source(monkeypatch):
+def test_stabilize_hunger_health_branch_still_yields_when_no_food_source(
+    monkeypatch, advancing_clock
+):
     """With no farm/herd and a failed local search, the critically low-health
     bot must still yield for survival recovery (unchanged safety behavior)."""
     class Transport:
@@ -2387,6 +2415,9 @@ def test_stabilize_hunger_health_branch_still_yields_when_no_food_source(monkeyp
 
     client = SimpleNamespace(transport=Transport())
     handler = iron_age.FoodAndIronHandler()
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.time", advancing_clock()
+    )
     handler.state = SimpleNamespace(custom_data={})
 
     monkeypatch.setattr(iron_age, "recover_health", lambda *_a, **_k: False)
@@ -2399,7 +2430,9 @@ def test_stabilize_hunger_health_branch_still_yields_when_no_food_source(monkeyp
         handler._stabilize_hunger(client)
 
 
-def test_stabilize_hunger_does_not_release_worker_at_food_ten(monkeypatch):
+def test_stabilize_hunger_does_not_release_worker_at_food_ten(
+    monkeypatch, advancing_clock
+):
     """Gatherers stop at food <= 10, so the phase must not claim readiness."""
     class Transport:
         def dispatch(self, route, _payload):
@@ -2409,6 +2442,9 @@ def test_stabilize_hunger_does_not_release_worker_at_food_ten(monkeypatch):
 
     client = SimpleNamespace(transport=Transport())
     handler = iron_age.FoodAndIronHandler()
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.time", advancing_clock()
+    )
     handler.state = SimpleNamespace(custom_data={})
     monkeypatch.setattr(iron_age, "eat_until_hunger", lambda *_a, **_k: False)
     monkeypatch.setattr(iron_age, "visit_known_herd_for_loot", lambda *_a, **_k: False)

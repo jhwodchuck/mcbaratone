@@ -156,8 +156,10 @@ def test_food_search_anchor_prefers_reanchored_spawn_home():
     ]
 
 
-def test_phase_food_search_returns_home_instead_of_rebasing(monkeypatch):
-    from baritone_client.common import combat
+def test_phase_food_search_returns_home_instead_of_rebasing(
+    monkeypatch, advancing_clock
+):
+    from baritone_client.common import combat, inventory
 
     far_state = {
         "health": 20.0,
@@ -174,6 +176,8 @@ def test_phase_food_search_returns_home_instead_of_rebasing(monkeypatch):
         )
     )
     returns = []
+
+    monkeypatch.setattr(inventory, "time", advancing_clock())
 
     monkeypatch.setattr(combat, "recover_health", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(

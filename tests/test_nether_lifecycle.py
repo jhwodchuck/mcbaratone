@@ -364,10 +364,15 @@ def test_nether_rearm_provisions_and_equips_armor_incrementally(monkeypatch, tmp
     ]
 
 
-def test_nether_rearm_requests_a_six_item_food_reserve(monkeypatch, tmp_path):
+def test_nether_rearm_requests_a_six_item_food_reserve(
+    monkeypatch, tmp_path, advancing_clock
+):
     handler, client, state = _portal_reuse_handler(tmp_path)
     readiness = iter((False, True))
     requested = []
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.time", advancing_clock()
+    )
     monkeypatch.setattr(handler, "_nether_loadout_ready", lambda *_a: next(readiness))
     monkeypatch.setattr(
         handler, "_provision_iron_gear", lambda *_a, **_k: True
@@ -988,7 +993,7 @@ def test_nether_egress_looks_for_blocks_that_exist_in_the_nether():
 
 
 def test_column_descent_helps_a_marooned_bot_below_the_overworld_shelf_height(
-    monkeypatch,
+    monkeypatch, advancing_clock
 ):
     """The y<96 gate refused the one escape that fits the situation.
 
@@ -1001,6 +1006,8 @@ def test_column_descent_helps_a_marooned_bot_below_the_overworld_shelf_height(
     the absolute height.
     """
     from baritone_client.common import shelf_escape
+
+    monkeypatch.setattr(shelf_escape, "time", advancing_clock())
 
     class VoidLedgeTransport(PortalTransport):
         def __init__(self):

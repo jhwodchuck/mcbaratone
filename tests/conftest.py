@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import socket
+import time as real_time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -14,6 +15,38 @@ import pytest_socket
 
 
 _ORIGINAL_CONNECT = socket.socket.connect
+
+
+class AdvancingClock:
+    """Deterministic clock for retry and timeout tests.
+
+    Production modules import ``time`` as a module, so tests can replace that
+    module attribute with this clock without changing Python's process-wide
+    clock (or pytest's own timeout bookkeeping). Sleeping advances logical
+    time immediately while preserving the number and order of retry cycles.
+    """
+
+    def __init__(self, start: float = 0.0, tick: float = 0.0):
+        self.now = float(start)
+        self.tick = float(tick)
+        self.sleeps: List[float] = []
+
+    def time(self) -> float:
+        current = self.now
+        self.now += self.tick
+        return current
+
+    def monotonic(self) -> float:
+        return self.time()
+
+    def sleep(self, seconds: float) -> None:
+        duration = max(0.0, float(seconds))
+        self.sleeps.append(duration)
+        self.now += duration
+
+    def __getattr__(self, name: str):
+        return getattr(real_time, name)
+
 
 # Restrict outbound connects while still allowing socket creation for local
 # asyncio event-loop plumbing on Windows. Applying this while conftest imports
@@ -179,3 +212,9 @@ def mock_client(mock_transport):
 def mock_context(mock_client):
     """Create a fresh MockActionContext for each test."""
     return MockActionContext(client=mock_client, state=MockWorldState())
+
+
+@pytest.fixture
+def advancing_clock():
+    """Return a factory for isolated logical clocks used by slow-path tests."""
+    return AdvancingClock

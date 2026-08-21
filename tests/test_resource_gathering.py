@@ -2275,7 +2275,10 @@ def test_choose_descent_offset_picks_first_open_cardinal_direction():
     assert resources._choose_descent_offset(client, 3, 101, -11) == (-1, 0)
 
 
-def test_choose_descent_offset_none_when_fully_enclosed():
+def test_choose_descent_offset_none_when_fully_enclosed(monkeypatch, advancing_clock):
+    from baritone_client.common import stone_descent
+
+    monkeypatch.setattr(stone_descent, "time", advancing_clock())
     client = SimpleNamespace(transport=RecordingTransport())  # get_block -> {}
 
     assert resources._choose_descent_offset(client, 3, 101, -11) is None
@@ -3011,7 +3014,9 @@ def test_wood_gathering_does_not_charge_defense_time_to_its_budget(monkeypatch):
     assert len(defense_calls) < 12, "budget credit must remain bounded"
 
 
-def test_marooned_wood_gatherer_attempts_lower_surface_egress(monkeypatch):
+def test_marooned_wood_gatherer_attempts_lower_surface_egress(
+    monkeypatch, advancing_clock
+):
     """Baritone idle + zero displacement means the bot cannot reach anything
     from where it stands, not that trees are scarce. Live: Bot07 sat motionless
     for hours on a single block at y=85 with air on all four sides, while every
@@ -3043,7 +3048,7 @@ def test_marooned_wood_gatherer_attempts_lower_surface_egress(monkeypatch):
     monkeypatch.setattr(res, "_reserve_gathering_inventory", lambda *_a: True)
     monkeypatch.setattr(res, "free_inventory_slots", lambda *_a: 32)
     monkeypatch.setattr(res, "_find_blocks_optional", lambda *_a, **_k: {"found": []})
-    monkeypatch.setattr(res.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(res, "time", advancing_clock())
 
     egress_calls = []
 
@@ -3076,7 +3081,9 @@ def test_surface_egress_altitude_gate_is_configurable():
     assert not client.transport.calls
 
 
-def test_marooned_egress_fires_even_while_defence_interrupts_every_tick(monkeypatch):
+def test_marooned_egress_fires_even_while_defence_interrupts_every_tick(
+    monkeypatch, advancing_clock
+):
     """The live failure: Bot07/Bot08 were marooned on the SAME one-block island
     at (-9,85,-7) with a creeper parked beside them. Defence fired on every
     loop iteration and `continue`d -- and reset idle_checks to 0 -- so an
@@ -3107,7 +3114,7 @@ def test_marooned_egress_fires_even_while_defence_interrupts_every_tick(monkeypa
     monkeypatch.setattr(res, "_reserve_gathering_inventory", lambda *_a: True)
     monkeypatch.setattr(res, "free_inventory_slots", lambda *_a: 32)
     monkeypatch.setattr(res, "_find_blocks_optional", lambda *_a, **_k: {"found": []})
-    monkeypatch.setattr(res.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(res, "time", advancing_clock())
     # A creeper is always present: defence handles it and reports "interrupted"
     # on every single iteration, exactly as it did live.
     monkeypatch.setattr(combat, "defend_or_flee", lambda _c: True)

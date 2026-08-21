@@ -1064,7 +1064,10 @@ def test_base_phase_refuses_exposed_night_work(monkeypatch):
     assert "safe daylight" in result.reason
 
 
-def test_setup_base_requires_verified_storage(monkeypatch):
+def test_setup_base_requires_verified_storage(monkeypatch, advancing_clock):
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.time", advancing_clock()
+    )
     monkeypatch.setattr("baritone_client.common.base.place_crafting_table", lambda *_args: True)
     monkeypatch.setattr("baritone_client.common.base.place_furnace", lambda *_args: True)
     monkeypatch.setattr("baritone_client.common.base.place_chest", lambda *_args: False)

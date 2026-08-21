@@ -253,7 +253,12 @@ def test_peaceful_enchanter_without_book_inputs_banks_renewable_wood():
     assert chosen and chosen.kind is OpportunityKind.WOOD_FARM
 
 
-def test_enchanting_material_uses_its_own_cooldown_in_overworld():
+def test_enchanting_material_uses_its_own_cooldown_in_overworld(
+    monkeypatch, advancing_clock
+):
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.time", advancing_clock()
+    )
     state = SimpleNamespace(
         custom_data={
             "adaptive_scheduler": {

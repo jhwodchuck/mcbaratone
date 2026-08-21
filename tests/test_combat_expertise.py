@@ -715,7 +715,11 @@ def test_exact_scored_weapon_stack_is_selected_and_verified():
     assert equipped["damage"] == 10
 
 
-def test_ranged_attack_leads_movement_and_serializes_bow_charges(monkeypatch):
+def test_ranged_attack_leads_movement_and_serializes_bow_charges(
+    monkeypatch, advancing_clock
+):
+    from baritone_client.common import combat_action
+
     clock = {"now": 10.0}
     calls = []
 
@@ -749,6 +753,7 @@ def test_ranged_attack_leads_movement_and_serializes_bow_charges(monkeypatch):
         velocity={"x": 0.5, "y": 0, "z": 0},
     )
     monkeypatch.setattr(combat_ranged.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(combat_action, "time", advancing_clock())
     monkeypatch.setattr(
         "baritone_client.common.inventory.select_item", lambda *_a, **_k: True
     )

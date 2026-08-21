@@ -2,7 +2,10 @@ from baritone_client.automator.phases.iron_farm import IronFarmHandler
 from baritone_client.common import iron_farm, mob_farm, villager
 
 
-def test_unimplemented_common_helpers_fail_closed():
+def test_unimplemented_common_helpers_fail_closed(monkeypatch, advancing_clock):
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.time", advancing_clock()
+    )
     client = object()
     assert not mob_farm.build_simple_mob_farm(client, 0, 64, 0)
     assert not mob_farm.enchant_tool_perfectly(client, 0, ["fortune"])
@@ -14,7 +17,10 @@ def test_unimplemented_common_helpers_fail_closed():
     assert not iron_farm.start_iron_production(client, (0, 64, 0))
 
 
-def test_unimplemented_phase_scaffolds_fail_closed():
+def test_unimplemented_phase_scaffolds_fail_closed(monkeypatch, advancing_clock):
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.time", advancing_clock()
+    )
     client = object()
     assert not IronFarmHandler()._move_villagers(client, (0, 64, 0))
     assert not IronFarmHandler()._add_zombie(client, (0, 64, 0))

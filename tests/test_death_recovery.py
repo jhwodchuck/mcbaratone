@@ -438,6 +438,12 @@ def test_automator_blocks_next_objective_until_survival_recovers(monkeypatch):
 
     monkeypatch.setattr(
         objective_survival,
+        "_has_carried_emergency_bread_materials",
+        lambda _client: False,
+    )
+
+    monkeypatch.setattr(
+        objective_survival,
         "_attempt_survival_recovery_food",
         lambda *_args: attempts.append("known") or False,
     )
@@ -591,7 +597,13 @@ def test_phase_executor_does_not_retry_player_death():
     assert handler.exited
 
 
-def test_phase_executor_does_not_retry_safe_survival_hold():
+def test_phase_executor_does_not_retry_safe_survival_hold(
+    monkeypatch, advancing_clock
+):
+    from baritone_client.automator import phase_executor as phase_executor_module
+
+    monkeypatch.setattr(phase_executor_module, "time", advancing_clock())
+
     class HoldingHandler(PhaseHandler):
         def __init__(self):
             self.calls = 0
