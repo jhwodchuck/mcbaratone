@@ -1344,10 +1344,8 @@ class FoodAndIronHandler(PhaseHandler):
         """Create a nearby survival crafting table without leaving the mine."""
         if not self._reserve_inventory_space(client, minimum_free_slots=2):
             return False
-        nearby = find_nearby_block(
-            client,
-            ["minecraft:crafting_table"],
-            radius=8,
+        nearby, local = iron_age_provisioning.mining_workstation_targets(
+            self, client
         )
         if not harness_ops.available():
             print("  Functional crafting-table harness is unavailable.")
@@ -1357,15 +1355,18 @@ class FoodAndIronHandler(PhaseHandler):
             if harness_ops.ensure_crafting_table_open(client, table_pos=nearby):
                 _safe_close_screen(client, "nearby crafting table")
                 return True
-            print(f"  Nearby crafting table at {nearby} is unreachable; replacing it locally.")
-            nearby = None
+            print(f"  Nearby crafting table at {nearby} could not be opened.")
+
+        if local is None:
+            print("  No supported local position is available for a mining workstation.")
+            return False
 
         if count_item(client, "minecraft:crafting_table") < 1:
             print("  Crafting a local deep-mining workstation...")
             if not craft(client, "minecraft:crafting_table", 1):
                 return False
 
-        if not harness_ops.ensure_crafting_table_open(client):
+        if not harness_ops.ensure_crafting_table_open(client, table_pos=local):
             return False
         _safe_close_screen(client, "new crafting table")
         return True

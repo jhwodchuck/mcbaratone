@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 from ..phase_verifier_support import FOOD_ITEMS
 from ...common import harness_ops
@@ -33,6 +33,61 @@ WOOD_TYPES = (
     "cherry",
     "pale_oak",
 )
+
+
+def mining_workstation_targets(
+    handler: "FoodAndIronHandler",
+    client,
+) -> tuple[Optional[Tuple[int, int, int]], Optional[Tuple[int, int, int]]]:
+    """Return a reachable table and a bounded local placement fallback.
+
+    The generic functional harness searches hundreds of candidate stand
+    positions.  In a compact house it can select a table on the roof and spend
+    minutes proving every route unreachable.  One small view gives enough
+    evidence to reuse a table already in reach or place the carried table on
+    verified support beside the player.
+    """
+    state = handler._read_state(client, "Local mining workstation") or {}
+    position = state.get("block_position", state.get("position", {}))
+    try:
+        player = tuple(int(position[axis]) for axis in ("x", "y", "z"))
+    except (KeyError, TypeError, ValueError):
+        return None, None
+
+    view = client.transport.dispatch("get_view", {"radius": 4})
+    data = view.get("data", view) if isinstance(view, dict) else {}
+    blocks = {
+        (int(block["x"]), int(block["y"]), int(block["z"])): str(block["id"])
+        for block in data.get("voxels", [])
+        if isinstance(block, dict)
+        and all(key in block for key in ("x", "y", "z", "id"))
+    }
+    px, py, pz = player
+    tables = [
+        target
+        for target, block_id in blocks.items()
+        if "crafting_table" in block_id
+        and sum((target[index] - player[index]) ** 2 for index in range(3))
+        <= 4.5**2
+    ]
+    reachable = min(
+        tables,
+        key=lambda target: sum(
+            (target[index] - player[index]) ** 2 for index in range(3)
+        ),
+        default=None,
+    )
+
+    local = None
+    for dx, dz in ((1, 0), (0, 1), (-1, 0), (0, -1)):
+        target = (px + dx, py, pz + dz)
+        below = blocks.get((target[0], target[1] - 1, target[2]), "")
+        if target not in blocks and below and not any(
+            token in below for token in ("air", "water", "lava")
+        ):
+            local = target
+            break
+    return reachable, local
 
 
 def withdraw_banked_iron(

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from baritone_client.automator.phases import iron_age
+from baritone_client.automator.phases import iron_age, iron_age_provisioning
 from baritone_client.common import resources
 from baritone_client.common.tasks import SurvivalRecoveryRequired
 
@@ -712,9 +712,9 @@ def test_mining_workstation_banks_excess_before_ground_disposal(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        iron_age,
-        "find_nearby_block",
-        lambda *_args, **_kwargs: (-92, 70, 40),
+        iron_age_provisioning,
+        "mining_workstation_targets",
+        lambda *_args, **_kwargs: ((-92, 70, 40), (-91, 70, 40)),
     )
     monkeypatch.setattr(iron_age.harness_ops, "available", lambda: True)
     monkeypatch.setattr(
@@ -725,6 +725,55 @@ def test_mining_workstation_banks_excess_before_ground_disposal(monkeypatch):
 
     assert handler._ensure_mining_workstation(client)
     assert deposits == [((-92, 70, 41), handler.state)]
+
+
+def test_mining_workstation_ignores_out_of_reach_roof_tables():
+    handler = iron_age.FoodAndIronHandler()
+    handler._read_state = lambda *_args: {
+        "block_position": {"x": -411, "y": 79, "z": -12}
+    }
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: {
+                "voxels": [
+                    {"x": -407, "y": 83, "z": -13, "id": "minecraft:crafting_table"},
+                    {"x": -410, "y": 78, "z": -12, "id": "minecraft:cobblestone"},
+                ]
+            }
+        )
+    )
+
+    assert iron_age_provisioning.mining_workstation_targets(handler, client) == (
+        None,
+        (-410, 79, -12),
+    )
+
+
+def test_mining_workstation_opens_bounded_local_target(monkeypatch):
+    handler = iron_age.FoodAndIronHandler()
+    client = SimpleNamespace()
+    opened = []
+    monkeypatch.setattr(handler, "_reserve_inventory_space", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        iron_age_provisioning,
+        "mining_workstation_targets",
+        lambda *_args: (None, (-410, 79, -12)),
+    )
+    monkeypatch.setattr(
+        iron_age,
+        "count_item",
+        lambda _client, item_id: int(item_id == "minecraft:crafting_table"),
+    )
+    monkeypatch.setattr(iron_age.harness_ops, "available", lambda: True)
+    monkeypatch.setattr(
+        iron_age.harness_ops,
+        "ensure_crafting_table_open",
+        lambda _client, table_pos=None: opened.append(table_pos) or True,
+    )
+    monkeypatch.setattr(iron_age, "_safe_close_screen", lambda *_args: None)
+
+    assert handler._ensure_mining_workstation(client)
+    assert opened == [(-410, 79, -12)]
 
 
 def test_craft_with_table_converts_absolute_target_to_missing_count(monkeypatch):
