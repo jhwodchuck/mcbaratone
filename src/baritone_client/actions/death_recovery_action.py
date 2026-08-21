@@ -288,7 +288,7 @@ def _checkpointed_retreat(state) -> Optional[Tuple[int, int, int]]:
 
 
 def _guard_grave_approach(client) -> None:
-    """Abort a naked grave route as soon as survival needs intervention."""
+    """Cancel unsafely approached graves so navigation returns ``False``."""
     state = client.transport.dispatch("get_state", {})
     health = float(state.get("health", 20) or 0)
     food = int(state.get("food_level", 20) or 0)
@@ -306,7 +306,6 @@ def _guard_grave_approach(client) -> None:
         )
     client._last_navigation_survival_abort = True
     client.transport.dispatch("cancel", {})
-    raise RuntimeError("unsafe grave approach interrupted")
 
 
 def _reach_overworld_grave(

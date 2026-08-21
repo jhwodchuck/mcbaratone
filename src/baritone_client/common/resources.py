@@ -223,36 +223,26 @@ def _find_blocks_optional(
     client,
     payload: Dict[str, Any],
     *,
-    retries: int = 3,
     label: str = "find_blocks",
 ) -> Optional[Dict[str, Any]]:
-    """Read-block search with transient retry and non-fatal fallback."""
-    attempts = 0
-    while attempts < retries:
-        attempts += 1
-        try:
-            return client.transport.dispatch("find_blocks", payload)
-        except (TransportError, CommandError) as exc:
-            message = str(exc).lower()
-            if (
-                attempts < retries
-                and (
-                    isinstance(exc, TransportError)
-                    or "player not available" in message
-                    or "not connected" in message
-                    or "connection lost" in message
-                    or "connection reset" in message
-                )
-            ):
-                print(
-                    f"{label}: find_blocks failed (attempt {attempts}/{retries}); "
-                    f"retrying"
-                )
-                time.sleep(0.5)
-                continue
-            print(f"{label}: find_blocks hard-failed: {exc}")
-            return None
-    return None
+    """Read-block search with a non-fatal ``None`` fallback on failure.
+
+    ``find_blocks`` is a READ_ONLY_ROUTE, so ``Transport.dispatch()`` already
+    retries it internally (up to 3 attempts) for these exact transient
+    conditions. This used to wrap that with its own independent 3x retry
+    loop on top, so one slow/contended bridge-side scan could balloon into
+    up to 9 raw dispatch attempts -- each up to the transport's ~15s
+    timeout, multiple minutes total -- while every attempt kept re-queuing
+    onto the bridge's single-threaded find_blocks scan executor and
+    delaying whichever caller (this one, or MappingSystem's background
+    landmark scan) got there first. Let the transport layer own retrying;
+    only add the graceful fallback here.
+    """
+    try:
+        return client.transport.dispatch("find_blocks", payload)
+    except (TransportError, CommandError) as exc:
+        print(f"{label}: find_blocks hard-failed: {exc}")
+        return None
 
 
 def _ensure_mining_pickaxe(client) -> bool:
@@ -1442,83 +1432,21 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
             label: str,
             require_horizontal: bool = False,
         ) -> str:
-            """Ask Baritone to enter one verified step and classify the result."""
-            response = _serialized_dispatch(
+            return descent_recovery.walk_to_cleared_step(
                 client,
-                "goto",
-                {"x": target_x, "y": target_y, "z": target_z},
-                post_delay_seconds=_BARITONE_MINE_SETUP_SECONDS,
+                target_x,
+                target_y,
+                target_z,
+                current_y,
+                state,
+                label=label,
+                require_horizontal=require_horizontal,
+                dispatch=_serialized_dispatch,
+                read_state=_read_state_with_retry,
+                read_flags=read_flags,
+                mine_setup_seconds=_BARITONE_MINE_SETUP_SECONDS,
+                cancel_grace_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
             )
-            if response.get("error"):
-                print(f"Y navigation: {label} goto rejected: {response['error']}")
-                return "stalled"
-
-            # Fleet-loaded clients can remain actively pathing for longer than
-            # eight seconds while calculating and mining deepslate. Cancelling
-            # that healthy work recreated Bot07's stall at every lower step.
-            move_deadline = time.monotonic() + 30.0
-            starting_health = float(state.get("health", 20) or 0)
-            last_position = (target_x, current_y, target_z)
-            while time.monotonic() < move_deadline:
-                moved, _ = _read_state_with_retry(
-                    client,
-                    retries=2,
-                    label="Y navigation cleared-step wait",
-                )
-                if moved is None:
-                    read_flags["unreadable"] = True
-                    time.sleep(0.25)
-                    continue
-                moved_pos = moved.get(
-                    "block_position", moved.get("position", {})
-                )
-                moved_x = int(moved_pos.get("x", target_x))
-                moved_y = int(moved_pos.get("y", current_y))
-                moved_z = int(moved_pos.get("z", target_z))
-                last_position = (moved_x, moved_y, moved_z)
-                moved_health = float(moved.get("health", starting_health) or 0)
-                if (
-                    moved.get("is_dead", False)
-                    or moved_health <= 0
-                    or moved_health < starting_health - 4
-                    or moved_y < target_y - 2
-                ):
-                    _serialized_dispatch(
-                        client,
-                        "cancel",
-                        {},
-                        post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
-                    )
-                    print(f"Y navigation safety abort during {label}")
-                    return "unsafe"
-                if descent_recovery.cleared_step_reached(
-                    moved_pos,
-                    target_x=target_x,
-                    target_y=target_y,
-                    target_z=target_z,
-                    require_horizontal=require_horizontal,
-                ):
-                    _serialized_dispatch(
-                        client,
-                        "cancel",
-                        {},
-                        post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
-                    )
-                    return "moved"
-                time.sleep(0.25)
-
-            _serialized_dispatch(
-                client,
-                "cancel",
-                {},
-                post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
-            )
-            print(
-                f"Y navigation: {label} goto made no downward progress; "
-                f"target=({target_x}, {target_y}, {target_z}) "
-                f"last_position={last_position}"
-            )
-            return "stalled"
 
         while time.time() - overall_start < timeout:
             state, _ = _read_state_with_retry(
