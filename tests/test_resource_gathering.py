@@ -1747,6 +1747,43 @@ def test_every_manual_grid_recipe_has_an_ensure_supplies_strategy():
     assert missing == []
 
 
+def test_craft_strategies_treat_their_quantity_as_a_shortfall(monkeypatch):
+    """ensure_supplies hands handlers a shortfall, not an absolute target.
+
+    _craft_with_table documents the opposite contract ("craft until the
+    absolute carried target qty is satisfied") and early-returns True when
+    ``count_item(item) >= qty``. Routing the shortfall straight into it makes
+    every already-well-stocked item a silent no-op that still reports success,
+    so ensure_supplies re-checks, finds the same shortfall, and spins until it
+    times out.
+
+    Confirmed live on A1 2026-08-21: carrying 14 bread and needing 15, the
+    shortfall of 1 satisfied ``14 >= 1`` instantly. FOOD_AND_IRON logged
+    "Ensuring supplies: {'minecraft:bread': 1}" every ~5.5s for the full 600s
+    window, failed "Bake durable prepared food", retried the phase, and
+    repeated on an ~11.5 minute cycle for days -- blocking prepared_food_32,
+    one of the seven uncleared End-readiness items.
+    """
+    requested = []
+
+    def fake_craft_with_table(_client, item_id, qty):
+        requested.append((item_id, qty))
+        return True
+
+    monkeypatch.setattr(resources, "_craft_with_table", fake_craft_with_table)
+    monkeypatch.setattr(resources, "count_item", lambda _client, _item: 14)
+
+    strategy = resources.DEFAULT_REQUIREMENT_STRATEGIES["minecraft:bread"]
+    strategy(object(), 1)
+
+    assert requested, "the bread strategy must reach the crafting path"
+    _item_id, absolute_target = requested[-1]
+    assert absolute_target == 15, (
+        "a shortfall of 1 on top of 14 carried must become an absolute target "
+        f"of 15, not {absolute_target}"
+    )
+
+
 def test_gathering_capacity_guard_requests_three_free_slots(monkeypatch):
     requested = []
     monkeypatch.setattr(resources, "free_inventory_slots", lambda _client: 0)

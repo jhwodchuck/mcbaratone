@@ -2274,6 +2274,16 @@ def _ensure_flamethrower_ready(client, qty: int = 1) -> bool:
     return True
 
 
+def _craft_shortfall_with_table(client, item_id: str, shortfall: int) -> bool:
+    """Translate an ``ensure_supplies`` shortfall to an absolute target."""
+    from .requirement_crafting import craft_shortfall_with_table
+
+    return craft_shortfall_with_table(
+        client, item_id, shortfall,
+        count_item=count_item, craft_with_table=_craft_with_table,
+    )
+
+
 DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
     "minecraft:oak_log": lambda client, qty: gather_wood(client, count=max(qty, 16)),
     "minecraft:cobblestone": lambda client, qty: gather_stone(client, count=max(qty, 16)),
@@ -2282,38 +2292,38 @@ DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
     "minecraft:gold_ingot": lambda client, qty: _smelt_requirement_shortfall(client, "minecraft:gold_ingot", qty),
     "minecraft:obsidian": lambda client, qty: _default_mine(client, "minecraft:obsidian", qty),
     "minecraft:crafting_table": lambda client, qty: craft(client, "minecraft:crafting_table", qty) or True,
-    "minecraft:furnace": lambda client, qty: _craft_with_table(client, "minecraft:furnace", qty),
-    "minecraft:chest": lambda client, qty: _craft_with_table(client, "minecraft:chest", qty),
+    "minecraft:furnace": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:furnace", qty),
+    "minecraft:chest": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:chest", qty),
     # Early game wooden tools (2x2 crafting)
     "minecraft:stick": lambda client, qty: (_safe_close_screen(client, "stick"), craft(client, "minecraft:stick", max(qty, 4)), time.sleep(1)),
     "minecraft:oak_planks": lambda client, qty: (_safe_close_screen(client, "plank"), craft(client, "minecraft:oak_planks", qty), time.sleep(1)),
     # Wooden tools (3x3 crafting table required)
-    "minecraft:wooden_pickaxe": lambda client, qty: _craft_with_table(client, "minecraft:wooden_pickaxe", qty),
-    "minecraft:wooden_sword": lambda client, qty: _craft_with_table(client, "minecraft:wooden_sword", qty),
-    "minecraft:wooden_axe": lambda client, qty: _craft_with_table(client, "minecraft:wooden_axe", qty),
-    "minecraft:wooden_shovel": lambda client, qty: _craft_with_table(client, "minecraft:wooden_shovel", qty),
+    "minecraft:wooden_pickaxe": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:wooden_pickaxe", qty),
+    "minecraft:wooden_sword": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:wooden_sword", qty),
+    "minecraft:wooden_axe": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:wooden_axe", qty),
+    "minecraft:wooden_shovel": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:wooden_shovel", qty),
     # Stone tools
-    "minecraft:stone_pickaxe": lambda client, qty: (_safe_close_screen(client, "stone_pickaxe"), _craft_with_table(client, "minecraft:stone_pickaxe", qty)),
-    "minecraft:stone_sword": lambda client, qty: (_safe_close_screen(client, "stone_sword"), _craft_with_table(client, "minecraft:stone_sword", qty)),
-    "minecraft:stone_axe": lambda client, qty: (_safe_close_screen(client, "stone_axe"), _craft_with_table(client, "minecraft:stone_axe", qty)),
-    "minecraft:stone_shovel": lambda client, qty: (_safe_close_screen(client, "stone_shovel"), _craft_with_table(client, "minecraft:stone_shovel", qty)),
-    "minecraft:iron_pickaxe": lambda client, qty: _craft_with_table(client, "minecraft:iron_pickaxe", qty),
-    "minecraft:iron_sword": lambda client, qty: _craft_with_table(client, "minecraft:iron_sword", qty),
-    "minecraft:iron_axe": lambda client, qty: _craft_with_table(client, "minecraft:iron_axe", qty),
-    "minecraft:iron_shovel": lambda client, qty: _craft_with_table(client, "minecraft:iron_shovel", qty),
-    "minecraft:iron_helmet": lambda client, qty: _craft_with_table(client, "minecraft:iron_helmet", qty),
-    "minecraft:iron_chestplate": lambda client, qty: _craft_with_table(client, "minecraft:iron_chestplate", qty),
-    "minecraft:iron_leggings": lambda client, qty: _craft_with_table(client, "minecraft:iron_leggings", qty),
-    "minecraft:iron_boots": lambda client, qty: _craft_with_table(client, "minecraft:iron_boots", qty),
-    "minecraft:diamond_pickaxe": lambda client, qty: _craft_with_table(client, "minecraft:diamond_pickaxe", qty),
-    "minecraft:diamond_sword": lambda client, qty: _craft_with_table(client, "minecraft:diamond_sword", qty),
-    "minecraft:bow": lambda client, qty: _craft_with_table(client, "minecraft:bow", qty),
-    "minecraft:arrow": lambda client, qty: _craft_with_table(client, "minecraft:arrow", max(qty, 32)),
+    "minecraft:stone_pickaxe": lambda client, qty: (_safe_close_screen(client, "stone_pickaxe"), _craft_shortfall_with_table(client, "minecraft:stone_pickaxe", qty)),
+    "minecraft:stone_sword": lambda client, qty: (_safe_close_screen(client, "stone_sword"), _craft_shortfall_with_table(client, "minecraft:stone_sword", qty)),
+    "minecraft:stone_axe": lambda client, qty: (_safe_close_screen(client, "stone_axe"), _craft_shortfall_with_table(client, "minecraft:stone_axe", qty)),
+    "minecraft:stone_shovel": lambda client, qty: (_safe_close_screen(client, "stone_shovel"), _craft_shortfall_with_table(client, "minecraft:stone_shovel", qty)),
+    "minecraft:iron_pickaxe": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:iron_pickaxe", qty),
+    "minecraft:iron_sword": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:iron_sword", qty),
+    "minecraft:iron_axe": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:iron_axe", qty),
+    "minecraft:iron_shovel": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:iron_shovel", qty),
+    "minecraft:iron_helmet": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:iron_helmet", qty),
+    "minecraft:iron_chestplate": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:iron_chestplate", qty),
+    "minecraft:iron_leggings": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:iron_leggings", qty),
+    "minecraft:iron_boots": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:iron_boots", qty),
+    "minecraft:diamond_pickaxe": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:diamond_pickaxe", qty),
+    "minecraft:diamond_sword": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:diamond_sword", qty),
+    "minecraft:bow": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:bow", qty),
+    "minecraft:arrow": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:arrow", max(qty, 32)),
     "minecraft:string": lambda client, qty: hunt_mobs(client, ["spider", "cave_spider"], {"minecraft:string": qty}, search_radius=64, timeout=300).success,
     "minecraft:feather": lambda client, qty: hunt_mobs(client, ["chicken"], {"minecraft:feather": qty}, search_radius=50, timeout=300).success,
     "minecraft:flint": lambda client, qty: gather_gravel(client, count=qty),
-    "minecraft:shield": lambda client, qty: _craft_with_table(client, "minecraft:shield", qty),
-    "minecraft:bucket": lambda client, qty: _craft_with_table(client, "minecraft:bucket", qty),
+    "minecraft:shield": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:shield", qty),
+    "minecraft:bucket": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:bucket", qty),
     "minecraft:water_bucket": lambda client, qty: gather_water(client, count=qty),
     # Craft-from-carried-ingredients handlers for the progression recipes the
     # manual grid can drive (see _MANUAL_GRID_RECIPES). Without an entry,
@@ -2321,15 +2331,15 @@ DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
     # timeout: end_game's ensure_supplies({"minecraft:ender_eye": 12}) would
     # have dead-ended exactly that way. Ingredient ACQUISITION (rods, pearls,
     # sugar cane, leather, obsidian) belongs to the owning phases.
-    "minecraft:flint_and_steel": lambda client, qty: _ensure_flamethrower_ready(client, qty) and _craft_with_table(client, "minecraft:flint_and_steel", qty),
-    "minecraft:paper": lambda client, qty: _craft_with_table(client, "minecraft:paper", qty),
-    "minecraft:book": lambda client, qty: _craft_with_table(client, "minecraft:book", qty),
-    "minecraft:bookshelf": lambda client, qty: _craft_with_table(client, "minecraft:bookshelf", qty),
-    "minecraft:enchanting_table": lambda client, qty: _craft_with_table(client, "minecraft:enchanting_table", qty),
-    "minecraft:blaze_powder": lambda client, qty: _craft_with_table(client, "minecraft:blaze_powder", qty),
-    "minecraft:ender_eye": lambda client, qty: _craft_with_table(client, "minecraft:ender_eye", qty),
-    "minecraft:shulker_box": lambda client, qty: _craft_with_table(client, "minecraft:shulker_box", qty),
-    "minecraft:ladder": lambda client, qty: _craft_with_table(client, "minecraft:ladder", qty),
+    "minecraft:flint_and_steel": lambda client, qty: _ensure_flamethrower_ready(client, qty) and _craft_shortfall_with_table(client, "minecraft:flint_and_steel", qty),
+    "minecraft:paper": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:paper", qty),
+    "minecraft:book": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:book", qty),
+    "minecraft:bookshelf": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:bookshelf", qty),
+    "minecraft:enchanting_table": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:enchanting_table", qty),
+    "minecraft:blaze_powder": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:blaze_powder", qty),
+    "minecraft:ender_eye": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:ender_eye", qty),
+    "minecraft:shulker_box": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:shulker_box", qty),
+    "minecraft:ladder": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:ladder", qty),
 }
 
 # A manual-grid recipe is, by definition, a supported ensure_supplies target.
@@ -2339,7 +2349,7 @@ DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
 for _manual_item_id in inventory._MANUAL_GRID_RECIPES:
     DEFAULT_REQUIREMENT_STRATEGIES.setdefault(
         _manual_item_id,
-        lambda client, qty, item_id=_manual_item_id: _craft_with_table(
+        lambda client, qty, item_id=_manual_item_id: _craft_shortfall_with_table(
             client, item_id, qty
         ),
     )
