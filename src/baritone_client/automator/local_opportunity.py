@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 
 class OpportunityKind(str, Enum):
@@ -42,6 +42,32 @@ class LocalOpportunity:
     target_item: str = ""
     assigned_role: str = ""
     aid_request_id: str = ""
+
+
+def record_opportunity_result(runtime: dict[str, Any], result: Any, now: float) -> None:
+    """Persist one bounded opportunity outcome in scheduler runtime state."""
+    opportunities = runtime.setdefault("opportunities", {})
+    if not isinstance(opportunities, dict):
+        opportunities = {}
+        runtime["opportunities"] = opportunities
+    prior = opportunities.get(result.opportunity.kind.value, {})
+    prior = prior if isinstance(prior, Mapping) else {}
+    delta = max(0, int(result.after) - int(result.before))
+    opportunities[result.opportunity.kind.value] = {
+        "last_attempt": now,
+        "success": result.success,
+        "detail": result.detail,
+        "before": result.before,
+        "after": result.after,
+        "target": result.opportunity.target_item
+        or result.opportunity.animal_type
+        or list(result.opportunity.location or ()),
+        "attempts": int(prior.get("attempts", 0) or 0) + 1,
+        "successful_cycles": int(prior.get("successful_cycles", 0) or 0)
+        + int(result.success),
+        "verified_delta_total": int(prior.get("verified_delta_total", 0) or 0)
+        + delta,
+    }
 
 
 def local_work_blockers(signals: object) -> Tuple[str, ...]:
@@ -93,4 +119,5 @@ __all__ = [
     "OpportunityKind",
     "local_work_blockers",
     "local_work_hold_reason",
+    "record_opportunity_result",
 ]

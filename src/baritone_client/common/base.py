@@ -1487,45 +1487,13 @@ def _matches_house_role(block_id: str, role: str) -> bool:
 
 
 def summarize_house_progress(client, x: int, y: int, z: int) -> dict[str, int | bool]:
-    """Return the starter house's current completion state by block role.
+    """Return the starter house's current completion state by block role."""
+    from .house_progress import summarize_house_progress as summarize
 
-    Shared by base_construction.py (during the build) and house_upkeep.py
-    (any time afterward): both need the same world-verified counts, and
-    duplicating this survey let one copy drift from the block-role rules in
-    ``_matches_house_role`` while the other didn't.
-    """
-    wait_for_chunk_loaded(client, x, y, z)
-    plan = _good_house_plan(x, y, z)
-    floor_total = 0
-    floor_ok = 0
-    shell_total = 0
-    shell_ok = 0
-    roof_total = 0
-    roof_ok = 0
-
-    for tx, ty, tz, role in plan:
-        role_id = _house_block_id(client, tx, ty, tz)
-        if role == "floor":
-            floor_total += 1
-            floor_ok += int(_matches_house_role(role_id, "floor"))
-        elif role == "shell":
-            shell_total += 1
-            shell_ok += int(_matches_house_role(role_id, "shell"))
-        elif role == "roof":
-            roof_total += 1
-            roof_ok += int(_matches_house_role(role_id, "roof"))
-
-    door_x = x + 3
-    door_present = _house_door_aligned(client, door_x, y + 1, z)
-    return {
-        "floor": floor_ok,
-        "shell": shell_ok,
-        "roof": roof_ok,
-        "floor_total": floor_total,
-        "shell_total": shell_total,
-        "roof_total": roof_total,
-        "door_present": door_present,
-    }
+    return summarize(
+        client, x, y, z, wait_for_chunk_loaded, _good_house_plan,
+        _house_block_id, _matches_house_role, _house_door_aligned,
+    )
 
 
 def _wait_for_build_window(client, latest_start: int = 9000) -> bool:
@@ -1898,4 +1866,3 @@ def loot_nearby_chests(client, radius: int = 16) -> bool:
     from .base_looting import loot_nearby_chests as implementation
 
     return implementation(client, radius)
-

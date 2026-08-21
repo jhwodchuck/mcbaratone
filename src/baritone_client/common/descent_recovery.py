@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, Callable, Collection, Optional
 
 from .movement_recovery import block_position
@@ -27,6 +28,76 @@ def cleared_step_reached(
         if (moved_x, moved_z) != (target_x, target_z):
             return False
     return True
+
+
+def walk_to_cleared_step(
+    client: Any,
+    target_x: int,
+    target_y: int,
+    target_z: int,
+    current_y: int,
+    state: dict[str, Any],
+    *,
+    label: str,
+    require_horizontal: bool,
+    dispatch: Callable[..., dict[str, Any]],
+    read_state: Callable[..., Any],
+    read_flags: dict[str, bool],
+    mine_setup_seconds: float,
+    cancel_grace_seconds: float,
+) -> str:
+    """Enter one verified step and classify movement, stall, or danger."""
+    response = dispatch(
+        client,
+        "goto",
+        {"x": target_x, "y": target_y, "z": target_z},
+        post_delay_seconds=mine_setup_seconds,
+    )
+    if response.get("error"):
+        print(f"Y navigation: {label} goto rejected: {response['error']}")
+        return "stalled"
+
+    move_deadline = time.monotonic() + 30.0
+    starting_health = float(state.get("health", 20) or 0)
+    last_position = (target_x, current_y, target_z)
+    while time.monotonic() < move_deadline:
+        moved, _ = read_state(client, retries=2, label="Y navigation cleared-step wait")
+        if moved is None:
+            read_flags["unreadable"] = True
+            time.sleep(0.25)
+            continue
+        moved_pos = moved.get("block_position", moved.get("position", {}))
+        moved_x = int(moved_pos.get("x", target_x))
+        moved_y = int(moved_pos.get("y", current_y))
+        moved_z = int(moved_pos.get("z", target_z))
+        last_position = (moved_x, moved_y, moved_z)
+        moved_health = float(moved.get("health", starting_health) or 0)
+        if (
+            moved.get("is_dead", False)
+            or moved_health <= 0
+            or moved_health < starting_health - 4
+            or moved_y < target_y - 2
+        ):
+            dispatch(client, "cancel", {}, post_delay_seconds=cancel_grace_seconds)
+            print(f"Y navigation safety abort during {label}")
+            return "unsafe"
+        if cleared_step_reached(
+            moved_pos,
+            target_x=target_x,
+            target_y=target_y,
+            target_z=target_z,
+            require_horizontal=require_horizontal,
+        ):
+            dispatch(client, "cancel", {}, post_delay_seconds=cancel_grace_seconds)
+            return "moved"
+        time.sleep(0.25)
+
+    dispatch(client, "cancel", {}, post_delay_seconds=cancel_grace_seconds)
+    print(
+        f"Y navigation: {label} goto made no downward progress; "
+        f"target=({target_x}, {target_y}, {target_z}) last_position={last_position}"
+    )
+    return "stalled"
 
 
 def attempt_water_pocket_sidestep(

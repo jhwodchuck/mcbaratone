@@ -21,6 +21,7 @@ The same rule is applied to terrain in ``terraform_verify`` and to portals in
 
 from __future__ import annotations
 
+import time
 from typing import Any, Optional, Tuple
 
 
@@ -116,3 +117,133 @@ def forget_missing_container(
         print(f"STORAGE: forgetting missing container at {tuple(position)}")
     except Exception as exc:
         print(f"STORAGE: missing-container catalog update deferred ({exc})")
+
+
+def clear_occluded_container_face(
+    client: Any, position: Tuple[int, int, int], _block_id: str = ""
+) -> None:
+    """Clear solid blocks that prevent horizontal container interaction."""
+    cx, cy, cz = (int(axis) for axis in position)
+    try:
+        state = client.transport.dispatch("get_state", {})
+        data = state.get("data", state)
+        player = data.get("block_position") or data.get("position", {})
+        px = int(round(float(player["x"])))
+        pz = int(round(float(player["z"])))
+    except (KeyError, TypeError, ValueError):
+        print("STORAGE: could not read position to clear an occluded chest face")
+        return
+
+    dx = 0 if cx == px else (1 if px < cx else -1)
+    dz = 0 if cz == pz else (1 if pz < cz else -1)
+    candidates = []
+    if dx:
+        candidates.extend(((cx - dx, cy, cz), (cx - dx, cy + 1, cz)))
+    if dz:
+        candidates.extend(((cx, cy, cz - dz), (cx, cy + 1, cz - dz)))
+    candidates.append((cx, cy + 1, cz))
+
+    for bx, by, bz in candidates:
+        try:
+            block = client.transport.dispatch(
+                "get_block", {"x": bx, "y": by, "z": bz}
+            ).get("id", "")
+        except Exception:
+            continue
+        if block in {"", "minecraft:air", "minecraft:cave_air", "minecraft:void_air"}:
+            continue
+        if is_storage_container(block):
+            continue
+        print(
+            f"STORAGE: chest at {(cx, cy, cz)} face {(bx, by, bz)} is "
+            f"occluded by {block}; clearing it"
+        )
+        try:
+            client.transport.dispatch(
+                "look_at", {"x": bx + 0.5, "y": by + 0.5, "z": bz + 0.5}
+            )
+            client.transport.dispatch("break_block", {"x": bx, "y": by, "z": bz})
+        except Exception as exc:
+            print(f"STORAGE: could not clear occluded chest face: {exc}")
+        deadline = time.time() + 6.0
+        while time.time() < deadline:
+            time.sleep(0.4)
+            try:
+                after = client.transport.dispatch(
+                    "get_block", {"x": bx, "y": by, "z": bz}
+                ).get("id", "")
+            except Exception:
+                after = ""
+            if after in {"", "minecraft:air", "minecraft:cave_air", "minecraft:void_air"}:
+                break
+
+
+def open_verified_container(
+    client: Any,
+    position: Tuple[int, int, int],
+    *,
+    attempts: int,
+    allow_recovery_access: bool,
+) -> Optional[dict]:
+    """Approach and open a container, returning only a verified screen."""
+    from . import harness_ops
+    from .navigation import goto
+
+    cx, cy, cz = (int(axis) for axis in position)
+    for sx, sy, sz in (
+        (cx + 1, cy, cz), (cx + 1, cy, cz + 1), (cx, cy, cz + 1),
+        (cx - 1, cy, cz), (cx, cy, cz - 1), (cx - 1, cy, cz - 1),
+    ):
+        stand = client.transport.dispatch(
+            "get_block", {"x": sx, "y": sy, "z": sz}
+        ).get("id", "")
+        floor = client.transport.dispatch(
+            "get_block", {"x": sx, "y": sy - 1, "z": sz}
+        ).get("id", "")
+        if "air" not in stand or "air" in floor:
+            continue
+        goto(client, sx, sy, sz, timeout=20, check_interval=0.25, tolerance=0.5)
+        break
+
+    screen: dict = {}
+    try:
+        if harness_ops.available() and harness_ops.open_container(
+            client,
+            (cx, cy, cz),
+            timeout=4.0,
+            attempts=attempts,
+            allow_recovery_access=allow_recovery_access,
+        ):
+            screen = client.transport.dispatch("get_screen", {})
+            data = screen.get("data", screen)
+            total_slots = int(data.get("total_slots") or len(data.get("slots", [])))
+            if total_slots in (63, 90):
+                return screen
+    except Exception as exc:
+        print(f"STORAGE: verified chest opener failed ({exc}); retrying natively")
+
+    for _attempt in range(3):
+        try:
+            client.transport.dispatch(
+                "look_at", {"x": cx + 0.5, "y": cy + 0.5, "z": cz + 0.5}
+            )
+            time.sleep(0.2)
+        except Exception:
+            pass
+        try:
+            client.transport.dispatch("interact_block", {"x": cx, "y": cy, "z": cz})
+        except Exception as exc:
+            print(f"STORAGE: native interact_block failed ({exc})")
+            continue
+        for _ in range(20):
+            try:
+                screen = client.transport.dispatch("get_screen", {})
+            except Exception:
+                break
+            data = screen.get("data", screen)
+            total_slots = int(data.get("total_slots") or len(data.get("slots", [])))
+            if total_slots in (63, 90):
+                return screen
+            time.sleep(0.1)
+        client.transport.dispatch("close_screen", {})
+    return None

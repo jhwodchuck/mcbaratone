@@ -1432,83 +1432,21 @@ def go_to_y_level(client, y: int, timeout: int = 300) -> bool:
             label: str,
             require_horizontal: bool = False,
         ) -> str:
-            """Ask Baritone to enter one verified step and classify the result."""
-            response = _serialized_dispatch(
+            return descent_recovery.walk_to_cleared_step(
                 client,
-                "goto",
-                {"x": target_x, "y": target_y, "z": target_z},
-                post_delay_seconds=_BARITONE_MINE_SETUP_SECONDS,
+                target_x,
+                target_y,
+                target_z,
+                current_y,
+                state,
+                label=label,
+                require_horizontal=require_horizontal,
+                dispatch=_serialized_dispatch,
+                read_state=_read_state_with_retry,
+                read_flags=read_flags,
+                mine_setup_seconds=_BARITONE_MINE_SETUP_SECONDS,
+                cancel_grace_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
             )
-            if response.get("error"):
-                print(f"Y navigation: {label} goto rejected: {response['error']}")
-                return "stalled"
-
-            # Fleet-loaded clients can remain actively pathing for longer than
-            # eight seconds while calculating and mining deepslate. Cancelling
-            # that healthy work recreated Bot07's stall at every lower step.
-            move_deadline = time.monotonic() + 30.0
-            starting_health = float(state.get("health", 20) or 0)
-            last_position = (target_x, current_y, target_z)
-            while time.monotonic() < move_deadline:
-                moved, _ = _read_state_with_retry(
-                    client,
-                    retries=2,
-                    label="Y navigation cleared-step wait",
-                )
-                if moved is None:
-                    read_flags["unreadable"] = True
-                    time.sleep(0.25)
-                    continue
-                moved_pos = moved.get(
-                    "block_position", moved.get("position", {})
-                )
-                moved_x = int(moved_pos.get("x", target_x))
-                moved_y = int(moved_pos.get("y", current_y))
-                moved_z = int(moved_pos.get("z", target_z))
-                last_position = (moved_x, moved_y, moved_z)
-                moved_health = float(moved.get("health", starting_health) or 0)
-                if (
-                    moved.get("is_dead", False)
-                    or moved_health <= 0
-                    or moved_health < starting_health - 4
-                    or moved_y < target_y - 2
-                ):
-                    _serialized_dispatch(
-                        client,
-                        "cancel",
-                        {},
-                        post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
-                    )
-                    print(f"Y navigation safety abort during {label}")
-                    return "unsafe"
-                if descent_recovery.cleared_step_reached(
-                    moved_pos,
-                    target_x=target_x,
-                    target_y=target_y,
-                    target_z=target_z,
-                    require_horizontal=require_horizontal,
-                ):
-                    _serialized_dispatch(
-                        client,
-                        "cancel",
-                        {},
-                        post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
-                    )
-                    return "moved"
-                time.sleep(0.25)
-
-            _serialized_dispatch(
-                client,
-                "cancel",
-                {},
-                post_delay_seconds=_BARITONE_CANCEL_GRACE_SECONDS,
-            )
-            print(
-                f"Y navigation: {label} goto made no downward progress; "
-                f"target=({target_x}, {target_y}, {target_z}) "
-                f"last_position={last_position}"
-            )
-            return "stalled"
 
         while time.time() - overall_start < timeout:
             state, _ = _read_state_with_retry(

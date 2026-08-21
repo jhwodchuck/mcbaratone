@@ -27,7 +27,13 @@ from . import aid_response, armor_upkeep, camp_breaker, food_opportunity, house_
 from .common.role_opportunities import run_role_opportunity
 from .common.crop_opportunity import run_crop_opportunity
 from .iron_scheduler import run_scheduled_iron_cycle
-from .local_opportunity import LocalOpportunity, OpportunityKind, local_work_blockers, local_work_hold_reason
+from .local_opportunity import (
+    LocalOpportunity,
+    OpportunityKind,
+    local_work_blockers,
+    local_work_hold_reason,
+    record_opportunity_result,
+)
 from .safety_recovery import run_self_defense
 from .objective import Objective
 from .state_manager import Phase
@@ -777,28 +783,7 @@ class AdaptiveScheduler:
     def _cooldown_ready(self, kind: OpportunityKind, now: float) -> bool: return food_opportunity.cooldown_ready(self._runtime(), kind, now, self._COOLDOWNS)
 
     def _record_opportunity_result(self, result: OpportunityResult) -> None:
-        runtime = self._runtime()
-        opportunities = runtime.setdefault("opportunities", {})
-        if not isinstance(opportunities, dict):
-            opportunities = {}
-            runtime["opportunities"] = opportunities
-        prior = opportunities.get(result.opportunity.kind.value, {})
-        prior = prior if isinstance(prior, Mapping) else {}
-        delta = max(0, int(result.after) - int(result.before))
-        opportunities[result.opportunity.kind.value] = {
-            "last_attempt": time.time(),
-            "success": result.success,
-            "detail": result.detail,
-            "before": result.before,
-            "after": result.after,
-            "target": result.opportunity.target_item or result.opportunity.animal_type
-            or list(result.opportunity.location or ()),
-            "attempts": int(prior.get("attempts", 0) or 0) + 1,
-            "successful_cycles": int(prior.get("successful_cycles", 0) or 0)
-            + int(result.success),
-            "verified_delta_total": int(prior.get("verified_delta_total", 0) or 0)
-            + delta,
-        }
+        record_opportunity_result(self._runtime(), result, time.time())
 
 
 __all__ = [
