@@ -465,6 +465,7 @@ HOME_LOCATION_*.json
 bounded_*_status.json
 /artifacts/
 /.codex_merge_*.py
+/.aider*
 
 # mcbaratone runtime state (never source or acceptance evidence by itself)
 /.current_run_log
