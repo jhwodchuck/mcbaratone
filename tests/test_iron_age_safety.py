@@ -2574,6 +2574,34 @@ def test_initial_smelt_does_not_defer_raw_iron_for_nearly_broken_pick(monkeypatc
     assert requested == [{"minecraft:iron_ingot": 6}]
 
 
+def test_stage_marker_does_not_defer_raw_iron_when_live_kit_is_missing(monkeypatch):
+    counts = {
+        "minecraft:iron_ingot": 0,
+        "minecraft:raw_iron": 15,
+        "minecraft:bucket": 1,
+        "minecraft:furnace": 1,
+    }
+    requested = []
+    handler = iron_age.FoodAndIronHandler()
+    handler.state = SimpleNamespace(
+        custom_data={"food_and_iron_stage": {"stage": "deep_mining"}}
+    )
+    monkeypatch.setattr(
+        iron_age, "count_item", lambda _client, item_id: counts.get(item_id, 0)
+    )
+    monkeypatch.setattr(iron_age, "find_nearby_block", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        iron_age,
+        "ensure_supplies",
+        lambda _client, requirements, **_kwargs: (
+            requested.append(dict(requirements)) or SimpleNamespace(success=True)
+        ),
+    )
+
+    assert handler._smelt_iron(SimpleNamespace())
+    assert requested == [{"minecraft:iron_ingot": 6}]
+
+
 def test_loaded_furnace_starter_batch_unblocks_initial_smelting(monkeypatch):
     inventory = {"minecraft:raw_iron": 0, "minecraft:iron_ingot": 0}
     furnace_pos = (1, 64, 1)

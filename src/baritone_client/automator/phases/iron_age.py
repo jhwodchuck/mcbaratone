@@ -1092,12 +1092,9 @@ class FoodAndIronHandler(PhaseHandler):
         """Smelt raw iron into ingots using furnace."""
         # Uses imports from file header: ensure_supplies, gather_stone, count_item
 
-        if not force and (
-            self._total_owned(client, "minecraft:diamond") >= 5
-            or iron_age_progress.stage_is_deep_mining(self.state)
-        ):
+        if not force and self._total_owned(client, "minecraft:diamond") >= 5:
             print(
-                "  Deep-mining leg already reached; deferring carried raw "
+                "  Deep-mining haul already reached; deferring carried raw "
                 "iron until the post-haul return."
             )
             return True
