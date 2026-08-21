@@ -2275,26 +2275,13 @@ def _ensure_flamethrower_ready(client, qty: int = 1) -> bool:
 
 
 def _craft_shortfall_with_table(client, item_id: str, shortfall: int) -> bool:
-    """Craft ``shortfall`` more of ``item_id`` on top of what is carried.
+    """Translate an ``ensure_supplies`` shortfall to an absolute target."""
+    from .requirement_crafting import craft_shortfall_with_table
 
-    ``ensure_supplies`` hands every strategy a *shortfall* (``_missing_requirements``
-    returns ``required - current``), but ``_craft_with_table`` takes an *absolute*
-    carried target and early-returns True when ``count_item(item_id) >= qty``.
-    Feeding the shortfall straight in makes any well-stocked item a silent
-    no-op that still reports success, so ``ensure_supplies`` re-checks, finds
-    the same shortfall, and spins until it times out.
-
-    Live on A1 2026-08-21: carrying 14 bread and needing 15, the shortfall of 1
-    satisfied ``14 >= 1`` instantly. FOOD_AND_IRON logged the same
-    "Ensuring supplies: {'minecraft:bread': 1}" line every ~5.5s for the full
-    600s window, failed "Bake durable prepared food", retried the phase, and
-    repeated on an ~11.5 minute cycle for days.
-
-    Callers outside this strategy map pass real absolute targets and must keep
-    calling ``_craft_with_table`` directly.
-    """
-    carried = count_item(client, item_id)
-    return _craft_with_table(client, item_id, carried + max(1, int(shortfall)))
+    return craft_shortfall_with_table(
+        client, item_id, shortfall,
+        count_item=count_item, craft_with_table=_craft_with_table,
+    )
 
 
 DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
