@@ -249,6 +249,61 @@ def find_farm_surface_near(
     return None
 
 
+def find_reusable_farm_water(
+    client,
+    x: int,
+    y: int,
+    z: int,
+    *,
+    size: int = 5,
+    horizontal_radius: int = 24,
+) -> Optional[Tuple[int, int, int]]:
+    """Find a source left by an interrupted farm build on usable soil."""
+    try:
+        view = client.transport.dispatch(
+            "get_view", {"radius": max(8, int(horizontal_radius))}
+        )
+        data = view.get("data", view) if isinstance(view, dict) else {}
+        voxels = data.get("voxels", []) if isinstance(data, dict) else []
+        blocks = {
+            (int(block["x"]), int(block["y"]), int(block["z"])): str(
+                block.get("id", "")
+            )
+            for block in voxels
+            if isinstance(block, dict)
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    tillable = {"minecraft:dirt", "minecraft:grass_block", "minecraft:farmland"}
+    half = size // 2
+    candidates = []
+    for position, block_id in blocks.items():
+        px, py, pz = position
+        if "water" not in block_id or abs(py - y) > 6:
+            continue
+        distance_sq = (px - x) ** 2 + (pz - z) ** 2
+        if distance_sq > horizontal_radius**2:
+            continue
+        if max(abs(px - x), abs(pz - z)) <= half:
+            continue
+        usable = sum(
+            1
+            for dx in range(-half, half + 1)
+            for dz in range(-half, half + 1)
+            if (dx or dz)
+            and blocks.get((px + dx, py, pz + dz)) in tillable
+            and blocks.get((px + dx, py + 1, pz + dz)) in _FARM_REPLACEABLE
+        )
+        if usable:
+            candidates.append((usable, -distance_sq, position))
+
+    for _usable, _distance, position in sorted(candidates, reverse=True):
+        if _is_water_source(_block_data(client, *position)):
+            return position
+    return None
+
+
 def _ensure_farm_bucket(client, state=None) -> bool:
     """Recover or craft the empty bucket needed to irrigate a new farm."""
     if count_item(client, "minecraft:bucket") >= 1:
@@ -570,13 +625,17 @@ def relocate_wheat_farm(
     search_radius: int = 24,
 ) -> Optional[Tuple[int, int, int]]:
     """Move an unusable persisted farm to a nearby verified soil patch."""
-    surface = find_farm_surface_near(
-        client,
-        x,
-        y,
-        z,
-        horizontal_radius=search_radius,
+    surface = find_reusable_farm_water(
+        client, x, y, z, size=size, horizontal_radius=search_radius
     )
+    if surface is None:
+        surface = find_farm_surface_near(
+            client,
+            x,
+            y,
+            z,
+            horizontal_radius=search_radius,
+        )
     if surface is None:
         return None
     if max(abs(surface[0] - x), abs(surface[2] - z)) <= size // 2:
