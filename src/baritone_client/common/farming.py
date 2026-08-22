@@ -365,6 +365,18 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
 
     center = _block_id(client, x, y, z)
     if center not in air:
+        if center not in {*_FARM_SOIL_ITEMS, "minecraft:farmland"} and not any(
+            select_item(client, pickaxe, allow_swap=True)
+            for pickaxe in (
+                "minecraft:netherite_pickaxe",
+                "minecraft:diamond_pickaxe",
+                "minecraft:iron_pickaxe",
+                "minecraft:stone_pickaxe",
+                "minecraft:wooden_pickaxe",
+            )
+        ):
+            print(f"  No pickaxe is available to clear {center} from the farm center.")
+            return False
         try:
             client.transport.dispatch(
                 "dig_block",

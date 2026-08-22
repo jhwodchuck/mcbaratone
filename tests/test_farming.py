@@ -200,10 +200,11 @@ def test_ensure_farm_water_repairs_elevated_source_that_floods_crops(monkeypatch
     }
     inventory = {"minecraft:bucket": 1, "minecraft:water_bucket": 0}
     selected = {"item": None}
+    selections = []
 
     def extra(route, payload, blocks_map):
         target = (payload.get("x"), payload.get("y"), payload.get("z"))
-        if route == "dig_block":
+        if route == "dig_block" and str(selected["item"]).endswith("_pickaxe"):
             blocks_map[target] = "minecraft:air"
             return {"started": True}
         if route == "use_item" and selected["item"] == "minecraft:bucket":
@@ -222,11 +223,18 @@ def test_ensure_farm_water_repairs_elevated_source_that_floods_crops(monkeypatch
     monkeypatch.setattr(
         farming, "count_item", lambda _client, item: inventory.get(item, 0)
     )
-    monkeypatch.setattr(
-        farming,
-        "select_item",
-        lambda _client, item, **_kwargs: selected.__setitem__("item", item) or True,
-    )
+    def select(_client, item, **_kwargs):
+        if item not in {
+            "minecraft:bucket",
+            "minecraft:water_bucket",
+            "minecraft:iron_pickaxe",
+        }:
+            return False
+        selected["item"] = item
+        selections.append(item)
+        return True
+
+    monkeypatch.setattr(farming, "select_item", select)
     monkeypatch.setattr(farming, "goto", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(farming.time, "sleep", lambda _seconds: None)
 
@@ -235,6 +243,10 @@ def test_ensure_farm_water_repairs_elevated_source_that_floods_crops(monkeypatch
     assert blocks[(10, 65, 10)] == "minecraft:air"
     assert ("look_at", {"x": 10.5, "y": 65.5, "z": 10.5}) in calls
     assert ("look_at", {"x": 10.5, "y": 63.5, "z": 10.5}) in calls
+    assert "minecraft:iron_pickaxe" in selections
+    assert selections.index("minecraft:iron_pickaxe") < selections.index(
+        "minecraft:water_bucket"
+    )
 
 
 def test_ensure_farm_water_fails_with_no_source_and_no_bucket(monkeypatch):
