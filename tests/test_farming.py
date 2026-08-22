@@ -16,6 +16,18 @@ def _client(blocks=None, dispatch_extra=None):
             key = (payload.get("x"), payload.get("y"), payload.get("z"))
             value = blocks.get(key, "minecraft:air")
             return value if isinstance(value, dict) else {"id": value}
+        if route == "get_view":
+            return {
+                "voxels": [
+                    {
+                        "x": x,
+                        "y": y,
+                        "z": z,
+                        "id": value.get("id") if isinstance(value, dict) else value,
+                    }
+                    for (x, y, z), value in blocks.items()
+                ]
+            }
         if dispatch_extra is not None:
             result = dispatch_extra(route, payload, blocks)
             if result is not None:
@@ -319,6 +331,45 @@ def test_relocate_wheat_farm_updates_checkpointed_crop_source(monkeypatch):
     assert source["irrigated"] is True
     assert source["planted"] == 1
     assert state.custom_data["crop_hold"]["hold_streak"] == 0
+
+
+def test_relocate_wheat_farm_reuses_interrupted_build_water_source(monkeypatch):
+    blocks = {
+        (20, 64, 20): {
+            "id": "minecraft:water",
+            "state": {"level": "0"},
+        }
+    }
+    for dx in range(-2, 3):
+        for dz in range(-2, 3):
+            if dx or dz:
+                blocks[(20 + dx, 64, 20 + dz)] = "minecraft:grass_block"
+                blocks[(20 + dx, 65, 20 + dz)] = "minecraft:air"
+    client, _calls, _blocks = _client(blocks=blocks)
+    established = []
+    monkeypatch.setattr(
+        farming,
+        "establish_wheat_farm",
+        lambda _client, x, y, z, **_kwargs: (
+            established.append((x, y, z)) or (x, y, z)
+        ),
+    )
+    monkeypatch.setattr(
+        farming,
+        "find_farm_surface_near",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a valid interrupted source should be reused")
+        ),
+    )
+
+    assert farming.relocate_wheat_farm(
+        client,
+        10,
+        64,
+        10,
+        state=SimpleNamespace(custom_data={}),
+    ) == (20, 64, 20)
+    assert established == [(20, 64, 20)]
 
 
 def test_ensure_farm_water_fails_with_no_source_and_no_bucket(monkeypatch):
