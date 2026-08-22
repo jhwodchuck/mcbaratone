@@ -89,10 +89,16 @@ def test_find_farm_surface_near_prefers_a_usable_patch_over_isolated_soil():
     ) == (5, 64, 0)
 
 def test_ensure_farm_water_places_bucket_when_already_carried(monkeypatch):
-    blocks = {}
+    blocks = {
+        (10, 63, 10): "minecraft:stone",
+        (10, 64, 10): "minecraft:grass_block",
+    }
     def extra(route, payload, blocks_map):
+        if route == "dig_block":
+            blocks_map[(payload["x"], payload["y"], payload["z"])] = "minecraft:air"
+            return {"started": True}
         if route == "use_item":
-            blocks_map[(10, 65, 10)] = "minecraft:water"
+            blocks_map[(10, 64, 10)] = "minecraft:water"
             return {"accepted": True}
         return None
     client, calls, blocks = _client(blocks=blocks, dispatch_extra=extra)
@@ -103,20 +109,31 @@ def test_ensure_farm_water_places_bucket_when_already_carried(monkeypatch):
     monkeypatch.setattr(farming.time, "sleep", lambda _seconds: None)
 
     assert farming.ensure_farm_water(client, 10, 64, 10) is True
-    assert ("look_at", {"x": 10.5, "y": 64.5, "z": 10.5}) in calls
+    assert ("look_at", {"x": 10.5, "y": 63.5, "z": 10.5}) in calls
+    assert (
+        "dig_block",
+        {"x": 10, "y": 64, "z": 10, "face": "UP", "max_ticks": 160},
+    ) in calls
     assert ("use_item", {"duration_ms": 0}) in calls
 
 
 def test_ensure_farm_water_clears_replaceable_center_vegetation(monkeypatch):
-    blocks = {(10, 65, 10): "minecraft:wildflowers"}
+    blocks = {
+        (10, 63, 10): "minecraft:stone",
+        (10, 64, 10): "minecraft:grass_block",
+        (10, 65, 10): "minecraft:wildflowers",
+    }
 
     def extra(route, payload, blocks_map):
         target = (payload.get("x"), payload.get("y"), payload.get("z"))
         if route == "attack_block":
             blocks_map[target] = "minecraft:air"
             return {"started": True}
+        if route == "dig_block":
+            blocks_map[target] = "minecraft:air"
+            return {"started": True}
         if route == "use_item":
-            blocks_map[(10, 65, 10)] = "minecraft:water"
+            blocks_map[(10, 64, 10)] = "minecraft:water"
             return {"accepted": True}
         return None
 
@@ -135,13 +152,20 @@ def test_ensure_farm_water_clears_replaceable_center_vegetation(monkeypatch):
 
 
 def test_ensure_farm_water_fills_bucket_first_when_needed(monkeypatch):
-    blocks = {(20, 60, 20): "minecraft:water"}
+    blocks = {
+        (20, 60, 20): "minecraft:water",
+        (0, 63, 0): "minecraft:stone",
+        (0, 64, 0): "minecraft:grass_block",
+    }
     uses = {"count": 0}
     def extra(route, payload, blocks_map):
+        if route == "dig_block":
+            blocks_map[(payload["x"], payload["y"], payload["z"])] = "minecraft:air"
+            return {"started": True}
         if route == "use_item":
             uses["count"] += 1
             if uses["count"] == 2:
-                blocks_map[(0, 65, 0)] = "minecraft:water"
+                blocks_map[(0, 64, 0)] = "minecraft:water"
             return {"accepted": True}
         return None
     client, calls, blocks = _client(blocks=blocks, dispatch_extra=extra)
@@ -166,6 +190,51 @@ def test_ensure_farm_water_fills_bucket_first_when_needed(monkeypatch):
 
     assert farming.ensure_farm_water(client, 0, 64, 0) is True
     assert all(options.get("allow_swap") is True for _item, options in selections)
+
+
+def test_ensure_farm_water_repairs_elevated_source_that_floods_crops(monkeypatch):
+    blocks = {
+        (10, 63, 10): "minecraft:stone",
+        (10, 64, 10): "minecraft:cobblestone",
+        (10, 65, 10): "minecraft:water",
+    }
+    inventory = {"minecraft:bucket": 1, "minecraft:water_bucket": 0}
+    selected = {"item": None}
+
+    def extra(route, payload, blocks_map):
+        target = (payload.get("x"), payload.get("y"), payload.get("z"))
+        if route == "dig_block":
+            blocks_map[target] = "minecraft:air"
+            return {"started": True}
+        if route == "use_item" and selected["item"] == "minecraft:bucket":
+            blocks_map[(10, 65, 10)] = "minecraft:air"
+            inventory["minecraft:bucket"] -= 1
+            inventory["minecraft:water_bucket"] += 1
+            return {"accepted": True}
+        if route == "use_item" and selected["item"] == "minecraft:water_bucket":
+            blocks_map[(10, 64, 10)] = "minecraft:water"
+            inventory["minecraft:water_bucket"] -= 1
+            inventory["minecraft:bucket"] += 1
+            return {"accepted": True}
+        return None
+
+    client, calls, _blocks = _client(blocks=blocks, dispatch_extra=extra)
+    monkeypatch.setattr(
+        farming, "count_item", lambda _client, item: inventory.get(item, 0)
+    )
+    monkeypatch.setattr(
+        farming,
+        "select_item",
+        lambda _client, item, **_kwargs: selected.__setitem__("item", item) or True,
+    )
+    monkeypatch.setattr(farming, "goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(farming.time, "sleep", lambda _seconds: None)
+
+    assert farming.ensure_farm_water(client, 10, 64, 10) is True
+    assert blocks[(10, 64, 10)] == "minecraft:water"
+    assert blocks[(10, 65, 10)] == "minecraft:air"
+    assert ("look_at", {"x": 10.5, "y": 65.5, "z": 10.5}) in calls
+    assert ("look_at", {"x": 10.5, "y": 63.5, "z": 10.5}) in calls
 
 
 def test_ensure_farm_water_fails_with_no_source_and_no_bucket(monkeypatch):
