@@ -277,12 +277,45 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
     Farmland only stays hydrated (and crops grow at a reasonable speed)
     within 4 blocks of water. Skipping this leaves a farm that "plants"
     successfully but barely produces anything -- not a real food source.
+
+    ``y`` is the ground level used by :func:`establish_wheat_farm`. The water
+    therefore belongs at ``(x, y, z)``, beside the farmland, while crops occupy
+    ``y + 1``. Older controllers placed the source at crop height; reclaim that
+    source before repairing the center so repeated calls heal those farms.
     """
-    # The bucket empties onto the tile directly above solid ground: the
-    # bridge's place_block requires the target coordinate itself to be
-    # replaceable (air), then finds the solid neighbor face to click against.
-    if "water" in _block_id(client, x, y, z) or "water" in _block_id(client, x, y + 1, z):
+    air = {"minecraft:air", "minecraft:cave_air"}
+    if "water" in _block_id(client, x, y, z):
         return True
+
+    elevated_water = "water" in _block_id(client, x, y + 1, z)
+    if elevated_water:
+        if count_item(client, "minecraft:bucket") < 1 and not _ensure_farm_bucket(
+            client, state
+        ):
+            print("  No empty bucket available to reclaim elevated farm water.")
+            return False
+        if not goto(client, x, y + 1, z, timeout=120, tolerance=3):
+            print("  Could not reach the elevated farm water source.")
+            return False
+        before = count_item(client, "minecraft:water_bucket")
+        if not select_item(client, "minecraft:bucket", allow_swap=True):
+            return False
+        client.transport.dispatch(
+            "look_at", {"x": x + 0.5, "y": y + 1.5, "z": z + 0.5}
+        )
+        time.sleep(0.2)
+        client.transport.dispatch("use_item", {"duration_ms": 0})
+        time.sleep(0.5)
+        if count_item(client, "minecraft:water_bucket") <= before:
+            print("  Could not reclaim elevated farm water.")
+            return False
+        for _ in range(12):
+            if "water" not in _block_id(client, x, y + 1, z):
+                break
+            time.sleep(0.25)
+        else:
+            print("  Elevated farm water did not drain after reclaiming its source.")
+            return False
 
     if count_item(client, "minecraft:water_bucket") < 1:
         source = find_nearby_block(client, ["minecraft:water"], radius=48)
@@ -313,25 +346,48 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
     if not goto(client, x, y, z, timeout=120, tolerance=3):
         print("  Could not reach the farm center to place water.")
         return False
+
+    support = _block_id(client, x, y - 1, z)
+    if support in _UNSUPPORTIVE_GROUND:
+        print(f"  Farm water center has no solid support below it ({support}).")
+        return False
+
     above = _block_id(client, x, y + 1, z)
-    if above not in {"minecraft:air", "minecraft:cave_air"}:
+    if above not in air:
         if above not in _FARM_REPLACEABLE:
             print(f"  Farm water center is blocked by {above}.")
             return False
         client.transport.dispatch("attack_block", {"x": x, "y": y + 1, "z": z})
         time.sleep(0.15)
-        if _block_id(client, x, y + 1, z) not in {
-            "minecraft:air",
-            "minecraft:cave_air",
-        }:
+        if _block_id(client, x, y + 1, z) not in air:
             print(f"  Could not clear {above} from the farm water center.")
             return False
+
+    center = _block_id(client, x, y, z)
+    if center not in air:
+        try:
+            client.transport.dispatch(
+                "dig_block",
+                {"x": x, "y": y, "z": z, "face": "UP", "max_ticks": 160},
+            )
+        except Exception as exc:
+            print(f"  Could not open the farm water center: {exc}")
+            return False
+        for _ in range(32):
+            if _block_id(client, x, y, z) in air:
+                client.transport.dispatch("cancel", {})
+                break
+            time.sleep(0.25)
+        else:
+            print(f"  Could not clear {center} from the farm water center.")
+            return False
+
     if not select_item(client, "minecraft:water_bucket", allow_swap=True):
         return False
     try:
         client.transport.dispatch(
             "look_at",
-            {"x": x + 0.5, "y": y + 0.5, "z": z + 0.5},
+            {"x": x + 0.5, "y": y - 0.5, "z": z + 0.5},
         )
         time.sleep(0.2)
         client.transport.dispatch("use_item", {"duration_ms": 0})
@@ -339,7 +395,7 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
     except Exception as exc:
         print(f"  Placing farm water failed: {exc}")
         return False
-    return "water" in _block_id(client, x, y + 1, z)
+    return "water" in _block_id(client, x, y, z)
 
 
 def _till_and_plant_tile(client, x: int, y: int, z: int) -> bool:
