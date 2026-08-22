@@ -194,6 +194,45 @@ def test_crop_hold_does_not_expand_at_size_ceiling(monkeypatch):
     assert expanded == []  # no expansion at the ceiling
 
 
+def test_crop_hold_relocates_when_the_saved_farm_cannot_expand(monkeypatch):
+    handler = _handler(
+        {
+            "farm_location": [-429, 79, 2],
+            "crop_hold": {
+                "hold_streak": provisioning._CROP_HOLD_HARD_CAP - 1,
+                "farm_size": 5,
+                "expansions": 0,
+            },
+        }
+    )
+    counts = {"minecraft:bread": 15, "minecraft:wheat": 0}
+    monkeypatch.setattr(
+        provisioning, "count_item", lambda _client, item: counts.get(item, 0)
+    )
+    monkeypatch.setattr(
+        provisioning, "harvest_persisted_crop_farm", lambda *_args: False
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.farming.establish_wheat_farm",
+        lambda *_args, **_kwargs: None,
+    )
+    relocations = []
+    monkeypatch.setattr(
+        "baritone_client.common.farming.relocate_wheat_farm",
+        lambda _client, x, y, z, **kwargs: (
+            relocations.append(((x, y, z), kwargs)) or (-426, 79, -20)
+        ),
+    )
+
+    with pytest.raises(PacingHoldRequired, match="farm expanded"):
+        handler._bake_durable_food(SimpleNamespace())
+
+    assert relocations[0][0] == (-429, 79, 2)
+    assert relocations[0][1]["size"] == 7
+    assert handler.state.custom_data["crop_hold"]["farm_size"] == 7
+    assert handler.state.custom_data["crop_hold"]["expansions"] == 1
+
+
 def test_shield_uses_plank_family_helper_and_fails_closed(monkeypatch):
     monkeypatch.setattr(provisioning, "count_item", lambda _client, _item: 0)
     ensured = []

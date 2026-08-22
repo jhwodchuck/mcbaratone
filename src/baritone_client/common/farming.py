@@ -153,13 +153,28 @@ def place_farm_soil(client, block_id) -> Optional[Tuple[int, int, int]]:
     return None
 
 
-def _block_id(client, x: int, y: int, z: int) -> str:
+def _block_data(client, x: int, y: int, z: int) -> dict:
     try:
-        return client.transport.dispatch(
+        response = client.transport.dispatch(
             "get_block", {"x": int(x), "y": int(y), "z": int(z)}
-        ).get("id", "")
+        )
+        data = response.get("data", response) if isinstance(response, dict) else {}
+        return data if isinstance(data, dict) else {}
     except Exception:
-        return ""
+        return {}
+
+
+def _block_id(client, x: int, y: int, z: int) -> str:
+    return str(_block_data(client, x, y, z).get("id", ""))
+
+
+def _is_water_source(data: dict) -> bool:
+    if "water" not in str(data.get("id", "")):
+        return False
+    state = data.get("state")
+    if not isinstance(state, dict) or "level" not in state:
+        return True  # Backward compatibility with bridges that omit block state.
+    return str(state.get("level")) == "0"
 
 
 def find_farm_surface_near(
@@ -284,11 +299,15 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
     source before repairing the center so repeated calls heal those farms.
     """
     air = {"minecraft:air", "minecraft:cave_air"}
-    if "water" in _block_id(client, x, y, z):
+    if _is_water_source(_block_data(client, x, y, z)):
         return True
 
-    elevated_water = "water" in _block_id(client, x, y + 1, z)
+    elevated = _block_data(client, x, y + 1, z)
+    elevated_water = "water" in str(elevated.get("id", ""))
     if elevated_water:
+        if not _is_water_source(elevated):
+            print("  Farm center is flooded by elevated flowing water.")
+            return False
         if count_item(client, "minecraft:bucket") < 1 and not _ensure_farm_bucket(
             client, state
         ):
@@ -364,7 +383,7 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
             return False
 
     center = _block_id(client, x, y, z)
-    if center not in air:
+    if center not in air and "water" not in center:
         if center not in {*_FARM_SOIL_ITEMS, "minecraft:farmland"} and not any(
             select_item(client, pickaxe, allow_swap=True)
             for pickaxe in (
@@ -386,7 +405,8 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
             print(f"  Could not open the farm water center: {exc}")
             return False
         for _ in range(32):
-            if _block_id(client, x, y, z) in air:
+            cleared = _block_id(client, x, y, z)
+            if cleared in air or "water" in cleared:
                 client.transport.dispatch("cancel", {})
                 break
             time.sleep(0.25)
@@ -407,12 +427,14 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
     except Exception as exc:
         print(f"  Placing farm water failed: {exc}")
         return False
-    return "water" in _block_id(client, x, y, z)
+    return _is_water_source(_block_data(client, x, y, z))
 
 
 def _till_and_plant_tile(client, x: int, y: int, z: int) -> bool:
     """Till one ground tile and plant a wheat seed on it, if not already done."""
     above = _block_id(client, x, y + 1, z)
+    if "wheat" in above:
+        return True
     if above not in {"minecraft:air", "minecraft:cave_air"}:
         if above not in _FARM_REPLACEABLE:
             return False
@@ -437,8 +459,6 @@ def _till_and_plant_tile(client, x: int, y: int, z: int) -> bool:
         return False
 
     above = _block_id(client, x, y + 1, z)
-    if "wheat" in above:
-        return True  # already planted
     if count_item(client, "minecraft:wheat_seeds") < 1:
         return False
     if not select_item(client, "minecraft:wheat_seeds"):
@@ -483,9 +503,6 @@ def establish_wheat_farm(
     or None if it could not be established. Safe to call repeatedly -- tiles
     that are already farmland/planted are left alone.
     """
-    if not ensure_farm_water(client, x, y, z, state=state):
-        return None
-
     half = size // 2
     tiles = [
         (x + dx, y, z + dz)
@@ -493,6 +510,22 @@ def establish_wheat_farm(
         for dz in range(-half, half + 1)
         if not (dx == 0 and dz == 0)  # center tile holds the water
     ]
+    tillable = {"minecraft:dirt", "minecraft:grass_block", "minecraft:farmland"}
+    usable_tiles = sum(
+        1
+        for tx, ty, tz in tiles
+        if _block_id(client, tx, ty, tz) in tillable
+        and (
+            _block_id(client, tx, ty + 1, tz) in _FARM_REPLACEABLE
+            or "wheat" in _block_id(client, tx, ty + 1, tz)
+        )
+    )
+    if usable_tiles == 0:
+        print(f"  Wheat farm at {(x, y, z)} has no usable planting tiles.")
+        return None
+
+    if not ensure_farm_water(client, x, y, z, state=state):
+        return None
 
     carried_seeds = count_item(client, "minecraft:wheat_seeds")
     # A partial first planting is intentionally productive: those crops yield
@@ -524,6 +557,87 @@ def establish_wheat_farm(
         return None
     print(f"  Wheat farm at {(x, y, z)} planted {planted}/{len(tiles)} tiles.")
     return (x, y, z)
+
+
+def relocate_wheat_farm(
+    client,
+    x: int,
+    y: int,
+    z: int,
+    *,
+    size: int = 5,
+    state=None,
+    search_radius: int = 24,
+) -> Optional[Tuple[int, int, int]]:
+    """Move an unusable persisted farm to a nearby verified soil patch."""
+    surface = find_farm_surface_near(
+        client,
+        x,
+        y,
+        z,
+        horizontal_radius=search_radius,
+    )
+    if surface is None:
+        return None
+    if max(abs(surface[0] - x), abs(surface[2] - z)) <= size // 2:
+        return None
+    custom = getattr(state, "custom_data", {}) if state is not None else {}
+    if isinstance(custom, dict) and not within_homestead(custom, surface):
+        return None
+
+    relocated = establish_wheat_farm(client, *surface, size=size, state=state)
+    if relocated is None:
+        return None
+    if isinstance(custom, dict):
+        location = [int(value) for value in relocated]
+        custom["farm_location"] = location
+        structures = custom.get("structures")
+        if not isinstance(structures, dict):
+            structures = {}
+            custom["structures"] = structures
+        prior = structures.get("food_source", {})
+        prior = dict(prior) if isinstance(prior, dict) else {}
+        if prior.get("type") not in {None, "starter_crop_farm"} and not prior.get(
+            "plots"
+        ):
+            prior = {}
+        half = size // 2
+        plots = []
+        for dx in range(-half, half + 1):
+            for dz in range(-half, half + 1):
+                crop = _block_id(
+                    client,
+                    relocated[0] + dx,
+                    relocated[1] + 1,
+                    relocated[2] + dz,
+                )
+                if "wheat" in crop:
+                    plots.append(
+                        [
+                            relocated[0] + dx,
+                            relocated[1] + 1,
+                            relocated[2] + dz,
+                            crop,
+                        ]
+                    )
+        prior.update(
+            {
+                "type": "starter_crop_farm",
+                "location": location,
+                "irrigated": True,
+                "verified": True,
+                "planted": len(plots),
+                "plots": plots,
+                "timestamp": time.time(),
+            }
+        )
+        structures["food_source"] = prior
+        ledger = custom.setdefault("crop_hold", {})
+        if isinstance(ledger, dict):
+            ledger["hold_streak"] = 0
+            ledger["farm_size"] = size
+    print(f"  Relocated flooded wheat farm from {(x, y, z)} to {relocated}.")
+    return relocated
 
 
 def harvest_wheat_farm(client, x: int, y: int, z: int, range_: int = 8) -> bool:

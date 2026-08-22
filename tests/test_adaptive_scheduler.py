@@ -639,6 +639,31 @@ def test_crop_opportunity_fails_when_rebuild_also_finds_nothing(monkeypatch):
     assert result.detail == "no harvest, planting, or rebuild change was observed"
 
 
+def test_crop_opportunity_relocates_an_unusable_saved_patch(monkeypatch):
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
+    state = _state()
+    scheduler = AdaptiveScheduler(client, SimpleNamespace(), state)
+    monkeypatch.setattr(adaptive, "get_inventory", lambda _client: {})
+    monkeypatch.setattr(adaptive, "goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(adaptive.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        "baritone_client.common.farming.establish_wheat_farm",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.farming.relocate_wheat_farm",
+        lambda *_args, **_kwargs: (20, 64, 20),
+    )
+    opportunity = LocalOpportunity(
+        OpportunityKind.CROP_FARM, 80, "test crops", location=(5, 64, 5),
+    )
+
+    result = scheduler.run_local_opportunity(opportunity, crop_timeout=0.1)
+
+    assert result.success
+    assert result.detail == "unusable crop patch was relocated and replanted"
+
+
 def test_wood_opportunity_records_banked_log_progress(monkeypatch):
     state = _state()
     scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)

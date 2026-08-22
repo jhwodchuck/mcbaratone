@@ -14,7 +14,8 @@ def _client(blocks=None, dispatch_extra=None):
         payload = payload or {}
         if route == "get_block":
             key = (payload.get("x"), payload.get("y"), payload.get("z"))
-            return {"id": blocks.get(key, "minecraft:air")}
+            value = blocks.get(key, "minecraft:air")
+            return value if isinstance(value, dict) else {"id": value}
         if dispatch_extra is not None:
             result = dispatch_extra(route, payload, blocks)
             if result is not None:
@@ -249,6 +250,77 @@ def test_ensure_farm_water_repairs_elevated_source_that_floods_crops(monkeypatch
     )
 
 
+def test_ensure_farm_water_replaces_flowing_center_with_a_source(monkeypatch):
+    blocks = {
+        (10, 63, 10): "minecraft:stone",
+        (10, 64, 10): {
+            "id": "minecraft:water",
+            "state": {"level": "1"},
+        },
+    }
+
+    def extra(route, _payload, blocks_map):
+        if route == "use_item":
+            blocks_map[(10, 64, 10)] = {
+                "id": "minecraft:water",
+                "state": {"level": "0"},
+            }
+            return {"accepted": True}
+        return None
+
+    client, calls, _blocks = _client(blocks=blocks, dispatch_extra=extra)
+    monkeypatch.setattr(
+        farming,
+        "count_item",
+        lambda _client, item: 1 if item == "minecraft:water_bucket" else 0,
+    )
+    monkeypatch.setattr(farming, "select_item", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(farming, "goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(farming.time, "sleep", lambda _seconds: None)
+
+    assert farming.ensure_farm_water(client, 10, 64, 10) is True
+    assert not any(route == "dig_block" for route, _payload in calls)
+    assert ("use_item", {"duration_ms": 0}) in calls
+
+
+def test_relocate_wheat_farm_updates_checkpointed_crop_source(monkeypatch):
+    blocks = {(20, 65, 20): "minecraft:wheat"}
+    client, _calls, _blocks = _client(blocks=blocks)
+    state = SimpleNamespace(
+        custom_data={
+            "farm_location": [10, 64, 10],
+            "structures": {
+                "food_source": {
+                    "type": "starter_crop_farm",
+                    "location": [10, 64, 10],
+                    "verified": True,
+                }
+            },
+            "crop_hold": {"hold_streak": 216, "farm_size": 5},
+        }
+    )
+    monkeypatch.setattr(
+        farming,
+        "find_farm_surface_near",
+        lambda *_args, **_kwargs: (20, 64, 20),
+    )
+    monkeypatch.setattr(
+        farming,
+        "establish_wheat_farm",
+        lambda *_args, **_kwargs: (20, 64, 20),
+    )
+
+    assert farming.relocate_wheat_farm(
+        client, 10, 64, 10, state=state
+    ) == (20, 64, 20)
+    assert state.custom_data["farm_location"] == [20, 64, 20]
+    source = state.custom_data["structures"]["food_source"]
+    assert source["location"] == [20, 64, 20]
+    assert source["irrigated"] is True
+    assert source["planted"] == 1
+    assert state.custom_data["crop_hold"]["hold_streak"] == 0
+
+
 def test_ensure_farm_water_fails_with_no_source_and_no_bucket(monkeypatch):
     client, _calls, _ = _client()
     monkeypatch.setattr(farming, "count_item", lambda *_a: 0)
@@ -282,9 +354,48 @@ def test_farm_bucket_is_recovered_from_checkpointed_storage(monkeypatch):
 
 
 def test_establish_wheat_farm_returns_none_when_water_fails(monkeypatch):
-    client, _calls, _ = _client()
+    client, _calls, _ = _client(
+        blocks={(1, 64, 0): "minecraft:grass_block"}
+    )
     monkeypatch.setattr(farming, "ensure_farm_water", lambda *_a, **_k: False)
     assert farming.establish_wheat_farm(client, 0, 64, 0) is None
+
+
+def test_establish_wheat_farm_rejects_flooded_patch_before_irrigation(monkeypatch):
+    blocks = {
+        (x, 64, z): "minecraft:cobblestone"
+        for x in range(-2, 3)
+        for z in range(-2, 3)
+    }
+    client, _calls, _ = _client(blocks=blocks)
+    monkeypatch.setattr(
+        farming,
+        "ensure_farm_water",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("an unusable patch must relocate without irrigation work")
+        ),
+    )
+
+    assert farming.establish_wheat_farm(client, 0, 64, 0) is None
+
+
+def test_till_and_plant_tile_accepts_an_existing_wheat_crop(monkeypatch):
+    client, calls, _ = _client(
+        blocks={
+            (1, 64, 1): "minecraft:farmland",
+            (1, 65, 1): "minecraft:wheat",
+        }
+    )
+    monkeypatch.setattr(
+        farming,
+        "count_item",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("an existing crop must not consume inventory")
+        ),
+    )
+
+    assert farming._till_and_plant_tile(client, 1, 64, 1) is True
+    assert not any(route in {"attack_block", "interact_block"} for route, _ in calls)
 
 
 def test_establish_wheat_farm_tills_and_plants_tiles(monkeypatch):
@@ -334,7 +445,9 @@ def test_establish_wheat_farm_tills_and_plants_tiles(monkeypatch):
 
 
 def test_establish_wheat_farm_uses_carried_starter_seed_batch(monkeypatch):
-    client, _calls, _blocks = _client()
+    client, _calls, _blocks = _client(
+        blocks={(1, 64, 0): "minecraft:grass_block"}
+    )
     targets = []
     monkeypatch.setattr(farming, "ensure_farm_water", lambda *_a, **_k: True)
     monkeypatch.setattr(

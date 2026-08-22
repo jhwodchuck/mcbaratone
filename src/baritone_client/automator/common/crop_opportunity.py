@@ -59,9 +59,12 @@ def run_crop_opportunity(
         except Exception:
             pass
 
-    from ...common.farming import establish_wheat_farm
+    from ...common.farming import establish_wheat_farm, relocate_wheat_farm
 
     rebuilt = establish_wheat_farm(client, *location, state=state)
     if rebuilt is not None:
         return True, "no mature crop; re-tilled and replanted the patch", before, after
+    relocated = relocate_wheat_farm(client, *location, state=state)
+    if relocated is not None:
+        return True, "unusable crop patch was relocated and replanted", before, after
     return False, "no harvest, planting, or rebuild change was observed", before, after
