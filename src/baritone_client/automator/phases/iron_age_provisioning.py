@@ -246,7 +246,7 @@ def _expand_crop_farm(handler: "FoodAndIronHandler", client, farm_location) -> b
     (farm_size grew), False when it is already at the size ceiling or the
     center cannot be located/expanded.
     """
-    from ...common.farming import establish_wheat_farm
+    from ...common.farming import establish_wheat_farm, relocate_wheat_farm
 
     if not isinstance(farm_location, (list, tuple)) or len(farm_location) != 3:
         return False
@@ -258,7 +258,17 @@ def _expand_crop_farm(handler: "FoodAndIronHandler", client, farm_location) -> b
     x, y, z = (int(value) for value in farm_location)
     established = establish_wheat_farm(client, x, y, z, size=next_size, state=handler.state)
     if established is None:
+        established = relocate_wheat_farm(
+            client,
+            x,
+            y,
+            z,
+            size=next_size,
+            state=handler.state,
+        )
+    if established is None:
         return False
+    x, y, z = established
     ledger["farm_size"] = next_size
     ledger["expansions"] = int(ledger.get("expansions", 0)) + 1
     print(f"  Crop farm expanded to {next_size}x{next_size} at {(x, y, z)}.")
