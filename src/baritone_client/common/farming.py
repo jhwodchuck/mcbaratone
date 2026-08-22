@@ -448,7 +448,7 @@ def _till_and_plant_tile(client, x: int, y: int, z: int) -> bool:
             client, "minecraft:wooden_hoe", 1
         ):
             return False
-        if not select_item(client, "minecraft:wooden_hoe"):
+        if not select_item(client, "minecraft:wooden_hoe", allow_swap=True):
             return False
         client.transport.dispatch("look_at", {"x": x + 0.5, "y": y + 1.0, "z": z + 0.5})
         time.sleep(0.15)
@@ -461,7 +461,7 @@ def _till_and_plant_tile(client, x: int, y: int, z: int) -> bool:
     above = _block_id(client, x, y + 1, z)
     if count_item(client, "minecraft:wheat_seeds") < 1:
         return False
-    if not select_item(client, "minecraft:wheat_seeds"):
+    if not select_item(client, "minecraft:wheat_seeds", allow_swap=True):
         return False
     client.transport.dispatch("look_at", {"x": x + 0.5, "y": y + 1.0, "z": z + 0.5})
     time.sleep(0.15)

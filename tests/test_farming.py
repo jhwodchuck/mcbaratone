@@ -398,6 +398,41 @@ def test_till_and_plant_tile_accepts_an_existing_wheat_crop(monkeypatch):
     assert not any(route in {"attack_block", "interact_block"} for route, _ in calls)
 
 
+def test_till_and_plant_tile_swaps_hoe_from_main_inventory(monkeypatch):
+    blocks = {(1, 64, 1): "minecraft:grass_block"}
+    selected = {"item": None}
+    selections = []
+
+    def extra(route, payload, blocks_map):
+        if route != "interact_block":
+            return None
+        target = (payload["x"], payload["y"], payload["z"])
+        if selected["item"] == "minecraft:wooden_hoe":
+            blocks_map[target] = "minecraft:farmland"
+        elif selected["item"] == "minecraft:wheat_seeds":
+            blocks_map[(target[0], target[1] + 1, target[2])] = "minecraft:wheat"
+        return {"accepted": True}
+
+    client, _calls, _ = _client(blocks=blocks, dispatch_extra=extra)
+    monkeypatch.setattr(farming, "count_item", lambda *_args, **_kwargs: 1)
+
+    def select(_client, item, **kwargs):
+        selections.append((item, kwargs))
+        if not kwargs.get("allow_swap"):
+            return False
+        selected["item"] = item
+        return True
+
+    monkeypatch.setattr(farming, "select_item", select)
+    monkeypatch.setattr(farming.time, "sleep", lambda _seconds: None)
+
+    assert farming._till_and_plant_tile(client, 1, 64, 1) is True
+    assert selections == [
+        ("minecraft:wooden_hoe", {"allow_swap": True}),
+        ("minecraft:wheat_seeds", {"allow_swap": True}),
+    ]
+
+
 def test_establish_wheat_farm_tills_and_plants_tiles(monkeypatch):
     # All tiles start as grass_block; farming.py tills then plants wheat above.
     blocks = {}
