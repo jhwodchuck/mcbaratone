@@ -153,7 +153,7 @@ def test_equipping_carried_armour_is_tried_before_crafting(monkeypatch):
 
     monkeypatch.setattr(inv, "equip_best_armor", equip)
     monkeypatch.setattr(
-        res, "ensure_supplies",
+        armor_upkeep, "craft",
         lambda *_a, **_k: pytest.fail("crafted despite carrying armour"),
     )
 
@@ -170,7 +170,7 @@ def test_crafting_that_changes_nothing_is_not_success(monkeypatch):
 
     monkeypatch.setattr(inv, "equip_best_armor", lambda _c: None)
     monkeypatch.setattr(
-        res, "ensure_supplies", lambda *_a, **_k: SimpleNamespace(success=False)
+        armor_upkeep, "craft", lambda *_a, **_k: False
     )
 
     ok, detail, before, after = armor_upkeep.run_armor_upkeep(
@@ -214,7 +214,7 @@ def test_death_during_crafting_is_not_swallowed(monkeypatch):
         raise PlayerDeathDetected("Player died during combat or health recovery")
 
     monkeypatch.setattr(inv, "equip_best_armor", lambda _c: None)
-    monkeypatch.setattr(res, "ensure_supplies", die)
+    monkeypatch.setattr(armor_upkeep, "craft", die)
 
     with pytest.raises(PlayerDeathDetected):
         armor_upkeep.run_armor_upkeep(_Client(iron=94, worn=0), SimpleNamespace())
@@ -229,7 +229,7 @@ def test_survival_recovery_signal_is_not_swallowed_either(monkeypatch):
         raise SurvivalRecoveryRequired("needs recovery")
 
     monkeypatch.setattr(inv, "equip_best_armor", bail)
-    monkeypatch.setattr(res, "ensure_supplies", lambda *_a, **_k: None)
+    monkeypatch.setattr(armor_upkeep, "craft", lambda *_a, **_k: None)
 
     with pytest.raises(SurvivalRecoveryRequired):
         armor_upkeep.run_armor_upkeep(_Client(iron=94, worn=0), SimpleNamespace())
@@ -242,7 +242,7 @@ def test_ordinary_crafting_failures_are_still_tolerated(monkeypatch):
 
     monkeypatch.setattr(inv, "equip_best_armor", lambda _c: None)
     monkeypatch.setattr(
-        res, "ensure_supplies",
+        armor_upkeep, "craft",
         lambda *_a, **_k: (_ for _ in ()).throw(ValueError("no recipe")),
     )
 
@@ -310,8 +310,8 @@ def test_raw_iron_yields_to_smelting_instead_of_armor_crafting(monkeypatch):
     )
     monkeypatch.setattr(inv, "equip_best_armor", lambda _c: None)
     monkeypatch.setattr(
-        res,
-        "ensure_supplies",
+        armor_upkeep,
+        "craft",
         lambda *_a, **_k: pytest.fail("raw iron was treated as recipe-ready"),
     )
 
@@ -324,3 +324,59 @@ def test_raw_iron_yields_to_smelting_instead_of_armor_crafting(monkeypatch):
     )
     assert ok is False and before == after == 1
     assert "unchanged" in detail
+
+
+def test_enough_iron_uses_craft_not_ensure_supplies(monkeypatch):
+    import baritone_client.common.inventory as inv
+    import baritone_client.common.resources as res
+    client = _Client(iron=14, worn=1)
+    calls = []
+    monkeypatch.setattr(inv, "equip_best_armor", lambda c: c.worn)
+    monkeypatch.setattr(
+        res, "ensure_supplies",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("ensure_supplies should not be called")),
+    )
+    monkeypatch.setattr(
+        armor_upkeep, "craft",
+        lambda c, item, count=1: calls.append(item) or True,
+    )
+    armor_upkeep.run_armor_upkeep(client, SimpleNamespace())
+    assert calls, "should have attempted to craft at least one piece"
+
+
+def test_successful_craft_attempts_equip_even_when_inventory_count_does_not_increase(monkeypatch):
+    """Successful craft must still try to equip the piece.
+
+    Regression for the saturated A1 counter:
+    armour unchanged at 1/4 with 14 iron carried
+    """
+    import baritone_client.common.inventory as inv
+
+    client = _Client(iron=14, worn=1)
+
+    # Force every armour count to 0 so the bot tries to craft all four pieces.
+    monkeypatch.setattr(
+        inv, "count_item",
+        lambda c, item: c.iron if item == "minecraft:iron_ingot" else 0,
+    )
+    monkeypatch.setattr(
+        inv, "get_equipped_armor",
+        lambda c: {"feet": "minecraft:iron_boots"} if c.worn else {},
+    )
+
+    equip_calls = []
+    monkeypatch.setattr(
+        inv, "equip_best_armor",
+        lambda c: equip_calls.append(1),
+    )
+
+    def fake_craft(_c, item, count=1):
+        return True
+
+    monkeypatch.setattr(armor_upkeep, "craft", fake_craft)
+
+    armor_upkeep.run_armor_upkeep(client, SimpleNamespace())
+
+    assert len(equip_calls) >= 2, (
+        "expected at least two equip attempts: initial plus after a crafted piece"
+    )

@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
+from ..common.inventory import craft
+
 #: Iron cost of each piece, cheapest first. Boots and helmet come first on
 #: purpose: three cheap pieces beat one expensive one for survival, and the
 #: defence runtime already treats armour count as its threshold.
@@ -176,7 +178,6 @@ def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
     not progress, and must not reset a no-progress streak.
     """
     from ..common.inventory import equip_best_armor
-    from ..common.resources import ensure_supplies
     from ..common.tasks import PlayerDeathDetected, SurvivalRecoveryRequired
 
     before = equipped_pieces(client)
@@ -200,10 +201,7 @@ def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
         if budget < cost:
             continue
         try:
-            if ensure_supplies(client, {piece: 1}, timeout=120).success:
-                crafted.append(piece.split(":")[1])
-                budget -= cost
-                equip_best_armor(client)
+            success = craft(client, piece, 1)
         except (PlayerDeathDetected, SurvivalRecoveryRequired):
             # These are control flow, not errors: they mean "stop and let the
             # top level recover". Swallowing them left Bot15 crafting while
@@ -213,6 +211,14 @@ def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
             raise
         except Exception:
             continue
+        if success:
+            # A successful craft may not immediately show up in the
+            # inventory count (the item could go straight into an armour
+            # slot). We still attempt to equip, then rely on the after
+            # count to detect real progress.
+            crafted.append(piece.split(":")[1])
+            budget -= cost
+            equip_best_armor(client)
 
     after = equipped_pieces(client)
     if after > before:
