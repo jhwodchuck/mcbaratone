@@ -365,8 +365,19 @@ class NetherAndBlazeHandler(PhaseHandler):
                 return False
             equip_best_armor(client)
 
+        # Ask the gate's own question. _provision_iron_gear short-circuits on
+        # count>=1, but weapon_score rejects a blade at <=3 durability, so a
+        # worn sword counted as "provisioned" while _nether_loadout_ready kept
+        # failing on equip_best_weapon: live A1 burned a day retrying the
+        # Nether with a 3/250 sword it never replaced. Armor already forces
+        # replacement this way; the weapon must use the same predicate as the
+        # check, or the two can silently disagree again.
+        replace_sword = (
+            count_item(client, "minecraft:iron_sword") >= 1
+            and not equip_best_weapon(client)
+        )
         if not self._provision_iron_gear(
-            client, "minecraft:iron_sword", 2
+            client, "minecraft:iron_sword", 2, force_replacement=replace_sword
         ):
             return False
         equip_best_weapon(client)
