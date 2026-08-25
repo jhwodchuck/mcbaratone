@@ -752,3 +752,38 @@ def test_find_natural_crop_center_returns_none_when_nothing_found(monkeypatch):
     assert center is None
     assert irrigated is False
     assert farming.harvest_wheat_farm(client, 0, 64, 0) is False
+
+
+def test_run_crop_opportunity_accepts_crop_blocks_without_inventory_change():
+    import baritone_client.automator.common.crop_opportunity as crop_opp
+    from types import SimpleNamespace
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda route, payload=None: {})
+    )
+    opp = SimpleNamespace(location=(0, 64, 0))
+
+    def inv_reader(_client):
+        return {"minecraft:wheat": 0, "minecraft:wheat_seeds": 5}
+
+    def traveler(*args, **kwargs):
+        return True
+
+    def found_crop(_client, block_ids, **kwargs):
+        return (0, 64, 1)
+
+    sleeper = lambda _seconds: None
+
+    result = crop_opp.run_crop_opportunity(
+        client,
+        opp,
+        1.0,
+        inventory_reader=inv_reader,
+        traveler=traveler,
+        block_finder=found_crop,
+        sleeper=sleeper,
+        state=None,
+    )
+
+    assert result[0] is True
+    assert "crop" in result[1]

@@ -59,7 +59,17 @@ def run_crop_opportunity(
         except Exception:
             pass
 
-    from ...common.farming import establish_wheat_farm, relocate_wheat_farm
+    # If the farm command didn't change inventories but crop blocks are present
+    # in the world, the patch is already planted and waiting to mature. Accept
+    # it as productive instead of cycling through rebuild attempts forever.
+    if block_finder(client, list(CROP_BLOCKS), radius=12):
+        return True, "crop blocks present; awaiting maturation", before, after
+
+    from ...common.farming import establish_wheat_farm, harvest_wheat_farm, relocate_wheat_farm
+
+    # Check if the farm is already established and working
+    if harvest_wheat_farm(client, location[0], location[1], location[2], range_=8):
+        return True, "farm is already producing", before, after
 
     rebuilt = establish_wheat_farm(client, *location, state=state)
     if rebuilt is not None:

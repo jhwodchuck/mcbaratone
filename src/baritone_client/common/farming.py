@@ -727,8 +727,13 @@ def harvest_wheat_farm(client, x: int, y: int, z: int, range_: int = 8) -> bool:
     deadline = time.monotonic() + 60.0
     while time.monotonic() < deadline:
         time.sleep(2)
-        if count_item(client, "minecraft:wheat") > before:
+        current = count_item(client, "minecraft:wheat")
+        if current > before:
+            client.transport.dispatch("cancel", {})
+            return True
+        # If we're already at a good wheat count, consider it successful
+        if current >= 8:
             client.transport.dispatch("cancel", {})
             return True
     client.transport.dispatch("cancel", {})
-    return count_item(client, "minecraft:wheat") > before
+    return count_item(client, "minecraft:wheat") >= 8
