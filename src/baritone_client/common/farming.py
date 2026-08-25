@@ -16,7 +16,15 @@ from .base import robust_place
 from .inventory import count_item, craft, select_item
 from .navigation import find_nearby_block, goto
 
-_UNSUPPORTIVE_GROUND = {"minecraft:air", "minecraft:cave_air", "minecraft:water", "minecraft:lava"}
+# powder_snow is not a floor: a player sinks into it and freezes, and it holds
+# neither farmland nor a water center.
+_UNSUPPORTIVE_GROUND = {
+    "minecraft:air",
+    "minecraft:cave_air",
+    "minecraft:water",
+    "minecraft:lava",
+    "minecraft:powder_snow",
+}
 _FARM_SOIL_ITEMS = ("minecraft:dirt", "minecraft:coarse_dirt", "minecraft:grass_block")
 _FARM_REPLACEABLE = {
     "minecraft:air",

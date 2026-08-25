@@ -1093,7 +1093,7 @@ class IncrementalHomestead:
             "kelp",
             "kelp_plant",
             "vine",
-            "snow",
+            "snow", "powder_snow",  # powder_snow is a sink-through, not a floor
             "torch",
             "wall_torch",
             "soul_torch",

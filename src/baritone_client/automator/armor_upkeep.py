@@ -46,6 +46,25 @@ TARGET_ARMOR_PIECES = 4
 #: 16, because a bot under fire is exactly the one that needs armour.
 ARMOR_MIN_HEALTH = 8.0
 
+#: The only biomes that generate powder snow, so the only ones that can freeze
+#: a player to death.
+FREEZING_BIOMES = frozenset(
+    {
+        "minecraft:grove",
+        "minecraft:snowy_slopes",
+        "minecraft:jagged_peaks",
+        "minecraft:frozen_peaks",
+    }
+)
+#: Leather boots are the *only* boots that stop a player sinking into powder
+#: snow and taking freeze damage; iron boots do not help at all. That is why
+#: this is separate from ARMOR_PLAN rather than another entry in it -- here the
+#: nominally weaker material is the strictly correct one, and it is bought with
+#: leather rather than iron.
+FREEZE_BOOTS = "minecraft:leather_boots"
+#: Vanilla recipe cost, reported in telemetry when the craft cannot proceed.
+FREEZE_BOOTS_LEATHER = 4
+
 
 def _count(client: Any, item_id: str) -> int:
     from ..common.inventory import count_item
@@ -117,6 +136,103 @@ def unworn_carried_pieces(client: Any) -> list[str]:
     ]
 
 
+def in_freezing_biome(client: Any) -> bool:
+    """True where powder snow generates, so freezing is possible."""
+    try:
+        state = client.transport.dispatch("get_state", {})
+    except Exception:
+        return False
+    if not isinstance(state, dict):
+        return False
+    return str(state.get("biome") or "").lower() in FREEZING_BIOMES
+
+
+def wearing_freeze_boots(client: Any) -> bool:
+    from ..common.inventory import get_equipped_armor
+
+    try:
+        return get_equipped_armor(client).get("boots") == FREEZE_BOOTS
+    except Exception:
+        return False
+
+
+def needs_freeze_boots(client: Any) -> bool:
+    """True when cold, not mobs, is the thing most likely to kill this bot.
+
+    dragon-a froze to death 17 times across 67 deaths in a grove whose
+    immediate surroundings measured ~24% powder snow, while dragon-b -- same
+    build, ordinary biome -- froze zero times. `equip_best_armor` ranks armour
+    by protection with `minimum_rank=iron`, so it will never put leather on and
+    will happily swap iron boots back over them. Freeze protection therefore
+    has to be asserted separately from the iron plan, and it applies even to a
+    bot already wearing a "complete" 4/4 iron set.
+    """
+    return in_freezing_biome(client) and not wearing_freeze_boots(client)
+
+
+def _inventory_slot_of(client: Any, item_id: str) -> Optional[int]:
+    """Locate a carried item's raw inventory slot, or None."""
+    try:
+        response = client.transport.dispatch("get_inventory", {})
+    except Exception:
+        return None
+    data = response.get("data", response) if isinstance(response, dict) else {}
+    for item in data.get("inventory", []) or []:
+        if item.get("id") != item_id or int(item.get("count", 0) or 0) <= 0:
+            continue
+        try:
+            return int(item["slot"])
+        except (KeyError, TypeError, ValueError):
+            return None
+    return None
+
+
+def equip_freeze_boots(client: Any) -> bool:
+    """Force leather boots on, past equip_best_armor's iron rank floor."""
+    import time
+
+    # Import the protocol slot rather than restating 8: a second copy of a
+    # wire constant is exactly how two halves drift apart.
+    from ..common.inventory import (
+        _PLAYER_ARMOR_CONTAINER_SLOTS,
+        get_equipped_armor,
+    )
+
+    if _inventory_slot_of(client, FREEZE_BOOTS) is None:
+        return False
+    try:
+        if get_equipped_armor(client).get("boots"):
+            client.transport.dispatch(
+                "inventory_click",
+                {
+                    "slot": _PLAYER_ARMOR_CONTAINER_SLOTS["boots"],
+                    "type": "QUICK_MOVE",
+                    "button": 0,
+                },
+            )
+            time.sleep(0.2)
+        # Re-read: unequipping the old boots moves everything that follows.
+        slot = _inventory_slot_of(client, FREEZE_BOOTS)
+        if slot is None:
+            return False
+        client.transport.dispatch(
+            "inventory_click",
+            {
+                "slot": 36 + slot if 0 <= slot <= 8 else slot,
+                "type": "QUICK_MOVE",
+                "button": 0,
+            },
+        )
+    except Exception:
+        return False
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        if wearing_freeze_boots(client):
+            return True
+        time.sleep(0.1)
+    return False
+
+
 def needs_armor(client: Any) -> bool:
     """True when a cheap, high-value equip is available right now."""
     if equipped_pieces(client) >= TARGET_ARMOR_PIECES:
@@ -153,6 +269,15 @@ def select_armor_opportunity(client: Any, signals: Any, cooldown_ready: bool):
     if not cooldown_ready or not armor_work_allowed(signals):
         return None
     worn = equipped_pieces(client)
+    # Freezing outranks the iron plan and ignores the "already dressed" exit:
+    # a 4/4 iron set is no protection at all against powder snow, so a fully
+    # armoured bot in a grove still needs this.
+    if needs_freeze_boots(client):
+        return LocalOpportunity(
+            OpportunityKind.ARMOR_UPKEEP,
+            200,
+            f"freezing biome without leather boots ({worn}/4 armour worn)",
+        )
     if worn >= TARGET_ARMOR_PIECES:
         return None
     # Carrying an unworn piece is worth a tick even with no iron at all:
@@ -189,6 +314,37 @@ def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
         raise
     except Exception:
         pass
+
+    # Cold before mobs. This runs *after* equip_best_armor on purpose: that
+    # call ranks by protection and will have just put iron boots back on, so
+    # the leather has to be re-asserted over the top of its choice. Swapping
+    # boots leaves the worn count unchanged, which is why this reports success
+    # on its own terms rather than through the before/after delta.
+    if needs_freeze_boots(client):
+        if _count(client, FREEZE_BOOTS) < 1:
+            try:
+                craft(client, FREEZE_BOOTS, 1)
+            except (PlayerDeathDetected, SurvivalRecoveryRequired):
+                raise
+            except Exception:
+                pass
+        if equip_freeze_boots(client):
+            after = equipped_pieces(client)
+            return (
+                True,
+                f"equipped leather boots against freezing ({before}->{after})",
+                before,
+                after,
+            )
+        if _count(client, FREEZE_BOOTS) < 1:
+            after = equipped_pieces(client)
+            return (
+                False,
+                "freezing biome but no leather boots; "
+                f"needs {FREEZE_BOOTS_LEATHER} leather",
+                before,
+                after,
+            )
     if equipped_pieces(client) >= TARGET_ARMOR_PIECES:
         after = equipped_pieces(client)
         return True, f"equipped carried armour ({before}->{after})", before, after
@@ -235,12 +391,19 @@ def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
 __all__ = [
     "ARMOR_MIN_HEALTH",
     "ARMOR_PLAN",
+    "FREEZE_BOOTS",
+    "FREEZE_BOOTS_LEATHER",
+    "FREEZING_BIOMES",
     "FULL_SET_IRON",
     "MIN_IRON_TO_EQUIP",
     "TARGET_ARMOR_PIECES",
     "armor_work_allowed",
     "carried_iron",
+    "equip_freeze_boots",
     "equipped_pieces",
+    "in_freezing_biome",
+    "needs_freeze_boots",
+    "wearing_freeze_boots",
     "missing_pieces",
     "needs_armor",
     "spendable_iron",

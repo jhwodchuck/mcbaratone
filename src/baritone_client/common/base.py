@@ -1304,14 +1304,14 @@ def _clear_wrong_house_target(
 ) -> bool:
     """Clear exactly one wrong occupied structure target under a build guard."""
     current = _house_block_id(client, x, y, z)
-    air_blocks = {
-        "",
-        "minecraft:air",
-        "minecraft:cave_air",
-        "minecraft:void_air",
-    }
+    air_blocks = {"", "minecraft:air", "minecraft:cave_air", "minecraft:void_air"}
     if current in air_blocks or current == requested_block:
         return True
+    # Breaking is mining: make the same tool guarantee gather_stone and
+    # stone_descent make. A bare hand cannot clear deepslate inside the 12s
+    # deadline, so live A1 looped ~70s forever on one cobbled_deepslate tile.
+    from .resources import _ensure_mining_pickaxe
+    _ensure_mining_pickaxe(client)
     client.transport.dispatch("chat", {"message": "#set allowBreak true"})
     try:
         client.transport.dispatch(

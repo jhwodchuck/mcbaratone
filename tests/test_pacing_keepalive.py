@@ -56,6 +56,65 @@ def test_pacing_wait_propagates_death_instead_of_hiding_it():
         raise AssertionError("death must reach top-level recovery")
 
 
+def test_an_existing_corpse_waits_for_recovery_instead_of_re_raising():
+    """A player already dead on entry must not crash the pause.
+
+    Callers reach this wait *after* yielding to death recovery.  Running the
+    defensive reflex on a corpse raised PlayerDeathDetected back out of
+    automator.run() and phase_executor's retry delay -- neither wraps it -- so
+    the controller exited instead of respawning and the supervisor just re-ran
+    the same crash.  Both dragon labs sat dead for a day on exactly this.
+    """
+    from baritone_client.common.tasks import PlayerDeathDetected
+
+    dispatched = []
+
+    def dispatch(route, _payload):
+        dispatched.append(route)
+        return {"is_dead": True, "health": 0.0}
+
+    def defensive(_client):
+        raise PlayerDeathDetected("corpse handed to the combat reflex")
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    clock = SimpleNamespace(now=0.0)
+
+    def sleep(seconds):
+        clock.now += seconds
+
+    wait_with_bridge_keepalive(
+        client,
+        duration=4.0,
+        safety_check=defensive,
+        sleep=sleep,
+        monotonic=lambda: clock.now,
+    )
+
+    # The bridge still gets kept warm; the combat reflex simply never runs.
+    assert dispatched.count("get_state") >= 2
+
+
+def test_a_player_dying_during_the_wait_still_propagates():
+    """Only an *existing* corpse is exempt; dying mid-wait must still raise."""
+    from baritone_client.common.tasks import PlayerDeathDetected
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda _route, _payload: {"is_dead": False, "health": 20.0}
+        )
+    )
+
+    def dies_now(_client):
+        raise PlayerDeathDetected("zombie reached idle bot")
+
+    try:
+        wait_with_bridge_keepalive(client, duration=30.0, safety_check=dies_now)
+    except PlayerDeathDetected:
+        pass
+    else:
+        raise AssertionError("a fresh death must still reach top-level recovery")
+
+
 def test_failed_phase_retry_uses_combat_aware_wait(monkeypatch):
     class FailingHandler(PhaseHandler):
         def execute(self, _client, _resources, _state):

@@ -23,7 +23,12 @@ _HAZARDS = (
     "pointed_dripstone",
     "sweet_berry_bush",
 )
-_NON_GROUND = ("air", "water", "lava", "cave_air", "void_air")
+# powder_snow looks solid to a floor probe but a player falls straight into it
+# and starts freezing.  Leaving it out made every flee endpoint "standing on"
+# powder snow read as supported: dragon-a fled into a grove that is ~24% powder
+# snow and froze to death 17 times out of 67.  Only leather boots let a player
+# walk on it, so treat it as no floor at all until that is worn.
+_NON_GROUND = ("air", "water", "lava", "cave_air", "void_air", "powder_snow")
 _PASSABLE_BLOCKS = {
     "air",
     "cave_air",
