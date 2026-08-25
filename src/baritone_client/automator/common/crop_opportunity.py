@@ -65,7 +65,12 @@ def run_crop_opportunity(
     if block_finder(client, list(CROP_BLOCKS), radius=12):
         return True, "crop blocks present; awaiting maturation", before, after
 
-    from ...common.farming import establish_wheat_farm, harvest_wheat_farm, relocate_wheat_farm
+    from ...common.farming import (
+        establish_wheat_farm,
+        harvest_wheat_farm,
+        reestablish_wheat_farm,
+        relocate_wheat_farm,
+    )
 
     # Check if the farm is already established and working
     if harvest_wheat_farm(client, location[0], location[1], location[2], range_=8):
@@ -74,6 +79,12 @@ def run_crop_opportunity(
     rebuilt = establish_wheat_farm(client, *location, state=state)
     if rebuilt is not None:
         return True, "no mature crop; re-tilled and replanted the patch", before, after
+    # A farm harvested down to bare ground has zero tillable tiles, so
+    # establish_wheat_farm declines. Re-till the same site in place (soil
+    # reverted to dirt/grass, water still beside it) before abandoning it.
+    reestablished = reestablish_wheat_farm(client, *location, state=state)
+    if reestablished is not None:
+        return True, "bare-ground farm was re-tilled and replanted in place", before, after
     relocated = relocate_wheat_farm(client, *location, state=state)
     if relocated is not None:
         return True, "unusable crop patch was relocated and replanted", before, after

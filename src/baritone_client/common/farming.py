@@ -622,6 +622,76 @@ def establish_wheat_farm(
     return (x, y, z)
 
 
+def reestablish_wheat_farm(
+    client, x: int, y: int, z: int, size: int = 5, state=None
+) -> Optional[Tuple[int, int, int]]:
+    """Recover a farm that has reverted to bare ground, re-tilling in place.
+
+    ``establish_wheat_farm`` declines when it sees zero tillable tiles, and
+    ``relocate_wheat_farm`` only moves to *new* soil it can already see. A
+    farm harvested down to bare ground -- farmland reverting to plain dirt/
+    grass_block, soil gone in a tile or two -- is the one case both miss:
+    ``usable_tiles == 0`` even though the site is still flat, still beside
+    its water source, and still the right place to grow food. Confirmed live
+    2026-08-14: every cycle reported "no harvest or planting change" forever
+    because ``#farm`` had nothing to act on and the rebuild path bailed on
+    zero usable tiles rather than re-tilling the same ground.
+
+    This reworks the *same* patch from the ground up: clear replaceable
+    overhead, re-saturate any buried soil up to farm level, irrigate the
+    center (idempotent), then till and plant every tile exactly like
+    :func:`establish_wheat_farm`. Returns the farm center on success, or
+    None if the site cannot be recovered in place.
+    """
+    half = size // 2
+    tiles = [
+        (x + dx, y, z + dz)
+        for dx in range(-half, half + 1)
+        for dz in range(-half, half + 1)
+        if not (dx == 0 and dz == 0)  # center tile holds the water
+    ]
+    tillable = {"minecraft:dirt", "minecraft:grass_block", "minecraft:farmland"}
+
+    # Clear replaceable overhead (grass/fern) so each surface block below is
+    # readable and tillable. A tile whose soil was destroyed outright reads as
+    # air here and is simply skipped; the plant loop below handles what's left.
+    for tx, ty, tz in tiles:
+        surface = _block_id(client, tx, ty, tz)
+        above = _block_id(client, tx, ty + 1, tz)
+        if surface in tillable and (
+            above in _FARM_REPLACEABLE or "wheat" in above
+        ):
+            continue
+        if above in _FARM_REPLACEABLE and above not in {"minecraft:air", "minecraft:cave_air"}:
+            client.transport.dispatch("attack_block", {"x": tx, "y": ty + 1, "z": tz})
+            time.sleep(0.1)
+
+    if not ensure_farm_water(client, x, y, z, state=state):
+        return None
+
+    carried_seeds = count_item(client, "minecraft:wheat_seeds")
+    seed_target = (
+        len(tiles)
+        if carried_seeds < min(8, len(tiles))
+        else min(carried_seeds, len(tiles))
+    )
+    if not _gather_seeds(client, seed_target):
+        print("  Could not gather enough wheat seeds to replant the recovered farm.")
+
+    planted = 0
+    for tx, ty, tz in tiles:
+        if not goto(client, tx, ty, tz, timeout=20, tolerance=3.5):
+            continue
+        if _till_and_plant_tile(client, tx, ty, tz):
+            planted += 1
+
+    if planted == 0:
+        print(f"  Wheat farm at {(x, y, z)} could not be recovered (0/{len(tiles)} tiles).")
+        return None
+    print(f"  Recovered bare-ground wheat farm at {(x, y, z)}: {planted}/{len(tiles)} tiles replanted.")
+    return (x, y, z)
+
+
 def relocate_wheat_farm(
     client,
     x: int,
