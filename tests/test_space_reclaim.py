@@ -107,7 +107,7 @@ def test_never_banks_food(item_id):
         "minecraft:diamond", "minecraft:raw_iron", "minecraft:iron_ingot",
         "minecraft:gold_ingot", "minecraft:obsidian", "minecraft:ender_pearl",
         "minecraft:blaze_rod", "minecraft:blaze_powder", "minecraft:emerald",
-        "minecraft:flint_and_steel", "minecraft:netherite_ingot",
+        "minecraft:netherite_ingot",
     ],
 )
 def test_never_banks_end_run_progression(item_id):
@@ -134,6 +134,25 @@ def test_duplicate_buckets_are_shed_but_one_is_kept():
         A1BOT_STUCK_INVENTORY["minecraft:water_bucket"]
         - banked["minecraft:water_bucket"]
     ) == 1, "must keep exactly one water bucket"
+
+
+def test_redundant_flint_and_steel_is_shed_but_one_is_kept():
+    """A1Bot 2026-08-26: 5 flint_and_steel, unstackable, all in _KEEP_TOKENS.
+
+    Each sat in its own slot forever -- flint_and_steel never appeared in
+    ``SPACE_RECLAIM_RETAIN_COUNTS`` so ``is_protected`` kept every copy
+    unconditionally. That structurally capped free slots at 2 of the 3
+    FOOD_AND_IRON needs, and no amount of chest capacity could fix it: the
+    bot doesn't need more room, it needs to bank duplicates it will never
+    use. Confirmed live: `manage_inventory` then fell back to placing an
+    overflow chest, which failed in a cramped alcove every ~90s and ate most
+    of a 600s gather timeout doing it.
+    """
+    carried = {"minecraft:flint_and_steel": 5, "minecraft:iron_pickaxe": 1}
+    banked = _banked(carried)
+
+    assert banked.get("minecraft:flint_and_steel") == 4
+    assert carried["minecraft:flint_and_steel"] - banked["minecraft:flint_and_steel"] == 1
 
 
 def test_working_building_stock_survives_the_sweep():

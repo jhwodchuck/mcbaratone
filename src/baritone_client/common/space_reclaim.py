@@ -31,7 +31,7 @@ from typing import Any, Dict, Set
 # (wooden/stone/iron/diamond/netherite) and wood types are all covered.
 _KEEP_TOKENS = (
     # tools and weapons -- banking these strands the bot mid-phase
-    "pickaxe", "_axe", "sword", "shovel", "_hoe", "shears", "flint_and_steel",
+    "pickaxe", "_axe", "sword", "shovel", "_hoe", "shears",
     # armour and defence
     "helmet", "chestplate", "leggings", "boots", "shield", "elytra",
     "bow", "arrow", "crossbow", "trident", "totem",
@@ -66,7 +66,9 @@ SPACE_RECLAIM_RETAIN_COUNTS: Dict[str, int] = {
     "minecraft:crafting_table": 1,
     "minecraft:furnace": 1,
     "minecraft:chest": 2,
-    # flint_and_steel lights the nether portal, and bare flint is its input.
+    # flint_and_steel lights the nether portal and does not get consumed by
+    # use, so one is enough; bare flint is its crafting input.
+    "minecraft:flint_and_steel": 1,
     "minecraft:flint": 1,
     "minecraft:wheat": 3,
     "minecraft:water_bucket": 1,
