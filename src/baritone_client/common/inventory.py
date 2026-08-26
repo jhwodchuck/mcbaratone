@@ -1718,18 +1718,14 @@ def deposit_excess_to_chest(
         if keep_items is None and item_id not in deposit_items:
             continue
         count = int(item.get("count", 0) or 0)
-        reserve = retain_counts.get(item_id, 0)
-        if player_totals.get(item_id, 0) - count < reserve:
-            continue
-        from .container_transfer import verified_quick_move
+        from .container_transfer import deposit_stack_respecting_reserve
 
-        moved_count = verified_quick_move(
-            client,
-            slot=slot,
-            item_id=item_id,
-            before_count=count,
-            sync_id=sync_id,
+        moved_count = deposit_stack_respecting_reserve(
+            client, slot=slot, item_id=item_id, count=count,
+            totals=player_totals, retains=retain_counts, sync_id=sync_id,
         )
+        if moved_count is None:
+            continue
         if moved_count <= 0:
             print(f"STORAGE: target chest is full; {item_id} did not move")
             break

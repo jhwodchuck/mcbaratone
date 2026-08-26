@@ -50,6 +50,29 @@ def _player_target_slot(
     return empty
 
 
+def _container_target_slot(
+    slots: Sequence[Mapping[str, Any]],
+    container_slots: int,
+    item_id: str,
+    needed: int,
+) -> int | None:
+    """Find a container slot that can receive ``needed`` right-click deposits."""
+    empty: int | None = None
+    for item in slots:
+        slot = int(item.get("slot", -1))
+        if slot >= container_slots:
+            continue
+        current_id = str(item.get("id", "minecraft:air"))
+        count = int(item.get("count", 0) or 0)
+        if current_id == item_id:
+            capacity = int(item.get("max_count", 64) or 64) - count
+            if capacity >= needed:
+                return slot
+        if empty is None and (not current_id or current_id == "minecraft:air" or count <= 0):
+            empty = slot
+    return empty
+
+
 def _click(client: Any, slot: int, click_type: str, button: int, sync_id: Any) -> None:
     payload = {"slot": int(slot), "type": click_type, "button": int(button)}
     if sync_id is not None:
@@ -78,6 +101,87 @@ def verified_quick_move(
     updated_id = updated_entry.get("id") if updated_entry else None
     updated_count = int(updated_entry.get("count", 0) or 0) if updated_entry else 0
     return before_count if updated_id != item_id else before_count - updated_count
+
+
+def verified_partial_move(
+    client: Any,
+    *,
+    slot: int,
+    item_id: str,
+    before_count: int,
+    transfer_count: int,
+    sync_id: Any,
+) -> int:
+    """Deposit only ``transfer_count`` of a player stack, leaving the rest.
+
+    ``verified_quick_move`` shift-clicks an entire stack, which cannot honor a
+    retain floor when the whole holding sits in one slot -- the common case,
+    since Minecraft auto-merges same-item stacks together. This finds a
+    container slot that can accept ``transfer_count`` and splits the stack
+    into it with ordinary pickup/place clicks, mirroring the withdraw-side
+    split in ``withdraw_bounded_items``.
+    """
+    opened = _screen_data(client)
+    if opened is None:
+        return 0
+    slots, container_slots, live_sync_id = opened
+    target_slot = _container_target_slot(slots, container_slots, item_id, transfer_count)
+    if target_slot is None:
+        return 0
+    active_sync_id = live_sync_id if live_sync_id is not None else sync_id
+    _click(client, slot, "PICKUP", 0, active_sync_id)
+    for _ in range(transfer_count):
+        _click(client, target_slot, "PICKUP", 1, active_sync_id)
+    _click(client, slot, "PICKUP", 0, active_sync_id)
+    time.sleep(0.05)
+    opened = _screen_data(client)
+    if opened is None:
+        return 0
+    updated_entry = next(
+        (item for item in opened[0] if int(item.get("slot", -1)) == slot),
+        None,
+    )
+    updated_id = updated_entry.get("id") if updated_entry else None
+    updated_count = int(updated_entry.get("count", 0) or 0) if updated_entry else 0
+    return before_count if updated_id != item_id else before_count - updated_count
+
+
+def deposit_stack_respecting_reserve(
+    client: Any,
+    *,
+    slot: int,
+    item_id: str,
+    count: int,
+    totals: Mapping[str, int],
+    retains: Mapping[str, int],
+    sync_id: Any,
+) -> int | None:
+    """Move as much of a stack as clears its retain floor.
+
+    Returns ``None`` when the floor protects the whole stack -- the caller
+    should move on to the next item without treating this as a full chest.
+    Otherwise attempts a transfer and returns the number of items actually
+    moved: a full shift-click when that clears the whole slot, or a split
+    transfer via ``verified_partial_move`` when only part of it does, since
+    Minecraft auto-merges same-item stacks into one slot and a shift-click
+    cannot leave a remainder behind.
+    """
+    surplus = totals.get(item_id, 0) - retains.get(item_id, 0)
+    if surplus <= 0:
+        return None
+    transfer = min(count, surplus)
+    if transfer >= count:
+        return verified_quick_move(
+            client, slot=slot, item_id=item_id, before_count=count, sync_id=sync_id
+        )
+    return verified_partial_move(
+        client,
+        slot=slot,
+        item_id=item_id,
+        before_count=count,
+        transfer_count=transfer,
+        sync_id=sync_id,
+    )
 
 
 def withdraw_bounded_items(
@@ -194,6 +298,8 @@ def withdraw_bounded_food(
 
 
 __all__ = [
+    "deposit_stack_respecting_reserve",
+    "verified_partial_move",
     "verified_quick_move",
     "withdraw_bounded_food",
     "withdraw_bounded_items",
