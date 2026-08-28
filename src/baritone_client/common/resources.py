@@ -1165,12 +1165,13 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
         )
         if remaining_pickaxe_durability(client, usable_pickaxes) <= 0:
             print("DEBUG: No usable pickaxe at start of gather_ores; preparing one...")
-            replacement = (
-                "minecraft:iron_pickaxe"
-                if ore_type == "diamond"
-                else "minecraft:stone_pickaxe"
-            )
-            if not ensure_supplies(client, {replacement: 1}, timeout=120).success:
+            # Hardcoded stone_pickaxe deadlocked A1 on cobbled_deepslate with
+            # no real cobblestone; reuse the helper that falls back to wooden.
+            if ore_type == "diamond":
+                prepared = ensure_supplies(client, {"minecraft:iron_pickaxe": 1}, timeout=120).success
+            else:
+                prepared = _ensure_mining_pickaxe(client)
+            if not prepared:
                 return False
 
         _start_mine_process(client, ORES[ore_type], count + 2)

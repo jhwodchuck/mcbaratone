@@ -423,6 +423,55 @@ def test_pickaxe_durability_uses_damage_from_raw_inventory():
     assert resources.remaining_pickaxe_durability(client) == 162
 
 
+def test_gather_ores_reuses_the_wooden_fallback_instead_of_hardcoding_stone(
+    monkeypatch,
+):
+    """A1 deadlocked at Y=-45 carrying 8 cobbled_deepslate and 0 real
+    cobblestone: the old branch always asked for stone_pickaxe, the recipe
+    rejected the deepslate substitute, and nothing here could mine more
+    stone without the pickaxe it was trying to craft. The replacement must
+    go through _ensure_mining_pickaxe, which already falls back to wooden.
+    """
+    client = SimpleNamespace(transport=RecordingTransport())
+    calls = []
+    monkeypatch.setattr(resources, "remaining_pickaxe_durability", lambda *_a, **_k: 0)
+    monkeypatch.setattr(
+        resources,
+        "_ensure_mining_pickaxe",
+        lambda _client: calls.append("wooden-fallback") or False,
+    )
+    monkeypatch.setattr(
+        resources,
+        "ensure_supplies",
+        lambda *_a, **_k: pytest.fail("iron/diamond path must not run for a non-diamond ore"),
+    )
+
+    assert resources.gather_ores(client, "iron", count=1, timeout=30) is False
+    assert calls == ["wooden-fallback"]
+
+
+def test_gather_ores_still_demands_an_iron_pickaxe_for_diamond(monkeypatch):
+    """Diamond genuinely needs iron tier or better; the wooden fallback must
+    not be substituted in for that ore type."""
+    client = SimpleNamespace(transport=RecordingTransport())
+    requested = []
+    monkeypatch.setattr(resources, "remaining_pickaxe_durability", lambda *_a, **_k: 0)
+    monkeypatch.setattr(
+        resources,
+        "_ensure_mining_pickaxe",
+        lambda _client: pytest.fail("wooden fallback must not run for diamond"),
+    )
+    monkeypatch.setattr(
+        resources,
+        "ensure_supplies",
+        lambda _client, kit, **_k: requested.append(kit)
+        or SimpleNamespace(success=False),
+    )
+
+    assert resources.gather_ores(client, "diamond", count=1, timeout=30) is False
+    assert requested == [{"minecraft:iron_pickaxe": 1}]
+
+
 def test_replacing_mine_process_cancels_before_starting(monkeypatch):
     transport = RecordingTransport()
     client = SimpleNamespace(transport=transport)
