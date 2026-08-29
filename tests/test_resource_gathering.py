@@ -450,6 +450,32 @@ def test_gather_ores_reuses_the_wooden_fallback_instead_of_hardcoding_stone(
     assert calls == ["wooden-fallback"]
 
 
+def test_gather_ores_asks_for_the_iron_pickaxe_head_material_too(monkeypatch):
+    """Requesting the tool alone dead-ends at its own missing ingredient.
+
+    Live A1 2026-08-29, descending the obsidian -> diamond_pickaxe ->
+    diamond -> iron_pickaxe chain, bottomed out here repeating
+    "place_recipe failed for minecraft:iron_pickaxe: Missing ingredient
+    'minecraft:iron_ingot'" -- _craft_with_table resolves stick and
+    cobblestone dependencies but never gathers ore, so the ingot has to be
+    named in the requirement set for its own smelting strategy to run.
+    """
+    client = SimpleNamespace(transport=RecordingTransport())
+    requested = []
+    monkeypatch.setattr(resources, "remaining_pickaxe_durability", lambda *_a, **_k: 0)
+    monkeypatch.setattr(
+        resources,
+        "ensure_supplies",
+        lambda _client, kit, **_k: requested.append(kit)
+        or SimpleNamespace(success=False),
+    )
+
+    assert resources.gather_ores(client, "diamond", count=1, timeout=30) is False
+    assert requested == [
+        {"minecraft:iron_pickaxe": 1, "minecraft:iron_ingot": 3}
+    ], "the ingot must be requested alongside the tool that consumes it"
+
+
 def test_gather_ores_still_demands_an_iron_pickaxe_for_diamond(monkeypatch):
     """Diamond genuinely needs iron tier or better; the wooden fallback must
     not be substituted in for that ore type."""
@@ -469,7 +495,11 @@ def test_gather_ores_still_demands_an_iron_pickaxe_for_diamond(monkeypatch):
     )
 
     assert resources.gather_ores(client, "diamond", count=1, timeout=30) is False
-    assert requested == [{"minecraft:iron_pickaxe": 1}]
+    # Asserts the tier, not the exact requirement set: the head material it
+    # is requested with is pinned by
+    # test_gather_ores_asks_for_the_iron_pickaxe_head_material_too.
+    assert len(requested) == 1
+    assert requested[0].get("minecraft:iron_pickaxe") == 1
 
 
 def test_replacing_mine_process_cancels_before_starting(monkeypatch):

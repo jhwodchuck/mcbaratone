@@ -1168,7 +1168,7 @@ def gather_ores(client, ore_type: str, count: int, timeout: int = 600) -> bool:
             # Hardcoded stone_pickaxe deadlocked A1 on cobbled_deepslate with
             # no real cobblestone; reuse the helper that falls back to wooden.
             if ore_type == "diamond":
-                prepared = ensure_supplies(client, {"minecraft:iron_pickaxe": 1}, timeout=120).success
+                prepared = ensure_supplies(client, {"minecraft:iron_pickaxe": 1, "minecraft:iron_ingot": 3}, timeout=120).success
             else:
                 prepared = _ensure_mining_pickaxe(client)
             if not prepared:
