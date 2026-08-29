@@ -37,7 +37,10 @@ def test_a_diamond_tier_block_is_not_mined_with_a_lesser_pickaxe():
         mine=lambda *_a: mined.append(True) or True,
     )
     assert mined == [], "must not dispatch a mine the tool cannot complete"
-    assert acquired == [{"minecraft:diamond_pickaxe": 1}]
+    # The head material must be requested alongside the tool: the crafter does
+    # not gather ore for a recipe, so asking for the pickaxe alone dead-ends on
+    # "Missing ingredient 'minecraft:diamond'" without ever mining one.
+    assert acquired == [{"minecraft:diamond_pickaxe": 1, "minecraft:diamond": 3}]
 
 
 def test_an_adequate_pickaxe_mines_immediately_without_reacquiring():

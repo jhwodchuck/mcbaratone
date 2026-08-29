@@ -60,6 +60,12 @@ def craft_shortfall_with_table(
 
 #: Obsidian, ancient debris and the respawn anchor are diamond-tier only.
 DIAMOND_TIER_PICKAXES = ("minecraft:diamond_pickaxe", "minecraft:netherite_pickaxe")
+#: A pickaxe recipe's own head material. ``_craft_with_table`` resolves stick
+#: and cobblestone dependencies (``ensure_tool_sticks``,
+#: ``ensure_stone_material``) but has no equivalent for ore, so asking for the
+#: tool alone dead-ends on "Missing ingredient 'minecraft:diamond'" rather
+#: than going and mining any.
+PICKAXE_HEAD_MATERIAL = {"minecraft:diamond_pickaxe": ("minecraft:diamond", 3)}
 
 
 def mine_requiring_pickaxe(
@@ -90,7 +96,18 @@ def mine_requiring_pickaxe(
     """
     if durability(client, list(pickaxes)) > 0:
         return mine(client, block_id, quantity)
-    if not ensure(client, {pickaxes[0]: 1}, timeout=300).success:
-        print(f"  {block_id} needs a {pickaxes[0].split(':')[-1]}; none available yet.")
+    wanted = pickaxes[0]
+    # Ask for the head material in the same requirement set as the tool. The
+    # crafter does not gather ore for a recipe, so requesting the pickaxe
+    # alone reports "all methods failed ... (have 0, wanted 1)" without ever
+    # mining a diamond -- the acquisition names the blocker but cannot clear
+    # it. Listing both lets ensure_supplies route the ore through its own
+    # gather_ores strategy first.
+    head = PICKAXE_HEAD_MATERIAL.get(wanted)
+    requirement = {wanted: 1}
+    if head is not None:
+        requirement[head[0]] = head[1]
+    if not ensure(client, requirement, timeout=300).success:
+        print(f"  {block_id} needs a {wanted.split(':')[-1]}; none available yet.")
         return False
     return mine(client, block_id, quantity)
