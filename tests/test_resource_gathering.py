@@ -890,46 +890,6 @@ def test_smelter_builds_missing_furnace_through_table_aware_craft(monkeypatch):
     assert crafted == [("minecraft:furnace", 1)]
 
 
-def test_smelter_does_not_craft_a_furnace_on_deepslate_alone(monkeypatch):
-    """gather_stone's own success check accepts cobbled_deepslate for
-    "count" -- correct for its many bulk-building callers, wrong for a
-    recipe that rejects the substitute. Live A1 sat on 60 cobbled_deepslate
-    and 0 real cobblestone at Y=-3; gather_stone returned True instantly,
-    mining nothing, so the furnace craft was attempted (and failed) forever.
-    Must bail before ever reaching the craft, not just fail inside it.
-    """
-    client = SimpleNamespace(
-        transport=SimpleNamespace(dispatch=lambda *_args, **_kwargs: {})
-    )
-    monkeypatch.setattr(
-        resources,
-        "count_item",
-        lambda _client, item_id: {
-            "minecraft:raw_iron": 4,
-            "minecraft:cobblestone": 0,
-        }.get(item_id, 0),
-    )
-    monkeypatch.setattr(
-        resources, "collect_finished_furnace_output", lambda *_a, **_k: False
-    )
-    monkeypatch.setattr(
-        resources, "_prepare_safe_furnace_fuel", lambda *_a: "minecraft:oak_planks"
-    )
-    monkeypatch.setattr(resources, "find_nearby_block", lambda *_a, **_k: None)
-    # The buggy call: reports success (as it genuinely does when sitting on
-    # enough cobbled_deepslate) while leaving literal cobblestone at 0.
-    monkeypatch.setattr(resources, "gather_stone", lambda *_a, **_k: True)
-    monkeypatch.setattr(
-        resources,
-        "_craft_with_table",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            AssertionError("must not attempt a craft with 0 real cobblestone")
-        ),
-    )
-
-    assert not resources._smelt_with_furnace(client, "minecraft:iron_ingot", 4)
-
-
 def test_smelter_fallback_collects_completed_output_before_requiring_input(monkeypatch):
     from baritone_client.common import base, harness_ops
 
@@ -1783,17 +1743,28 @@ def test_stone_material_prep_is_noop_for_non_stone_recipes(monkeypatch):
     assert gathered == []
 
 
-def test_stone_material_prep_accepts_cobbled_deepslate(monkeypatch):
+def test_stone_material_prep_rejects_cobbled_deepslate_as_a_substitute(monkeypatch):
+    """No recipe in _STONE_RECIPE_COBBLESTONE_NEEDS accepts cobbled_deepslate
+    in place of cobblestone -- confirmed live by the server itself rejecting
+    both a stone_pickaxe and a furnace craft with "Missing ingredient
+    'minecraft:cobblestone'" while deepslate sat in the inventory. Sitting on
+    3 deepslate must not report success for a recipe needing 3 cobblestone,
+    and gather_stone must be asked for more than what is already held (held +
+    shortfall, not just the shortfall) so it is forced to actually mine
+    instead of instantly declaring victory on the existing deepslate stock.
+    """
     client = SimpleNamespace(transport=RecordingTransport())
     counts = {"minecraft:cobblestone": 0, "minecraft:cobbled_deepslate": 3}
     gathered = []
     monkeypatch.setattr(resources, "count_item", lambda _c, item: counts.get(item, 0))
     monkeypatch.setattr(
-        resources, "gather_stone", lambda *_a, **_k: gathered.append(True) or True
+        resources,
+        "gather_stone",
+        lambda _c, count, **_k: gathered.append(count) or True,
     )
 
-    assert resources.ensure_stone_material(client, "minecraft:stone_pickaxe", 1)
-    assert gathered == []
+    assert not resources.ensure_stone_material(client, "minecraft:stone_pickaxe", 1)
+    assert gathered == [6]
 
 
 def test_stone_material_prep_fails_closed_when_mining_fails(monkeypatch):

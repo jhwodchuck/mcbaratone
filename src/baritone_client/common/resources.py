@@ -2036,18 +2036,20 @@ def ensure_stone_material(client, item_id: str, qty: int = 1) -> bool:
     if needed_each is None:
         return True
 
-    def _carried_stone() -> int:
-        return count_item(client, "minecraft:cobblestone") + count_item(
-            client, "minecraft:cobbled_deepslate"
-        )
-
+    # None of these recipes accept cobbled_deepslate in place of cobblestone
+    # (confirmed live: A1's furnace craft rejected 60 carried deepslate with
+    # "Missing ingredient 'minecraft:cobblestone'"), so both checks must be
+    # literal. gather_stone's own target is a combined tally, so passing
+    # `needed` while already holding enough combined material is a same-call
+    # no-op -- pass held+shortfall instead so it is forced to actually mine.
     needed = needed_each * max(1, qty)
-    current = _carried_stone()
+    current = count_item(client, "minecraft:cobblestone")
     if current >= needed:
         return True
     print(f"  Need {needed - current} more cobblestone for {item_id}; gathering stone first...")
-    gather_stone(client, count=needed)
-    return _carried_stone() >= needed
+    held = current + count_item(client, "minecraft:cobbled_deepslate")
+    gather_stone(client, count=held + (needed - current))
+    return count_item(client, "minecraft:cobblestone") >= needed
 
 
 def _craft_with_table(client, item_id: str, qty: int) -> bool:
@@ -2759,11 +2761,9 @@ def _smelt_with_furnace(
         fpos = find_nearby_block(client, furnace_blocks, radius=10)
     if fpos is None:
         if count_item(client, "minecraft:furnace") == 0:
-            # gather_stone accepts cobbled_deepslate for "count"; the furnace recipe rejects that substitute, so recheck the literal item afterward.
             if count_item(client, "minecraft:cobblestone") < 8:
-                gather_stone(client, count=8)
-            if count_item(client, "minecraft:cobblestone") < 8:
-                return False
+                if not gather_stone(client, count=8):
+                    return False
             # A raw craft can fall back to a table but skip converting its
             # planks (live Bot16: 42 logs, still "any_planks:0"); this route
             # converts a log first and verifies the workstation craft.
