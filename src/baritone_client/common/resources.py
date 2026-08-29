@@ -24,7 +24,7 @@ from .movement_recovery import (
     recover_stalled_gathering,
 )
 from .mining_safety import run_mining_defense
-from .requirement_crafting import absolute_requirement as _absolute_requirement, craft_shortfall_with_table as _craft_shortfall_impl
+from .requirement_crafting import absolute_requirement as _absolute_requirement, craft_shortfall_with_table as _craft_shortfall_impl, mine_requiring_pickaxe as _mine_requiring_pickaxe
 from .ore_gather_recovery import OreStallRecovery
 from .surface_egress import try_lower_surface_egress
 from .storage_safety import (
@@ -2292,7 +2292,7 @@ DEFAULT_REQUIREMENT_STRATEGIES: Dict[str, Callable[[Any, int], bool]] = {
     "minecraft:iron_ingot": lambda client, qty: _smelt_requirement_shortfall(client, "minecraft:iron_ingot", qty),
     "minecraft:diamond": lambda client, qty: gather_ores(client, "diamond", count=max(_absolute_requirement(client, "minecraft:diamond", qty, count_item=count_item), 4)),
     "minecraft:gold_ingot": lambda client, qty: _smelt_requirement_shortfall(client, "minecraft:gold_ingot", qty),
-    "minecraft:obsidian": lambda client, qty: _default_mine(client, "minecraft:obsidian", qty),
+    "minecraft:obsidian": lambda client, qty: _mine_requiring_pickaxe(client, "minecraft:obsidian", qty, durability=remaining_pickaxe_durability, ensure=ensure_supplies, mine=_default_mine),
     "minecraft:crafting_table": lambda client, qty: craft(client, "minecraft:crafting_table", qty) or True,
     "minecraft:furnace": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:furnace", qty),
     "minecraft:chest": lambda client, qty: _craft_shortfall_with_table(client, "minecraft:chest", qty),

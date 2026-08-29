@@ -56,3 +56,41 @@ def craft_shortfall_with_table(
         client, item_id, shortfall, count_item=count_item
     )
     return craft_with_table(client, item_id, target)
+
+
+#: Obsidian, ancient debris and the respawn anchor are diamond-tier only.
+DIAMOND_TIER_PICKAXES = ("minecraft:diamond_pickaxe", "minecraft:netherite_pickaxe")
+
+
+def mine_requiring_pickaxe(
+    client: Any,
+    block_id: str,
+    quantity: int,
+    *,
+    durability: Callable[[Any, list], int],
+    ensure: Callable[..., Any],
+    mine: Callable[[Any, str, int], bool],
+    pickaxes: tuple = DIAMOND_TIER_PICKAXES,
+) -> bool:
+    """Refuse a mine the carried tools physically cannot break.
+
+    Baritone's ``mine`` route silently does nothing when no carried tool can
+    break the target, and the caller reports success merely for dispatching
+    it, so ``ensure_supplies`` re-checks an unchanged inventory and respins
+    for its entire timeout -- the same false-success shape this module was
+    written for, one layer lower.
+
+    Live on A1 2026-08-29, carrying only a stone pickaxe: NETHER_AND_BLAZE
+    logged "Gathering minecraft:obsidian x14" every ~6s across three full
+    180s windows per attempt, then "Could not gather portal materials".
+    Obsidian is diamond-tier, so not one of those swings could ever have
+    landed. ``inventory._MANUAL_GRID_RECIPES`` already records why this
+    matters: the portal, and therefore the whole Nether phase, is
+    unreachable without a diamond pickaxe.
+    """
+    if durability(client, list(pickaxes)) > 0:
+        return mine(client, block_id, quantity)
+    if not ensure(client, {pickaxes[0]: 1}, timeout=300).success:
+        print(f"  {block_id} needs a {pickaxes[0].split(':')[-1]}; none available yet.")
+        return False
+    return mine(client, block_id, quantity)
