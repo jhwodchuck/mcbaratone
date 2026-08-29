@@ -2759,14 +2759,14 @@ def _smelt_with_furnace(
         fpos = find_nearby_block(client, furnace_blocks, radius=10)
     if fpos is None:
         if count_item(client, "minecraft:furnace") == 0:
+            # gather_stone accepts cobbled_deepslate for "count"; the furnace recipe rejects that substitute, so recheck the literal item afterward.
             if count_item(client, "minecraft:cobblestone") < 8:
-                if not gather_stone(client, count=8):
-                    return False
-            # A furnace is a 3x3 recipe. The raw craft route can fall back to
-            # making a table but does not acquire/convert its four planks;
-            # live Bot16 carried 42 logs and still repeated "any_planks:0"
-            # for the full supply timeout. The table-aware route converts a
-            # carried log first and then verifies the workstation craft.
+                gather_stone(client, count=8)
+            if count_item(client, "minecraft:cobblestone") < 8:
+                return False
+            # A raw craft can fall back to a table but skip converting its
+            # planks (live Bot16: 42 logs, still "any_planks:0"); this route
+            # converts a log first and verifies the workstation craft.
             if not _craft_with_table(client, "minecraft:furnace", 1):
                 return False
 
