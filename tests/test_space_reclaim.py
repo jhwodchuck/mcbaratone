@@ -240,3 +240,104 @@ def test_never_banks_a_bed(item_id):
 def test_bedrock_is_not_mistaken_for_a_bed():
     """The "_bed" token must not accidentally protect terrain."""
     assert not is_protected("minecraft:bedrock")
+
+
+# A1Bot again on 2026-08-31, 35/36 slots, at (-305,-42,563) mining for the
+# diamonds a diamond pickaxe needs. 598m from home storage -- past
+# MAX_STORAGE_TRAVEL_DISTANCE -- so nothing could be banked, and unlike the
+# 2026-08-16 capture above it carried no chests to build an overflow with.
+# manage_inventory's named tiers matched only cobblestone (48, floor 128) and
+# cobbled_deepslate (58, floor 64); whole-stack disposal skipped both, so it
+# freed zero slots and retried every ~6s indefinitely.
+A1BOT_DEEP_MINING_INVENTORY = {
+    "minecraft:cobbled_deepslate": 58, "minecraft:cobblestone": 48,
+    "minecraft:bread": 16, "minecraft:beef": 16, "minecraft:amethyst_shard": 12,
+    "minecraft:carrot": 10, "minecraft:sweet_berries": 7, "minecraft:torch": 6,
+    "minecraft:apple": 5, "minecraft:flint_and_steel": 4, "minecraft:lead": 4,
+    "minecraft:stick": 4, "minecraft:redstone": 4, "minecraft:iron_ingot": 3,
+    "minecraft:enchanted_book": 3, "minecraft:iron_sword": 2,
+    "minecraft:oak_planks": 2, "minecraft:diamond": 1,
+    "minecraft:iron_pickaxe": 1, "minecraft:wheat": 1,
+    "minecraft:water_bucket": 1, "minecraft:golden_apple": 1,
+    "minecraft:iron_shovel": 1, "minecraft:stone_pickaxe": 1,
+    "minecraft:bucket": 1, "minecraft:string": 1, "minecraft:sand": 1,
+    "minecraft:shield": 1, "minecraft:leather_boots": 1,
+}
+
+
+def _whole_stacks_droppable(carried):
+    """Types disposal can actually shed, given whole-stack-only dropping.
+
+    inventory_disposal.drop_items skips a slot when dropping it would fall
+    below the retain floor, and it only moves whole stacks -- so an item under
+    its own floor is undroppable no matter how useless it is.
+    """
+    return sorted(
+        item_id
+        for item_id in space_reclaim_deposit_items(carried)
+        if carried[item_id] - carried[item_id] >= SPACE_RECLAIM_RETAIN_COUNTS.get(item_id, 0)
+    )
+
+
+def test_the_deep_mining_deadlock_frees_the_slots_ore_gathering_needs():
+    """The inverted keep-list must free 3 slots where the named tiers freed 0.
+
+    This is the whole point of routing manage_inventory's last resort through
+    space_reclaim: nobody had listed amethyst_shard, redstone, string or sand
+    as junk, so a name-based allow-list could never shed them, while an
+    inverted keep-list sheds them precisely because nothing protects them.
+    """
+    droppable = _whole_stacks_droppable(A1BOT_DEEP_MINING_INVENTORY)
+
+    assert droppable == [
+        "minecraft:amethyst_shard",
+        "minecraft:redstone",
+        "minecraft:sand",
+        "minecraft:string",
+    ]
+    assert len(droppable) >= IRON_MINING_SLOTS_REQUIRED
+
+
+def test_the_deep_mining_deadlock_keeps_everything_that_matters():
+    """Freeing slots must not cost the run its tools, food, or progression."""
+    shed = space_reclaim_deposit_items(A1BOT_DEEP_MINING_INVENTORY)
+
+    for item_id in (
+        "minecraft:iron_pickaxe", "minecraft:stone_pickaxe",
+        "minecraft:iron_sword", "minecraft:iron_shovel", "minecraft:shield",
+        "minecraft:leather_boots", "minecraft:diamond",
+        "minecraft:iron_ingot", "minecraft:bread", "minecraft:beef",
+        "minecraft:golden_apple", "minecraft:enchanted_book",
+    ):
+        assert item_id not in shed, f"{item_id} must survive the sweep"
+
+
+def test_reclaim_drop_tier_stops_once_enough_slots_are_free():
+    """It must not keep shedding after the requirement is met."""
+    from types import SimpleNamespace
+
+    from baritone_client.common import inventory as inventory_api
+    from baritone_client.common.space_reclaim import reclaim_drop_tier
+
+    free = {"n": 0}
+    calls = []
+
+    def fake_drop(_client, item_ids, max_stacks=None, retain_counts=None):
+        calls.append(max_stacks)
+        free["n"] += 1
+        return 1
+
+    original_drop = inventory_api.drop_items
+    original_free = inventory_api.free_inventory_slots
+    original_get = inventory_api.get_inventory
+    inventory_api.drop_items = fake_drop
+    inventory_api.free_inventory_slots = lambda _c: free["n"]
+    inventory_api.get_inventory = lambda _c: dict(A1BOT_DEEP_MINING_INVENTORY)
+    try:
+        assert reclaim_drop_tier(SimpleNamespace(), 3, {})
+    finally:
+        inventory_api.drop_items = original_drop
+        inventory_api.free_inventory_slots = original_free
+        inventory_api.get_inventory = original_get
+
+    assert calls == [3, 2, 1], "must shrink its ask as slots come free, then stop"

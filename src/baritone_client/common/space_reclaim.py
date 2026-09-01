@@ -114,3 +114,45 @@ def carried_items(client: Any) -> Dict[str, int]:
     except Exception as exc:
         print(f"  STORAGE: could not read inventory for space reclaim ({exc})")
         return {}
+
+
+def reclaim_drop_tier(
+    client: Any, required: int, retain_counts: Dict[str, int] | None = None
+) -> bool:
+    """Drop whatever the keep-list does not protect, as the last resort.
+
+    ``manage_inventory``'s own tiers are a hardcoded *allow*-list of item
+    names, so an inventory full of things nobody thought to name is
+    undroppable no matter how worthless it is. The banking path already
+    solved this by inverting the question -- ``space_reclaim_deposit_items``
+    ships everything ``_KEEP_TOKENS`` does not protect -- but that answer was
+    computed inside the chest tour and thrown away when no chest was
+    reachable, so disposal never saw it.
+
+    Live on A1 2026-08-31, stuck at 35/36 slots 598m from home (past
+    ``MAX_STORAGE_TRAVEL_DISTANCE``, so no banking) and needing 3 free slots
+    to mine the diamonds for a diamond pickaxe: of its 29 carried types the
+    named tiers matched only cobblestone and cobbled_deepslate, and both sat
+    under their retain floors. Whole-stack-only disposal
+    (``inventory_disposal.drop_items``) then skipped both, freeing zero slots
+    and failing every ~6s indefinitely. amethyst_shard, redstone, string and
+    sand -- none of which has a consumer in any phase -- were sitting right
+    there, unprotected and unfloored.
+
+    Retain floors are merged caller-first, so a caller that guards building
+    stone more strictly than the shared defaults keeps its stricter floor.
+    """
+    from .inventory import drop_items, free_inventory_slots
+
+    floors = dict(SPACE_RECLAIM_RETAIN_COUNTS)
+    floors.update(retain_counts or {})
+    reclaim = sorted(space_reclaim_deposit_items(carried_items(client)))
+    while reclaim and free_inventory_slots(client) < required:
+        needed = required - free_inventory_slots(client)
+        if drop_items(client, reclaim, max_stacks=needed, retain_counts=floors) <= 0:
+            break
+    free = free_inventory_slots(client)
+    if free >= required:
+        return True
+    print(f"  Inventory cleanup failed: only {free}/{required} required slots are free")
+    return False

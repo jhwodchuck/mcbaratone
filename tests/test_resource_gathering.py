@@ -3373,6 +3373,42 @@ def test_building_stone_is_still_retained_in_bulk(monkeypatch):
     assert '"minecraft:cobblestone": 128' in src
 
 
+def test_manage_inventory_falls_back_to_the_inverted_keep_list(monkeypatch):
+    """When every named tier frees nothing, disposal must invert the question.
+
+    Live A1 2026-08-31 at 35/36 slots, 598m from home so nothing could be
+    banked: of 29 carried types the named tiers matched only cobblestone (48,
+    floor 128) and cobbled_deepslate (58, floor 64), and whole-stack disposal
+    skipped both. It freed zero slots and retried every ~6s indefinitely while
+    amethyst_shard, redstone, string and sand sat there unprotected. The
+    named-tier loop must hand off to space_reclaim rather than just printing
+    a failure.
+    """
+    from baritone_client.common import resources as res
+
+    delegated = []
+    monkeypatch.setattr(res, "_store_surplus_in_chest", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.free_inventory_slots", lambda _c: 1
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.drop_items",
+        lambda *_a, **_k: 0,  # every named tier frees nothing, as on A1
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.space_reclaim.reclaim_drop_tier",
+        lambda client, required, retain_counts: delegated.append(
+            (required, retain_counts.get("minecraft:cobblestone"))
+        )
+        or True,
+    )
+
+    assert res.manage_inventory(SimpleNamespace(), minimum_free_slots=3)
+    assert delegated == [(3, 128)], (
+        "must delegate with the caller's stricter building-stone floor intact"
+    )
+
+
 def _slots(chest_slots, occupied):
     """Build a container screen payload: chest slots then the 36 player slots."""
     items = []

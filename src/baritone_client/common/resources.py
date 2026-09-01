@@ -2499,11 +2499,8 @@ def manage_inventory(client, minimum_free_slots: int = 1) -> bool:
         if free_inventory_slots(client) >= required:
             return True
 
-    print(
-        f"  Inventory cleanup failed: only {free_inventory_slots(client)}/"
-        f"{required} required slots are free"
-    )
-    return False
+    from .space_reclaim import reclaim_drop_tier
+    return reclaim_drop_tier(client, required, retain_counts)
 
 
 def _resolve_raw_plank_helper() -> Callable[[Any, int], bool]:
