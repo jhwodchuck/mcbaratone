@@ -341,3 +341,67 @@ def test_reclaim_drop_tier_stops_once_enough_slots_are_free():
         inventory_api.get_inventory = original_get
 
     assert calls == [3, 2, 1], "must shrink its ask as slots come free, then stop"
+
+
+def test_a_failed_disposal_says_which_step_refused(capsys):
+    """A silent `continue` cost A1 47 blind cleanup failures in 20 minutes.
+
+    Four unprotected, unfloored stacks sat in slots 6/9/12/20 while
+    manage_inventory reported only "only 2/3 required slots are free" -- no
+    way to tell "nothing was eligible" from "the throw is not landing". Each
+    rejection path must now name itself, so the next look at a stuck bot
+    starts from a reason instead of a guess.
+
+    Here the throw never empties the slot, which is one of the two silent
+    paths; the assertion pins the reason, not just that something printed.
+    """
+    from types import SimpleNamespace
+
+    from baritone_client.common import inventory as api
+    from baritone_client.common import inventory_disposal
+
+    def dispatch(route, _payload=None):
+        if route == "get_inventory":
+            return {"inventory": [
+                {"id": "minecraft:amethyst_shard", "slot": 6, "count": 12},
+            ]}
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    original_free = api.free_inventory_slots
+    api.free_inventory_slots = lambda _c: 1
+    try:
+        dropped = inventory_disposal.drop_items(
+            client, ["minecraft:amethyst_shard"], max_stacks=3, retain_counts={}
+        )
+    finally:
+        api.free_inventory_slots = original_free
+
+    assert dropped == 0
+    out = capsys.readouterr().out
+    assert "none of 1 candidate stack(s) left the inventory" in out, out
+    assert "not_emptied=1" in out, out
+
+
+def test_a_disposal_with_no_eligible_stacks_stays_quiet(capsys):
+    """Only a real refusal is worth a line; nothing eligible is not news."""
+    from types import SimpleNamespace
+
+    from baritone_client.common import inventory_disposal
+
+    def dispatch(route, _payload=None):
+        if route == "get_inventory":
+            return {"inventory": [
+                {"id": "minecraft:diamond", "slot": 3, "count": 2},
+            ]}
+        return {}
+
+    dropped = inventory_disposal.drop_items(
+        SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch)),
+        ["minecraft:amethyst_shard"],
+        max_stacks=3,
+        retain_counts={},
+    )
+
+    assert dropped == 0
+    assert "Drop items:" not in capsys.readouterr().out
