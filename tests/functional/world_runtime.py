@@ -87,6 +87,39 @@ def stop_server(port: int, password: str) -> None:
         rcon.command("stop")
 
 
+#: Hostile spawning is a GAMERULE in 26.2, not a server.properties key.
+#: `spawn-monsters` appears in zero of the 16804 entries of the 26.2 server
+#: jar, so writing it into server.properties is silently inert -- dragon-a ran
+#: a supposedly peaceful world and still died 16 times (Zombie x8, Skeleton x4,
+#: Spider x2, Pillager x1, drowned x1). The jar's own GameRuleRegistryFix maps
+#: the legacy `spawnMonsters` to `minecraft:spawn_monsters`, which is the id
+#: this must use. `spawn_patrols` covers the pillager that killed it once.
+PEACEFUL_GAMERULES = ("spawn_monsters", "spawn_patrols")
+
+
+def apply_gamerules(port: int, password: str, rules: dict[str, str]) -> dict:
+    """Set gamerules over RCON and read each one back to prove it applied.
+
+    An unknown rule id fails as an unrecognised command rather than raising,
+    so the read-back is the only thing that distinguishes "applied" from
+    "silently ignored" -- which is exactly how the inert server.properties key
+    went unnoticed.
+    """
+    from scripts.maintenance.locate_biome_atlas import RconClient
+
+    applied: dict[str, str] = {}
+    with RconClient("127.0.0.1", port, password, 5.0) as rcon:
+        for rule, value in rules.items():
+            rcon.command(f"gamerule {rule} {value}")
+            applied[rule] = str(rcon.command(f"gamerule {rule}") or "").strip()
+    mismatched = {
+        rule: applied.get(rule, "")
+        for rule, value in rules.items()
+        if str(value).lower() not in applied.get(rule, "").lower()
+    }
+    return {"applied": applied, "mismatched": mismatched, "ok": not mismatched}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -100,6 +133,10 @@ def main() -> int:
     stop.add_argument("--rcon-port", type=int, required=True)
     stop.add_argument("--password", required=True)
 
+    peaceful = subparsers.add_parser("apply-peaceful")
+    peaceful.add_argument("--rcon-port", type=int, required=True)
+    peaceful.add_argument("--password", required=True)
+
     args = parser.parse_args()
     if args.command == "verify":
         print(
@@ -110,6 +147,14 @@ def main() -> int:
             )
         )
         return 0
+    if args.command == "apply-peaceful":
+        result = apply_gamerules(
+            args.rcon_port,
+            args.password,
+            {rule: "false" for rule in PEACEFUL_GAMERULES},
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result["ok"] else 1
     stop_server(args.rcon_port, args.password)
     return 0
 
