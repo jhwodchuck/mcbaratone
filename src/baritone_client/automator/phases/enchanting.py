@@ -1168,16 +1168,16 @@ class EnchantingPipelineHandler(PhaseHandler):
                 return False
         if not table_needed:
             return True
+        # Portal obsidian outranks a table; local import dodges a cycle.
+        from ..adaptive_scheduler import _known_portal
+        from .nether_prep import PORTAL_FRAME_OBSIDIAN
+
+        need = 4 if _known_portal(state) else 4 + PORTAL_FRAME_OBSIDIAN
         self._withdraw_at_home(
-            client,
-            state,
-            {
-                "minecraft:book": 1,
-                "minecraft:diamond": 2,
-                "minecraft:obsidian": 4,
-            },
+            client, state,
+            {"minecraft:book": 1, "minecraft:diamond": 2, "minecraft:obsidian": need},
         )
-        if count_item(client, "minecraft:obsidian") < 4:
+        if count_item(client, "minecraft:obsidian") < need:
             if not self._wait_for_daylight(client, state):
                 return False
             if not self._leave_starter_house(client, state):
@@ -1185,7 +1185,7 @@ class EnchantingPipelineHandler(PhaseHandler):
             mined = False
             returned = False
             try:
-                mined = self._mine_obsidian(client, target=4)
+                mined = self._mine_obsidian(client, target=need)
             finally:
                 client.transport.dispatch("cancel", {})
                 returned = self._return_home(client, state)
