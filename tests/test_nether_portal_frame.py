@@ -109,3 +109,70 @@ def test_every_obsidian_gate_agrees_on_ten():
     from baritone_client.automator import end_readiness
 
     assert 'supplies["obsidian"] >= 10' in inspect.getsource(end_readiness)
+
+
+def test_an_obstructed_site_places_nothing_at_all():
+    """The leak: a doomed build used to spend obsidian before discovering it.
+
+    Live on A1 2026-09-02 at y=-32 in deepslate, the bot reached the build
+    carrying exactly 10 obsidian -- the first time the supply gate had ever let
+    it through. Each candidate offset placed a block or two, then raised
+    "Target position is already occupied" on the first solid position. The
+    handler caught it and returned False, but the blocks already placed were
+    gone from the inventory. Two attempts later it held 8, fell under its own
+    requirement, and every further offset failed on `hasObsidian: False`.
+
+    So a site that cannot be cleared must cost nothing.
+    """
+    placed = []
+    solid = {}
+
+    class Transport:
+        def dispatch(self, route, payload):
+            key = (payload.get("x"), payload.get("y"), payload.get("z"))
+            if route == "get_block":
+                return {"id": solid.get(key, "minecraft:air")}
+            if route == "dig_block":
+                return {}  # refuses to break: the block stays put
+            return {}
+
+    client = SimpleNamespace(
+        transport=Transport(),
+        mission=SimpleNamespace(
+            macro=lambda _n, params: {"result": {"ready": params["obsidian"] >= 10}},
+            checkpoint=lambda *_a, **_k: None,
+        ),
+    )
+
+    # One unbreakable block anywhere in the volume is enough.
+    solid[(1, 64, 0)] = "minecraft:deepslate"
+
+    import baritone_client.common.nether as mod
+    import baritone_client.common.automation_utils as utils
+
+    orig_place, orig_sleep = mod.place_block, mod.time.sleep
+    orig_usleep, orig_clock = utils.time.sleep, utils.time.monotonic
+    clock = iter(range(0, 10_000))
+    try:
+        mod.place_block = lambda *_a, **_k: placed.append(_a) or True
+        mod.time.sleep = lambda _s: None
+        utils.time.sleep = lambda _s: None
+        # Let the dig deadline expire immediately instead of burning 8s of wall
+        # clock waiting for a block the stub will never break.
+        utils.time.monotonic = lambda: next(clock)
+        assert not mod.build_nether_portal(client, 0, 64, 0)
+    finally:
+        mod.place_block, mod.time.sleep = orig_place, orig_sleep
+        utils.time.sleep, utils.time.monotonic = orig_usleep, orig_clock
+
+    assert placed == [], f"leaked {len(placed)} obsidian into a doomed site"
+
+
+def test_an_unreadable_block_counts_as_occupied():
+    """A transport blip must not be guessed as air -- that is how stacks leak."""
+    from baritone_client.common.automation_utils import clear_placement_volume
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda _route, _payload: {})
+    )
+    assert not clear_placement_volume(client, [(0, 64, 0)])

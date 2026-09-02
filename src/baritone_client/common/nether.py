@@ -10,7 +10,7 @@ import logging
 import time
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
-from .automation_utils import place_block
+from .automation_utils import clear_placement_volume, place_block
 from .blaze_spawners import (
     camp_blaze_spawner,
     publish_blaze_spawner as _publish_blaze_spawner,
@@ -207,13 +207,13 @@ def build_nether_portal(client, x: int, y: int, z: int, obsidian: int = 10) -> b
 
         logger.info("Building Nether portal frame at (%d, %d, %d)", x, y, z)
 
-        # Standard Nether portal dimensions: 4x5 obsidian frame with 2x3 interior
-        # Portal frame is 4 blocks wide (x), 5 blocks tall (y), 1 block deep (z)
-        # Interior is 2x3 (bottom 3 rows, middle 2 columns)
-
-        # The bridge's place_block only accepts flat x/y/z and places the
-        # main-hand item, so go through the shared helper which selects the
-        # item first (nested "position" payloads NPE server-side).
+        # Clear frame AND interior first: place_block raises on an occupied
+        # target only after earlier blocks are spent (see clear_placement_volume),
+        # and needs its item selected, so it goes through the shared helper.
+        volume = list(_frame_positions(x, y, z)) + list(_portal_interior(x, y, z))
+        if not clear_placement_volume(client, volume):
+            logger.warning("Portal site (%d, %d, %d) not clear", x, y, z)
+            return False
 
         # Bottom and top, 2 each; skipping the corners is load-bearing.
         for dx in (1, 2):

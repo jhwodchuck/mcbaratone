@@ -115,3 +115,49 @@ def place_block(client, x: int, y: int, z: int, item_id: str) -> bool:
         # Some bridge builds report success without the placed flag
         placed = True
     return placed
+
+
+def _block_at(client, x: int, y: int, z: int) -> str:
+    response = client.transport.dispatch("get_block", {"x": x, "y": y, "z": z})
+    data = response.get("data", response) if isinstance(response, dict) else {}
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("id") or data.get("block") or "")
+
+
+def clear_placement_volume(client, positions, *, timeout: float = 8.0) -> bool:
+    """Dig every occupied position so a multi-block build cannot fail part-way.
+
+    ``place_block`` raises "Target position is already occupied" against solid
+    ground. A caller that places a structure block-by-block catches that at the
+    top level -- but only *after* earlier blocks are already in the world, spent
+    from the inventory and never recovered. Underground, where every candidate
+    site is solid, each retry therefore costs materials and buys nothing.
+
+    Live on A1 2026-09-02 at y=-32 in deepslate: the bot reached the portal
+    build carrying exactly 10 obsidian, leaked 2 into a doomed attempt, dropped
+    below the requirement, and every subsequent offset failed on ``hasObsidian:
+    False`` -- having destroyed the very blocks it spent hours mining.
+
+    An unreadable block counts as occupied, not clear: guessing "probably air"
+    is what turns a transport blip into another leaked stack.
+    """
+    for x, y, z in positions:
+        current = _block_at(client, x, y, z)
+        if not current:
+            print(f"  clear volume: ({x},{y},{z}) unreadable; refusing to place")
+            return False
+        if "air" in current:
+            continue
+        client.transport.dispatch(
+            "dig_block", {"x": x, "y": y, "z": z, "max_ticks": 160}
+        )
+        deadline = time.monotonic() + max(1.0, float(timeout))
+        while time.monotonic() < deadline:
+            time.sleep(0.3)
+            if "air" in _block_at(client, x, y, z):
+                break
+        else:
+            print(f"  clear volume: {current} at ({x},{y},{z}) would not break")
+            return False
+    return True
