@@ -74,6 +74,10 @@ def test_build_ignite_verify_and_enter_portal(monkeypatch):
     transport = PortalTransport()
     client = SimpleNamespace(transport=transport, mission=MissionStub())
     portal = (3, 64, 0)
+    # A buildable site needs a floor: the bottom pair has to anchor to
+    # something, or the build is refused before it spends any obsidian.
+    for floor_x in range(3, 7):
+        transport.blocks[(floor_x, 63, 0)] = "minecraft:stone"
 
     def place(_client, x, y, z, item_id):
         assert item_id == "minecraft:obsidian"

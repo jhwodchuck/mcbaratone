@@ -161,3 +161,66 @@ def clear_placement_volume(client, positions, *, timeout: float = 8.0) -> bool:
             print(f"  clear volume: {current} at ({x},{y},{z}) would not break")
             return False
     return True
+
+
+#: Fluids and air are not anchors: Minecraft refuses a placement whose six
+#: neighbours are all non-solid.
+_NON_SOLID = ("air", "water", "lava", "cave_air", "void_air")
+
+
+def _is_solid(client, x: int, y: int, z: int) -> bool:
+    block = _block_at(client, x, y, z)
+    return bool(block) and not any(token in block for token in _NON_SOLID)
+
+
+def has_placement_support(client, positions, *, floor: bool = True) -> bool:
+    """True when a structure's blocks will have something to place against.
+
+    A cleared site is not automatically a buildable one. Minecraft refuses a
+    placement with no adjacent solid face, and an air pocket underground passes
+    every "is it clear?" test while anchoring nothing.
+
+    Live on A1 2026-09-02 at y=-48, immediately after site-clearing shipped:
+
+        Building Nether portal frame at (-74, -48, 99)
+        ERROR Portal construction failed: No solid block found to place
+              against at BlockPos{x=-73, y=-48, z=99}
+
+    Three attempts in six seconds, each spending obsidian before failing.
+    """
+    lowest = min(y for _x, y, _z in positions)
+    if floor and not all(
+        _is_solid(client, x, lowest - 1, z)
+        for x, y, z in positions
+        if y == lowest
+    ):
+        print("  placement support: nothing solid under the base")
+        return False
+    return True
+
+
+def recover_placed(client, positions) -> int:
+    """Dig back blocks placed into a build that then failed.
+
+    Without this, a partial structure is a permanent loss: the blocks are out
+    of the inventory and the caller reports failure, so the next attempt starts
+    poorer than the last. Broken blocks drop where the bot is standing and are
+    picked up automatically.
+    """
+    recovered = 0
+    for x, y, z in positions:
+        try:
+            client.transport.dispatch(
+                "dig_block", {"x": x, "y": y, "z": z, "max_ticks": 160}
+            )
+        except Exception:
+            continue
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline:
+            time.sleep(0.3)
+            if "air" in _block_at(client, x, y, z):
+                recovered += 1
+                break
+    if recovered:
+        print(f"  recovered {recovered} block(s) from the abandoned build")
+    return recovered

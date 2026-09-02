@@ -10,7 +10,8 @@ import logging
 import time
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
-from .automation_utils import clear_placement_volume, place_block
+from .automation_utils import (
+    clear_placement_volume, has_placement_support, place_block, recover_placed)
 from .blaze_spawners import (
     camp_blaze_spawner,
     publish_blaze_spawner as _publish_blaze_spawner,
@@ -207,28 +208,26 @@ def build_nether_portal(client, x: int, y: int, z: int, obsidian: int = 10) -> b
 
         logger.info("Building Nether portal frame at (%d, %d, %d)", x, y, z)
 
-        # Clear frame AND interior first: place_block raises on an occupied
-        # target only after earlier blocks are spent (see clear_placement_volume),
-        # and needs its item selected, so it goes through the shared helper.
-        volume = list(_frame_positions(x, y, z)) + list(_portal_interior(x, y, z))
+        # A site must be clear AND anchored; place_block only discovers
+        # either after earlier blocks are already spent.
+        frame = list(_frame_positions(x, y, z))
+        volume = frame + list(_portal_interior(x, y, z))
         if not clear_placement_volume(client, volume):
             logger.warning("Portal site (%d, %d, %d) not clear", x, y, z)
             return False
-
-        # Bottom and top, 2 each; skipping the corners is load-bearing.
-        for dx in (1, 2):
-            place_block(client, x + dx, y, z, "minecraft:obsidian")
-            time.sleep(0.1)
-
-        for dx in (1, 2):
-            place_block(client, x + dx, y + 4, z, "minecraft:obsidian")
-            time.sleep(0.1)
-
-        # Build the frame sides (3 blocks tall on each side)
-        for dy in range(1, 4):  # y+1, y+2, y+3
-            place_block(client, x, y + dy, z, "minecraft:obsidian")
-            time.sleep(0.1)
-            place_block(client, x + 3, y + dy, z, "minecraft:obsidian")
+        if not has_placement_support(client, frame):
+            logger.warning("Portal site (%d, %d, %d) unanchored", x, y, z)
+            return False
+        # Lowest first IS the anchoring order: bottom pair meets the floor, each
+        # side lands on the one beneath, top closes against the sides. Placing
+        # the top first is how a cleared site hit "No solid block to place".
+        placed = []
+        for position in sorted(frame, key=lambda point: point[1]):
+            if not place_block(client, *position, "minecraft:obsidian"):
+                logger.warning("Portal placement stalled at %s", position)
+                recover_placed(client, placed)
+                return False
+            placed.append(position)
             time.sleep(0.1)
 
         if verify_portal(client, (x, y, z), require_active=False):
@@ -237,6 +236,7 @@ def build_nether_portal(client, x: int, y: int, z: int, obsidian: int = 10) -> b
             return True
         else:
             logger.error("Portal frame construction failed - blocks not placed correctly")
+            recover_placed(client, placed)
             return False
 
     except Exception as exc:
