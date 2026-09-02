@@ -125,33 +125,65 @@ def cast_one(client, lava: Position, *, timeout: float = 12.0) -> bool:
 
 
 def _lava_candidates(client, radius: int, limit: int = 256) -> List[Position]:
-    try:
-        data = client.transport.dispatch(
-            "find_blocks", {"blocks": [LAVA], "radius": radius, "limit": limit}
-        )
-    except Exception:
-        return []
-    found = data.get("found", []) if isinstance(data, dict) else []
-    if not isinstance(found, list):
-        return []
-    ordered = sorted(
-        (entry for entry in found if isinstance(entry, dict)),
-        key=lambda entry: float(entry.get("distance", float("inf"))),
-    )
-    positions: List[Position] = []
-    for entry in ordered:
+    """Nearest lava first, searching outward in rings.
+
+    The bridge scans in x/y/z order and does not sort, so a single wide query
+    returns an arbitrary member of the batch -- ``find_nearby_block`` rings
+    outward for exactly this reason. Rings matter more here than for mining:
+    the nearest lava is the shortest walk, and every extra block walked toward
+    standing lava is risk.
+    """
+    for ring in [value for value in (16, 32, 64) if value < radius] + [radius]:
         try:
-            positions.append((int(entry["x"]), int(entry["y"]), int(entry["z"])))
-        except (KeyError, TypeError, ValueError):
+            data = client.transport.dispatch(
+                "find_blocks", {"blocks": [LAVA], "radius": ring, "limit": limit}
+            )
+        except Exception:
+            return []
+        found = data.get("found", []) if isinstance(data, dict) else []
+        if not isinstance(found, list) or not found:
             continue
-    return positions
+        ordered = sorted(
+            (entry for entry in found if isinstance(entry, dict)),
+            key=lambda entry: float(entry.get("distance", float("inf"))),
+        )
+        positions: List[Position] = []
+        for entry in ordered:
+            try:
+                positions.append((int(entry["x"]), int(entry["y"]), int(entry["z"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if positions:
+            return positions
+    return []
+
+
+
+def _standing_spot(client, lava: Position) -> Optional[Position]:
+    """A dry foothold beside the source, or None.
+
+    Walking blindly to a fixed offset is how a bot steps into the lava it came
+    to cast: a source in a pool has lava for neighbours. The spot must be air,
+    with something solid under it and no lava at foot level.
+    """
+    x, y, z = lava
+    for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        foot = (x + dx, y + 1, z + dz)
+        below = (x + dx, y, z + dz)
+        below_id = _block_id(_read(client, *below))
+        if not _is_air(client, foot) or not below_id:
+            continue
+        if LAVA in below_id or "air" in below_id or "water" in below_id:
+            continue
+        return foot
+    return None
 
 
 def cast_obsidian(
     client,
     target: int,
     *,
-    radius: int = 24,
+    radius: int = 112,
     timeout: float = 240.0,
     goto: Optional[Any] = None,
 ) -> int:
@@ -188,10 +220,11 @@ def cast_obsidian(
             print("  cast: stopping, health or food fell while casting")
             break
         if goto is not None:
-            # Stand on the block above the source's neighbour rather than in
-            # the lava's own column.
+            stand = _standing_spot(client, position)
+            if stand is None:
+                continue
             try:
-                goto(client, position[0] + 1, position[1] + 1, position[2])
+                goto(client, *stand)
             except Exception:
                 continue
         if cast_one(client, position):

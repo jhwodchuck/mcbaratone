@@ -172,3 +172,62 @@ def test_casting_refuses_when_hurt_or_starving(monkeypatch):
 
     world.dispatch = dispatch
     assert casting.cast_obsidian(_client(world), 4) == 0
+
+
+def test_lava_is_searched_in_rings_and_far_enough_to_matter(monkeypatch):
+    """A 24-block radius from a surface base can never reach the lava layer.
+
+    Live on A1 2026-09-02, standing at its base at y=79, the caster fired
+    correctly and reported "cast: no lava within 24 blocks" -- the wiring was
+    right and the reach was useless. Lava sits below y=0, so the default has to
+    span that gap, while still trying the nearest rings first: the closest
+    source is the shortest walk, and every block walked toward standing lava is
+    risk.
+    """
+    import inspect
+
+    default = inspect.signature(casting.cast_obsidian).parameters["radius"].default
+    assert default >= 96, "must be able to reach the lava layer from the surface"
+
+    asked = []
+
+    class Ringed:
+        def dispatch(self, route, payload=None):
+            if route == "find_blocks":
+                asked.append(payload["radius"])
+                # Only the widest ring has anything.
+                if payload["radius"] < 64:
+                    return {"found": []}
+                return {"found": [{"x": 0, "y": 0, "z": 0, "distance": 3.0}]}
+            return {}
+
+    found = casting._lava_candidates(_client(Ringed()), 112)
+    assert found == [(0, 0, 0)]
+    assert asked == sorted(asked), f"must widen outward, got {asked}"
+    assert asked[0] < asked[-1], "nearest ring first"
+
+
+def test_the_bot_never_stands_in_the_lava_it_came_to_cast():
+    """A source in a pool has lava for neighbours."""
+    world = FakeWorld({
+        (0, 0, 0): {"id": "minecraft:lava", "state": {"level": "0"}},
+        # East and west neighbours are more lava; north is a solid ledge.
+        (1, 0, 0): {"id": "minecraft:lava", "state": {"level": "0"}},
+        (-1, 0, 0): {"id": "minecraft:lava", "state": {"level": "0"}},
+        (0, 0, 1): {"id": "minecraft:deepslate", "state": {}},
+    })
+    client = _client(world)
+
+    spot = casting._standing_spot(client, (0, 0, 0))
+    assert spot == (0, 1, 1), f"must pick the solid ledge, got {spot}"
+
+
+def test_a_source_with_no_dry_foothold_is_skipped():
+    world = FakeWorld({
+        (0, 0, 0): {"id": "minecraft:lava", "state": {"level": "0"}},
+        (1, 0, 0): {"id": "minecraft:lava", "state": {"level": "0"}},
+        (-1, 0, 0): {"id": "minecraft:lava", "state": {"level": "0"}},
+        (0, 0, 1): {"id": "minecraft:lava", "state": {"level": "0"}},
+        (0, 0, -1): {"id": "minecraft:lava", "state": {"level": "0"}},
+    })
+    assert casting._standing_spot(_client(world), (0, 0, 0)) is None
