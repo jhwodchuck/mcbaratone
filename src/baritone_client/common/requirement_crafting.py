@@ -25,6 +25,7 @@ targets and must keep calling those helpers directly.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Callable
 
 
@@ -111,3 +112,79 @@ def mine_requiring_pickaxe(
         print(f"  {block_id} needs a {wanted.split(':')[-1]}; none available yet.")
         return False
     return mine(client, block_id, quantity)
+
+
+def mine_until_satisfied(
+    client: Any,
+    block_id: str,
+    quantity: int,
+    *,
+    timeout: float = 150.0,
+    poll: float = 2.0,
+) -> bool:
+    """Mine one target to an absolute carried count, waiting for completion.
+
+    ``_default_mine`` dispatches Baritone's ``mine`` route and returns True for
+    the dispatch alone, and ``ensure_supplies`` discards that answer anyway --
+    it only re-reads the inventory, so a strategy that never finishes looks
+    exactly like one that is still working. Every other gatherer already avoids
+    this: ``gather_stone`` and ``gather_ores`` dispatch once and then poll,
+    and ``gather_stone``'s own comment records why -- "Reissuing ``mine`` on
+    every idle poll used to reset these counters forever."
+
+    Obsidian is the one strategy-table target that cannot survive that. Each
+    re-dispatch re-enters Baritone's mine process, clearing its target and
+    blacklist bookkeeping, and obsidian needs ~9.4s of uninterrupted breaking
+    at diamond tier against a ~6s poll. Live A1 2026-09-02 logged
+    "Gathering minecraft:obsidian x14" every ~6s for over a day at 0 carried,
+    wandering 90 blocks out and back with a stale iron_sword in hand while
+    obsidian sat within 64 blocks the whole time.
+
+    So: put the right pickaxe in hand, start the process exactly once through
+    ``_start_mine_process`` (which keeps the cancel-then-grace ordering a live
+    Baritone crash was traced to), then poll the carried count and give up on a
+    bounded idle rather than spinning forever.
+    """
+    from . import resources as api
+
+    target = absolute_requirement(
+        client, block_id, quantity, count_item=api.count_item
+    )
+    if api.count_item(client, block_id) >= target:
+        return True
+
+    api.equip_best_pickaxe(client, list(DIAMOND_TIER_PICKAXES))
+    api._start_mine_process(client, [block_id], max(1, target))
+
+    deadline = time.monotonic() + max(1.0, float(timeout))
+    idle_checks = 0
+    try:
+        while time.monotonic() < deadline:
+            if api.count_item(client, block_id) >= target:
+                return True
+            state = api._read_state_optional(
+                client, retries=2, label=f"{block_id} mine wait"
+            )
+            if state is not None:
+                if state.get("is_dead", False):
+                    return False
+                if float(state.get("health", 20) or 0) < 12.0:
+                    print(f"  {block_id} mining paused: health too low to continue")
+                    return False
+                if state.get("is_pathing", False):
+                    idle_checks = 0
+                else:
+                    idle_checks += 1
+                    if idle_checks >= 4:
+                        print(f"  No reachable {block_id} in the bounded search.")
+                        return False
+            time.sleep(max(0.5, float(poll)))
+        print(f"  {block_id} mining hit its {timeout:.0f}s budget")
+        return api.count_item(client, block_id) >= target
+    finally:
+        api._serialized_dispatch(
+            client,
+            "cancel",
+            {},
+            post_delay_seconds=api._BARITONE_CANCEL_GRACE_SECONDS,
+        )
