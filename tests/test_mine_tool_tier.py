@@ -83,9 +83,19 @@ def test_the_obsidian_strategy_is_wired_through_the_tier_gate():
     entry = source[source.index('"minecraft:obsidian": lambda') :].split("\n", 1)[0]
     assert "_mine_requiring_pickaxe" in entry, entry
     assert "remaining_pickaxe_durability" in entry, entry
-    # ...and through the completion-waiting miner, not fire-and-forget.
-    assert "mine=_mine_until_satisfied" in entry, entry
+    # ...and through the caster, which falls back to making obsidian from lava
+    # once the fixed natural stock within reach is gone.
+    assert "mine=_mine_or_cast_obsidian" in entry, entry
     assert "_default_mine" not in entry, entry
+
+    # The caster must still WAIT for the break rather than fire-and-forget --
+    # that property is what this test originally pinned, and it now lives one
+    # layer down instead of in the strategy line.
+    from baritone_client.common.requirement_crafting import mine_or_cast_obsidian
+
+    wrapper = inspect.getsource(mine_or_cast_obsidian)
+    assert "mine_until_satisfied(" in wrapper
+    assert "cast_obsidian(" in wrapper
 
 
 def test_mining_waits_for_completion_instead_of_fire_and_forget(monkeypatch):

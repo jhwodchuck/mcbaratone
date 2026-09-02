@@ -188,3 +188,39 @@ def mine_until_satisfied(
             {},
             post_delay_seconds=api._BARITONE_CANCEL_GRACE_SECONDS,
         )
+
+
+def mine_or_cast_obsidian(
+    client: Any,
+    block_id: str,
+    quantity: int,
+    *,
+    timeout: float = 150.0,
+    poll: float = 2.0,
+) -> bool:
+    """Mine reachable obsidian; if there is none left, cast some from lava.
+
+    ``mine_until_satisfied`` reports "No reachable minecraft:obsidian in the
+    bounded search" once the natural supply within reach is gone, and no amount
+    of retrying changes that -- natural obsidian only exists where water has
+    already met lava, so it is a fixed stock, not a slow one. Live A1
+    2026-09-02: hours of that message while carrying a water bucket at a depth
+    where lava is everywhere.
+
+    So on failure, make more and mine again. One retry only: if casting
+    produced obsidian the second mine finds it, and if it did not, spinning
+    here just burns the phase budget that the caller still needs.
+    """
+    if mine_until_satisfied(
+        client, block_id, quantity, timeout=timeout, poll=poll
+    ):
+        return True
+
+    from . import resources as api
+    from .navigation import goto
+    from .obsidian_casting import cast_obsidian
+
+    shortfall = max(1, int(quantity) - api.count_item(client, block_id))
+    if cast_obsidian(client, shortfall, goto=goto) <= 0:
+        return False
+    return mine_until_satisfied(client, block_id, quantity, timeout=timeout, poll=poll)
