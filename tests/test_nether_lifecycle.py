@@ -15,7 +15,7 @@ class MissionStub:
 
     def macro(self, name, params):
         assert name == "enter_nether"
-        return {"result": {"ready": params["obsidian"] >= 14}}
+        return {"result": {"ready": params["obsidian"] >= 10}}
 
     def checkpoint(self, phase, note=None):
         self.checkpoints.append((phase, note))

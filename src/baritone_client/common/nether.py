@@ -121,8 +121,9 @@ def _wait_for_dimension(client, target: str, timeout: int) -> bool:
 
 
 def _frame_positions(x: int, y: int, z: int) -> Tuple[PortalPosition, ...]:
-    positions = [(x + dx, y, z) for dx in range(4)]
-    positions.extend((x + dx, y + 4, z) for dx in range(4))
+    """The ten load-bearing frame blocks -- vanilla never checks the corners."""
+    positions = [(x + dx, y, z) for dx in (1, 2)]
+    positions.extend((x + dx, y + 4, z) for dx in (1, 2))
     for dy in range(1, 4):
         positions.extend(((x, y + dy, z), (x + 3, y + dy, z)))
     return tuple(positions)
@@ -190,7 +191,7 @@ def ignite_portal(
     return False
 
 
-def build_nether_portal(client, x: int, y: int, z: int, obsidian: int = 14) -> bool:
+def build_nether_portal(client, x: int, y: int, z: int, obsidian: int = 10) -> bool:
     """
     Build a complete Nether portal frame at the specified coordinates.
     Validates materials and constructs the obsidian frame with proper dimensions.
@@ -214,13 +215,12 @@ def build_nether_portal(client, x: int, y: int, z: int, obsidian: int = 14) -> b
         # main-hand item, so go through the shared helper which selects the
         # item first (nested "position" payloads NPE server-side).
 
-        # Build the frame bottom (4 blocks wide)
-        for dx in range(4):
+        # Bottom and top, 2 each; skipping the corners is load-bearing.
+        for dx in (1, 2):
             place_block(client, x + dx, y, z, "minecraft:obsidian")
             time.sleep(0.1)
 
-        # Build the frame top (4 blocks wide)
-        for dx in range(4):
+        for dx in (1, 2):
             place_block(client, x + dx, y + 4, z, "minecraft:obsidian")
             time.sleep(0.1)
 

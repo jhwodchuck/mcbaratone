@@ -260,7 +260,7 @@ class ResourceManager:
         },
         Phase.NETHER_AND_BLAZE: {
             "minecraft:blaze_rod": 6,
-            "minecraft:obsidian": 14,
+            "minecraft:obsidian": 10,  # ten-block frame; corners unchecked
             "minecraft:flint_and_steel": 1,
         },
         Phase.VILLAGER_INFRA: {

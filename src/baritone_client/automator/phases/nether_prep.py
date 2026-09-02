@@ -34,6 +34,14 @@ from ...common.nether import (
     verify_portal,
 )
 
+#: A portal's four corners sit diagonal to the interior and vanilla's shape
+#: check never tests them, so a frame costs ten obsidian, not fourteen. This
+#: gate demanded 14 while ``end_readiness`` already judged the bot ready at 10,
+#: so A1 could be portal-ready and still refuse to build: live 2026-09-02 it
+#: failed "Could not gather portal materials" for hours holding 9 obsidian.
+PORTAL_FRAME_OBSIDIAN = 10
+
+
 class NetherAndBlazeHandler(PhaseHandler):
     """Phase 4: Nether exploration - Hour 3-4."""
     
@@ -144,7 +152,7 @@ class NetherAndBlazeHandler(PhaseHandler):
             return True
 
         # Adopt any lit portal already standing nearby before spending an
-        # expedition on 14 obsidian and a flint & steel. find_nearest_portal
+        # expedition on ten obsidian and a flint & steel. find_nearest_portal
         # was already imported here but only ever used from inside the Nether
         # to locate the return portal, so an Overworld portal the bot could
         # see -- one it built on an earlier run, or one an operator placed --
@@ -226,7 +234,10 @@ class NetherAndBlazeHandler(PhaseHandler):
             )
         materials_ready = ensure_supplies(
             client,
-            {"minecraft:obsidian": 14, "minecraft:flint_and_steel": 1},
+            {
+                "minecraft:obsidian": PORTAL_FRAME_OBSIDIAN,
+                "minecraft:flint_and_steel": 1,
+            },
             timeout=180,
         )
         if not materials_ready.success:
