@@ -31,6 +31,11 @@ EMPTY_BUCKET = "minecraft:bucket"
 
 #: Casting walks the bot to standing lava, which is where it dies. These are
 #: deliberately stricter than the mining gates.
+#: Open lava lakes sit around this level; above it, a cast has nothing to work
+#: with no matter how wide the search. Live A1 2026-09-02 stood at y=160 with
+#: 112-block reach and found nothing, because there was nothing to find.
+LAVA_LEVEL = -50
+
 MIN_HEALTH = 16.0
 MIN_FOOD = 12
 

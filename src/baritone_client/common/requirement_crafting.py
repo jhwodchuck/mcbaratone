@@ -218,9 +218,25 @@ def mine_or_cast_obsidian(
 
     from . import resources as api
     from .navigation import goto
-    from .obsidian_casting import cast_obsidian
+    from .obsidian_casting import LAVA_LEVEL, cast_obsidian
 
     shortfall = max(1, int(quantity) - api.count_item(client, block_id))
     if cast_obsidian(client, shortfall, goto=goto) <= 0:
-        return False
+        # Lava lives below y=0. A bot on a mountain has none within any
+        # search radius, and neither has the obsidian that forms from it, so
+        # widening the sweep cannot help -- it has to go down first. Live A1
+        # 2026-09-02: locked on NETHER_AND_BLAZE for hours, one obsidian
+        # short, standing at y=160.
+        from .stone_descent import descend_to_stone_layer
+
+        state = api._read_state_optional(client, retries=2, label="cast descent")
+        if state is None or int((state.get("block_position") or {}).get("y", 0)) <= LAVA_LEVEL:
+            return False
+        print(f"  No lava at this altitude; descending toward y={LAVA_LEVEL}.")
+        if not descend_to_stone_layer(
+            client, target_depth=250, floor_y=LAVA_LEVEL, timeout=300
+        ):
+            return False
+        if cast_obsidian(client, shortfall, goto=goto) <= 0:
+            return False
     return mine_until_satisfied(client, block_id, quantity, timeout=timeout, poll=poll)

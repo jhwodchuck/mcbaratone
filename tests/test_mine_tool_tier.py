@@ -174,3 +174,67 @@ def test_mining_gives_up_on_a_bounded_idle_rather_than_spinning(monkeypatch):
         SimpleNamespace(), "minecraft:obsidian", 14, timeout=600
     )
     assert "cancel" in cancels, "must cancel the mine process on every exit path"
+
+
+def test_a_bot_above_the_lava_layer_descends_before_giving_up(monkeypatch):
+    """Widening a search cannot find lava that is 200 blocks below.
+
+    Live A1 2026-09-02: locked on NETHER_AND_BLAZE for hours, exactly one
+    obsidian short, standing at y=160. Lava lives below y=0, so neither the
+    cast nor the natural obsidian it would replace was reachable from there --
+    and no radius fixes an altitude problem.
+    """
+    from types import SimpleNamespace
+
+    from baritone_client.common import requirement_crafting as rc
+    from baritone_client.common import resources as api
+    import baritone_client.common.obsidian_casting as casting
+    import baritone_client.common.stone_descent as descent
+
+    calls = {"cast": 0, "descend": 0}
+
+    monkeypatch.setattr(rc, "mine_until_satisfied", lambda *_a, **_k: False)
+    monkeypatch.setattr(api, "count_item", lambda _c, _i: 9)
+    monkeypatch.setattr(
+        api, "_read_state_optional",
+        lambda *_a, **_k: {"block_position": {"x": 0, "y": 160, "z": 0}},
+    )
+    monkeypatch.setattr(
+        casting, "cast_obsidian",
+        lambda *_a, **_k: calls.__setitem__("cast", calls["cast"] + 1) or 0,
+    )
+    monkeypatch.setattr(
+        descent, "descend_to_stone_layer",
+        lambda *_a, **_k: calls.__setitem__("descend", calls["descend"] + 1) or False,
+    )
+
+    assert not rc.mine_or_cast_obsidian(SimpleNamespace(), "minecraft:obsidian", 1)
+    assert calls["descend"] == 1, "must go down before reporting failure"
+    assert calls["cast"] == 1, "and not re-cast at the same useless altitude"
+
+
+def test_a_bot_already_at_lava_depth_does_not_descend_again(monkeypatch):
+    """Descending from y=-55 would be a pointless, dangerous detour."""
+    from types import SimpleNamespace
+
+    from baritone_client.common import requirement_crafting as rc
+    from baritone_client.common import resources as api
+    import baritone_client.common.obsidian_casting as casting
+    import baritone_client.common.stone_descent as descent
+
+    descended = []
+
+    monkeypatch.setattr(rc, "mine_until_satisfied", lambda *_a, **_k: False)
+    monkeypatch.setattr(api, "count_item", lambda _c, _i: 9)
+    monkeypatch.setattr(
+        api, "_read_state_optional",
+        lambda *_a, **_k: {"block_position": {"x": 0, "y": -55, "z": 0}},
+    )
+    monkeypatch.setattr(casting, "cast_obsidian", lambda *_a, **_k: 0)
+    monkeypatch.setattr(
+        descent, "descend_to_stone_layer",
+        lambda *_a, **_k: descended.append(True) or True,
+    )
+
+    assert not rc.mine_or_cast_obsidian(SimpleNamespace(), "minecraft:obsidian", 1)
+    assert descended == [], "already at lava depth; nothing to descend to"
