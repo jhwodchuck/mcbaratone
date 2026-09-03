@@ -82,6 +82,36 @@ def _safe(client) -> bool:
     )
 
 
+
+#: Survival reach is about 4.5 blocks. ``goto`` reports arrival within its own
+#: tolerance, which is not the same thing as being able to touch the target.
+REACH = 4.0
+
+
+def _within_reach(client, target: Position) -> bool:
+    """True when the bot can actually interact with ``target``.
+
+    The server silently rejects a use-on-block beyond reach, so a pour issued
+    from across the room looks exactly like a pour that was accepted and did
+    nothing -- which is how thirteen consecutive sources reported "water did
+    not land" while the bucket was never actually spent.
+    """
+    try:
+        state = client.transport.dispatch("get_state", {})
+    except Exception:
+        return False
+    position = (state or {}).get("block_position")
+    if not isinstance(position, dict):
+        return False
+    try:
+        dx = float(position["x"]) - target[0]
+        dy = float(position["y"]) - target[1]
+        dz = float(position["z"]) - target[2]
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (dx * dx + dy * dy + dz * dz) ** 0.5 <= REACH
+
+
 def cast_one(client, lava: Position, *, timeout: float = 12.0) -> bool:
     """Convert one lava source to obsidian and reclaim the water.
 
@@ -93,6 +123,9 @@ def cast_one(client, lava: Position, *, timeout: float = 12.0) -> bool:
     x, y, z = lava
     above = (x, y + 1, z)
     if not is_lava_source(client, x, y, z) or not _is_air(client, above):
+        return False
+    if not _within_reach(client, above):
+        print(f"  cast: too far from {above} to pour")
         return False
     if not select_item(client, WATER_BUCKET, allow_swap=True):
         print("  cast: no water bucket in hand")
@@ -263,7 +296,11 @@ def cast_obsidian(
             if stand is None:
                 continue
             try:
-                goto(client, *stand)
+                # goto blocks and reports whether it arrived. Ignoring that
+                # answer is how every pour got rejected for being out of
+                # reach while the log insisted the water "did not land".
+                if not goto(client, *stand):
+                    continue
             except Exception:
                 continue
         if cast_one(client, position):

@@ -33,7 +33,13 @@ class FakeWorld:
             key = (payload["x"], payload["y"], payload["z"])
             return self.blocks.get(key, {"id": "minecraft:air", "state": {}})
         if route == "get_state":
-            return {"health": 20.0, "food_level": 20, "is_dead": False}
+            return {
+                "health": 20.0,
+                "food_level": 20,
+                "is_dead": False,
+                # Standing right next to the origin, within reach.
+                "block_position": {"x": 0, "y": 1, "z": 1},
+            }
         if route == "interact_block":
             key = (payload["x"], payload["y"], payload["z"])
             self.interactions.append((self.selected, key))
@@ -259,7 +265,7 @@ def test_a_full_inventory_is_discovered_before_walking_to_lava(monkeypatch):
     )
 
     assert casting.cast_obsidian(
-        _client(world), 2, goto=lambda *a: walked.append(a)
+        _client(world), 2, goto=lambda *a: walked.append(a) or True
     ) == 0
     assert walked == [], "must not walk to lava it cannot pour on"
 
@@ -347,5 +353,49 @@ def test_an_unrecovered_bucket_stops_the_run_instead_of_grinding(monkeypatch):
 
     monkeypatch.setattr(casting, "cast_one", cast_one)
 
-    casting.cast_obsidian(_client(world), 2, goto=lambda *a: walked.append(a))
+    casting.cast_obsidian(
+        _client(world), 2, goto=lambda *a: walked.append(a) or True
+    )
     assert len(walked) <= 1, f"must stop after the bucket is gone, walked {walked}"
+
+
+def test_a_pour_is_not_attempted_from_out_of_reach():
+    """The server silently rejects a use-on-block beyond ~4.5 blocks.
+
+    Live on A1 2026-09-02, thirteen consecutive sources reported "water did
+    not land" while the bucket was never actually spent: the bot was pouring
+    from wherever it happened to be standing.
+    """
+    world = FakeWorld({(0, 0, 0): {"id": "minecraft:lava", "state": {"level": "0"}}})
+    original = world.dispatch
+    world.dispatch = lambda route, payload=None: (
+        {"health": 20.0, "food_level": 20, "is_dead": False,
+         "block_position": {"x": 40, "y": 1, "z": 40}}      # far away
+        if route == "get_state" else original(route, payload)
+    )
+
+    assert not casting.cast_one(_client(world), (0, 0, 0))
+    assert world.interactions == [], "must not pour from across the room"
+
+
+def test_a_failed_walk_skips_the_source_instead_of_pouring_anyway():
+    """goto blocks and reports arrival; ignoring that answer wasted every cast."""
+    world = FakeWorld({
+        (0, 0, 0): {"id": "minecraft:lava", "state": {"level": "0"}},
+        (0, 0, 1): {"id": "minecraft:deepslate", "state": {}},
+    })
+
+    import baritone_client.common.obsidian_casting as mod
+
+    called = []
+    original_cast_one = mod.cast_one
+    try:
+        mod.cast_one = lambda *a, **k: called.append(a) or True
+        made = mod.cast_obsidian(
+            _client(world), 1, goto=lambda *_a: False      # never arrives
+        )
+    finally:
+        mod.cast_one = original_cast_one
+
+    assert made == 0
+    assert called == [], "a failed walk must not be followed by a pour"
