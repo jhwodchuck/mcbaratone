@@ -282,11 +282,17 @@ def cast_obsidian(
         return 0
 
     converted = 0
+    # Every skip below is a silent `continue`, and a run that skips all of them
+    # prints nothing at all -- live A1 2026-09-02 produced 3.5 minutes of dead
+    # air between "No reachable obsidian" and "Could not gather portal
+    # materials". Count the reasons so the next failure names itself.
+    skipped = {"flowing": 0, "no_foothold": 0, "walk_failed": 0, "pour_failed": 0}
     deadline = time.monotonic() + max(1.0, float(timeout))
     for position in candidates:
         if converted >= target or time.monotonic() >= deadline:
             break
         if not is_lava_source(client, *position):
+            skipped["flowing"] += 1
             continue
         if not _safe(client):
             print("  cast: stopping, health or food fell while casting")
@@ -294,21 +300,32 @@ def cast_obsidian(
         if goto is not None:
             stand = _standing_spot(client, position)
             if stand is None:
+                skipped["no_foothold"] += 1
                 continue
             try:
                 # goto blocks and reports whether it arrived. Ignoring that
                 # answer is how every pour got rejected for being out of
                 # reach while the log insisted the water "did not land".
                 if not goto(client, *stand):
+                    skipped["walk_failed"] += 1
                     continue
             except Exception:
+                skipped["walk_failed"] += 1
                 continue
         if cast_one(client, position):
             converted += 1
+        else:
+            skipped["pour_failed"] += 1
             print(f"  cast: obsidian at {position} ({converted}/{target})")
         if count_item(client, WATER_BUCKET) < 1:
             print("  cast: stopping, the water bucket was not recovered")
             break
     if converted:
         print(f"  cast: made {converted} obsidian from lava")
+    else:
+        reasons = ", ".join(f"{k}={v}" for k, v in skipped.items() if v)
+        print(
+            f"  cast: nothing made from {len(candidates)} candidates"
+            + (f" ({reasons})" if reasons else "")
+        )
     return converted

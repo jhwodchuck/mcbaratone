@@ -399,3 +399,44 @@ def test_a_failed_walk_skips_the_source_instead_of_pouring_anyway():
 
     assert made == 0
     assert called == [], "a failed walk must not be followed by a pour"
+
+
+def test_a_run_that_casts_nothing_says_why(capsys, monkeypatch):
+    """Silent skips made a failing run indistinguishable from a hung one.
+
+    Live A1 2026-09-02: 3.5 minutes of dead air between "No reachable
+    obsidian" and "Could not gather portal materials", because every skip in
+    the candidate loop was a bare `continue`.
+    """
+    world = FakeWorld({
+        # Flowing lava -- skipped as not-a-source.
+        (0, 0, 0): {"id": "minecraft:lava", "state": {"level": "4"}},
+        (9, 0, 0): {"id": "minecraft:lava", "state": {"level": "2"}},
+    })
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.count_item", lambda _c, _i: 1
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.select_item", lambda *_a, **_k: True
+    )
+    assert casting.cast_obsidian(_client(world), 2, goto=lambda *_a: True) == 0
+
+    out = capsys.readouterr().out
+    assert "nothing made from" in out, out
+    assert "flowing=2" in out, out
+
+
+def test_a_run_that_cannot_walk_reports_the_walk(capsys, monkeypatch):
+    world = FakeWorld({
+        (0, 0, 0): {"id": "minecraft:lava", "state": {"level": "0"}},
+        (0, 0, 1): {"id": "minecraft:deepslate", "state": {}},
+    })
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.count_item", lambda _c, _i: 1
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.select_item", lambda *_a, **_k: True
+    )
+
+    assert casting.cast_obsidian(_client(world), 1, goto=lambda *_a: False) == 0
+    assert "walk_failed=1" in capsys.readouterr().out
