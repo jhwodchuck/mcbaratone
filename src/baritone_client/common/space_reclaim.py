@@ -176,3 +176,50 @@ def reclaim_drop_tier(
             return True
     print(f"  Inventory cleanup failed: only {free}/{required} required slots are free")
     return False
+
+
+def nearest_usable_container(client, snapshot, max_distance: float):
+    """A catalogued chest with room, close enough to actually walk to.
+
+    ``resolve_storage_location`` returns the *checkpointed* home, which goes
+    stale the moment the bot relocates: banking is then skipped as "distant"
+    while a perfectly good chest sits a block away. Live on A1 2026-09-03 at
+    (-8, 160, 9), cycling for hours on "Gathering cleanup skipped distant home
+    storage (412.6 blocks away)" with a verified chest at (-8, 160, 8) holding
+    14 of 27 slots.
+
+    Only containers the catalog has actually seen are considered, and only ones
+    with a free slot, so this cannot send the bot to a chest that is missing or
+    already full.
+    """
+    from .storage_catalog import catalog_for
+
+    position = (snapshot or {}).get("block_position")
+    if not isinstance(position, dict):
+        return None
+    try:
+        px, py, pz = float(position["x"]), float(position["y"]), float(position["z"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    best = None
+    best_distance = float(max_distance)
+    try:
+        containers = catalog_for(client).list_containers()
+    except Exception:
+        return None
+    for row in containers:
+        try:
+            capacity = int(row.get("capacity_slots") or 0)
+            occupied = int(row.get("occupied_slots") or 0)
+            if capacity and occupied >= capacity:
+                continue
+            cx, cy, cz = float(row["x"]), float(row["y"]), float(row["z"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        distance = ((px - cx) ** 2 + (py - cy) ** 2 + (pz - cz) ** 2) ** 0.5
+        if distance < best_distance:
+            best, best_distance = (int(cx), int(cy), int(cz)), distance
+    if best is not None:
+        print(f"  Banking into nearer catalogued chest at {best} ({best_distance:.1f}m).")
+    return best

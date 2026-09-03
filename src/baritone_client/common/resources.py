@@ -2380,23 +2380,21 @@ def _reserve_gathering_inventory(client, minimum_free_slots: int = 3) -> bool:
             )
         if chest_pos is not None:
             snapshot = client.transport.dispatch("get_state", {})
-            distance = storage_distance(snapshot, chest_pos)
-            if distance <= MAX_STORAGE_TRAVEL_DISTANCE:
+            if storage_distance(snapshot, chest_pos) > MAX_STORAGE_TRAVEL_DISTANCE:
+                # The checkpointed home goes stale the moment the bot relocates.
+                from .space_reclaim import nearest_usable_container
+                chest_pos = nearest_usable_container(
+                    client, snapshot, MAX_STORAGE_TRAVEL_DISTANCE
+                )
+            if chest_pos is not None:
                 deposited = deposit_excess_to_chest(
-                    client,
-                    chest_pos,
-                    state=automation_state,
+                    client, chest_pos, state=automation_state
                 )
                 if deposited >= 0 and free_inventory_slots(client) >= required:
                     print(
                         f"  Reserved {required} gathering slots in persistent home storage."
                     )
                     return True
-            else:
-                print(
-                    "  Gathering cleanup skipped distant home storage "
-                    f"({distance:.1f} blocks away)."
-                )
     except Exception as exc:
         print(f"  Gathering storage cleanup unavailable ({exc}); using bounded disposal")
 

@@ -94,6 +94,44 @@ def collect_finished_furnace_output(
     return False
 
 
+def _load_carried_fuel(client, data) -> bool:
+    """Shift a carried fuel stack into a stalled furnace.
+
+    A furnace holding raw ore and no fuel used to end the attempt outright,
+    even while the bot carried planks and logs that burn perfectly well. Live
+    on A1 2026-09-03: "Resuming loaded furnace at (-7, 160, 7) (1
+    minecraft:raw_iron pending)... Loaded furnace stalled without fuel", on a
+    ~24 second cycle for hours, with 9 oak planks and 2 oak logs in the bag and
+    NETHER_AND_BLAZE waiting on six iron ingots.
+
+    QUICK_MOVE from the player rows routes fuel to the fuel slot in vanilla,
+    which is the same mechanism the input loader above already relies on.
+    """
+    from .resources import FURNACE_FUEL_SMELTS
+
+    carried = next(
+        (
+            slot
+            for slot in data.get("slots", [])
+            if int(slot.get("slot", -1)) >= 3
+            and slot.get("id") in FURNACE_FUEL_SMELTS
+            and int(slot.get("count", 0)) > 0
+        ),
+        None,
+    )
+    if carried is None:
+        return False
+    payload = {"slot": int(carried["slot"]), "type": "QUICK_MOVE", "button": 0}
+    sync_id = data.get("sync_id")
+    if sync_id is not None:
+        payload["sync_id"] = sync_id
+    try:
+        client.transport.dispatch("inventory_click", payload)
+    except Exception:
+        return False
+    return True
+
+
 def resume_active_furnace(
     client,
     furnace_pos,
@@ -268,6 +306,10 @@ def resume_active_furnace(
                 or int(fuel_slot.get("count", 0)) <= 0
             )
             if not lit and fuel_empty:
+                if _load_carried_fuel(client, data):
+                    print("  Refuelled the stalled furnace from carried stock.")
+                    time.sleep(0.3)
+                    continue
                 client.transport.dispatch("close_screen", {})
                 print("  Loaded furnace stalled without fuel.")
                 return False
