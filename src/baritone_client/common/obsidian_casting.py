@@ -88,7 +88,7 @@ def cast_one(client, lava: Position, *, timeout: float = 12.0) -> bool:
     The water goes into the air block directly above the source: it flows down,
     meets the source, and the source becomes obsidian.
     """
-    from .inventory import select_item
+    from .inventory import count_item, select_item
 
     x, y, z = lava
     above = (x, y + 1, z)
@@ -105,6 +105,13 @@ def cast_one(client, lava: Position, *, timeout: float = 12.0) -> bool:
         print(f"  cast: pouring water failed: {exc}")
         return False
 
+    # Dispatching the pour is not evidence it happened. If no water landed the
+    # bucket was never spent, so return before the reclaim dance rather than
+    # right-clicking a dry block and calling it a recovery.
+    if "water" not in _block_id(_read(client, *above)):
+        print(f"  cast: water did not land above {lava}")
+        return False
+
     converted = False
     deadline = time.monotonic() + max(1.0, float(timeout))
     while time.monotonic() < deadline:
@@ -113,14 +120,17 @@ def cast_one(client, lava: Position, *, timeout: float = 12.0) -> bool:
             converted = True
             break
 
-    # Reclaim the water whether or not the cast worked. Losing the bucket ends
-    # the whole capability, and the placed source is standing right there
-    # either way -- there is no cheaper moment to pick it back up.
+    # Reclaim whether or not the cast worked: the source is standing right
+    # there either way, and losing the bucket ends the capability. Verify it
+    # came back -- an unnoticed empty bucket turns every later candidate into
+    # "no water bucket in hand", which reads like a different bug entirely.
     if select_item(client, EMPTY_BUCKET, allow_swap=True):
         try:
             client.transport.dispatch("interact_block", dict(payload))
         except Exception:
             pass
+    if count_item(client, WATER_BUCKET) < 1:
+        print(f"  cast: water bucket not recovered at {above}")
     return converted
 
 
@@ -259,6 +269,9 @@ def cast_obsidian(
         if cast_one(client, position):
             converted += 1
             print(f"  cast: obsidian at {position} ({converted}/{target})")
+        if count_item(client, WATER_BUCKET) < 1:
+            print("  cast: stopping, the water bucket was not recovered")
+            break
     if converted:
         print(f"  cast: made {converted} obsidian from lava")
     return converted

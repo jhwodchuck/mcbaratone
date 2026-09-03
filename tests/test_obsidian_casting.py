@@ -290,3 +290,62 @@ def test_a_full_inventory_is_cleared_and_casting_proceeds(monkeypatch):
 
     assert casting._bucket_in_hand(_client(world))
     assert freed["done"], "must try to free a slot before giving up"
+
+
+def test_a_pour_that_did_not_land_costs_nothing(monkeypatch):
+    """Dispatching the pour is not evidence it happened."""
+    world = FakeWorld({(0, 0, 0): {"id": "minecraft:lava", "state": {"level": "0"}}})
+    # Swallow the interaction so no water is ever placed.
+    original = world.dispatch
+    world.dispatch = lambda route, payload=None: (
+        {} if route == "interact_block" else original(route, payload)
+    )
+    client = _client(world)
+    _patch_selection(monkeypatch, world)
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.count_item", lambda _c, _i: 1
+    )
+
+    assert not casting.cast_one(client, (0, 0, 0))
+    assert world.blocks[(0, 0, 0)]["id"] == "minecraft:lava"
+
+
+def test_an_unrecovered_bucket_stops_the_run_instead_of_grinding(monkeypatch):
+    """One lost bucket makes every later candidate fail the same way.
+
+    Live on A1 2026-09-02, "cast: no water bucket in hand" repeated across a
+    run whose opening check had passed -- the bucket was spent mid-loop and
+    never came back, and each further candidate was walked to and refused. That
+    reads like a selection bug rather than a spent bucket.
+    """
+    world = FakeWorld({
+        (0, 0, 0): {"id": "minecraft:lava", "state": {"level": "0"}},
+        (4, 0, 0): {"id": "minecraft:lava", "state": {"level": "0"}},
+        (0, 0, 1): {"id": "minecraft:deepslate", "state": {}},
+        (4, 0, 1): {"id": "minecraft:deepslate", "state": {}},
+    })
+    walked = []
+    buckets = {"water": 1}
+
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.count_item",
+        lambda _c, item: buckets["water"] if "water" in item else 1,
+    )
+    monkeypatch.setattr(casting.time, "sleep", lambda _s: None)
+
+    def select(_client, item_id, allow_swap=False):
+        world.selected = item_id
+        return True
+
+    monkeypatch.setattr("baritone_client.common.inventory.select_item", select)
+
+    real_cast_one = casting.cast_one
+
+    def cast_one(client, lava, **kw):
+        buckets["water"] = 0          # the pour spends it and it never returns
+        return real_cast_one(client, lava, **kw)
+
+    monkeypatch.setattr(casting, "cast_one", cast_one)
+
+    casting.cast_obsidian(_client(world), 2, goto=lambda *a: walked.append(a))
+    assert len(walked) <= 1, f"must stop after the bucket is gone, walked {walked}"
