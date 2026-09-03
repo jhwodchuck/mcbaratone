@@ -6,6 +6,11 @@ import time
 from typing import Any, Dict, List, Optional
 
 
+#: Vanilla gives a player-thrown stack a 2 second pickup delay. Any settle
+#: longer than that measures the inventory after the bot has re-collected
+#: what it just threw.
+PICKUP_SAFE_SETTLE_SECONDS = 0.5
+
 def drop_items(
     client: Any,
     item_ids: List[str],
@@ -64,7 +69,15 @@ def drop_items(
             if not _wait_for_empty_slot(client, slot):
                 skips["not_emptied"] += 1
                 continue
-            time.sleep(2.25)
+            # A player-thrown stack becomes collectable again after 2 seconds,
+            # and a bot standing over it takes it straight back. Settling for
+            # 2.25s therefore measured the inventory *after* the re-pickup, so
+            # every throw scored no_slot_gain and disposal could never free a
+            # slot. Live A1 2026-09-03 at (-8, 160, 9): 36/36 slots, all 14
+            # unfloored candidates reported no_slot_gain, and the bot cycled
+            # for hours without moving. Read the count inside that window --
+            # the slot has already been verified empty above.
+            time.sleep(PICKUP_SAFE_SETTLE_SECONDS)
             if api.free_inventory_slots(client) > free_before:
                 dropped += 1
                 totals[item_id] = max(0, totals.get(item_id, 0) - count)

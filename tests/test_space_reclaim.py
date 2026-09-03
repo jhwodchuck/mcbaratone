@@ -467,3 +467,21 @@ def test_the_break_glass_pass_only_sheds_what_the_keep_list_allows():
         assert any(
             protected in token for token in space_reclaim._KEEP_TOKENS
         ), protected
+
+
+def test_the_drop_is_measured_before_the_bot_can_pick_it_back_up():
+    """A thrown stack is collectable again after 2 seconds.
+
+    Live on A1 2026-09-03 at (-8, 160, 9): the slot emptied every time
+    (`not_emptied` was always 0), yet all 14 unfloored candidates scored
+    `no_slot_gain`, because the settle ran 2.25s -- past vanilla's pickup
+    delay -- and the bot standing over the pile took it straight back before
+    the count was read. Disposal could never free a slot, and the run sat
+    wedged for hours.
+    """
+    from baritone_client.common import inventory_disposal
+
+    assert inventory_disposal.PICKUP_SAFE_SETTLE_SECONDS < 2.0, (
+        "the settle must land inside the pickup-delay window"
+    )
+    assert inventory_disposal.PICKUP_SAFE_SETTLE_SECONDS > 0
