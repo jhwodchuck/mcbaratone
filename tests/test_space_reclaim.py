@@ -405,3 +405,65 @@ def test_a_disposal_with_no_eligible_stacks_stays_quiet(capsys):
 
     assert dropped == 0
     assert "Drop items:" not in capsys.readouterr().out
+
+
+def test_retain_floors_yield_rather_than_wedge_the_run(monkeypatch):
+    """An inventory where every candidate is floored can never free a slot.
+
+    Live on A1 2026-09-03 at (-8, 160, 9): 36 of 36 slots used, needing 3 free
+    to smelt iron, cycling every ~24 seconds for hours without moving:
+
+        Drop items: none of 14 candidate stack(s) left the inventory
+                    (reserved=13, no_slot_gain=1)
+        Inventory cleanup failed: only 1/3 required slots are free
+
+    46 cobblestone sat under a floor of 64. The floors were doing exactly what
+    they were written to do, and the effect was a permanently stuck run.
+    """
+    from baritone_client.common import space_reclaim
+
+    calls = []
+    free = {"n": 1}
+
+    def drop_items(_client, items, max_stacks=None, retain_counts=None):
+        calls.append({"floored": retain_counts is not None})
+        if retain_counts is not None:
+            return 0          # everything is under its floor
+        free["n"] = 3         # unfloored pass sheds bulk
+        return 2
+
+    monkeypatch.setattr("baritone_client.common.inventory.drop_items", drop_items)
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.free_inventory_slots",
+        lambda _c: free["n"],
+    )
+    monkeypatch.setattr(
+        space_reclaim, "carried_items", lambda _c: {"minecraft:cobblestone": 46}
+    )
+    monkeypatch.setattr(
+        space_reclaim, "space_reclaim_deposit_items",
+        lambda _carried: {"minecraft:cobblestone"},
+    )
+
+    from types import SimpleNamespace as _NS
+
+    assert space_reclaim.reclaim_drop_tier(_NS(), 3)
+    assert [c["floored"] for c in calls] == [True, False], calls
+
+
+def test_the_break_glass_pass_only_sheds_what_the_keep_list_allows():
+    """Tools, food, ores and portal materials must never reach it."""
+    import inspect
+
+    from baritone_client.common import space_reclaim
+
+    source = inspect.getsource(space_reclaim.reclaim_drop_tier)
+    # The unfloored drop must reuse `reclaim`, which is already filtered by
+    # _KEEP_TOKENS -- not the raw carried inventory.
+    assert "drop_items(client, reclaim, max_stacks=required - free)" in source
+    assert "carried_items(client)" not in source.split("Break glass")[1]
+
+    for protected in ("pickaxe", "diamond", "obsidian", "iron_ingot", "bread"):
+        assert any(
+            protected in token for token in space_reclaim._KEEP_TOKENS
+        ), protected

@@ -154,5 +154,25 @@ def reclaim_drop_tier(
     free = free_inventory_slots(client)
     if free >= required:
         return True
+
+    # Break glass. Retain floors exist to keep a working kit, not to wedge the
+    # run: an inventory where every unprotected stack sits under its floor can
+    # never free a slot, so the bot repeats the same failure until something
+    # else kills it. Live on A1 2026-09-03 at (-8, 160, 9), 36/36 slots and
+    # needing 3 free to smelt iron: 13 of 14 candidates were floored -- 46
+    # cobblestone under a floor of 64 among them -- and it looped every ~24s
+    # for hours without moving a block.
+    #
+    # `reclaim` already excludes everything _KEEP_TOKENS protects, so this can
+    # only shed bulk: tools, armour, food, ores and portal materials are never
+    # in it. Losing some cobblestone is strictly better than losing the run.
+    if reclaim and drop_items(client, reclaim, max_stacks=required - free) > 0:
+        free = free_inventory_slots(client)
+        if free >= required:
+            print(
+                f"  Inventory cleanup: dropped below retain floors to free "
+                f"{free}/{required} slot(s) rather than stay wedged"
+            )
+            return True
     print(f"  Inventory cleanup failed: only {free}/{required} required slots are free")
     return False
