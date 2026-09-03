@@ -427,9 +427,10 @@ def test_a_run_that_casts_nothing_says_why(capsys, monkeypatch):
 
 
 def test_a_run_that_cannot_walk_reports_the_walk(capsys, monkeypatch):
+    # Far enough that the in-reach shortcut does not apply.
     world = FakeWorld({
-        (0, 0, 0): {"id": "minecraft:lava", "state": {"level": "0"}},
-        (0, 0, 1): {"id": "minecraft:deepslate", "state": {}},
+        (40, 0, 40): {"id": "minecraft:lava", "state": {"level": "0"}},
+        (40, 0, 41): {"id": "minecraft:deepslate", "state": {}},
     })
     monkeypatch.setattr(
         "baritone_client.common.inventory.count_item", lambda _c, _i: 1
@@ -491,3 +492,48 @@ def test_every_foothold_can_actually_touch_the_pour_target():
 def test_the_foothold_search_stays_cheap():
     """Each offset costs two block reads on every candidate that fails."""
     assert len(casting._FOOTHOLD_OFFSETS) <= 20, len(casting._FOOTHOLD_OFFSETS)
+
+
+def test_a_source_already_in_reach_is_poured_without_walking(monkeypatch):
+    """Lava embedded in rock has no standing ledge, but is often already close.
+
+    Live A1 2026-09-02 at (258,-57,289), the nearest source (260,-55,291) sat
+    3.5 blocks away inside deepslate: every neighbour was either solid rock
+    (cannot stand in it) or air over lava (cannot stand on it), so all 20
+    foothold offsets failed. Meanwhile the bot was already close enough to
+    pour. Checking reach first costs one state read; the foothold search costs
+    forty block reads before it can reach the same conclusion.
+    """
+    world = FakeWorld({(0, 0, 0): {"id": "minecraft:lava", "state": {"level": "0"}}})
+    walked = []
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.count_item", lambda _c, _i: 1
+    )
+    _patch_selection(monkeypatch, world)
+
+    # FakeWorld reports the player at (0, 1, 1) -- adjacent to the pour target.
+    made = casting.cast_obsidian(
+        _client(world), 1, goto=lambda *a: walked.append(a) or True
+    )
+
+    assert made == 1, "an in-reach source must still be cast"
+    assert walked == [], "no walk should be needed when already in reach"
+    assert world.blocks[(0, 0, 0)]["id"] == "minecraft:obsidian"
+
+
+def test_the_reach_shortcut_does_not_skip_the_walk_when_far(monkeypatch):
+    """Distant sources must still be approached."""
+    world = FakeWorld({
+        (40, 0, 40): {"id": "minecraft:lava", "state": {"level": "0"}},
+        (40, 0, 41): {"id": "minecraft:deepslate", "state": {}},
+    })
+    walked = []
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.count_item", lambda _c, _i: 1
+    )
+    _patch_selection(monkeypatch, world)
+
+    casting.cast_obsidian(
+        _client(world), 1, goto=lambda *a: walked.append(a) or True
+    )
+    assert walked, "a source 40 blocks away must still be walked to"

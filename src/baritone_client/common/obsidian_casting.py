@@ -317,7 +317,13 @@ def cast_obsidian(
         if not _safe(client):
             print("  cast: stopping, health or food fell while casting")
             break
-        if goto is not None:
+        # Already close enough? Pour from here. The bot spends its time mining
+        # at lava depth, so it is often standing within arm's reach of a source
+        # already, and the foothold search costs 40 block reads before it can
+        # say so. Live A1 2026-09-02: 46 candidates examined in a 240s budget,
+        # every one rejected for a dry ledge that a lava lake does not have.
+        above = (position[0], position[1] + 1, position[2])
+        if goto is not None and not _within_reach(client, above):
             stand = _standing_spot(client, position)
             if stand is None:
                 skipped["no_foothold"] += 1
