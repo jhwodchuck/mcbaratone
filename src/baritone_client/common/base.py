@@ -947,6 +947,7 @@ def wait_for_safe_daylight(
     next_bed_attempt = 0.0
     next_anti_idle = 0.0
     anti_idle_yaw = 0.0
+    from .night_peace import night_is_over_or_harmless
     shelter_attempted = False
     shelter_complete = False
 
@@ -972,8 +973,7 @@ def wait_for_safe_daylight(
             return False
 
         day_time = int(state.get("world_time", 0)) % 24000
-        if day_time < 12000:
-            print(f"Daylight safety: daylight confirmed (time={day_time}).")
+        if night_is_over_or_harmless(client, day_time):
             return True
 
         if not shelter_attempted:
