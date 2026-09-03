@@ -60,6 +60,20 @@ def test_the_refuel_is_tried_before_giving_up():
     assert stall.index("_load_carried_fuel") < stall.index("stalled without fuel")
 
 
+def test_refuelling_is_bounded_so_a_dead_move_cannot_spin():
+    """Dispatching the shift is not evidence the fuel landed.
+
+    Live A1 2026-09-03: the first, unbounded version logged "Refuelled the
+    stalled furnace from carried stock" once a second indefinitely while the
+    fuel slot stayed empty -- the same dispatch-and-assume shape the rest of
+    this work has been removing, reintroduced by the fix for it.
+    """
+    assert furnace_recovery.MAX_REFUEL_ATTEMPTS <= 5
+    source = inspect.getsource(furnace_recovery.resume_active_furnace)
+    assert "refuels < MAX_REFUEL_ATTEMPTS" in source
+    assert "refuels += 1" in source
+
+
 def _catalog(rows):
     return SimpleNamespace(list_containers=lambda: rows)
 

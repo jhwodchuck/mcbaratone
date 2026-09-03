@@ -94,6 +94,10 @@ def collect_finished_furnace_output(
     return False
 
 
+#: A shift-move that does not land fuel will not land it on the tenth try.
+MAX_REFUEL_ATTEMPTS = 3
+
+
 def _load_carried_fuel(client, data) -> bool:
     """Shift a carried fuel stack into a stalled furnace.
 
@@ -223,6 +227,7 @@ def resume_active_furnace(
         timeout, max(20.0, initial_input * 10.5 + 30.0)
     )
     empty_polls = 0
+    refuels = 0
     print(
         f"  Resuming loaded furnace at {tuple(furnace_pos)} "
         f"({initial_input} {input_item} pending)..."
@@ -306,12 +311,14 @@ def resume_active_furnace(
                 or int(fuel_slot.get("count", 0)) <= 0
             )
             if not lit and fuel_empty:
-                if _load_carried_fuel(client, data):
-                    print("  Refuelled the stalled furnace from carried stock.")
-                    time.sleep(0.3)
+                # Bounded: dispatching the shift is not evidence fuel landed.
+                if refuels < MAX_REFUEL_ATTEMPTS and _load_carried_fuel(client, data):
+                    refuels += 1
+                    print(f"  Refuelling the stalled furnace ({refuels}).")
+                    time.sleep(0.5)
                     continue
                 client.transport.dispatch("close_screen", {})
-                print("  Loaded furnace stalled without fuel.")
+                print(f"  Loaded furnace stalled without fuel ({refuels} refuels).")
                 return False
         time.sleep(0.5)
 
