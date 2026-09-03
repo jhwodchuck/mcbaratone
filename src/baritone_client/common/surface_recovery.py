@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any, Callable, Optional
 
+from .automation_utils import HAND_BREAKABLE_BLOCKS
 from .movement_recovery import block_position
 
 
@@ -188,7 +189,7 @@ def _clear_reachable_ascent_obstructions(
             continue
         if name in _UNBREAKABLE_EGRESS_BLOCKS:
             return False
-        breakable.append(block)
+        breakable.append((block, name))
     if not breakable:
         return True
     if not any(
@@ -200,9 +201,9 @@ def _clear_reachable_ascent_obstructions(
             "minecraft:stone_pickaxe",
             "minecraft:wooden_pickaxe",
         )
-    ):
+    ) and not all(name in HAND_BREAKABLE_BLOCKS for _b, name in breakable):
         return False
-    for block in reversed(breakable):
+    for block, _name in reversed(breakable):
         try:
             client.transport.dispatch(
                 "break_block",
@@ -229,11 +230,10 @@ def _start_loaded_column_ascent(
     )
     if target_y is None or target_y <= position[1]:
         return False
-    if require_stable_support and not _clear_reachable_ascent_obstructions(
-        client,
-        position,
-        target_y=target_y,
-    ):
+    # Drowning takes this path with require_stable_support False, which used to
+    # skip this entirely and leave the ceiling above a submerged bot unbroken.
+    cleared = _clear_reachable_ascent_obstructions(client, position, target_y=target_y)
+    if require_stable_support and not cleared:
         return False
     return _start_y_level_ascent(client, target_y)
 

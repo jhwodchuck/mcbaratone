@@ -224,3 +224,14 @@ def recover_placed(client, positions) -> int:
     if recovered:
         print(f"  recovered {recovered} block(s) from the abandoned build")
     return recovered
+
+
+#: Blocks a bare hand can break at a usable speed. A bot that has just drowned
+#: respawns naked, so gating an escape dig on a pickaxe makes it a no-op in the
+#: one situation it exists for -- and what sits above a submerged bot near
+#: shore is almost always one of these.
+HAND_BREAKABLE_BLOCKS = frozenset(
+    """dirt coarse_dirt rooted_dirt grass_block podzol mycelium dirt_path
+    farmland mud clay sand red_sand gravel soul_sand soul_soil snow snow_block
+    moss_block""".split()
+)
