@@ -505,13 +505,87 @@ def plan_escape_candidates(
     return candidates
 
 
+@dataclass(frozen=True)
+class ArmorAssessment:
+    """Result of armor assessment for environmental threats."""
+
+    action: str  # "none", "swap_boots", "equip_full_leather"
+    reason: str
+    current_boots: Optional[str] = None
+    recommended_boots: Optional[str] = None
+
+
+def assess_armor_for_environment(client, environment: str) -> ArmorAssessment:
+    """Assess whether current armor is appropriate for the environment.
+
+    Args:
+        client: Minecraft client with transport for inventory queries
+        environment: Environmental threat type ("freezing", "fire", etc.)
+
+    Returns:
+        ArmorAssessment with recommended action and reasoning.
+    """
+    if environment != "freezing":
+        return ArmorAssessment("none", f"no specific armor requirement for {environment}")
+
+    # Query current armor and inventory
+    try:
+        response = client.transport.dispatch("get_inventory", {})
+        data = response.get("data", response)
+    except Exception:
+        return ArmorAssessment("none", "failed to query inventory")
+
+    armor = data.get("armor", [])
+    inventory = data.get("inventory", [])
+
+    # Find currently equipped boots
+    current_boots = None
+    for item in armor:
+        if item.get("id", "").endswith("_boots"):
+            current_boots = item.get("id")
+            break
+
+    # Check if leather boots are already equipped (optimal for freezing)
+    if current_boots == "minecraft:leather_boots":
+        return ArmorAssessment(
+            "none",
+            "leather boots already equipped for freezing protection",
+            current_boots=current_boots,
+            recommended_boots="minecraft:leather_boots",
+        )
+
+    # Check if leather boots are available in inventory
+    has_leather_boots = any(
+        item.get("id") == "minecraft:leather_boots" and item.get("count", 0) > 0
+        for item in inventory
+    )
+
+    if has_leather_boots:
+        return ArmorAssessment(
+            "swap_boots",
+            "leather boots available in inventory for freezing protection",
+            current_boots=current_boots,
+            recommended_boots="minecraft:leather_boots",
+        )
+
+    # No leather boots available
+    return ArmorAssessment(
+        "none",
+        "no leather boots available for freezing protection",
+        current_boots=current_boots,
+        recommended_boots="minecraft:leather_boots",
+    )
+
+
 __all__ = [
     "AttackStyle",
+    "ArmorAssessment",
     "DefenseDecision",
     "DefenseMode",
     "DefenseRuntime",
     "EscapeCandidate",
     "ThreatAssessment",
+    "assess_armor_for_environment",
     "assess_threats",
     "choose_defense_action",
     "normalize_entity_type",

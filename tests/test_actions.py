@@ -336,6 +336,75 @@ class TestInventoryAction:
         
         assert slot is None
 
+    def test_equip_best_armor_avoids_redundant_swaps(self, mock_context):
+        """Test that equip_best_armor does not swap if already equipped."""
+        from baritone_client.common.inventory import equip_best_armor
+
+        # Mock get_equipped_armor_details to return leather boots
+        mock_context.client.transport.set_response("get_inventory", {
+            "data": {
+                "armor": [{"id": "minecraft:leather_boots", "count": 1, "max_damage": 65, "damage": 0}],
+                "inventory": [{"id": "minecraft:leather_boots", "count": 1, "slot": 0, "max_damage": 65, "damage": 0}]
+            }
+        })
+
+        # This should not trigger an inventory_click if logic is correct
+        equip_best_armor(mock_context.client)
+
+        clicks = [c for c in mock_context.client.transport.calls if c[0] == "inventory_click"]
+        assert len(clicks) == 0
+
+    def test_armor_upkeep_freezing_recognizes_leather_boots_equipped(self, mock_context):
+        """Test that armor upkeep recognizes leather boots are already equipped for freezing.
+
+        Regression for blocker: armor_upkeep saturated at 61 attempts with
+        'equipped leather boots against freezing (4->4)' - bot has full armor
+        including leather boots but keeps trying to equip them.
+        """
+        from baritone_client.common.defense import assess_armor_for_environment
+
+        # Player has full armor including leather boots (optimal for freezing)
+        mock_context.client.transport.set_response("get_inventory", {
+            "data": {
+                "armor": [
+                    {"id": "minecraft:leather_helmet", "count": 1, "max_damage": 55, "damage": 0},
+                    {"id": "minecraft:leather_chestplate", "count": 1, "max_damage": 80, "damage": 0},
+                    {"id": "minecraft:leather_leggings", "count": 1, "max_damage": 75, "damage": 0},
+                    {"id": "minecraft:leather_boots", "count": 1, "max_damage": 65, "damage": 0},
+                ],
+                "inventory": [],
+                "offhand": []
+            }
+        })
+
+        # Should recognize leather boots are equipped and no change needed
+        result = assess_armor_for_environment(mock_context.client, "freezing")
+        assert result.action == "none"
+        assert "leather boots" in result.reason.lower()
+
+    def test_armor_upkeep_freezing_detects_missing_leather_boots(self, mock_context):
+        """Test that armor upkeep detects when leather boots are missing for freezing."""
+        from baritone_client.common.defense import assess_armor_for_environment
+
+        # Player has iron armor but no leather boots (suboptimal for freezing)
+        mock_context.client.transport.set_response("get_inventory", {
+            "data": {
+                "armor": [
+                    {"id": "minecraft:iron_helmet", "count": 1, "max_damage": 165, "damage": 0},
+                    {"id": "minecraft:iron_chestplate", "count": 1, "max_damage": 240, "damage": 0},
+                    {"id": "minecraft:iron_leggings", "count": 1, "max_damage": 225, "damage": 0},
+                    {"id": "minecraft:iron_boots", "count": 1, "max_damage": 195, "damage": 0},
+                ],
+                "inventory": [{"id": "minecraft:leather_boots", "count": 1, "slot": 0, "max_damage": 65, "damage": 0}],
+                "offhand": []
+            }
+        })
+
+        # Should recommend swapping to leather boots
+        result = assess_armor_for_environment(mock_context.client, "freezing")
+        assert result.action == "swap_boots"
+        assert "leather boots" in result.reason.lower()
+
 
 # ============================================================================
 # CraftingAction-like Tests

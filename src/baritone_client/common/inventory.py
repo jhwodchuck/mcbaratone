@@ -1,11 +1,8 @@
-"""
-Inventory management - Item counting, crafting, and organization.
-"""
+"""Inventory management - Item counting, crafting, and organization."""
 
 from typing import Dict, Optional, List, Tuple
 import logging
 import time
-
 from .storage_safety import remember_unreachable_storage, storage_retry_ready
 
 logger = logging.getLogger(__name__)
@@ -386,6 +383,9 @@ def equip_best_armor(client) -> int:
         if selected is None:
             continue
         _best_rank, _best_remaining, best_item = selected
+
+        if _best_rank <= current_rank and (current_remaining or 0) >= _best_remaining:
+            continue
 
         try:
             # QUICK_MOVE on a player-container slot is the same verified path
