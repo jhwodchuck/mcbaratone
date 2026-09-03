@@ -440,3 +440,54 @@ def test_a_run_that_cannot_walk_reports_the_walk(capsys, monkeypatch):
 
     assert casting.cast_obsidian(_client(world), 1, goto=lambda *_a: False) == 0
     assert "walk_failed=1" in capsys.readouterr().out
+
+
+def test_a_successful_cast_is_reported_as_success_not_failure():
+    """#53 left this print inside the else branch.
+
+    The live log then read:
+
+        cast: water did not land above (259, -55, 292)
+        cast: obsidian at (259, -55, 292) (0/1)
+        cast: nothing made from 42 candidates (no_foothold=39, pour_failed=3)
+
+    claiming obsidian was made, on the failure path, with a counter that never
+    moved. A log that contradicts itself is worse than a silent one.
+    """
+    import inspect
+
+    source = inspect.getsource(casting.cast_obsidian)
+    success = source[source.index("if cast_one(client, position):"):]
+    success = success[: success.index("if count_item(")]
+
+    before_else, _, after_else = success.partition("else:")
+    assert "cast: obsidian at" in before_else, success
+    assert "cast: obsidian at" not in after_else, success
+    assert "pour_failed" in after_else, success
+
+
+def test_footholds_look_past_the_four_orthogonal_neighbours():
+    """39 of 42 live sources had no orthogonal dry neighbour."""
+    offsets = casting._FOOTHOLD_OFFSETS
+
+    # The original four are still tried, and tried first.
+    orthogonal = {(1, 1, 0), (-1, 1, 0), (0, 1, 1), (0, 1, -1)}
+    assert orthogonal <= set(offsets)
+    assert orthogonal == set(offsets[:4]), offsets[:4]
+
+    # ...but they are no longer the only option.
+    assert len(offsets) > 4
+    # Never the lava's own column, which is not a foothold.
+    assert not any(dx == 0 and dz == 0 for dx, _dy, dz in offsets)
+
+
+def test_every_foothold_can_actually_touch_the_pour_target():
+    """A spot out of reach is not a foothold, it is a wasted walk."""
+    for dx, dy, dz in casting._FOOTHOLD_OFFSETS:
+        distance = (dx * dx + (dy - 1) ** 2 + dz * dz) ** 0.5
+        assert distance <= casting.REACH, (dx, dy, dz, distance)
+
+
+def test_the_foothold_search_stays_cheap():
+    """Each offset costs two block reads on every candidate that fails."""
+    assert len(casting._FOOTHOLD_OFFSETS) <= 20, len(casting._FOOTHOLD_OFFSETS)

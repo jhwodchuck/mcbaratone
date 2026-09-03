@@ -202,6 +202,26 @@ def _lava_candidates(client, radius: int, limit: int = 256) -> List[Position]:
 
 
 
+
+#: Candidate footholds, nearest first. Only the four orthogonal neighbours at
+#: exactly y+1 were tried, which rejected 39 of 42 live lava sources on A1
+#: 2026-09-02 -- a source in a pool or against a cave wall has no orthogonal
+#: dry neighbour, but very often has a ledge one step further out or a block
+#: higher. Every offset here stays inside REACH of the pour target at (0,1,0).
+_FOOTHOLD_OFFSETS = tuple(
+    sorted(
+        (
+            (dx, dy, dz)
+            for dx in (-2, -1, 0, 1, 2)
+            for dz in (-2, -1, 0, 1, 2)
+            for dy in (1, 2, 0)
+            if (dx, dz) != (0, 0)
+            and (dx * dx + (dy - 1) * (dy - 1) + dz * dz) ** 0.5 <= 3.0
+        ),
+        key=lambda o: (o[0] * o[0] + (o[1] - 1) ** 2 + o[2] * o[2], abs(o[1] - 1)),
+    )[:20]
+)
+
 def _standing_spot(client, lava: Position) -> Optional[Position]:
     """A dry foothold beside the source, or None.
 
@@ -210,9 +230,9 @@ def _standing_spot(client, lava: Position) -> Optional[Position]:
     with something solid under it and no lava at foot level.
     """
     x, y, z = lava
-    for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-        foot = (x + dx, y + 1, z + dz)
-        below = (x + dx, y, z + dz)
+    for dx, dy, dz in _FOOTHOLD_OFFSETS:
+        foot = (x + dx, y + dy, z + dz)
+        below = (x + dx, y + dy - 1, z + dz)
         below_id = _block_id(_read(client, *below))
         if not _is_air(client, foot) or not below_id:
             continue
@@ -314,9 +334,9 @@ def cast_obsidian(
                 continue
         if cast_one(client, position):
             converted += 1
+            print(f"  cast: obsidian at {position} ({converted}/{target})")
         else:
             skipped["pour_failed"] += 1
-            print(f"  cast: obsidian at {position} ({converted}/{target})")
         if count_item(client, WATER_BUCKET) < 1:
             print("  cast: stopping, the water bucket was not recovered")
             break
