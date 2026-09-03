@@ -231,3 +231,62 @@ def test_a_source_with_no_dry_foothold_is_skipped():
         (0, 0, -1): {"id": "minecraft:lava", "state": {"level": "0"}},
     })
     assert casting._standing_spot(_client(world), (0, 0, 0)) is None
+
+
+def test_a_full_inventory_is_discovered_before_walking_to_lava(monkeypatch):
+    """Carrying a bucket is not the same as being able to hold one.
+
+    A full inventory has no free hotbar slot to swap into, so select_item
+    fails -- at the pour, after the walk. Live on A1 2026-09-02 with 36/36
+    slots used, the caster found lava, approached it, and only then reported
+    "cast: no water bucket in hand", having spent the whole trip to learn
+    something it could have checked standing still.
+    """
+    world = FakeWorld({(0, 0, 0): {"id": "minecraft:lava", "state": {"level": "0"}}})
+    walked = []
+
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.count_item", lambda _c, _i: 1
+    )
+    # Selection fails and freeing a slot does not help.
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.select_item",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.resources.manage_inventory",
+        lambda *_a, **_k: False,
+    )
+
+    assert casting.cast_obsidian(
+        _client(world), 2, goto=lambda *a: walked.append(a)
+    ) == 0
+    assert walked == [], "must not walk to lava it cannot pour on"
+
+
+def test_a_full_inventory_is_cleared_and_casting_proceeds(monkeypatch):
+    """One freed slot is all it takes; do not abandon the trip over it."""
+    world = FakeWorld({(0, 0, 0): {"id": "minecraft:lava", "state": {"level": "0"}}})
+    freed = {"done": False}
+
+    def select(_client, item_id, allow_swap=False):
+        if not freed["done"]:
+            return False
+        world.selected = item_id
+        return True
+
+    def free_slot(*_a, **_k):
+        freed["done"] = True
+        return True
+
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.count_item", lambda _c, _i: 1
+    )
+    monkeypatch.setattr("baritone_client.common.inventory.select_item", select)
+    monkeypatch.setattr(
+        "baritone_client.common.resources.manage_inventory", free_slot
+    )
+    monkeypatch.setattr(casting.time, "sleep", lambda _s: None)
+
+    assert casting._bucket_in_hand(_client(world))
+    assert freed["done"], "must try to free a slot before giving up"

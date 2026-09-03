@@ -179,6 +179,33 @@ def _standing_spot(client, lava: Position) -> Optional[Position]:
     return None
 
 
+
+def _bucket_in_hand(client) -> bool:
+    """Prove the water bucket can be held before walking to any lava.
+
+    Carrying a bucket is not the same as being able to select one. A full
+    inventory has no free hotbar slot to swap into, so select_item fails --
+    and it fails at the pour, after the walk. Live on A1 2026-09-02, 36/36
+    slots used: the caster found lava, approached it, and reported
+
+        cast: no water bucket in hand
+
+    having spent the whole trip to learn something it could have checked
+    standing still. manage_inventory exists to free exactly one slot.
+    """
+    from .inventory import select_item
+
+    if select_item(client, WATER_BUCKET, allow_swap=True):
+        return True
+    from .resources import manage_inventory
+
+    manage_inventory(client, minimum_free_slots=1)
+    if select_item(client, WATER_BUCKET, allow_swap=True):
+        return True
+    print("  cast: water bucket cannot be brought to hand; inventory is full")
+    return False
+
+
 def cast_obsidian(
     client,
     target: int,
@@ -202,6 +229,8 @@ def cast_obsidian(
         return 0
     if not _safe(client):
         print("  cast: health or food too low to approach lava")
+        return 0
+    if not _bucket_in_hand(client):
         return 0
 
     candidates = _lava_candidates(client, radius)
