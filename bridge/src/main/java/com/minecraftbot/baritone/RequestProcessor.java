@@ -3,6 +3,8 @@ package com.minecraftbot.baritone;
 import baritone.api.IBaritone;
 import com.minecraftbot.baritone.BaritoneAPIBridge.IPlayerContext;
 import com.google.gson.Gson;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonPrimitive;
 import com.google.gson.JsonObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,6 +26,8 @@ public class RequestProcessor {
     
     private static final Logger LOGGER = LoggerFactory.getLogger("request-processor");
     private static final Gson GSON = new Gson();
+    private static final String REQUEST_SEQUENCE_KEY = "request_seq";
+    private static final String LEGACY_SEQUENCE_KEY = "seq";
     
     private final AtomicLong sequenceNumber = new AtomicLong(0);
     private final String sessionId = GetVersionCommandHandler.getBridgeInstanceId();
@@ -111,7 +115,7 @@ public class RequestProcessor {
      */
     public JsonObject processCommand(JsonObject request, Socket clientSocket) {
         JsonObject response = createResponseEnvelope(request);
-        
+
         // Basic validation
         if (request == null || !request.has("command")) {
             response.addProperty("status", "error");
@@ -121,6 +125,12 @@ public class RequestProcessor {
         
         try {
             String command = request.get("command").getAsString();
+
+            if (hasConflictingSequenceValues(request)) {
+                response.addProperty("status", "error");
+                response.addProperty("error", "Conflicting request sequence values. request_seq and seq must match when both are provided.");
+                return response;
+            }
             
             // Handle debug command
             if ("debug_reset_circuit".equals(command)) {
@@ -185,8 +195,9 @@ public class RequestProcessor {
         response.addProperty("bridge_session_id", sessionId);
         response.addProperty("timestamp", System.currentTimeMillis());
 
-        if (request != null && request.has("seq")) {
-            response.add("request_seq", request.get("seq"));
+        JsonElement requestSeq = getRequestSequence(request);
+        if (requestSeq != null) {
+            response.add("request_seq", requestSeq);
         }
         
         String id = request != null && request.has("id") ? request.get("id").getAsString() : null;
@@ -252,6 +263,51 @@ public class RequestProcessor {
      */
     public String toJson(JsonObject response) {
         return GSON.toJson(response);
+    }
+
+    private JsonElement getRequestSequence(JsonObject request) {
+        if (request == null) {
+            return null;
+        }
+        if (request.has(REQUEST_SEQUENCE_KEY)) {
+            return request.get(REQUEST_SEQUENCE_KEY);
+        }
+        if (request.has(LEGACY_SEQUENCE_KEY)) {
+            return request.get(LEGACY_SEQUENCE_KEY);
+        }
+        return null;
+    }
+
+    private boolean hasConflictingSequenceValues(JsonObject request) {
+        if (request == null
+            || !request.has(REQUEST_SEQUENCE_KEY)
+            || !request.has(LEGACY_SEQUENCE_KEY)) {
+            return false;
+        }
+
+        JsonElement canonical = request.get(REQUEST_SEQUENCE_KEY);
+        JsonElement legacy = request.get(LEGACY_SEQUENCE_KEY);
+        return !sequenceValuesMatch(canonical, legacy);
+    }
+
+    private boolean sequenceValuesMatch(JsonElement lhs, JsonElement rhs) {
+        if (lhs == null || rhs == null) {
+            return false;
+        }
+        if (lhs.isJsonPrimitive() && rhs.isJsonPrimitive()) {
+            JsonPrimitive lhsPrimitive = lhs.getAsJsonPrimitive();
+            JsonPrimitive rhsPrimitive = rhs.getAsJsonPrimitive();
+
+            if (lhsPrimitive.isNumber() && rhsPrimitive.isNumber()) {
+                try {
+                    return lhsPrimitive.getAsLong() == rhsPrimitive.getAsLong();
+                } catch (NumberFormatException e) {
+                    return lhsPrimitive.getAsString().equals(rhsPrimitive.getAsString());
+                }
+            }
+            return lhsPrimitive.equals(rhsPrimitive);
+        }
+        return lhs.equals(rhs);
     }
     
     /**
