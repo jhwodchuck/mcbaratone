@@ -426,10 +426,13 @@ def test_retain_floors_yield_rather_than_wedge_the_run(monkeypatch):
     free = {"n": 1}
 
     def drop_items(_client, items, max_stacks=None, retain_counts=None):
-        calls.append({"floored": retain_counts is not None})
-        if retain_counts is not None:
+        # The break-glass pass is distinguished by dropping the caller's
+        # floors, not by having none at all -- it still guards fuel.
+        floored = "minecraft:cobblestone" in (retain_counts or {})
+        calls.append({"floored": floored})
+        if floored:
             return 0          # everything is under its floor
-        free["n"] = 3         # unfloored pass sheds bulk
+        free["n"] = 3         # break-glass pass sheds bulk
         return 2
 
     monkeypatch.setattr("baritone_client.common.inventory.drop_items", drop_items)
@@ -458,10 +461,13 @@ def test_the_break_glass_pass_only_sheds_what_the_keep_list_allows():
     from baritone_client.common import space_reclaim
 
     source = inspect.getsource(space_reclaim.reclaim_drop_tier)
-    # The unfloored drop must reuse `reclaim`, which is already filtered by
+    # The break-glass drop must reuse `reclaim`, which is already filtered by
     # _KEEP_TOKENS -- not the raw carried inventory.
-    assert "drop_items(client, reclaim, max_stacks=required - free)" in source
-    assert "carried_items(client)" not in source.split("Break glass")[1]
+    tail = source.split("Break glass")[1]
+    assert "drop_items(" in tail and "reclaim" in tail
+    assert "carried_items(client)" not in tail
+    # ...and it must still carry the minimal fuel floors.
+    assert "LAST_DITCH_FLOORS" in tail
 
     for protected in ("pickaxe", "diamond", "obsidian", "iron_ingot", "bread"):
         assert any(
@@ -485,3 +491,39 @@ def test_the_drop_is_measured_before_the_bot_can_pick_it_back_up():
         "the settle must land inside the pickup-delay window"
     )
     assert inventory_disposal.PICKUP_SAFE_SETTLE_SECONDS > 0
+
+
+def test_the_last_resort_still_keeps_enough_fuel_to_light_a_furnace(monkeypatch):
+    """Two of these fixes were fighting each other.
+
+    Planks are not in _KEEP_TOKENS -- they are bulk by every other measure --
+    so the unfloored break-glass pass was free to throw them away. On A1
+    2026-09-03 it took oak planks from 9 to 4 while the iron phase sat blocked
+    on a furnace reporting "stalled without fuel". A bot that cannot smelt is
+    not in a better position than a bot with three fewer free slots.
+    """
+    from baritone_client.common import space_reclaim
+
+    seen = []
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.drop_items",
+        lambda _c, _i, max_stacks=None, retain_counts=None: seen.append(retain_counts) or 0,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.free_inventory_slots", lambda _c: 0
+    )
+    monkeypatch.setattr(
+        space_reclaim, "carried_items", lambda _c: {"minecraft:oak_planks": 9}
+    )
+    monkeypatch.setattr(
+        space_reclaim, "space_reclaim_deposit_items",
+        lambda _carried: {"minecraft:oak_planks"},
+    )
+
+    from types import SimpleNamespace as _NS
+
+    space_reclaim.reclaim_drop_tier(_NS(), 3)
+    # The break-glass pass is the last call; it must still carry a fuel floor.
+    assert seen[-1] is not None, seen
+    assert seen[-1].get("minecraft:oak_planks", 0) >= 8, seen[-1]
+    assert space_reclaim.LAST_DITCH_FLOORS["minecraft:coal"] >= 1

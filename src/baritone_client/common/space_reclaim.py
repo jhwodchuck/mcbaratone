@@ -116,6 +116,17 @@ def carried_items(client: Any) -> Dict[str, int]:
         return {}
 
 
+
+#: Even the last-resort pass keeps enough fuel to light a furnace. Everything
+#: else here is replaceable by walking; a bot that cannot smelt is not.
+LAST_DITCH_FLOORS = {
+    "minecraft:coal": 4,
+    "minecraft:charcoal": 4,
+    **{item: 8 for item in ("minecraft:oak_planks", "minecraft:birch_planks",
+                            "minecraft:spruce_planks", "minecraft:jungle_planks",
+                            "minecraft:acacia_planks", "minecraft:dark_oak_planks")},
+}
+
 def reclaim_drop_tier(
     client: Any, required: int, retain_counts: Dict[str, int] | None = None
 ) -> bool:
@@ -166,7 +177,15 @@ def reclaim_drop_tier(
     # `reclaim` already excludes everything _KEEP_TOKENS protects, so this can
     # only shed bulk: tools, armour, food, ores and portal materials are never
     # in it. Losing some cobblestone is strictly better than losing the run.
-    if reclaim and drop_items(client, reclaim, max_stacks=required - free) > 0:
+    #
+    # Fuel keeps a small floor even here. Planks and logs are bulk by every
+    # other measure, and dropping the last of them strands the bot in front of
+    # a furnace it can no longer light -- which is exactly what happened on A1
+    # 2026-09-03, where this pass took oak planks from 9 to 4 while the iron
+    # phase was blocked on a furnace reporting "stalled without fuel".
+    if reclaim and drop_items(
+        client, reclaim, max_stacks=required - free, retain_counts=LAST_DITCH_FLOORS
+    ) > 0:
         free = free_inventory_slots(client)
         if free >= required:
             print(
