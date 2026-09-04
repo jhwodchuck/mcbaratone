@@ -2,10 +2,13 @@
 
 from typing import Any, Dict
 
+from ..core.exceptions import CommandError
+
 
 READ_ONLY_ROUTES = frozenset(
     {
         "get_state",
+        "get_inventory",
         "process/status",
         "get_block",
         "get_view",
@@ -31,6 +34,8 @@ def is_traced_command(route: str) -> bool:
         "cancel",
         "command/cancel",
         "place_block",
+        "interact_block", "use_bucket", "use_item", "smelt_items",
+        "inventory_click", "dig_block", "place_fire", "throw_item", "select_slot",
         "break_block",
         "set_fast_break",
         "craft",
@@ -41,6 +46,53 @@ def is_traced_command(route: str) -> bool:
         "respawn",
         "attack",
     } or route.startswith("process/")
+
+
+def validate_response_sequence(response: Dict[str, Any], request_seq: int) -> None:
+    """Reject a response that explicitly echoes a different request sequence.
+
+    Older bridge builds omitted the echo, so absence remains compatible; an
+    explicit mismatch is unsafe because it can attach evidence to the wrong
+    request even when the socket-level request id was reused.
+    """
+    if not isinstance(response, dict):
+        raise CommandError("Malformed bridge response", response={})
+    echoed = response.get("request_seq")
+    for key in ("data", "result"):
+        nested = response.get(key)
+        if echoed is None and isinstance(nested, dict):
+            echoed = nested.get("request_seq")
+    if echoed is None:
+        return
+    try:
+        matches = (
+            not isinstance(echoed, bool)
+            and str(echoed) == str(request_seq)
+        )
+    except (TypeError, ValueError):
+        matches = False
+    if not matches:
+        raise CommandError(
+            f"Bridge response sequence mismatch (expected {request_seq}, got {echoed})",
+            response=response,
+        )
+
+
+def observe_response(route: str, payload: Dict[str, Any], response: Dict[str, Any]) -> None:
+    """Run shared response observers for TCP and WebSocket transports."""
+    from ..observability import (
+        observe_command_response,
+        observe_entities_response,
+        observe_inventory_response,
+        observe_state_response,
+    )
+    if route == "get_inventory":
+        observe_inventory_response(response)
+    elif route in {"get_state", "process/status"}:
+        observe_state_response(response)
+    elif route == "get_entities":
+        observe_entities_response(response)
+    observe_command_response(route, payload, response) if is_traced_command(route) else None
 
 
 def translate_route(route: str, payload: Dict[str, Any]) -> Dict[str, Any]:

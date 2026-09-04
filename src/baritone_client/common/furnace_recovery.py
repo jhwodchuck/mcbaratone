@@ -94,27 +94,17 @@ def collect_finished_furnace_output(
     return False
 
 
-#: A shift-move that does not land fuel will not land it on the tenth try.
+#: Reconcile the furnace between bounded refuel attempts.
 MAX_REFUEL_ATTEMPTS = 3
 
 
 def _load_carried_fuel(client, data) -> bool:
-    """Shift a carried fuel stack into a stalled furnace.
+    """Load carried fuel only when the bridge observes its transfer.
 
-    A furnace holding raw ore and no fuel used to end the attempt outright,
-    even while the bot carried planks and logs that burn perfectly well. Live
-    on A1 2026-09-03: "Resuming loaded furnace at (-7, 160, 7) (1
-    minecraft:raw_iron pending)... Loaded furnace stalled without fuel", on a
-    ~24 second cycle for hours, with 9 oak planks and 2 oak logs in the bag and
-    NETHER_AND_BLAZE waiting on six iron ingots.
-
-    This goes through the bridge's own ``smelt_items``, which was already
-    registered and had no Python caller at all. It resolves the container from
-    ``player.containerMenu.containerId`` at click time; the hand-rolled
-    ``inventory_click`` this replaced passed a ``sync_id`` read earlier from
-    the furnace snapshot, and a stale one is dropped by the server without
-    error -- three refuels in a row reported success while the fuel slot stayed
-    empty.
+    Pass the observed menu ID so a changed container fails before clicks.
+    The bridge targets the fuel slot explicitly; a log must not be routed to
+    the input slot by a generic shift-click. A verified transfer starts work,
+    while collected output remains the smelting completion predicate.
     """
     from .resources import FURNACE_FUEL_SMELTS
 
@@ -136,17 +126,17 @@ def _load_carried_fuel(client, data) -> bool:
     # being discarded, so the real reason never reached the log.
     try:
         response = client.transport.dispatch(
-            "smelt_items", {"fuel_slot": int(carried["slot"])}
+            "smelt_items", {"fuel_slot": int(carried["slot"]), **({"sync_id": data["sync_id"]} if "sync_id" in data else {})}
         )
     except Exception as exc:
         print(f"  Refuel dispatch failed: {exc}")
         return False
-    if isinstance(response, dict):
-        error = response.get("error") or response.get("message")
-        if error or str(response.get("status", "ok")).lower() == "error":
-            print(f"  Refuel refused by the bridge: {error or response}")
-            return False
-    return True
+    result = response.get("data", response) if isinstance(response, dict) else {}
+    verified = result.get("moved") is True and result.get("postcondition_verified") is True
+    if not verified:
+        print("  Refuel refused by the bridge or unverified; reconcile the furnace before another transfer")
+    return verified
+
 
 
 def resume_active_furnace(
@@ -177,13 +167,11 @@ def resume_active_furnace(
     if not opened:
         return False
 
+    starting_output = count_item(client, output_item)
+    menu_id = [None]
+
     def furnace_slots():
-        screen = client.transport.dispatch("get_screen", {})
-        data = screen.get("data", screen)
-        by_slot = {
-            int(slot.get("slot", -1)): slot for slot in data.get("slots", [])
-        }
-        return data, by_slot
+        return _verified_furnace_slots(client, menu_id)
 
     data, slots = furnace_slots()
     input_slot = slots.get(0, {})
@@ -305,8 +293,9 @@ def resume_active_furnace(
                 client.transport.dispatch("close_screen", {})
                 print("  Loaded furnace batch is fully collected.")
                 return (
-                    minimum_output is None
-                    or count_item(client, output_item) >= minimum_output
+                    count_item(client, output_item) > starting_output
+                    if minimum_output is None
+                    else count_item(client, output_item) >= minimum_output
                 )
         else:
             empty_polls = 0
@@ -349,3 +338,17 @@ def resume_active_furnace(
         else "  Timed out while resuming loaded furnace."
     )
     return completed
+
+
+def _verified_furnace_slots(client, menu_id):
+    screen = client.transport.dispatch("get_screen", {})
+    data = screen.get("data", screen)
+    slots = {int(slot.get("slot", -1)): slot for slot in data.get("slots", [])}
+    if (not {0, 1, 2}.issubset(slots) or data.get("sync_id") is None
+            or data.get("type") not in ("FurnaceMenu", "BlastFurnaceMenu", "SmokerMenu")):
+        raise RuntimeError("Incomplete furnace screen; not completion evidence")
+    if menu_id[0] is None:
+        menu_id[0] = data["sync_id"]
+    if data["sync_id"] != menu_id[0]:
+        raise RuntimeError("Furnace menu changed during recovery")
+    return data, slots

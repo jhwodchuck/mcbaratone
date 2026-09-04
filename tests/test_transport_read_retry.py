@@ -18,7 +18,7 @@ from baritone_client.core.exceptions import (
 )
 from baritone_client.transport import transport as transport_module
 from baritone_client.transport.transport import TcpTransport, WebSocketTransport
-from baritone_client.transport.tcp_protocol import is_traced_command
+from baritone_client.transport.tcp_protocol import is_traced_command, validate_response_sequence
 
 
 class _DummySocket:
@@ -116,6 +116,59 @@ def test_player_not_available_error_is_retried_on_read_route(monkeypatch, tcp):
 
     assert tcp.dispatch("get_state", {}) == {"health": 20.0}
     assert calls == ["get_state", "get_state"]
+
+
+def test_malformed_inventory_is_retried_and_never_becomes_empty(monkeypatch, tcp):
+    calls = _script_dispatch_once(
+        monkeypatch,
+        tcp,
+        [
+            CommandError("Malformed inventory snapshot; current inventory unknown"),
+            {"inventory": [], "armor": [], "offhand": []},
+        ],
+    )
+    assert tcp.dispatch("get_inventory", {}) == {
+        "inventory": [], "armor": [], "offhand": []
+    }
+    assert calls == ["get_inventory", "get_inventory"]
+
+
+def test_empty_inventory_object_from_transport_is_retried(monkeypatch, tcp):
+    calls = _script_dispatch_once(
+        monkeypatch,
+        tcp,
+        [{}, {"inventory": [], "armor": [], "offhand": []}],
+    )
+    assert tcp.dispatch("get_inventory", {})["inventory"] == []
+    assert calls == ["get_inventory", "get_inventory"]
+
+
+def test_response_sequence_mismatch_fails_closed():
+    with pytest.raises(CommandError, match="sequence mismatch"):
+        validate_response_sequence({"request_seq": 8}, 7)
+
+
+@pytest.mark.parametrize("echo", [7.1, True, "7.1"])
+def test_response_sequence_does_not_coerce_invalid_values(echo):
+    with pytest.raises(CommandError, match="sequence mismatch"):
+        validate_response_sequence({"request_seq": echo}, 7 if echo is not True else 1)
+
+
+def test_response_sequence_can_be_nested_in_rpc_result():
+    validate_response_sequence({"result": {"request_seq": 7}}, 7)
+
+
+def test_command_error_keeps_bridge_error_envelope():
+    response = {
+        "status": "error",
+        "error": "mutation outcome unknown",
+        "request_seq": 4,
+        "server_seq": 9,
+        "bridge_session_id": "session-a",
+        "data": {"action_status": "unknown"},
+    }
+    error = CommandError(response["error"], response=response)
+    assert error.response == response
 
 
 def test_bridge_command_errors_are_not_retried(monkeypatch, tcp):
@@ -227,10 +280,22 @@ def test_websocket_rpc_error_remains_command_error(monkeypatch):
             "ws://test", timeout=0, enable_event_storage=False
         )
     transport._loop = object()
+    response = {
+        "id": 1,
+        "error": {
+            "message": "rejected",
+            "data": {"action_status": "unknown", "mutation_dispatched": True},
+        },
+        "request_seq": 1,
+        "server_seq": 3,
+        "bridge_session_id": "ws-session",
+    }
 
     def send_with_error(message):
+        response["id"] = message["id"]
+        response["request_seq"] = message["id"]
         transport._response_queues[message["id"]].put(
-            {"id": message["id"], "error": {"message": "rejected"}}
+            response
         )
 
     transport._send_message = send_with_error
@@ -240,5 +305,29 @@ def test_websocket_rpc_error_remains_command_error(monkeypatch):
         lambda _coro, _loop: _DummyFuture(),
     )
 
-    with pytest.raises(CommandError, match="rejected"):
+    with pytest.raises(CommandError, match="rejected") as raised:
+        transport.dispatch("goto", {})
+    assert raised.value.response == response
+
+
+def test_websocket_sequence_mismatch_fails_closed(monkeypatch):
+    with patch.object(WebSocketTransport, "_connect", lambda self: None):
+        transport = WebSocketTransport(
+            "ws://test", timeout=0, enable_event_storage=False
+        )
+    transport._loop = object()
+
+    def send_with_wrong_sequence(message):
+        transport._response_queues[message["id"]].put(
+            {"id": message["id"], "request_seq": message["id"] + 1, "result": {}}
+        )
+
+    transport._send_message = send_with_wrong_sequence
+    monkeypatch.setattr(
+        transport_module.asyncio,
+        "run_coroutine_threadsafe",
+        lambda _coro, _loop: _DummyFuture(),
+    )
+
+    with pytest.raises(CommandError, match="sequence mismatch"):
         transport.dispatch("goto", {})

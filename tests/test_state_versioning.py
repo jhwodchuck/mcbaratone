@@ -311,6 +311,44 @@ class TestStateManagerIntegration:
                 "minecraft:iron_ingot": 7
             }
 
+    def test_invalid_inventory_does_not_overwrite_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = StateManager(checkpoint_dir=tmpdir)
+            manager.save_checkpoint({"minecraft:iron_ingot": 7})
+            path = Path(tmpdir) / StateManager.CHECKPOINT_FILE
+            before = path.read_bytes()
+
+            with pytest.raises(ValueError, match="invalid inventory snapshot"):
+                manager.save_checkpoint({"minecraft:iron_ingot": "unknown"})
+
+            assert path.read_bytes() == before
+
+    def test_checkpoint_labels_current_snapshot_and_historical_maximum(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = StateManager(checkpoint_dir=tmpdir)
+            manager.save_checkpoint({"minecraft:iron_ingot": 7})
+            checkpoint = json.loads(
+                (Path(tmpdir) / StateManager.CHECKPOINT_FILE).read_text()
+            )
+            assert checkpoint["inventory_summary_semantics"] == "current_snapshot"
+            assert checkpoint["inventory_observations_semantics"] == (
+                "historical_maximum_observed"
+            )
+
+    def test_malformed_checkpoint_is_rejected_without_partial_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / StateManager.CHECKPOINT_FILE
+            path.write_text(json.dumps({
+                "phase": "FOOD_AND_IRON",
+                "position": [9, 64, 9],
+                "inventory_summary": {},
+                "inventory_observations": {"minecraft:iron_ingot": "unknown"},
+                "timestamp": 1,
+            }))
+            manager = StateManager(checkpoint_dir=tmpdir)
+            assert not manager.load_checkpoint()
+            assert manager.current_phase.name == "BRIDGE_CHECK"
+
     def test_checkpoint_validation(self):
         """Test checkpoint validation."""
         # Isolated dir: a default StateManager() points at the repo root and

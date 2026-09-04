@@ -635,6 +635,8 @@ def test_storage_withdrawal_routes_interrupted_expedition_home(monkeypatch):
                     "world_time": 4000,
                     "block_position": {"x": 120, "y": 70, "z": 120},
                 }
+            if route == "get_inventory":
+                return {"inventory": [], "armor": [], "offhand": []}
             return {}
 
     client = SimpleNamespace(transport=Transport())

@@ -26,9 +26,12 @@ class FakeWorld:
         self.blocks = dict(blocks)
         self.interactions = []
         self.selected = None
+        self.water_buckets = 1
 
     def dispatch(self, route, payload=None):
         payload = payload or {}
+        if route == "get_inventory":
+            return {"inventory": [{"id": casting.WATER_BUCKET, "count": self.water_buckets}]}
         if route == "get_block":
             key = (payload["x"], payload["y"], payload["z"])
             return self.blocks.get(key, {"id": "minecraft:air", "state": {}})
@@ -40,10 +43,11 @@ class FakeWorld:
                 # Standing right next to the origin, within reach.
                 "block_position": {"x": 0, "y": 1, "z": 1},
             }
-        if route == "interact_block":
+        if route == "use_bucket":
             key = (payload["x"], payload["y"], payload["z"])
             self.interactions.append((self.selected, key))
             if self.selected == casting.WATER_BUCKET:
+                self.water_buckets -= 1
                 below = (key[0], key[1] - 1, key[2])
                 target = self.blocks.get(below, {})
                 # Vanilla: source -> obsidian, flowing -> cobblestone.
@@ -56,6 +60,7 @@ class FakeWorld:
                     }
                 self.blocks[key] = {"id": "minecraft:water", "state": {"level": "0"}}
             elif self.selected == casting.EMPTY_BUCKET:
+                self.water_buckets += 1
                 self.blocks[key] = {"id": "minecraft:air", "state": {}}
             return {}
         if route == "find_blocks":
@@ -139,7 +144,7 @@ def test_the_bucket_is_reclaimed_even_when_the_cast_fails(monkeypatch):
 
     def dispatch(route, payload=None):
         result = original(route, payload)
-        if route == "interact_block" and world.selected == casting.WATER_BUCKET:
+        if route == "use_bucket" and world.selected == casting.WATER_BUCKET:
             world.blocks[(0, 0, 0)] = {"id": "minecraft:lava", "state": {"level": "0"}}
         return result
 
@@ -150,7 +155,7 @@ def test_the_bucket_is_reclaimed_even_when_the_cast_fails(monkeypatch):
     ticks = iter(range(0, 10_000))
     monkeypatch.setattr(casting.time, "monotonic", lambda: float(next(ticks)))
 
-    assert not casting.cast_one(client, (0, 0, 0), timeout=1.0)
+    assert not casting.cast_one(client, (0, 0, 0), timeout=3.0)
     assert world.interactions[-1][0] == casting.EMPTY_BUCKET
 
 
@@ -304,7 +309,7 @@ def test_a_pour_that_did_not_land_costs_nothing(monkeypatch):
     # Swallow the interaction so no water is ever placed.
     original = world.dispatch
     world.dispatch = lambda route, payload=None: (
-        {} if route == "interact_block" else original(route, payload)
+        {} if route == "use_bucket" else original(route, payload)
     )
     client = _client(world)
     _patch_selection(monkeypatch, world)

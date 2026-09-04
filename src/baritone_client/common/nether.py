@@ -154,7 +154,7 @@ def verify_portal(
         return False
     if not require_active:
         return True
-    return any(
+    return all(
         _block_id(
             client.transport.dispatch(
                 "get_block", {"x": bx, "y": by, "z": bz}
@@ -178,12 +178,18 @@ def ignite_portal(
     x, y, z = portal
     target = (x + 1, y + 1, z)
     try:
+        from .portal_construction import prepare_ignition_pose
+        if not prepare_ignition_pose(client, portal):
+            return False
+        from .inventory import select_item
+        if not select_item(client, "minecraft:flint_and_steel", allow_swap=True):
+            return False
         client.transport.dispatch(
             "place_fire", {"x": target[0], "y": target[1], "z": target[2]}
         )
     except Exception as exc:
         logger.warning("Portal ignition command failed: %s", exc)
-        return False
+        # A timed-out ignition may have lit the frame. Observe without replay.
     start = time.time()
     while time.time() - start < timeout:
         if verify_portal(client, portal, require_active=True):
@@ -197,50 +203,18 @@ def build_nether_portal(client, x: int, y: int, z: int, obsidian: int = 10) -> b
     Build a complete Nether portal frame at the specified coordinates.
     Validates materials and constructs the obsidian frame with proper dimensions.
     """
+    from .portal_construction import construct_frame
     try:
-        # First validate we have enough obsidian
-        response = client.mission.macro("enter_nether", {"obsidian": obsidian})
-        result = response.get("result", {})
-        ready = result.get("ready", False)
-        if not ready:
-            logger.warning("Portal materials missing: %s", result)
-            return False
-
-        logger.info("Building Nether portal frame at (%d, %d, %d)", x, y, z)
-
-        # A site must be clear AND anchored; place_block only discovers
-        # either after earlier blocks are already spent.
-        frame = list(_frame_positions(x, y, z))
-        volume = frame + list(_portal_interior(x, y, z))
-        if not clear_placement_volume(client, volume):
-            logger.warning("Portal site (%d, %d, %d) not clear", x, y, z)
-            return False
-        if not has_placement_support(client, frame):
-            logger.warning("Portal site (%d, %d, %d) unanchored", x, y, z)
-            return False
-        # Lowest first IS the anchoring order: bottom pair meets the floor, each
-        # side lands on the one beneath, top closes against the sides. Placing
-        # the top first is how a cleared site hit "No solid block to place".
-        placed = []
-        for position in sorted(frame, key=lambda point: point[1]):
-            if not place_block(client, *position, "minecraft:obsidian"):
-                logger.warning("Portal placement stalled at %s", position)
-                recover_placed(client, placed)
-                return False
-            placed.append(position)
-            time.sleep(0.1)
-
         if verify_portal(client, (x, y, z), require_active=False):
-            client.mission.checkpoint("nether_portal_built", f"Portal frame completed at {x},{y},{z}")
-            logger.info("Nether portal frame successfully built")
             return True
-        else:
-            logger.error("Portal frame construction failed - blocks not placed correctly")
-            recover_placed(client, placed)
+        if not construct_frame(client, (x, y, z), _frame_positions(x, y, z), _portal_interior(x, y, z)):
             return False
-
+        if not verify_portal(client, (x, y, z), require_active=False):
+            return False
+        client.mission.checkpoint("nether_portal_built", f"Verified frame at {x},{y},{z}")
+        return True
     except Exception as exc:
-        logger.error("Portal construction failed: %s", exc)
+        logger.error("Portal build interrupted at %s; preserve and reconcile: %s", (x, y, z), exc)
         return False
 
 

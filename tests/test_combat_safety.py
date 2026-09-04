@@ -15,6 +15,10 @@ class CombatTransport:
         self.calls.append((route, payload))
         if route == "get_state":
             return {"health": self.health, "block_position": {"x": 0, "y": 64, "z": 0}}
+        if route == "get_inventory":
+            # This fixture represents a known empty inventory.  An omitted
+            # inventory payload is malformed evidence under the strict reader.
+            return {"inventory": [], "armor": [], "offhand": []}
         return {}
 
 
@@ -555,7 +559,7 @@ def test_aquatic_surface_aborts_downward_route(monkeypatch):
 
     client = SimpleNamespace(transport=DownwardTransport())
     ticks = iter((0.0, 0.0, 1.0, 2.0))
-    monkeypatch.setattr(combat.time, "time", ticks.__next__)
+    monkeypatch.setattr(combat.time, "time", lambda: next(ticks, 2.0))
     monkeypatch.setattr(combat.time, "sleep", lambda _seconds: None)
 
     assert combat._surface_after_aquatic_hunt(client, timeout=10.0) is False
@@ -696,6 +700,8 @@ def test_near_death_recovery_eventually_explores_instead_of_holding_forever(
                     "world_time": 1000,
                     "block_position": {"x": 0, "y": 64, "z": 0},
                 }
+            if route == "get_inventory":
+                return {"inventory": [], "armor": [], "offhand": []}
             return {}
 
     client = SimpleNamespace(transport=NearDeathTransport())
@@ -837,6 +843,8 @@ def test_emergency_food_does_not_treat_full_health_low_hunger_as_recovered(
                     "world_time": 1000,
                     "block_position": {"x": 0, "y": 64, "z": 0},
                 }
+            if route == "get_inventory":
+                return {"inventory": [], "armor": [], "offhand": []}
             return {}
 
     client = SimpleNamespace(transport=HungryTransport(health=20.0))
@@ -880,6 +888,8 @@ def test_emergency_food_refuses_blind_underground_exploration(
                     "dimension": "minecraft:overworld",
                     "block_position": {"x": 100, "y": 12, "z": 172},
                 }
+            if route == "get_inventory":
+                return {"inventory": [], "armor": [], "offhand": []}
             return {}
 
     client = SimpleNamespace(transport=UndergroundTransport())
@@ -932,6 +942,8 @@ def test_emergency_food_rechecks_dry_surface_after_exploration_enters_water(
             self.calls.append((route, payload))
             if route == "get_state":
                 return wet
+            if route == "get_inventory":
+                return {"inventory": [], "armor": [], "offhand": []}
             return {}
 
     client = SimpleNamespace(transport=WetAfterStartTransport())

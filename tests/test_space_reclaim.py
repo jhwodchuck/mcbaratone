@@ -475,22 +475,27 @@ def test_the_break_glass_pass_only_sheds_what_the_keep_list_allows():
         ), protected
 
 
-def test_the_drop_is_measured_before_the_bot_can_pick_it_back_up():
-    """A thrown stack is collectable again after 2 seconds.
-
-    Live on A1 2026-09-03 at (-8, 160, 9): the slot emptied every time
-    (`not_emptied` was always 0), yet all 14 unfloored candidates scored
-    `no_slot_gain`, because the settle ran 2.25s -- past vanilla's pickup
-    delay -- and the bot standing over the pile took it straight back before
-    the count was read. Disposal could never free a slot, and the run sat
-    wedged for hours.
-    """
-    from baritone_client.common import inventory_disposal
-
-    assert inventory_disposal.PICKUP_SAFE_SETTLE_SECONDS < 2.0, (
-        "the settle must land inside the pickup-delay window"
-    )
-    assert inventory_disposal.PICKUP_SAFE_SETTLE_SECONDS > 0
+def test_immediate_repickup_is_not_durable_disposal(monkeypatch):
+    from types import SimpleNamespace
+    from baritone_client.common import inventory_disposal as disposal, inventory
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(disposal.time, "monotonic", lambda: clock.now)
+    monkeypatch.setattr(disposal.time, "sleep", lambda seconds: setattr(clock, "now", clock.now + seconds))
+    thrown = []
+    def dispatch(route, payload):
+        if route == "inventory_click":
+            thrown.append(clock.now)
+            return {"clicked": True}
+        if route == "get_inventory":
+            gone = thrown and clock.now - thrown[0] < 2
+            return {"inventory": [] if gone else [{"id": "minecraft:dirt", "slot": 6, "count": 64}]}
+        return {}
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    monkeypatch.setattr(inventory, "free_inventory_slots", lambda c: 36 if thrown and clock.now - thrown[0] < 2 else 35)
+    assert disposal.drop_items(client, ["minecraft:dirt"]) == 0
+    assert len(thrown) == 1
+    assert disposal.drop_items(client, ["minecraft:dirt"]) == 0
+    assert len(thrown) == 1, "cooldown must prevent repeating a failed disposal"
 
 
 def test_the_last_resort_still_keeps_enough_fuel_to_light_a_furnace(monkeypatch):

@@ -98,23 +98,29 @@ def place_block(client, x: int, y: int, z: int, item_id: str) -> bool:
     """
     from .inventory import select_item
 
+    if _block_at(client, x, y, z) == item_id:
+        return True
     if not select_item(client, item_id, allow_swap=True):
         print(f"  place_block: '{item_id}' not available to select")
         return False
     time.sleep(0.2)
 
-    response = client.transport.dispatch("place_block", {
-        "x": x,
-        "y": y,
-        "z": z,
-        "block": item_id,
-    })
-    data = response.get("data", response)
-    placed = bool(data.get("placed", False))
-    if not placed and response.get("status") == "ok":
-        # Some bridge builds report success without the placed flag
-        placed = True
-    return placed
+    try:
+        client.transport.dispatch("place_block", {
+            "x": x, "y": y, "z": z, "block": item_id,
+        })
+    except Exception:
+        # A timeout may follow a physical placement. Reconcile; never replay.
+        pass
+    deadline = time.monotonic() + 4.0
+    while time.monotonic() < deadline:
+        try:
+            if _block_at(client, x, y, z) == item_id:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.2)
+    return False
 
 
 def _block_at(client, x: int, y: int, z: int) -> str:
@@ -144,10 +150,10 @@ def clear_placement_volume(client, positions, *, timeout: float = 8.0) -> bool:
     """
     for x, y, z in positions:
         current = _block_at(client, x, y, z)
-        if not current:
+        if not current or current == "minecraft:void_air":
             print(f"  clear volume: ({x},{y},{z}) unreadable; refusing to place")
             return False
-        if "air" in current:
+        if current in ("minecraft:air", "minecraft:cave_air"):
             continue
         client.transport.dispatch(
             "dig_block", {"x": x, "y": y, "z": z, "max_ticks": 160}
@@ -155,7 +161,7 @@ def clear_placement_volume(client, positions, *, timeout: float = 8.0) -> bool:
         deadline = time.monotonic() + max(1.0, float(timeout))
         while time.monotonic() < deadline:
             time.sleep(0.3)
-            if "air" in _block_at(client, x, y, z):
+            if _block_at(client, x, y, z) in ("minecraft:air", "minecraft:cave_air"):
                 break
         else:
             print(f"  clear volume: {current} at ({x},{y},{z}) would not break")
@@ -170,7 +176,7 @@ _NON_SOLID = ("air", "water", "lava", "cave_air", "void_air")
 
 def _is_solid(client, x: int, y: int, z: int) -> bool:
     block = _block_at(client, x, y, z)
-    return bool(block) and not any(token in block for token in _NON_SOLID)
+    return bool(block) and block != "minecraft:unloaded" and not any(token in block for token in _NON_SOLID)
 
 
 def has_placement_support(client, positions, *, floor: bool = True) -> bool:

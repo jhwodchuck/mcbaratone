@@ -6,10 +6,9 @@ import time
 from typing import Any, Dict, List, Optional
 
 
-#: Vanilla gives a player-thrown stack a 2 second pickup delay. Any settle
-#: longer than that measures the inventory after the bot has re-collected
-#: what it just threw.
-PICKUP_SAFE_SETTLE_SECONDS = 0.5
+# Observe beyond vanilla's pickup delay; early empty slots are not durable.
+PICKUP_SAFE_SETTLE_SECONDS = 2.5
+DISPOSAL_RETRY_COOLDOWN_SECONDS = 300.0
 
 def drop_items(
     client: Any,
@@ -20,6 +19,8 @@ def drop_items(
     """Drop verified whole stacks while preserving requested reserves."""
     from . import inventory as api
 
+    if time.monotonic() < getattr(client, "_disposal_retry_after", 0.0):
+        return 0
     dropped = 0
     reserves = {
         item_id: max(0, int(count))
@@ -29,6 +30,9 @@ def drop_items(
         client.transport.dispatch("close_screen", {})
         time.sleep(0.1)
         raw = client.transport.dispatch("get_inventory", {})
+        from ..inventory_evidence import valid_inventory
+        if not valid_inventory(raw.get("data", raw)):
+            raise RuntimeError("Inventory unavailable; disposal refused")
         items = raw.get("data", raw).get("inventory", [])
         totals: Dict[str, int] = {}
         for carried in items:
@@ -68,21 +72,23 @@ def drop_items(
             )
             if not _wait_for_empty_slot(client, slot):
                 skips["not_emptied"] += 1
-                continue
-            # A player-thrown stack becomes collectable again after 2 seconds,
-            # and a bot standing over it takes it straight back. Settling for
-            # 2.25s therefore measured the inventory *after* the re-pickup, so
-            # every throw scored no_slot_gain and disposal could never free a
-            # slot. Live A1 2026-09-03 at (-8, 160, 9): 36/36 slots, all 14
-            # unfloored candidates reported no_slot_gain, and the bot cycled
-            # for hours without moving. Read the count inside that window --
-            # the slot has already been verified empty above.
+                client._disposal_retry_after = time.monotonic() + DISPOSAL_RETRY_COOLDOWN_SECONDS
+                break
+            # Allow a safe retreat if one is observable; never blindly path
+            # toward an edge just to avoid pickup. Durable verification still
+            # decides whether disposal worked when retreat is unavailable.
+            _retreat_from_drop(client)
             time.sleep(PICKUP_SAFE_SETTLE_SECONDS)
             if api.free_inventory_slots(client) > free_before:
                 dropped += 1
                 totals[item_id] = max(0, totals.get(item_id, 0) - count)
             else:
                 skips["no_slot_gain"] += 1
+                client._disposal_retry_after = time.monotonic() + DISPOSAL_RETRY_COOLDOWN_SECONDS
+                from ..observability import emit_event
+                emit_event("disposal_repickup", item_id=item_id, slot=slot,
+                           postcondition_verified=False, retry_after_seconds=DISPOSAL_RETRY_COOLDOWN_SECONDS)
+                break
         if not dropped and candidates:
             detail = ", ".join(f"{name}={n}" for name, n in skips.items() if n)
             print(
@@ -98,6 +104,9 @@ def _wait_for_empty_slot(client: Any, inventory_slot: int) -> bool:
     deadline = time.time() + 2.0
     while time.time() < deadline:
         raw = client.transport.dispatch("get_inventory", {})
+        from ..inventory_evidence import valid_inventory
+        if not valid_inventory(raw.get("data", raw)):
+            return False
         items = raw.get("data", raw).get("inventory", [])
         entry = next(
             (
@@ -114,4 +123,23 @@ def _wait_for_empty_slot(client: Any, inventory_slot: int) -> bool:
         ):
             return True
         time.sleep(0.1)
+    return False
+
+
+def _retreat_from_drop(client):
+    from .automation_utils import _block_at, _is_solid
+    from .navigation import goto
+    try:
+        state = client.transport.dispatch("get_state", {})
+        pos = state.get("block_position", {})
+        x, y, z = (int(pos[k]) for k in ("x", "y", "z"))
+        air = {"minecraft:air", "minecraft:cave_air"}
+        for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            if all(_is_solid(client, x + dx * n, y - 1, z + dz * n)
+                   and _block_at(client, x + dx * n, y, z + dz * n) in air
+                   and _block_at(client, x + dx * n, y + 1, z + dz * n) in air
+                   for n in (1, 2, 3)):
+                return goto(client, x + dx * 3, y, z + dz * 3, timeout=6, tolerance=0.8)
+    except Exception:
+        return False
     return False

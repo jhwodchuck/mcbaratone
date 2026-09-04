@@ -39,15 +39,15 @@ def test_a_stalled_furnace_is_refuelled_from_carried_stock():
     routes = []
     client = SimpleNamespace(
         transport=SimpleNamespace(
-            dispatch=lambda r, p: (routes.append(r), clicks.append(p)) and {}
+            dispatch=lambda r, p: (routes.append(r), clicks.append(p)) and {"moved": True, "postcondition_verified": True}
         )
     )
 
     assert furnace_recovery._load_carried_fuel(client, data)
-    assert clicks == [{"fuel_slot": 5}], clicks
+    assert clicks == [{"fuel_slot": 5, "sync_id": 7}], clicks
     assert routes == ["smelt_items"], routes
     # No sync_id: the bridge resolves the container at click time.
-    assert "sync_id" not in clicks[0]
+    assert clicks[0]["sync_id"] == 7
 
 
 def test_furnace_slots_are_never_mistaken_for_carried_fuel():
@@ -96,6 +96,16 @@ def _catalog(rows):
     return SimpleNamespace(list_containers=lambda: rows)
 
 
+def _client_with_block(block_id):
+    return SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: (
+                {"id": block_id} if route == "get_block" else {}
+            )
+        )
+    )
+
+
 def test_a_nearer_catalogued_chest_is_used_when_home_is_stale(monkeypatch):
     monkeypatch.setattr(
         "baritone_client.common.storage_catalog.catalog_for",
@@ -105,8 +115,23 @@ def test_a_nearer_catalogued_chest_is_used_when_home_is_stale(monkeypatch):
         ]),
     )
     snapshot = {"block_position": {"x": -8, "y": 160, "z": 9}}
-    found = space_reclaim.nearest_usable_container(SimpleNamespace(), snapshot, 64.0)
+    found = space_reclaim.nearest_usable_container(
+        _client_with_block("minecraft:chest"), snapshot, 64.0
+    )
     assert found == (-8, 160, 8), found
+
+
+def test_a_removed_catalogued_chest_is_not_offered_as_storage(monkeypatch):
+    monkeypatch.setattr(
+        "baritone_client.common.storage_catalog.catalog_for",
+        lambda _c: _catalog([
+            {"x": -8, "y": 160, "z": 8, "capacity_slots": 27, "occupied_slots": 14},
+        ]),
+    )
+    snapshot = {"block_position": {"x": -8, "y": 160, "z": 9}}
+    assert space_reclaim.nearest_usable_container(
+        _client_with_block("minecraft:air"), snapshot, 64.0
+    ) is None
 
 
 def test_a_full_chest_is_not_offered_as_storage(monkeypatch):
@@ -167,6 +192,6 @@ def test_a_refused_refuel_is_reported_not_counted_as_success(capsys):
 def test_a_successful_refuel_still_reports_success():
     data = {"slots": [{"slot": 5, "id": "minecraft:oak_planks", "count": 9}]}
     client = SimpleNamespace(
-        transport=SimpleNamespace(dispatch=lambda _r, _p: {"moved": True})
+        transport=SimpleNamespace(dispatch=lambda _r, _p: {"moved": True, "postcondition_verified": True})
     )
     assert furnace_recovery._load_carried_fuel(client, data)

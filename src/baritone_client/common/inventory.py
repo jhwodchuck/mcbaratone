@@ -13,14 +13,9 @@ _last_inventory: Dict[str, int] = {}
 def reset_inventory_cache() -> None:
     """Discard the last-known inventory snapshot.
 
-    ``get_inventory`` falls back to ``_last_inventory`` when the bridge read
-    fails.  Across a death that fallback is actively dangerous: the player
-    drops its whole inventory on death, so a stale snapshot still lists tools
-    the bot no longer has.  A failed post-respawn read then reports a phantom
-    pickaxe, ``_ensure_mining_pickaxe`` believes it is equipped, never
-    recrafts, and the naked bot loops forever trying to mine with nothing.
-    Clearing the cache on respawn makes a failed read fail safe -- "assume no
-    tools", which triggers a recraft -- instead of hallucinating dropped gear.
+    Inventory reads fail closed when the bridge cannot provide a current
+    snapshot.  Clearing the prior observation on respawn prevents later code
+    from accidentally treating that historical state as live evidence.
     """
     global _last_inventory
     _last_inventory = {}
@@ -39,25 +34,17 @@ def get_inventory(client) -> Dict[str, int]:
             response = client.transport.dispatch("get_inventory", {})
         except Exception:
             response = None
-        if not response or (isinstance(response, dict) and response.get("error")):
+        from ..inventory_evidence import inventory_counts, unwrap_inventory, valid_inventory
+        data = unwrap_inventory(response)
+        if not valid_inventory(data):
             if attempt < 2:
                 time.sleep(0.3)
             continue
-        data = response.get("data", response)
-        counts: Dict[str, int] = {}
-        for section in ["inventory", "armor", "offhand"]:
-            for item in data.get(section, []):
-                item_id = item.get("id", "")
-                count = item.get("count", 0)
-                if item_id and count > 0:
-                    counts[item_id] = counts.get(item_id, 0) + count
+        counts = inventory_counts(data)
         _last_inventory = dict(counts)
         return counts
-    logger.warning(
-        "get_inventory: returning last-known inventory (%s) because bridge read failed",
-        _last_inventory,
-    )
-    return dict(_last_inventory)
+    raise RuntimeError("Current inventory unavailable after bounded reads; last-known state is not current evidence")
+
 
 
 def count_item(client, item_id: str) -> int:

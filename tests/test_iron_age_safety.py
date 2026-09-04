@@ -8,11 +8,17 @@ from baritone_client.common import resources
 from baritone_client.common.tasks import SurvivalRecoveryRequired
 
 
+def _valid_inventory(items=()):
+    return {"inventory": list(items), "armor": [], "offhand": []}
+
+
 def test_iron_phase_stabilizes_low_hunger_before_mining(monkeypatch):
     class Transport:
         def dispatch(self, route, payload):
             if route == "get_state":
                 return {"food_level": 6}
+            if route == "get_inventory":
+                return _valid_inventory()
             return {}
 
     client = SimpleNamespace(transport=Transport())
@@ -73,7 +79,14 @@ def test_expedition_pickaxe_restores_banked_iron_tool(monkeypatch, tmp_path):
 
     monkeypatch.setattr(iron_age, "withdraw_required_from_catalog", withdraw)
 
-    assert handler._ensure_expedition_pickaxe(SimpleNamespace())
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: _valid_inventory()
+            if route == "get_inventory"
+            else {}
+        )
+    )
+    assert handler._ensure_expedition_pickaxe(client)
     assert withdrawals == [{"minecraft:iron_pickaxe": 1}]
 
 
@@ -848,6 +861,8 @@ def test_bulk_mining_stops_after_first_failed_resource(monkeypatch):
 
         def dispatch(self, route, payload):
             self.calls.append((route, payload))
+            if route == "get_inventory":
+                return _valid_inventory()
             return {}
 
     client = SimpleNamespace(transport=Transport())
@@ -2167,6 +2182,8 @@ def test_stabilize_hunger_falls_back_to_farm_when_local_search_fails(
         def dispatch(self, route, _payload):
             if route == "get_state":
                 return {"health": 20.0, "food_level": 3}
+            if route == "get_inventory":
+                return _valid_inventory()
             return {}
 
     client = SimpleNamespace(transport=Transport())
@@ -2215,6 +2232,8 @@ def test_stabilize_hunger_falls_back_to_known_herd_when_no_farm_established(
         def dispatch(self, route, _payload):
             if route == "get_state":
                 return {"health": 20.0, "food_level": 3}
+            if route == "get_inventory":
+                return _valid_inventory()
             return {}
 
     client = SimpleNamespace(transport=Transport())
@@ -2328,6 +2347,8 @@ def test_stabilize_hunger_still_degrades_when_farm_and_herd_both_fail(
         def dispatch(self, route, _payload):
             if route == "get_state":
                 return {"health": 20.0, "food_level": 3}
+            if route == "get_inventory":
+                return _valid_inventory()
             return {}
 
     client = SimpleNamespace(transport=Transport())
@@ -2365,6 +2386,8 @@ def test_stabilize_hunger_health_branch_falls_back_to_known_sources(
                     "health": 20.0 if fed["v"] else 6.0,
                     "food_level": 20 if fed["v"] else 5,
                 }
+            if route == "get_inventory":
+                return _valid_inventory()
             return {}
 
     client = SimpleNamespace(transport=Transport())
@@ -2411,6 +2434,8 @@ def test_stabilize_hunger_health_branch_still_yields_when_no_food_source(
         def dispatch(self, route, _payload):
             if route == "get_state":
                 return {"health": 6.0, "food_level": 5}
+            if route == "get_inventory":
+                return _valid_inventory()
             return {}
 
     client = SimpleNamespace(transport=Transport())
@@ -2438,6 +2463,8 @@ def test_stabilize_hunger_does_not_release_worker_at_food_ten(
         def dispatch(self, route, _payload):
             if route == "get_state":
                 return {"health": 20.0, "food_level": 10}
+            if route == "get_inventory":
+                return _valid_inventory()
             return {}
 
     client = SimpleNamespace(transport=Transport())

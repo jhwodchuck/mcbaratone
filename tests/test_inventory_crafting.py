@@ -1966,9 +1966,9 @@ def test_storage_resolver_prefers_verified_chest_over_unloaded_landmark():
 def test_reset_inventory_cache_prevents_stale_phantom_after_death():
     """A dropped-on-death tool must not resurface from the stale cache.
 
-    Without the reset, get_inventory's failed-read fallback returns the
-    pre-death snapshot, so a naked bot reports a phantom pickaxe and never
-    recrafts. reset_inventory_cache() makes a failed read fail safe.
+    After death, a failed current read is unknown evidence.  The cache reset
+    keeps the prior observation from being mistaken for a live inventory, and
+    the read path fails closed when the bridge remains unavailable.
     """
     class FlakyTransport:
         def __init__(self):
@@ -1992,13 +1992,15 @@ def test_reset_inventory_cache_prevents_stale_phantom_after_death():
     # Death drops it; respawn clears the cache.
     inventory.reset_inventory_cache()
 
-    # Subsequent bridge reads fail -> must NOT report the dropped pickaxe.
+    # Subsequent bridge reads fail -> current inventory is unknown and must
+    # not be replaced with the dropped pickaxe from the old snapshot.
     client.transport.fail = True
-    assert inventory.count_item(client, "minecraft:wooden_pickaxe") == 0
+    with pytest.raises(RuntimeError, match="Current inventory unavailable"):
+        inventory.count_item(client, "minecraft:wooden_pickaxe")
 
 
 def test_stale_cache_would_report_phantom_without_reset():
-    """Documents the failure mode the reset fixes: no reset -> phantom tool."""
+    """Without reset, an unavailable read still fails closed as unknown."""
     class FlakyTransport:
         def __init__(self):
             self.fail = False
@@ -2016,9 +2018,10 @@ def test_stale_cache_would_report_phantom_without_reset():
 
     client = SimpleNamespace(transport=FlakyTransport())
     assert inventory.count_item(client, "minecraft:wooden_pickaxe") == 1
-    # No reset. A failed read returns the stale snapshot => phantom pickaxe.
+    # No reset. A failed read must not return the stale snapshot as evidence.
     client.transport.fail = True
-    assert inventory.count_item(client, "minecraft:wooden_pickaxe") == 1
+    with pytest.raises(RuntimeError, match="Current inventory unavailable"):
+        inventory.count_item(client, "minecraft:wooden_pickaxe")
     # Clean up module state so the cache does not leak into other tests.
     inventory.reset_inventory_cache()
 
