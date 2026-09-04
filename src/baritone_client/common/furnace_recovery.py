@@ -130,12 +130,22 @@ def _load_carried_fuel(client, data) -> bool:
     )
     if carried is None:
         return False
+    # Report what the bridge said. Two rounds of refuel work assumed a
+    # dispatched move had landed and re-entered the loop on that assumption;
+    # smelt_items returns an explicit error ("Not in a furnace screen") that was
+    # being discarded, so the real reason never reached the log.
     try:
-        client.transport.dispatch(
+        response = client.transport.dispatch(
             "smelt_items", {"fuel_slot": int(carried["slot"])}
         )
-    except Exception:
+    except Exception as exc:
+        print(f"  Refuel dispatch failed: {exc}")
         return False
+    if isinstance(response, dict):
+        error = response.get("error") or response.get("message")
+        if error or str(response.get("status", "ok")).lower() == "error":
+            print(f"  Refuel refused by the bridge: {error or response}")
+            return False
     return True
 
 

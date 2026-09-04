@@ -140,3 +140,28 @@ def test_the_gathering_reserve_falls_back_instead_of_skipping():
     assert "nearest_usable_container" in block
     # The old dead end must be gone, not merely bypassed.
     assert "skipped distant home storage" not in block
+
+
+def test_a_refused_refuel_is_reported_not_counted_as_success(capsys):
+    """smelt_items returns an explicit error that was being discarded.
+
+    Two rounds of refuel work assumed a dispatched move had landed. The bridge
+    was answering "Not in a furnace screen" the whole time and nothing read it,
+    so the log showed three confident refuels and an empty fuel slot.
+    """
+    data = {"slots": [{"slot": 5, "id": "minecraft:oak_planks", "count": 9}]}
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda _r, _p: {"error": "Not in a furnace screen"}
+        )
+    )
+    assert not furnace_recovery._load_carried_fuel(client, data)
+    assert "Refuel refused by the bridge" in capsys.readouterr().out
+
+
+def test_a_successful_refuel_still_reports_success():
+    data = {"slots": [{"slot": 5, "id": "minecraft:oak_planks", "count": 9}]}
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda _r, _p: {"moved": True})
+    )
+    assert furnace_recovery._load_carried_fuel(client, data)
