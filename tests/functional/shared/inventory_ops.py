@@ -301,6 +301,40 @@ def ensure_crafting_output_space(ctx, screen=None) -> bool:
             time.sleep(0.1)
         return False
 
+    # Cobblestone is the common case, not the only one. A bot deep underground
+    # fills up on deepslate, tuff, netherrack and gravel instead, and refusing
+    # to craft because none of it is literally cobblestone wedges the run: live
+    # A1 2026-09-04 at (-442, -54, -601) could not place a crafting table for
+    # want of one free slot, with 36 slots of exactly that kind of bulk.
+    #
+    # Reuse the progression keep-list rather than inventing a second policy --
+    # it already protects tools, armour, food, ores and portal materials, so
+    # what remains is bulk by construction.
+    from baritone_client.common.space_reclaim import space_reclaim_deposit_items
+
+    carried = {}
+    for slot in player_slots:
+        item_id = slot.get("id")
+        if item_id and item_id != "minecraft:air":
+            carried[item_id] = carried.get(item_id, 0) + int(slot.get("count", 0))
+    shedable = space_reclaim_deposit_items(carried)
+    spare = [
+        slot for slot in player_slots
+        if slot.get("id") in shedable and int(slot.get("count", 0)) > 0
+    ]
+    if spare:
+        # Largest stack first: one throw, most room, least likely to be the
+        # last of anything the bot is mid-way through using.
+        candidate = max(spare, key=lambda slot: int(slot.get("count", 0)))
+        slot_id = int(candidate["slot"])
+        ctx.log_event(
+            f"Inventory full; dropping {candidate.get('id')} "
+            f"x{candidate.get('count')} to make room for crafting output"
+        )
+        safe_inventory_click(ctx, slot_id, "THROW", 1)
+        time.sleep(0.3)
+        return True
+
     ctx.log_event(
         "Inventory is full and contains no approved low-value stack to drop; "
         "crafting output cannot be collected safely"

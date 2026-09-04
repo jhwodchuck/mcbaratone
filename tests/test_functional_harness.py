@@ -844,3 +844,73 @@ def test_no_cheat_helpers_are_exposed():
                    "set_block", "set_health_full", "kill_nearby_entities",
                    "build_flat_pad", "set_gamerules_for_test"):
         assert not hasattr(harness_ops, banned), f"cheat helper exposed: {banned}"
+
+
+def test_crafting_space_sheds_bulk_that_is_not_cobblestone():
+    """Deep underground the bulk is deepslate and tuff, not cobblestone.
+
+    Live A1 2026-09-04 at (-442, -54, -601): 36 of 36 slots and no crafting
+    table could be placed, because the only stack this path would sacrifice
+    was cobblestone and there was none left. The run sat repeating
+    "all methods failed for minecraft:crafting_table (have 0, wanted 1)".
+    """
+    from types import SimpleNamespace
+
+    from tests.functional.shared import inventory_ops
+
+    thrown = []
+    events = []
+    slots = [
+        {"slot": 9, "id": "minecraft:cobbled_deepslate", "count": 64},
+        {"slot": 10, "id": "minecraft:tuff", "count": 55},
+        {"slot": 11, "id": "minecraft:diamond_pickaxe", "count": 1},
+        {"slot": 12, "id": "minecraft:bread", "count": 16},
+    ]
+    screen = {"data": {"type": "PlayerScreenHandler", "slots": slots}}
+    ctx = SimpleNamespace(
+        log_event=events.append,
+        client=SimpleNamespace(
+            transport=SimpleNamespace(dispatch=lambda _r, _p=None: screen)
+        ),
+    )
+    original = inventory_ops.safe_inventory_click
+    try:
+        inventory_ops.safe_inventory_click = (
+            lambda _ctx, slot, _t, _b: thrown.append(slot) or True
+        )
+        assert inventory_ops.ensure_crafting_output_space(ctx, screen)
+    finally:
+        inventory_ops.safe_inventory_click = original
+
+    # The largest bulk stack goes; the pickaxe and the food never do.
+    assert thrown == [9], thrown
+    assert not any("no approved low-value stack" in e for e in events), events
+
+
+def test_crafting_space_never_sheds_tools_or_food():
+    from types import SimpleNamespace
+
+    from tests.functional.shared import inventory_ops
+
+    thrown = []
+    slots = [
+        {"slot": 9, "id": "minecraft:diamond_pickaxe", "count": 1},
+        {"slot": 10, "id": "minecraft:bread", "count": 16},
+        {"slot": 11, "id": "minecraft:obsidian", "count": 9},
+    ]
+    screen = {"data": {"type": "PlayerScreenHandler", "slots": slots}}
+    ctx = SimpleNamespace(
+        log_event=lambda _e: None,
+        client=SimpleNamespace(
+            transport=SimpleNamespace(dispatch=lambda _r, _p=None: screen)
+        ),
+    )
+    original = inventory_ops.safe_inventory_click
+    try:
+        inventory_ops.safe_inventory_click = (
+            lambda _ctx, slot, _t, _b: thrown.append(slot) or True
+        )
+        assert not inventory_ops.ensure_crafting_output_space(ctx, screen)
+    finally:
+        inventory_ops.safe_inventory_click = original
+    assert thrown == [], thrown
