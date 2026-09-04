@@ -29,6 +29,7 @@ public class RequestProcessor {
     private static final String REQUEST_SEQUENCE_KEY = "request_seq";
     private static final String LEGACY_SEQUENCE_KEY = "seq";
     
+    private final MutationLedger mutationLedger = new MutationLedger();
     private final AtomicLong sequenceNumber = new AtomicLong(0);
     private final String sessionId = GetVersionCommandHandler.getBridgeInstanceId();
     private final CommandDispatcher commandDispatcher;
@@ -165,7 +166,17 @@ public class RequestProcessor {
             }
             
             // Dispatch through the command dispatcher
-            CommandResult result = commandDispatcher.dispatchCommand(request, clientSocket, client, baritone);
+            CommandResult result;
+            if (MutationLedger.ROUTES.contains(command) && request.has("id") && request.get("id").isJsonPrimitive()) {
+                MutationLedger.Response recorded = mutationLedger.execute(request.get("id").getAsString(),
+                    command + ":" + (request.has("params") ? request.get("params").toString() : "{}"),
+                    () -> commandDispatcher.dispatchCommand(request, clientSocket, client, baritone));
+                result = recorded.result();
+                response.addProperty("mutation_replayed", recorded.replayed());
+                response.addProperty("deduplication_window_ms", MutationLedger.WINDOW_MS);
+            } else {
+                result = commandDispatcher.dispatchCommand(request, clientSocket, client, baritone);
+            }
             
             // Preserve the full CommandResult contract, including typed errors.
             for (var entry : result.toJson().entrySet()) {

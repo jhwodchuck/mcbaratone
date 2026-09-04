@@ -58,6 +58,9 @@ public class GetVersionCommandHandler extends AbstractCommandHandler {
 
             JsonObject capabilities = new JsonObject();
             capabilities.addProperty("structured_errors", true);
+            capabilities.addProperty("observed_mutations_v1", true);
+            capabilities.addProperty("mutation_request_deduplication_v1", true);
+            capabilities.addProperty("water_bucket_postconditions", true);
             capabilities.addProperty("request_seq_echo", true);
             capabilities.addProperty("event_cursors", true);
             capabilities.addProperty("fresh_live_reads", true);

@@ -13,7 +13,7 @@ import net.minecraft.world.item.trading.MerchantOffers;
 /**
  * Handler for the get_screen command - returns current screen info.
  */
-public class GetScreenCommandHandler extends AbstractCommandHandler {
+public class GetScreenCommandHandler extends AsyncCommandHandler {
 
     @Override
     public String getCommandName() {
@@ -21,13 +21,13 @@ public class GetScreenCommandHandler extends AbstractCommandHandler {
     }
 
     @Override
-    protected CommandResult execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
+    public java.util.concurrent.CompletableFuture<CommandResult> execute(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         if (client.player == null) {
-            return CommandResult.error("Player not available");
+            return java.util.concurrent.CompletableFuture.completedFuture(CommandResult.error("Player not available"));
         }
 
         try {
-            return client.submit(() -> {
+            return executeOnMainThread(client, () -> {
                 AbstractContainerMenu handler = client.player.containerMenu;
                 if (handler == null) {
                     return CommandResult.error("No screen handler");
@@ -63,9 +63,9 @@ public class GetScreenCommandHandler extends AbstractCommandHandler {
                 }
 
                 return CommandResult.success(data);
-            }).get();
+            });
         } catch (Exception e) {
-            return CommandResult.error("Failed to read screen: " + e.getMessage());
+            return java.util.concurrent.CompletableFuture.completedFuture(CommandResult.error("Failed to read screen: " + e.getMessage()));
         }
     }
 

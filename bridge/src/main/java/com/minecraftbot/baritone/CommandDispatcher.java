@@ -80,7 +80,7 @@ public class CommandDispatcher {
     private static final Set<String> STATE_CHANGING_COMMANDS = Set.of(
         "goto", "mine", "build", "explore", "stop", "pause", "cancel",
         "goal", "path", "tunnel", "farm", "interact_block", "attack_entity", "sel",
-        "use_item", "place_block", "break_block", "throw_item", "select_slot",
+        "use_item", "use_bucket", "place_block", "break_block", "throw_item", "select_slot",
         "equip", "inventory_click", "chat", "set_fast_break",
         "settings", "smelt_items", "craft", "auto_craft", "craft_advanced", "click_recipe",
         "place_fire", "place_recipe", "respawn", "screenshot",

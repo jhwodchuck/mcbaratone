@@ -52,6 +52,7 @@ public class CommandHandlerFactory {
 
         // Explicit fixes for commands previously relying on legacy fallback
         registerHandler("place_block", PlaceBlockCommandHandler.class);
+        registerHandler("use_bucket", UseBucketCommandHandler.class);
         registerHandler("get_block", GetBlockCommandHandler.class);
         registerHandler("chat", ChatCommandHandler.class);
         registerHandler("select_slot", SelectSlotCommandHandler.class);

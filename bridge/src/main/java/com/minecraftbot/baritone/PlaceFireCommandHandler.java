@@ -59,8 +59,8 @@ public class PlaceFireCommandHandler extends AsyncCommandHandler {
 
         BlockPos targetPos = getBlockPos(params);
 
-        return executeOnMainThread(client, () -> {
-            if (client.player == null || client.level == null) {
+        return ObservedMutation.run(client::execute, () -> client.level.getGameTime(), () -> {
+            if (client.player == null || client.level == null || client.gameMode == null) {
                 return CommandResult.error("Player or world not available");
             }
 
@@ -84,16 +84,25 @@ public class PlaceFireCommandHandler extends AsyncCommandHandler {
                 new net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket(inventoryCheck.slot)
             );
 
+            if (!client.level.getBlockState(targetPos).canBeReplaced()
+                    || client.level.getBlockState(targetPos.below()).canBeReplaced()) {
+                return CommandResult.error("Fire target must be replaceable with solid support below");
+            }
+            if (client.player.getEyePosition().distanceTo(Vec3.atCenterOf(targetPos)) > client.player.blockInteractionRange()) {
+                return CommandResult.error("Fire target outside interaction reach");
+            }
             // Execute fire placement
             BlockHitResult hitResult = new BlockHitResult(
-                Vec3.atCenterOf(targetPos), Direction.UP, targetPos, false
+                Vec3.atBottomCenterOf(targetPos), Direction.UP, targetPos.below(), false
             );
-            client.gameMode.useItemOn(client.player, InteractionHand.MAIN_HAND, hitResult);
+            var actionResult = client.gameMode.useItemOn(client.player, InteractionHand.MAIN_HAND, hitResult);
+            if (!actionResult.consumesAction()) return CommandResult.error("Ignition rejected: " + actionResult);
             client.player.swing(InteractionHand.MAIN_HAND);
 
             // Prepare response data
             JsonObject data = new JsonObject();
-            data.addProperty("ignited", true);
+            data.addProperty("ignited", false);
+            data.addProperty("accepted", true);
             data.addProperty("x", targetPos.getX());
             data.addProperty("y", targetPos.getY());
             data.addProperty("z", targetPos.getZ());
@@ -113,7 +122,10 @@ public class PlaceFireCommandHandler extends AsyncCommandHandler {
             }
 
             return CommandResult.success(data);
-        });
+        }, data -> {
+            BlockState state = client.level.getBlockState(targetPos);
+            return state.is(Blocks.FIRE) || state.is(Blocks.SOUL_FIRE) || state.is(Blocks.NETHER_PORTAL);
+        }, "ignited");
     }
 
     /**

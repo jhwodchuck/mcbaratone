@@ -48,6 +48,8 @@ public class GetInventoryCommandHandler implements CommandHandler {
                     data.add("armor", armorInventory);
                     data.add("offhand", offhandInventory);
                     data.addProperty("selected_slot", inv.selected);
+                    data.addProperty("snapshot_valid", true);
+                    data.addProperty("observed_tick", client.level.getGameTime());
 
                     result.complete(CommandResult.success(data));
                 } catch (Exception e) {

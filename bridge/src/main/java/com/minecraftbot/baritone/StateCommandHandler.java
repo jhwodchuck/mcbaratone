@@ -100,6 +100,10 @@ public class StateCommandHandler extends AsyncCommandHandler {
             data.addProperty("health", player.getHealth());
             data.addProperty("max_health", player.getMaxHealth());
             data.addProperty("food_level", player.getFoodData().getFoodLevel());
+            data.addProperty("air_supply", player.getAirSupply());
+            data.addProperty("max_air_supply", player.getMaxAirSupply());
+            data.addProperty("eyes_in_water", player.isEyeInFluid(net.minecraft.tags.FluidTags.WATER));
+            data.addProperty("on_fire", player.isOnFire());
             data.addProperty("saturation", player.getFoodData().getSaturationLevel());
             data.addProperty("experience_level", player.experienceLevel);
             data.addProperty("experience_total", player.totalExperience);
