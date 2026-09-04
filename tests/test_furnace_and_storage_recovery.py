@@ -70,7 +70,7 @@ def test_a_furnace_with_no_carried_fuel_still_reports_the_stall():
 def test_the_refuel_is_tried_before_giving_up():
     source = inspect.getsource(furnace_recovery.resume_active_furnace)
     stall = source[source.index("if not lit and fuel_empty:"):]
-    assert stall.index("_load_carried_fuel") < stall.index("stalled without fuel")
+    assert stall.index("_load_carried_fuel") < stall.index("fruitless refuels")
 
 
 def test_refuelling_is_bounded_so_a_dead_move_cannot_spin():
@@ -85,6 +85,11 @@ def test_refuelling_is_bounded_so_a_dead_move_cannot_spin():
     source = inspect.getsource(furnace_recovery.resume_active_furnace)
     assert "refuels < MAX_REFUEL_ATTEMPTS" in source
     assert "refuels += 1" in source
+    # ...but the counter must reset on real output, or the bound cuts off a
+    # furnace that is working: each load burns out and the furnace goes unlit
+    # again, so attempts alone are not evidence of failure.
+    assert "if produced > last_output:" in source
+    assert "refuels = 0" in source
 
 
 def _catalog(rows):

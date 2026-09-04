@@ -241,6 +241,7 @@ def resume_active_furnace(
     )
     empty_polls = 0
     refuels = 0
+    last_output = -1  # any real output resets the refuel bound
     print(
         f"  Resuming loaded furnace at {tuple(furnace_pos)} "
         f"({initial_input} {input_item} pending)..."
@@ -324,14 +325,16 @@ def resume_active_furnace(
                 or int(fuel_slot.get("count", 0)) <= 0
             )
             if not lit and fuel_empty:
-                # Bounded: dispatching the shift is not evidence fuel landed.
+                produced = count_item(client, output_item)
+                if produced > last_output:  # a burnt load is progress, not failure
+                    refuels, last_output = 0, produced
                 if refuels < MAX_REFUEL_ATTEMPTS and _load_carried_fuel(client, data):
                     refuels += 1
                     print(f"  Refuelling the stalled furnace ({refuels}).")
                     time.sleep(0.5)
                     continue
                 client.transport.dispatch("close_screen", {})
-                print(f"  Loaded furnace stalled without fuel ({refuels} refuels).")
+                print(f"  Furnace unfuelled after {refuels} fruitless refuels.")
                 return False
         time.sleep(0.5)
 
