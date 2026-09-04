@@ -108,8 +108,13 @@ def _load_carried_fuel(client, data) -> bool:
     ~24 second cycle for hours, with 9 oak planks and 2 oak logs in the bag and
     NETHER_AND_BLAZE waiting on six iron ingots.
 
-    QUICK_MOVE from the player rows routes fuel to the fuel slot in vanilla,
-    which is the same mechanism the input loader above already relies on.
+    This goes through the bridge's own ``smelt_items``, which was already
+    registered and had no Python caller at all. It resolves the container from
+    ``player.containerMenu.containerId`` at click time; the hand-rolled
+    ``inventory_click`` this replaced passed a ``sync_id`` read earlier from
+    the furnace snapshot, and a stale one is dropped by the server without
+    error -- three refuels in a row reported success while the fuel slot stayed
+    empty.
     """
     from .resources import FURNACE_FUEL_SMELTS
 
@@ -125,12 +130,10 @@ def _load_carried_fuel(client, data) -> bool:
     )
     if carried is None:
         return False
-    payload = {"slot": int(carried["slot"]), "type": "QUICK_MOVE", "button": 0}
-    sync_id = data.get("sync_id")
-    if sync_id is not None:
-        payload["sync_id"] = sync_id
     try:
-        client.transport.dispatch("inventory_click", payload)
+        client.transport.dispatch(
+            "smelt_items", {"fuel_slot": int(carried["slot"])}
+        )
     except Exception:
         return False
     return True

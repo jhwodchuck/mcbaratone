@@ -20,6 +20,13 @@ from baritone_client.common import furnace_recovery, space_reclaim
 
 
 def test_a_stalled_furnace_is_refuelled_from_carried_stock():
+    """Uses the bridge's own smelt_items, which resolves the container live.
+
+    The hand-rolled inventory_click this replaced passed a sync_id read from
+    an earlier furnace snapshot. A stale one is dropped by the server without
+    error, so three refuels in a row reported success while the fuel slot
+    stayed empty.
+    """
     clicks = []
     data = {
         "sync_id": 7,
@@ -29,12 +36,18 @@ def test_a_stalled_furnace_is_refuelled_from_carried_stock():
             {"slot": 5, "id": "minecraft:oak_planks", "count": 9},
         ],
     }
+    routes = []
     client = SimpleNamespace(
-        transport=SimpleNamespace(dispatch=lambda _r, p: clicks.append(p) or {})
+        transport=SimpleNamespace(
+            dispatch=lambda r, p: (routes.append(r), clicks.append(p)) and {}
+        )
     )
 
     assert furnace_recovery._load_carried_fuel(client, data)
-    assert clicks == [{"slot": 5, "type": "QUICK_MOVE", "button": 0, "sync_id": 7}]
+    assert clicks == [{"fuel_slot": 5}], clicks
+    assert routes == ["smelt_items"], routes
+    # No sync_id: the bridge resolves the container at click time.
+    assert "sync_id" not in clicks[0]
 
 
 def test_furnace_slots_are_never_mistaken_for_carried_fuel():
