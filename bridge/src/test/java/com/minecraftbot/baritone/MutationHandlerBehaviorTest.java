@@ -298,4 +298,41 @@ class MutationHandlerBehaviorTest {
         assertTrue(result.getErrorMessage().contains("Stale furnace sync_id"));
         verifyNoInteractions(gameMode);
     }
+
+    @Test
+    void containerEvidenceKeepsContainerIndexesAcrossSnapshots() {
+        LocalPlayer player = mock(LocalPlayer.class);
+        Level playerLevel = mock(Level.class);
+        RecipeAccess recipes = mock(RecipeAccess.class);
+        when(player.level()).thenReturn(playerLevel);
+        when(playerLevel.recipeAccess()).thenReturn(recipes);
+        when(recipes.propertySet(any())).thenReturn(RecipePropertySet.EMPTY);
+        Inventory inventory = new Inventory(player, new EntityEquipment());
+        FurnaceMenu menu = new FurnaceMenu(
+            42, inventory, new SimpleContainer(3), new SimpleContainerData(4)
+        );
+        ItemStack first = mock(ItemStack.class);
+        ItemStack second = mock(ItemStack.class);
+        when(first.isEmpty()).thenReturn(true);
+        when(second.isEmpty()).thenReturn(true);
+        menu.getSlot(0).set(first);
+        menu.getSlot(1).set(second);
+
+        JsonObject before = ContainerEvidence.snapshot(menu);
+        assertEquals(0, before.getAsJsonArray("slots").get(0).getAsJsonObject()
+            .get("slot").getAsInt());
+        assertEquals(1, before.getAsJsonArray("slots").get(1).getAsJsonObject()
+            .get("slot").getAsInt());
+        assertEquals(-1, before.getAsJsonObject("cursor").get("slot").getAsInt());
+
+        ItemStack replacement = mock(ItemStack.class);
+        when(replacement.isEmpty()).thenReturn(true);
+        menu.getSlot(0).set(replacement);
+        JsonObject after = ContainerEvidence.snapshot(menu);
+        assertEquals(0, after.getAsJsonArray("slots").get(0).getAsJsonObject()
+            .get("slot").getAsInt());
+        assertEquals(1, after.getAsJsonArray("slots").get(1).getAsJsonObject()
+            .get("slot").getAsInt());
+        assertEquals(-1, after.getAsJsonObject("cursor").get("slot").getAsInt());
+    }
 }

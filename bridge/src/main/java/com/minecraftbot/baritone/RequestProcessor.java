@@ -9,6 +9,7 @@ import com.google.gson.JsonObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.math.BigDecimal;
 import java.net.Socket;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
@@ -311,7 +312,9 @@ public class RequestProcessor {
 
             if (lhsPrimitive.isNumber() && rhsPrimitive.isNumber()) {
                 try {
-                    return lhsPrimitive.getAsLong() == rhsPrimitive.getAsLong();
+                    return new BigDecimal(lhsPrimitive.getAsString()).compareTo(
+                        new BigDecimal(rhsPrimitive.getAsString())
+                    ) == 0;
                 } catch (NumberFormatException e) {
                     return lhsPrimitive.getAsString().equals(rhsPrimitive.getAsString());
                 }

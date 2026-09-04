@@ -131,6 +131,25 @@ class RequestProcessorTest {
     }
 
     @Test
+    void rejectsFractionalSequenceValuesThatDifferBeforeLongConversion() {
+        CommandDispatcher dispatcher = buildFailingDispatcher();
+        RequestProcessor processor = createProcessor(dispatcher);
+
+        JsonObject request = new JsonObject();
+        request.addProperty("id", "request-fractional-conflict");
+        request.addProperty("request_seq", 1.1);
+        request.addProperty("seq", 1.9);
+        request.addProperty("command", "goto");
+        request.add("params", new JsonObject());
+        JsonObject response = processor.processCommand(request, null);
+
+        assertEquals("error", response.get("status").getAsString());
+        assertTrue(response.get("error").getAsString()
+            .contains("Conflicting request sequence values"));
+        verify(dispatcher, never()).dispatchCommand(any(), any(), any(), any());
+    }
+
+    @Test
     void preservesErrorEnvelopeWhenCommandMissing() {
         CommandDispatcher dispatcher = mock(CommandDispatcher.class);
         RequestProcessor processor = createProcessor(dispatcher);

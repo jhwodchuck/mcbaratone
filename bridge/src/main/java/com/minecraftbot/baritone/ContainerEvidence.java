@@ -2,8 +2,8 @@ package com.minecraftbot.baritone;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 
 final class ContainerEvidence {
@@ -15,7 +15,10 @@ final class ContainerEvidence {
         result.addProperty("sync_id", menu.containerId);
         result.addProperty("menu_type", menu.getClass().getSimpleName());
         JsonArray slots = new JsonArray();
-        menu.slots.forEach(slot -> slots.add(item(slot.getItem())));
+        int slotIndex = 0;
+        for (Slot slot : menu.slots) {
+            slots.add(ItemStackJsonSerializer.serialize(slot.getItem(), slotIndex++));
+        }
         result.add("slots", slots);
         result.add("cursor", item(menu.getCarried()));
         return result;
