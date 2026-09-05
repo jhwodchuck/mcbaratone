@@ -48,6 +48,10 @@ class RecoveryTransport:
             return {}
         if route == "get_death_location":
             return self.death_response
+        if route == "get_inventory":
+            # The default recovery fixture has a known empty inventory.  Keep
+            # this explicit so strict inventory evidence accepts it.
+            return {"inventory": [], "armor": [], "offhand": []}
         return {}
 
 
@@ -194,6 +198,8 @@ def test_nether_grave_recovery_enters_dimension_before_goto(monkeypatch):
                 "dimension": current_dimension["value"],
                 "block_position": {"x": 0, "y": 70, "z": 4},
             }
+        if route == "get_inventory":
+            return {"inventory": [], "armor": [], "offhand": []}
         return {}
 
     context.client.transport.dispatch = dispatch
@@ -261,6 +267,8 @@ def test_nether_grave_recovery_uses_persisted_overworld_portal(monkeypatch):
                 "dimension": current_dimension["value"],
                 "block_position": {"x": 0, "y": 70, "z": 4},
             }
+        if route == "get_inventory":
+            return {"inventory": [], "armor": [], "offhand": []}
         return {}
 
     context.client.transport.dispatch = dispatch

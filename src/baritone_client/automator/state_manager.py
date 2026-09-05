@@ -19,6 +19,9 @@ from ..world_identity import WorldIdentity
 from ..observability import emit_event
 
 logger = logging.getLogger(__name__)
+def _valid_inventory_summary(value: Any) -> bool:
+    """Validate an aggregated *current* inventory snapshot before persistence."""
+    return isinstance(value, dict) and all(isinstance(item_id, str) and bool(item_id) and isinstance(count, int) and not isinstance(count, bool) and count >= 0 for item_id, count in value.items())
 
 
 class Phase(Enum):
@@ -314,10 +317,9 @@ class StateManager:
         effective_seed = world_seed
         if effective_seed is None and effective_identity is not None:
             effective_seed = effective_identity.seed
-        normalized_inventory = {
-            str(item_id): max(0, int(count or 0))
-            for item_id, count in inventory_summary.items()
-        }
+        if not _valid_inventory_summary(inventory_summary):
+            raise ValueError("Cannot save checkpoint with invalid inventory snapshot; preserving the previous checkpoint")
+        normalized_inventory = dict(inventory_summary)
         for item_id, count in normalized_inventory.items():
             self.inventory_observations[item_id] = max(
                 self.inventory_observations.get(item_id, 0),
@@ -329,7 +331,9 @@ class StateManager:
             "phase": self.current_phase.name,
             "position": list(self._last_position),
             "inventory_summary": normalized_inventory,
+            "inventory_summary_semantics": "current_snapshot",
             "inventory_observations": dict(self.inventory_observations),
+            "inventory_observations_semantics": "historical_maximum_observed",
             "timestamp": time.time(),
             "phase_progress": {p.name: v for p, v in self.phase_progress.items()},
             "custom_data": self.custom_data,
@@ -693,6 +697,9 @@ class StateManager:
         Args:
             data: Checkpoint data dictionary
         """
+        if not _valid_inventory_summary(data.get("inventory_summary")): raise ValueError("checkpoint inventory_summary is malformed")
+        observed = data.get("inventory_observations", data.get("inventory_summary", {}))
+        if not _valid_inventory_summary(observed): raise ValueError("checkpoint inventory_observations is malformed")
         self.current_phase = Phase[data["phase"]]
         self._last_position = tuple(data["position"])
         self.phase_progress = {
@@ -703,15 +710,7 @@ class StateManager:
         self.has_durable_inventory_observations = (
             "inventory_observations" in data
         )
-        observed = data.get(
-            "inventory_observations",
-            data.get("inventory_summary", {}),
-        )
-        if isinstance(observed, dict):
-            self.inventory_observations = {
-                str(item_id): max(0, int(count or 0))
-                for item_id, count in observed.items()
-            }
+        self.inventory_observations = dict(observed)
         payloads = data.get("phase_payloads", {})
         if isinstance(payloads, dict):
             self.phase_payloads = {name: dict(value) for name, value in payloads.items()}

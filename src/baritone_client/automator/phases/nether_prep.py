@@ -25,6 +25,9 @@ from ...common.landmark_scanner import import_shared_landmarks
 from ...common.health_recovery import recover_health
 from ...common.storage_catalog import catalog_for
 from ...common.nether import (
+    _block_id,
+    _frame_positions,
+    _portal_interior,
     build_nether_portal,
     enter_portal,
     find_nearest_portal,
@@ -40,6 +43,90 @@ from ...common.nether import (
 #: so A1 could be portal-ready and still refuse to build: live 2026-09-02 it
 #: failed "Could not gather portal materials" for hours holding 9 obsidian.
 PORTAL_FRAME_OBSIDIAN = 10
+
+# Candidate origins are relative to the bot's current feet position. They are
+# deliberately finite: changing sites after a partial placement is how the
+# old implementation scattered obsidian through the world. A candidate is
+# selected only while it is pristine and every read needed to prove that fact
+# is current and loaded.
+_PORTAL_SITE_OFFSETS = ((3, 0), (3, 2), (0, 3), (-3, 0), (0, -2), (0, 2))
+_PORTAL_AIR = {"minecraft:air", "minecraft:cave_air"}
+_PORTAL_UNKNOWN = {"", "minecraft:void_air", "minecraft:unloaded"}
+
+
+def _portal_foundation_is_solid(block):
+    """Reject air, fluids, and unknown reads as portal foundations."""
+    return (
+        block is not None
+        and block not in _PORTAL_AIR
+        and block not in _PORTAL_UNKNOWN
+        and not any(token in block for token in ("water", "lava", "fire"))
+    )
+
+
+def _read_block_for_site(client, position):
+    """Return a block id, or ``None`` when the bridge did not prove it."""
+    try:
+        response = client.transport.dispatch(
+            "get_block", {"x": position[0], "y": position[1], "z": position[2]}
+        )
+    except Exception:
+        return None
+    if not isinstance(response, dict):
+        return None
+    data = response.get("data", response)
+    if not isinstance(data, dict):
+        return None
+    block = str(data.get("id") or data.get("type") or data.get("block") or "")
+    return None if block in _PORTAL_UNKNOWN else block
+
+
+def _portal_site_is_pristine_and_reachable(client, origin):
+    """Prove a candidate is an empty, grounded, reachable portal site.
+
+    This is intentionally read-only. The check includes the full frame,
+    interior, optional corner support cells, and a standing pose. A missing or
+    unloaded block is unknown evidence and rejects the candidate.
+    """
+    x, y, z = origin
+    corners = {(x + dx, y + dy, z) for dx in (0, 3) for dy in (0, 4)}
+    frame = set(_frame_positions(x, y, z))
+    interior = set(_portal_interior(x, y, z))
+    positions = frame | interior | corners
+    observed = {position: _read_block_for_site(client, position) for position in positions}
+    if any(block is None for block in observed.values()):
+        return False
+    if any(observed[position] not in _PORTAL_AIR for position in frame | interior | corners):
+        return False
+
+    # The bottom row and the two approach poses need actual solid footing.
+    for floor_x in range(x, x + 4):
+        floor = _read_block_for_site(client, (floor_x, y - 1, z))
+        if not _portal_foundation_is_solid(floor):
+            return False
+    for pose in ((x + 1, y, z - 1), (x + 1, y, z + 1)):
+        feet = _read_block_for_site(client, pose)
+        head = _read_block_for_site(client, (pose[0], pose[1] + 1, pose[2]))
+        floor = _read_block_for_site(client, (pose[0], pose[1] - 1, pose[2]))
+        if feet in _PORTAL_AIR and head in _PORTAL_AIR and _portal_foundation_is_solid(floor):
+            return True
+    return False
+
+
+def _choose_portal_site(client, snapshot):
+    """Choose one proven site, without issuing any world mutation."""
+    position = snapshot.get("block_position", snapshot.get("position", {}))
+    if not isinstance(position, dict) or not all(key in position for key in ("x", "y", "z")):
+        return None
+    try:
+        px, py, pz = (int(position[key]) for key in ("x", "y", "z"))
+    except (TypeError, ValueError):
+        return None
+    for dx, dz in _PORTAL_SITE_OFFSETS:
+        candidate = (px + dx, py, pz + dz)
+        if _portal_site_is_pristine_and_reachable(client, candidate):
+            return candidate
+    return None
 
 
 class NetherAndBlazeHandler(PhaseHandler):
@@ -227,15 +314,51 @@ class NetherAndBlazeHandler(PhaseHandler):
         if recorded:
             return True
 
-        if not _ensure_raw_planks(client, 4):
-            print(
-                "  Could not prepare planks for portal support; proceeding with "
-                "minimal-material fallback."
+        # Keep the chosen site across failures and restarts. Existing obsidian
+        # at that site counts as installed progress, not a lost resource.
+        from ...common.inventory import get_inventory
+        plan = state.custom_data.get("portal_build_plan")
+        if not isinstance(plan, dict) or plan.get("dimension") != "overworld":
+            snapshot, _ = _read_state_with_retry(client, retries=2, label="Portal build state read")
+            if not snapshot:
+                return False
+            origin = _choose_portal_site(client, snapshot)
+            if origin is None:
+                print("  No loaded, grounded, reachable portal site is available.")
+                return False
+            plan = {"dimension": "overworld", "origin": list(origin), "status": "planned"}
+            state.custom_data["portal_build_plan"] = plan
+            try:
+                state.save_checkpoint(get_inventory(client))
+            except Exception as exc:
+                print(f"  Portal site plan could not be durably checkpointed: {exc}")
+                # A plan that exists only in memory must not authorize a later
+                # mutation. The next phase invocation must re-prove the site
+                # and checkpoint it again before spending any materials.
+                state.custom_data.pop("portal_build_plan", None)
+                return False
+        try:
+            portal = tuple(int(v) for v in plan["origin"])
+            if len(portal) != 3:
+                return False
+            installed = sum(
+                _block_id(
+                    client.transport.dispatch(
+                        "get_block", {"x": p[0], "y": p[1], "z": p[2]}
+                    )
+                )
+                == "minecraft:obsidian"
+                for p in _frame_positions(*portal)
             )
+        except Exception:
+            return False
+        # Non-flammable corner supports. Their observed presence is reconciled
+        # by construct_frame; never use obsidian for the optional corners.
         materials_ready = ensure_supplies(
             client,
             {
-                "minecraft:obsidian": PORTAL_FRAME_OBSIDIAN,
+                "minecraft:obsidian": max(0, PORTAL_FRAME_OBSIDIAN - installed),
+                "minecraft:cobblestone": 4,
                 "minecraft:flint_and_steel": 1,
             },
             timeout=180,
@@ -244,46 +367,20 @@ class NetherAndBlazeHandler(PhaseHandler):
             print("  Could not gather portal materials; cannot build nether portal.")
             return False
 
-        # Get current position
-        snapshot, _ = _read_state_with_retry(
-            client, retries=2, label="Portal build state read"
-        )
-        if snapshot is None:
-            print(
-                "  Portal position read timed out; using last-known safe origin "
-                "(0, 64, 0) for this attempt."
-            )
-            snapshot = {"block_position": {"x": 0, "y": 64, "z": 0}}
-        pos = snapshot.get("block_position", snapshot.get("position", {}))
-        px = int(pos.get("x", 0))
-        py = int(pos.get("y", 64))
-        pz = int(pos.get("z", 0))
-
-        # Try nearby offsets if the first construction attempt is blocked.
-        candidate_offsets = (
-            (3, 0),
-            (3, 2),
-            (0, 3),
-            (-3, 0),
-            (0, -2),
-            (0, 2),
-        )
-        for offset_x, offset_z in candidate_offsets:
-            x = px + int(offset_x)
-            z = pz + int(offset_z)
-            print(f"  Attempting portal frame at ({x}, {py}, {z})")
-            portal = (x, py, z)
-            if build_nether_portal(client, *portal) and ignite_portal(client, portal):
-                state.add_location(
-                    "nether_portal",
-                    x,
-                    py,
-                    z,
-                    dimension="overworld",
-                    tags=["active", "entry"],
-                )
-                return True
-        print("  All portal placement attempts failed; will retry later.")
+        if build_nether_portal(client, *portal) and ignite_portal(client, portal):
+            plan["status"] = "active_verified"
+            state.add_location("nether_portal", *portal, dimension="overworld", tags=["active", "entry"])
+            try:
+                state.save_checkpoint(get_inventory(client))
+            except Exception as exc:
+                print(f"  Portal is active but progress checkpoint failed: {exc}")
+                return False
+            return True
+        plan["status"] = "interrupted_reconcile"
+        try:
+            state.save_checkpoint(get_inventory(client))
+        except Exception as exc:
+            print(f"  Portal interruption could not be checkpointed: {exc}")
         return False
 
     @staticmethod

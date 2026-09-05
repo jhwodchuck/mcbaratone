@@ -91,6 +91,8 @@ public class UseItemCommandHandler extends AsyncCommandHandler {
                     scheduleRelease(client, 50);
                 }
                 data.addProperty("used", true);
+                data.addProperty("action_status", "accepted");
+                data.addProperty("postcondition_verified", false);
             }
             return CommandResult.success(data);
         }).completeOnTimeout(

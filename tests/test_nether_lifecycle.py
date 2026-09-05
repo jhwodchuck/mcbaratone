@@ -9,6 +9,11 @@ from baritone_client.common import blaze_spawners, nether
 from baritone_client.common.tasks import PlayerDeathDetected, TaskResult
 
 
+def _goto_stopped(client, *_args, **_kwargs):
+    client._last_navigation_cancel = {"cancel_status": "stopped"}
+    return True
+
+
 class MissionStub:
     def __init__(self):
         self.checkpoints = []
@@ -39,6 +44,11 @@ class PortalTransport:
         if route == "get_block":
             key = (payload["x"], payload["y"], payload["z"])
             return {"id": self.blocks.get(key, "minecraft:air")}
+        if route == "get_inventory":
+            return {"inventory": [
+                {"id": "minecraft:obsidian", "count": 10},
+                {"id": "minecraft:cobblestone", "count": 4},
+            ], "armor": [], "offhand": []}
         if route == "place_fire":
             x, y, z = payload["x"], payload["y"], payload["z"]
             for dx in (0, 1):
@@ -77,19 +87,23 @@ def test_build_ignite_verify_and_enter_portal(monkeypatch):
     # A buildable site needs a floor: the bottom pair has to anchor to
     # something, or the build is refused before it spends any obsidian.
     for floor_x in range(3, 7):
-        transport.blocks[(floor_x, 63, 0)] = "minecraft:stone"
+        for floor_z in (-1, 0, 1):
+            transport.blocks[(floor_x, 63, floor_z)] = "minecraft:stone"
 
     def place(_client, x, y, z, item_id):
-        assert item_id == "minecraft:obsidian"
+        assert item_id in {"minecraft:obsidian", "minecraft:cobblestone"}
         transport.blocks[(x, y, z)] = item_id
         return True
 
-    monkeypatch.setattr(nether, "place_block", place)
-    monkeypatch.setattr(nether.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr("baritone_client.common.portal_construction.place_block", place)
+    monkeypatch.setattr("baritone_client.common.portal_construction.goto", _goto_stopped)
+    monkeypatch.setattr("baritone_client.common.portal_construction.time.sleep", lambda _seconds: None)
 
     assert nether.build_nether_portal(client, *portal)
     assert nether.verify_portal(client, portal, require_active=False)
     assert not nether.verify_portal(client, portal, require_active=True)
+    monkeypatch.setattr("baritone_client.common.inventory.select_item", lambda *_a, **_k: True)
+    monkeypatch.setattr("baritone_client.common.portal_construction.prepare_ignition_pose", lambda *_a: True)
     assert nether.ignite_portal(client, portal)
     assert nether.verify_portal(client, portal, require_active=True)
     assert nether.enter_portal(
@@ -538,6 +552,7 @@ def test_prepare_portal_still_builds_when_nothing_is_nearby(monkeypatch, tmp_pat
     built = []
 
     monkeypatch.setattr(nether_prep, "find_nearest_portal", lambda *_a: None)
+    monkeypatch.setattr(nether_prep, "_choose_portal_site", lambda *_a: (3, 64, 0))
     monkeypatch.setattr(nether_prep, "verify_portal", lambda *_a, **_k: True)
     monkeypatch.setattr(nether_prep, "_ensure_raw_planks", lambda *_a: True)
     monkeypatch.setattr(nether_prep, "ensure_supplies", lambda *_a, **_k: TaskResult.ok())

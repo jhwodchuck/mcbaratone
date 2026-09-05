@@ -227,6 +227,44 @@ def nearest_usable_container(client, snapshot, max_distance: float):
         containers = catalog_for(client).list_containers()
     except Exception:
         return None
+    def current_storage_block(position):
+        """Return a storage block observed at ``position`` right now.
+
+        The catalog is intentionally last-known state.  A fresh block read is
+        required before navigation so a removed or replaced container cannot
+        become a banking target again.
+        """
+        transport = getattr(client, "transport", None)
+        dispatch = getattr(transport, "dispatch", None)
+        if not callable(dispatch):
+            return None
+        try:
+            response = dispatch(
+                "get_block",
+                {"x": position[0], "y": position[1], "z": position[2]},
+            )
+        except Exception:
+            return None
+        if not isinstance(response, dict):
+            return None
+        if response.get("error") or response.get("status") == "error":
+            return None
+        block = response.get("data", response)
+        if isinstance(block, dict) and isinstance(block.get("block"), dict):
+            block = block["block"]
+        if not isinstance(block, dict):
+            return None
+        block_id = block.get("id", block.get("block_id"))
+        if not isinstance(block_id, str):
+            return None
+        if block_id not in {
+            "minecraft:chest",
+            "minecraft:trapped_chest",
+            "minecraft:barrel",
+        }:
+            return None
+        return block_id
+
     for row in containers:
         try:
             capacity = int(row.get("capacity_slots") or 0)
@@ -238,7 +276,10 @@ def nearest_usable_container(client, snapshot, max_distance: float):
             continue
         distance = ((px - cx) ** 2 + (py - cy) ** 2 + (pz - cz) ** 2) ** 0.5
         if distance < best_distance:
-            best, best_distance = (int(cx), int(cy), int(cz)), distance
+            position = (int(cx), int(cy), int(cz))
+            if current_storage_block(position) is None:
+                continue
+            best, best_distance = position, distance
     if best is not None:
         print(f"  Banking into nearer catalogued chest at {best} ({best_distance:.1f}m).")
     return best

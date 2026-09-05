@@ -20,6 +20,11 @@ class RecordingTransport:
         self.calls.append((route, payload))
         if route == "break_block":
             return self.break_response
+        if route == "get_inventory":
+            # An explicit empty snapshot is a valid physical read.  Returning
+            # {} would model an unavailable bridge response and now correctly
+            # abort inventory-dependent helpers.
+            return {"inventory": [], "armor": [], "offhand": []}
         return {}
 
 
@@ -1524,6 +1529,7 @@ def test_resume_active_furnace_collects_interrupted_batch(monkeypatch):
         def __init__(self):
             self.screen_reads = 0
             self.clicks = []
+            self.collected = False
 
         def dispatch(self, route, payload):
             if route == "get_screen":
@@ -1545,11 +1551,24 @@ def test_resume_active_furnace_collects_interrupted_batch(monkeypatch):
                         {"slot": slot, "id": "minecraft:air", "count": 0}
                         for slot in range(3)
                     )
-                return {"sync_id": 9, "total_slots": 39, "slots": list(contents)}
+                return {
+                    "sync_id": 9,
+                    "type": "FurnaceMenu",
+                    "total_slots": 39,
+                    "slots": list(contents),
+                }
             if route == "inventory_click":
                 self.clicks.append(payload)
+                if payload.get("slot") == 2:
+                    self.collected = True
             if route == "get_block":
                 return {"id": "minecraft:furnace", "state": {"lit": "true"}}
+            if route == "get_inventory":
+                items = (
+                    [{"id": "minecraft:iron_ingot", "count": 1}]
+                    if self.collected else []
+                )
+                return {"inventory": items, "armor": [], "offhand": []}
             return {}
 
     transport = FurnaceTransport()
@@ -1601,7 +1620,7 @@ def test_resume_active_furnace_loads_carried_input_into_existing_fuel(monkeypatc
                         {"slot": 1, "id": "minecraft:oak_planks", "count": 19},
                         {"slot": 2, "id": "minecraft:iron_ingot", "count": 1},
                     ]
-                return {"sync_id": 12, "slots": slots}
+                return {"sync_id": 12, "type": "FurnaceMenu", "slots": slots}
             if route == "inventory_click":
                 self.clicks.append(payload)
                 if payload["slot"] == 3:
@@ -1652,6 +1671,7 @@ def test_resume_active_furnace_accepts_delayed_carried_output(monkeypatch):
             if route == "get_screen":
                 return {
                     "sync_id": 14,
+                    "type": "FurnaceMenu",
                     "slots": [
                         {"slot": 0, "id": "minecraft:raw_iron", "count": 64},
                         {"slot": 1, "id": "minecraft:oak_planks", "count": 19},
@@ -1666,7 +1686,9 @@ def test_resume_active_furnace_accepts_delayed_carried_output(monkeypatch):
 
     transport = FurnaceTransport()
     client = SimpleNamespace(transport=transport)
-    inventory_reads = iter((0, 3))
+    # One read is the pre-open readiness check, one establishes the starting
+    # carried count, and the next observes the delayed output.
+    inventory_reads = iter((0, 0, 3))
     monkeypatch.setattr(harness_ops, "available", lambda: True)
     monkeypatch.setattr(harness_ops, "open_container", lambda *_a, **_k: True)
     monkeypatch.setattr(
@@ -1704,6 +1726,7 @@ def test_resume_active_furnace_clears_incompatible_output(monkeypatch):
                 )
                 return {
                     "sync_id": 51,
+                    "type": "FurnaceMenu",
                     "slots": [
                         {"slot": 0, "id": "minecraft:raw_iron", "count": 64},
                         {"slot": 1, "id": "minecraft:oak_planks", "count": 47},

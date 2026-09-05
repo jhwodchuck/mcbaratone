@@ -19,6 +19,8 @@ _REGEN_FOOD_FLOOR = 18
 _MAX_CRITICAL_TRAVEL_DISTANCE = 48.0
 _MAX_CONSECUTIVE_STATE_MISSES = 2
 _VERIFIED_STATE_FRESH_SECONDS = 30.0
+
+
 class _UnsafeNavigationTelemetry(RuntimeError):
     """The bridge returned state that cannot safely supervise movement."""
 
@@ -94,16 +96,6 @@ def _dispatch_indeterminate_goal(client, route: str, payload: dict) -> None:
         if exc.route != route or not exc.request_sent:
             raise
         print(f"Navigation: {route} response timed out; polling verified state")
-
-
-def _cancel_once(client, cancelled: list[bool]) -> None:
-    if cancelled[0]:
-        return
-    cancelled[0] = True
-    try:
-        client.transport.dispatch("cancel", {})
-    except Exception:
-        pass
 
 
 def _refuse_critical_long_travel(
@@ -205,87 +197,12 @@ def goto(
     defense_check_interval: float = 0.5,
 ) -> bool:
     """Navigate to exact coordinates under fresh-state safety supervision."""
-    defense_check_interval = max(0.1, float(defense_check_interval))
-    cancelled = [False]
-    goal_active = False
-    try:
-        client._last_navigation_survival_abort = False
-        try:
-            initial_state = _verified_navigation_state(client.transport.dispatch("get_state", {}))
-        except _UnsafeNavigationTelemetry:
-            return False
-        if _refuse_critical_long_travel(client, x, y, z, state=initial_state):
-            return False
-        _dispatch_indeterminate_goal(client, "goto", {"x": x, "y": y, "z": z})
-        goal_active = True
-        state_window = _VerifiedStateWindow(initial_state)
-        start = time.time()
-        last_position = None
-        idle_unpathing_checks = 0
-        no_move_checks = 0
-        while time.time() - start < timeout:
-            if on_tick:
-                on_tick()
-            state = state_window.read(client)
-            if state is None:
-                time.sleep(min(float(check_interval), defense_check_interval))
-                continue
-            from .combat import survival_tick
-
-            if survival_tick(client, state):
-                client._last_navigation_survival_abort = True
-                _cancel_once(client, cancelled)
-                return False
-            if run_navigation_defense(client, on_defense):
-                _cancel_once(client, cancelled)
-                return False
-            position = state["block_position"]
-            px, py, pz = position["x"], position["y"], position["z"]
-            distance = ((px - x)**2 + (py - y)**2 + (pz - z)**2) ** 0.5
-            if distance <= tolerance:
-                _cancel_once(client, cancelled)
-                return True
-            current_position = (float(px), float(py), float(pz))
-            is_pathing = state.get("is_pathing")
-            if is_pathing is False and current_position == last_position:
-                idle_unpathing_checks += 1
-            elif is_pathing is False:
-                idle_unpathing_checks = 1
-            else:
-                idle_unpathing_checks = 0
-            # Independent no-movement watchdog: abort when the body has not
-            # moved at all for a sustained window, regardless of Baritone's
-            # self-reported `is_pathing` flag. Baritone can stay in "pathing"
-            # state indefinitely while the client never actually executes the
-            # path (observed live: A1Bot frozen 28 blocks from base for ~12h
-            # while goto() kept returning started:true). Gating only on
-            # is_pathing == False misses that failure mode entirely.
-            if current_position == last_position:
-                no_move_checks += 1
-            else:
-                no_move_checks = 0
-            last_position = current_position
-            if idle_unpathing_checks >= 3:
-                _cancel_once(client, cancelled)
-                return False
-            # ~30s of zero movement (default check_interval 2s x 15 samples).
-            if no_move_checks >= 15:
-                _cancel_once(client, cancelled)
-                return False
-            time.sleep(min(float(check_interval), defense_check_interval))
-        _cancel_once(client, cancelled)
-        return False
-    except PlayerDeathDetected:
-        _cancel_once(client, cancelled)
-        raise
-    except _UnsafeNavigationTelemetry:
-        if goal_active:
-            _cancel_once(client, cancelled)
-        return False
-    except Exception:
-        if goal_active:
-            _cancel_once(client, cancelled)
-        raise
+    from .navigation_supervision import goto as supervised_goto
+    return supervised_goto(
+        client, x, y, z, timeout=timeout, check_interval=check_interval,
+        tolerance=tolerance, on_tick=on_tick, on_defense=on_defense,
+        defense_check_interval=defense_check_interval,
+    )
 
 
 def recovery_goto(client, x: int, y: int, z: int, **kwargs) -> bool:
@@ -308,83 +225,12 @@ def goto_xz(
     defense_check_interval: float = 0.5,
 ) -> bool:
     """Navigate to a horizontal column while Baritone chooses loaded terrain Y."""
-    defense_check_interval = max(0.1, float(defense_check_interval))
-    cancelled = [False]
-    goal_active = False
-    try:
-        client._last_navigation_survival_abort = False
-        try:
-            initial_state = _verified_navigation_state(client.transport.dispatch("get_state", {}))
-        except _UnsafeNavigationTelemetry:
-            return False
-        initial_y = round(initial_state["block_position"]["y"])
-        if _refuse_critical_long_travel(
-            client, x, initial_y, z, state=initial_state
-        ):
-            return False
-        _dispatch_indeterminate_goal(client, "chat", {"message": f"#goto {x} {z}"})
-        goal_active = True
-        state_window = _VerifiedStateWindow(initial_state)
-        start = time.time()
-        last_position = None
-        idle_unpathing_checks = 0
-        while time.time() - start < timeout:
-            state = state_window.read(client)
-            if state is None:
-                time.sleep(min(float(check_interval), defense_check_interval))
-                continue
-            from .combat import survival_tick
-
-            if survival_tick(client, state):
-                client._last_navigation_survival_abort = True
-                _cancel_once(client, cancelled)
-                return False
-            if run_navigation_defense(client, on_defense):
-                _cancel_once(client, cancelled)
-                return False
-            position = state["block_position"]
-            px, pz = float(position["x"]), float(position["z"])
-            if math.hypot(px - x, pz - z) <= tolerance:
-                _cancel_once(client, cancelled)
-                return True
-
-            current_position = (px, pz)
-            is_pathing = state.get("is_pathing")
-            if is_pathing is False and current_position == last_position:
-                idle_unpathing_checks += 1
-            elif is_pathing is False:
-                idle_unpathing_checks = 1
-            else:
-                idle_unpathing_checks = 0
-            # Independent no-movement watchdog: abort when the body has not
-            # moved at all for a sustained window, regardless of Baritone's
-            # self-reported `is_pathing` flag (which can stay True while the
-            # client never executes the path).
-            if current_position == last_position:
-                no_move_checks += 1
-            else:
-                no_move_checks = 0
-            last_position = current_position
-            if idle_unpathing_checks >= 3:
-                _cancel_once(client, cancelled)
-                return False
-            if no_move_checks >= 15:
-                _cancel_once(client, cancelled)
-                return False
-            time.sleep(min(float(check_interval), defense_check_interval))
-        _cancel_once(client, cancelled)
-        return False
-    except PlayerDeathDetected:
-        _cancel_once(client, cancelled)
-        raise
-    except _UnsafeNavigationTelemetry:
-        if goal_active:
-            _cancel_once(client, cancelled)
-        return False
-    except Exception:
-        if goal_active:
-            _cancel_once(client, cancelled)
-        raise
+    from .navigation_supervision import goto_xz as supervised_goto_xz
+    return supervised_goto_xz(
+        client, x, z, timeout=timeout, check_interval=check_interval,
+        tolerance=tolerance, on_defense=on_defense,
+        defense_check_interval=defense_check_interval,
+    )
 
 
 def _loaded_stage_y(client, x: int, nominal_y: int, z: int) -> int:

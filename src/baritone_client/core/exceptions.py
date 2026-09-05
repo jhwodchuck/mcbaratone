@@ -37,10 +37,20 @@ class ValidationError(ValueError):
 class CommandError(RuntimeError):
     """Raised when Baritone returns a command error or invalid state."""
     
-    def __init__(self, message: str, command: str = None, error_code: str = None):
+    def __init__(
+        self,
+        message: str,
+        command: str = None,
+        error_code: str = None,
+        response: dict = None,
+    ):
         super().__init__(message)
         self.command = command
         self.error_code = error_code
+        # Preserve the bridge envelope for callers that need to distinguish a
+        # rejected mutation from an unknown outcome.  The transport may still
+        # raise, but request/server sequence and action evidence must survive.
+        self.response = dict(response) if isinstance(response, dict) else None
 
 
 class RouteError(TransportError):

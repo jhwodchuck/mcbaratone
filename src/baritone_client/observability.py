@@ -144,6 +144,8 @@ def configure_event_journal(output_dir: str | Path) -> None:
 
 
 def _inventory_counts(payload: Dict[str, Any]) -> Dict[str, int]:
+    from .inventory_evidence import unwrap_inventory
+    payload = unwrap_inventory(payload) or {}
     raw = payload.get("items")
     if raw is None:
         raw = payload.get("inventory")
@@ -180,9 +182,11 @@ def _inventory_counts(payload: Dict[str, Any]) -> Dict[str, int]:
 def observe_inventory_response(payload: Dict[str, Any]) -> None:
     """Emit item deltas from an inventory response already requested by code."""
     global _INVENTORY_COUNTS
-    counts = _inventory_counts(payload)
-    if not counts and _INVENTORY_COUNTS is None:
+    from .inventory_evidence import valid_inventory
+    if not valid_inventory(payload):
+        emit_event("inventory_observation_invalid", reason="malformed_or_unavailable")
         return
+    counts = _inventory_counts(payload)
     with _INVENTORY_LOCK:
         previous = _INVENTORY_COUNTS
         _INVENTORY_COUNTS = counts
@@ -206,7 +210,7 @@ def observe_inventory_response(payload: Dict[str, Any]) -> None:
         movement = "inventory_change"
         if active_container is not None:
             movement = "player_to_storage" if delta < 0 else "storage_to_player"
-        elif delta < 0 and any(token in task for token in ("bank", "deposit", "store")):
+        elif delta < 0 and any(token in task.split() for token in ("bank", "deposit", "store")):
             movement = "player_to_storage"
         elif delta > 0 and "withdraw" in task:
             movement = "storage_to_player"
@@ -418,14 +422,7 @@ def observe_command_response(
             command_payload=effective_payload,
         )
     elif effective_route in {"cancel", "command/cancel"}:
-        if _ACTIVE_NAVIGATION:
-            emit_event(
-                "navigation_ended",
-                navigation_id=_ACTIVE_NAVIGATION["navigation_id"],
-                route=_ACTIVE_NAVIGATION["route"],
-                outcome="cancelled",
-            )
-        _ACTIVE_NAVIGATION = None
+        finish_navigation("cancelled", {"route": effective_route})
     elif effective_route in {"open_container", "open_chest"}:
         if all(key in effective_payload for key in ("x", "y", "z")):
             _ACTIVE_CONTAINER = {
@@ -441,6 +438,24 @@ def observe_command_response(
                 position=_ACTIVE_CONTAINER["position"],
                 response=response,
             )
+
+
+def finish_navigation(outcome: str, evidence: Optional[Dict[str, Any]] = None) -> bool:
+    """Finish active navigation after explicit destination/failure evidence."""
+    global _ACTIVE_NAVIGATION
+    if not _ACTIVE_NAVIGATION:
+        return False
+    navigation = _ACTIVE_NAVIGATION
+    _ACTIVE_NAVIGATION = None
+    fields: Dict[str, Any] = {
+        "navigation_id": navigation["navigation_id"],
+        "route": navigation["route"],
+        "outcome": str(outcome),
+    }
+    if isinstance(evidence, dict):
+        fields["evidence"] = evidence
+    emit_event("navigation_ended", **fields)
+    return True
 
 
 def _flush_death_blackbox(state: Dict[str, Any]) -> None:

@@ -171,7 +171,11 @@ def test_phase_food_search_returns_home_instead_of_rebasing(
     client = SimpleNamespace(
         transport=SimpleNamespace(
             dispatch=lambda route, _payload: (
-                dict(far_state) if route == "get_state" else {}
+                dict(far_state)
+                if route == "get_state"
+                else {"inventory": [], "armor": [], "offhand": []}
+                if route == "get_inventory"
+                else {}
             )
         )
     )

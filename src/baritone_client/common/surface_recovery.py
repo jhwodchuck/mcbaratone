@@ -7,6 +7,12 @@ from typing import Any, Callable, Optional
 
 from .automation_utils import HAND_BREAKABLE_BLOCKS
 from .movement_recovery import block_position
+from .surface_recovery_helpers import (
+    _loaded_breathing_level_above,
+    _loaded_two_block_air_level_above,
+    _state_has_breathing_air,
+    wait_for_dry_level as _wait_for_dry_level,
+)
 
 
 _SURFACE_BLOCKS = [
@@ -122,58 +128,13 @@ def _has_stable_support(
     return bool(value) and value not in _NON_SUPPORT_BLOCKS
 
 
-def _loaded_breathing_level_above(
-    client: Any,
-    position: tuple[int, int, int],
-    *,
-    scan_height: int = 32,
-) -> Optional[int]:
-    """Return the feet Y just below loaded breathing air in this column."""
-    x, y, z = position
-    for head_y in range(y + 1, y + max(1, int(scan_height)) + 1):
-        try:
-            block = client.transport.dispatch(
-                "get_block",
-                {"x": x, "y": head_y, "z": z},
-            ).get("id", "")
-        except Exception:
-            return None
-        if _block_is_breathable(block):
-            return head_y - 1
-    return None
-
-
-def _loaded_two_block_air_level_above(
-    client: Any,
-    position: tuple[int, int, int],
-    *,
-    scan_height: int = 32,
-) -> Optional[int]:
-    """Return the first loaded feet level with open feet and head blocks."""
-    x, y, z = position
-    for feet_y in range(y + 1, y + max(2, int(scan_height))):
-        try:
-            feet = client.transport.dispatch(
-                "get_block", {"x": x, "y": feet_y, "z": z}
-            ).get("id", "")
-            head = client.transport.dispatch(
-                "get_block", {"x": x, "y": feet_y + 1, "z": z}
-            ).get("id", "")
-        except Exception:
-            return None
-        if (
-            str(feet).split(":")[-1] in _OPEN_PLAYER_BLOCKS
-            and str(head).split(":")[-1] in _OPEN_PLAYER_BLOCKS
-        ):
-            return feet_y
-    return None
-
-
 def _clear_reachable_ascent_obstructions(
     client: Any,
     position: tuple[int, int, int],
     *,
     target_y: int,
+    deadline: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> bool:
     """Clear solid blocks in the reachable part of a loaded vertical escape."""
     from .inventory import select_item
@@ -204,6 +165,8 @@ def _clear_reachable_ascent_obstructions(
     ) and not all(name in HAND_BREAKABLE_BLOCKS for _b, name in breakable):
         return False
     for block, _name in reversed(breakable):
+        if deadline is not None and clock() >= deadline:
+            return False
         try:
             client.transport.dispatch(
                 "break_block",
@@ -211,7 +174,10 @@ def _clear_reachable_ascent_obstructions(
             )
         except Exception:
             return False
-        if not _wait_for_open_block(client, block):
+        wait_timeout = 5.0
+        if deadline is not None:
+            wait_timeout = max(0.0, min(wait_timeout, deadline - clock()))
+        if not _wait_for_open_block(client, block, timeout=wait_timeout):
             return False
     return True
 
@@ -221,18 +187,30 @@ def _start_loaded_column_ascent(
     position: tuple[int, int, int],
     *,
     require_stable_support: bool = False,
+    deadline: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> bool:
     """Prefer an upward-only Y goal when the water surface is already loaded."""
     target_y = (
-        _loaded_two_block_air_level_above(client, position)
+        _loaded_two_block_air_level_above(
+            client, position, deadline=deadline, clock=clock
+        )
         if require_stable_support
-        else _loaded_breathing_level_above(client, position)
+        else _loaded_breathing_level_above(
+            client, position, deadline=deadline, clock=clock
+        )
     )
     if target_y is None or target_y <= position[1]:
         return False
     # Drowning takes this path with require_stable_support False, which used to
     # skip this entirely and leave the ceiling above a submerged bot unbroken.
-    cleared = _clear_reachable_ascent_obstructions(client, position, target_y=target_y)
+    cleared = _clear_reachable_ascent_obstructions(
+        client,
+        position,
+        target_y=target_y,
+        deadline=deadline,
+        clock=clock,
+    )
     if require_stable_support and not cleared:
         return False
     return _start_y_level_ascent(client, target_y)
@@ -250,33 +228,6 @@ def _start_y_level_ascent(client: Any, target_y: int) -> bool:
         return False
     print(f"SURVIVAL: starting upward Y-level ascent to y={target_y}")
     return True
-
-
-def _wait_for_dry_level(
-    client: Any,
-    *,
-    origin_y: int,
-    expected_y: int,
-    timeout: float,
-) -> Optional[tuple[int, int, int]]:
-    """Wait for an ascent route to reach breathing terrain near the surface."""
-    deadline = time.monotonic() + max(0.0, timeout)
-    try:
-        while time.monotonic() < deadline:
-            current = block_position(client.transport.dispatch("get_state", {}))
-            if current[1] < origin_y - 2:
-                return None
-            if (
-                current[1] >= expected_y - 3
-                and _head_is_dry(client, current)
-                and not position_is_aquatic(client, current)
-            ):
-                return current
-            time.sleep(0.5)
-    finally:
-        client.transport.dispatch("chat", {"message": "#stop"})
-        client.transport.dispatch("cancel", {})
-    return None
 
 
 def _aquatic_walkway_plan(
@@ -374,7 +325,13 @@ def _place_support_below_breathing_position(
 
     if _has_stable_support(client, position):
         return True
-    materials = _walkway_materials(get_inventory(client), required=1)
+    try:
+        materials = _walkway_materials(get_inventory(client), required=1)
+    except Exception:
+        # Inventory telemetry is optional for this emergency path.  An
+        # unreadable inventory means support cannot be claimed, not that the
+        # recovery should crash before its bounded fallback can run.
+        return False
     if not materials or not harness_ops.available():
         return False
     material = materials[0]
@@ -586,14 +543,21 @@ def _swim_to_loaded_dry_shore(
     origin: tuple[int, int, int],
     *,
     timeout: float = 30.0,
+    deadline: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> Optional[tuple[int, int, int]]:
-    """Use one bounded raw route from surface water to verified loaded land."""
+    """Use one bounded route from surface water to verified loaded land."""
     candidates = _loaded_dry_shore_candidates(client, origin)[:2]
     if not candidates:
         return None
-    deadline = time.monotonic() + max(0.0, timeout)
+    deadline = (
+        float(deadline)
+        if deadline is not None
+        else clock() + max(0.0, timeout)
+    )
     for target in candidates:
-        if time.monotonic() >= deadline:
+        if clock() >= deadline:
             break
         client.transport.dispatch("cancel", {})
         client.transport.dispatch(
@@ -601,13 +565,14 @@ def _swim_to_loaded_dry_shore(
             {"x": target[0], "y": target[1], "z": target[2]},
         )
         checks = 0
-        while time.monotonic() < deadline:
+        while clock() < deadline:
             state = client.transport.dispatch("get_state", {})
             current = block_position(state)
             if (
                 not position_is_aquatic(client, current)
                 and _head_is_dry(client, current)
                 and _has_stable_support(client, current)
+                and _state_has_breathing_air(state)
             ):
                 client.transport.dispatch("cancel", {})
                 print(f"SURVIVAL: reached loaded dry shore at {current}")
@@ -617,7 +582,7 @@ def _swim_to_loaded_dry_shore(
             checks += 1
             if checks >= 2 and not state.get("is_pathing", True):
                 break
-            time.sleep(0.5)
+            sleep(min(0.5, max(0.0, deadline - clock())))
         client.transport.dispatch("cancel", {})
     return None
 
@@ -643,12 +608,17 @@ def reach_breathing_air(
     clock: Callable[[], float] = time.monotonic,
 ) -> bool:
     """Reach breathing air, optionally continuing until footing is stable."""
+    started_at = clock()
+    deadline = started_at + max(0.0, float(timeout))
     initial = block_position(client.transport.dispatch("get_state", {}))
     _configure_surface_pathing(client, sleep=sleep)
     shore = _swim_to_loaded_dry_shore(
         client,
         initial,
-        timeout=min(15.0, max(8.0, timeout)),
+        timeout=max(0.0, float(timeout)),
+        deadline=deadline,
+        clock=clock,
+        sleep=sleep,
     )
     if shore is not None:
         return True
@@ -656,11 +626,11 @@ def reach_breathing_air(
         client,
         initial,
         require_stable_support=require_stable_support,
+        deadline=deadline,
+        clock=clock,
     )
     if not loaded_ascent:
         client.transport.dispatch("chat", {"message": "#surface"})
-    started_at = clock()
-    deadline = started_at + max(0.0, timeout)
     highest_y = initial[1]
     if require_stable_support:
         # Loaded flooded shafts need several seconds to swim a vertical
@@ -670,7 +640,7 @@ def reach_breathing_air(
         progress_window = min(12.0, max(4.0, timeout * 0.35))
     else:
         progress_window = min(3.0, max(1.0, timeout * 0.4))
-    progress_deadline = started_at + progress_window
+    progress_deadline = min(deadline, started_at + progress_window)
     try:
         while True:
             now = clock()
@@ -685,12 +655,18 @@ def reach_breathing_air(
                     shore = _swim_to_loaded_dry_shore(
                         client,
                         current,
-                        timeout=min(15.0, max(8.0, timeout)),
+                        timeout=max(0.0, float(timeout)),
+                        deadline=deadline,
+                        clock=clock,
+                        sleep=sleep,
                     )
                     if shore is not None:
                         return True
-                if not require_stable_support or (
+                if _state_has_breathing_air(state) and (
+                    not require_stable_support
+                    or (
                     not aquatic and _has_stable_support(client, current)
+                    )
                 ):
                     return True
                 if require_stable_support and not aquatic:
@@ -712,6 +688,9 @@ def reach_breathing_air(
                 return False
             if current[1] > highest_y:
                 highest_y = current[1]
+                # Vertical progress earns another bounded progress window,
+                # while the overall drowning timeout remains unchanged.
+                progress_deadline = min(deadline, now + progress_window)
             if loaded_ascent and now >= progress_deadline:
                 print(
                     "SURVIVAL: loaded-column ascent made no vertical "

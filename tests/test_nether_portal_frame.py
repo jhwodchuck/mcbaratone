@@ -27,6 +27,11 @@ from baritone_client.automator.phases import nether_prep
 from baritone_client.common import nether
 
 
+def _goto_stopped(client, *_args, **_kwargs):
+    client._last_navigation_cancel = {"cancel_status": "stopped"}
+    return True
+
+
 def test_the_frame_is_ten_blocks_and_excludes_the_corners():
     x, y, z = 100, 64, 100
     frame = set(nether._frame_positions(x, y, z))
@@ -46,18 +51,55 @@ def test_the_frame_is_ten_blocks_and_excludes_the_corners():
     assert frame.isdisjoint(set(nether._portal_interior(x, y, z)))
 
 
+def test_arrived_but_uncertain_cleanup_never_spends_portal_blocks(monkeypatch):
+    from baritone_client.common import portal_construction as construction
+
+    client = SimpleNamespace()
+    monkeypatch.setattr(construction, "_block_at", lambda *_args: "minecraft:air")
+    monkeypatch.setattr(construction, "_is_solid", lambda *_args: True)
+    monkeypatch.setattr(
+        construction,
+        "get_inventory",
+        lambda *_args: {"minecraft:obsidian": 1},
+    )
+    placed = []
+    monkeypatch.setattr(
+        construction,
+        "place_block",
+        lambda *_args: placed.append(True) or True,
+    )
+
+    def arrived_with_unknown_cancel(active_client, *_args, **_kwargs):
+        active_client._last_navigation_cancel = {"cancel_status": "unknown"}
+        return True
+
+    monkeypatch.setattr(construction, "goto", arrived_with_unknown_cancel)
+    assert not construction.construct_frame(
+        client,
+        (0, 64, 0),
+        {(1, 64, 0)},
+        {(1, 65, 0)},
+    )
+    assert placed == []
+
+
 def test_the_builder_places_exactly_the_blocks_the_verifier_demands():
     """The coupling that makes a partial change worse than no change."""
     placed = []
     # The site needs a floor for the bottom pair to anchor against.
-    blocks = {(fx, 63, 0): "minecraft:stone" for fx in range(0, 4)}
+    blocks = {(fx, 63, z): "minecraft:stone" for fx in range(0, 4) for z in (-1, 0, 1)}
 
     class Transport:
         def dispatch(self, route, payload):
-            if route == "get_block":
-                key = (payload["x"], payload["y"], payload["z"])
-                return {"id": blocks.get(key, "minecraft:air")}
-            return {}
+                if route == "get_block":
+                    key = (payload["x"], payload["y"], payload["z"])
+                    return {"id": blocks.get(key, "minecraft:air")}
+                if route == "get_inventory":
+                    return {"inventory": [
+                        {"id": "minecraft:obsidian", "count": 10},
+                        {"id": "minecraft:cobblestone", "count": 4},
+                    ], "armor": [], "offhand": []}
+                return {}
 
     client = SimpleNamespace(
         transport=Transport(),
@@ -69,22 +111,27 @@ def test_the_builder_places_exactly_the_blocks_the_verifier_demands():
 
     import baritone_client.common.nether as mod
 
-    original_place, original_sleep = mod.place_block, mod.time.sleep
+    from baritone_client.common import portal_construction as construction
+    original_place, original_goto, original_sleep = construction.place_block, construction.goto, construction.time.sleep
     try:
         def place(_client, px, py, pz, item_id):
             placed.append((px, py, pz))
             blocks[(px, py, pz)] = item_id
             return True
 
-        mod.place_block = place
-        mod.time.sleep = lambda _s: None
+        construction.place_block = place
+        construction.goto = _goto_stopped
+        construction.time.sleep = lambda _s: None
         assert mod.build_nether_portal(client, 0, 64, 0)
     finally:
-        mod.place_block, mod.time.sleep = original_place, original_sleep
+        construction.place_block, construction.goto, construction.time.sleep = original_place, original_goto, original_sleep
 
-    assert len(placed) == 10, placed
-    # Exactly the verifier's set -- no wasted block, none missing.
-    assert set(placed) == set(nether._frame_positions(0, 64, 0))
+    assert len(placed) == 14, placed
+    assert sum(blocks[p] == "minecraft:obsidian" for p in placed) == 10
+    assert sum(blocks[p] == "minecraft:cobblestone" for p in placed) == 4
+    assert set(placed) == set(nether._frame_positions(0, 64, 0)) | {
+        (0, 64, 0), (3, 64, 0), (0, 68, 0), (3, 68, 0)
+    }
 
 
 def test_every_obsidian_gate_agrees_on_ten():
@@ -98,7 +145,7 @@ def test_every_obsidian_gate_agrees_on_ten():
     # 2. the ensure_supplies gate that actually fired on A1
     source = inspect.getsource(nether_prep)
     assert '"minecraft:obsidian": 14' not in source
-    assert '"minecraft:obsidian": PORTAL_FRAME_OBSIDIAN' in source
+    assert '"minecraft:obsidian": max(0, PORTAL_FRAME_OBSIDIAN - installed)' in source
 
     # 3. the phase requirement table
     from baritone_client.automator.resource_manager import Phase
@@ -133,6 +180,11 @@ def test_an_obstructed_site_places_nothing_at_all():
             key = (payload.get("x"), payload.get("y"), payload.get("z"))
             if route == "get_block":
                 return {"id": solid.get(key, "minecraft:air")}
+            if route == "get_inventory":
+                return {"inventory": [
+                    {"id": "minecraft:obsidian", "count": 10},
+                    {"id": "minecraft:cobblestone", "count": 4},
+                ], "armor": [], "offhand": []}
             if route == "dig_block":
                 return {}  # refuses to break: the block stays put
             return {}
@@ -184,12 +236,21 @@ def test_an_unreadable_block_counts_as_occupied():
 def _world(blocks, placed, fail_at=None):
     """A block world whose place_block refuses positions in `fail_at`."""
     state = dict(blocks)
+    floor_x = {x for x, y, z in state if y == 63 and z == 0}
+    for x in floor_x:
+        state.setdefault((x, 63, -1), "minecraft:stone")
+        state.setdefault((x, 63, 1), "minecraft:stone")
 
     class Transport:
         def dispatch(self, route, payload):
             key = (payload.get("x"), payload.get("y"), payload.get("z"))
             if route == "get_block":
                 return {"id": state.get(key, "minecraft:air")}
+            if route == "get_inventory":
+                return {"inventory": [
+                    {"id": "minecraft:obsidian", "count": 10},
+                    {"id": "minecraft:cobblestone", "count": 4},
+                ], "armor": [], "offhand": []}
             if route == "dig_block":
                 state[key] = "minecraft:air"
                 if key in placed:
@@ -226,13 +287,15 @@ def test_an_unanchored_site_is_refused_before_any_obsidian_is_spent():
 
     import baritone_client.common.nether as mod
 
-    orig_place, orig_sleep = mod.place_block, mod.time.sleep
+    from baritone_client.common import portal_construction as construction
+    orig_place, orig_goto, orig_sleep = construction.place_block, construction.goto, construction.time.sleep
     try:
-        mod.place_block = lambda *_a, **_k: placed.append(_a) or True
-        mod.time.sleep = lambda _s: None
+        construction.place_block = lambda *_a, **_k: placed.append(_a) or True
+        construction.goto = _goto_stopped
+        construction.time.sleep = lambda _s: None
         assert not mod.build_nether_portal(client, 0, 64, 0)
     finally:
-        mod.place_block, mod.time.sleep = orig_place, orig_sleep
+        construction.place_block, construction.goto, construction.time.sleep = orig_place, orig_goto, orig_sleep
 
     assert placed == [], "an air pocket must cost nothing"
 
@@ -254,18 +317,20 @@ def test_the_frame_is_placed_lowest_first_so_each_block_has_an_anchor():
     import baritone_client.common.nether as mod
 
     order = []
-    orig_place, orig_sleep = mod.place_block, mod.time.sleep
+    from baritone_client.common import portal_construction as construction
+    orig_place, orig_goto, orig_sleep = construction.place_block, construction.goto, construction.time.sleep
     try:
         def place(_c, px, py, pz, _item):
             order.append((px, py, pz))
-            state[(px, py, pz)] = "minecraft:obsidian"
+            state[(px, py, pz)] = _item
             return True
 
-        mod.place_block = place
-        mod.time.sleep = lambda _s: None
+        construction.place_block = place
+        construction.goto = _goto_stopped
+        construction.time.sleep = lambda _s: None
         mod.build_nether_portal(client, 0, 64, 0)
     finally:
-        mod.place_block, mod.time.sleep = orig_place, orig_sleep
+        construction.place_block, construction.goto, construction.time.sleep = orig_place, orig_goto, orig_sleep
 
     heights = [y for _x, y, _z in order]
     assert heights == sorted(heights), f"must build upward, got {order}"
@@ -290,22 +355,66 @@ def test_a_stalled_placement_gives_the_obsidian_back():
     import baritone_client.common.nether as mod
     import baritone_client.common.automation_utils as utils
 
-    orig_place, orig_sleep = mod.place_block, mod.time.sleep
+    from baritone_client.common import portal_construction as construction
+    orig_place, orig_goto, orig_sleep = construction.place_block, construction.goto, construction.time.sleep
     orig_usleep = utils.time.sleep
     try:
-        def place(_c, px, py, pz, _item):
-            if len(placed) >= 3:      # refuse the fourth, mid-build
+        def place(_c, px, py, pz, item):
+            if len(placed) >= 3:      # unknown fourth placement; preserve prior blocks
                 return False
             placed.append((px, py, pz))
-            state[(px, py, pz)] = "minecraft:obsidian"
+            state[(px, py, pz)] = item
             return True
 
-        mod.place_block = place
-        mod.time.sleep = lambda _s: None
-        utils.time.sleep = lambda _s: None
+        construction.place_block = place
+        construction.goto = _goto_stopped
+        construction.time.sleep = lambda _s: None
         assert not mod.build_nether_portal(client, 0, 64, 0)
     finally:
-        mod.place_block, mod.time.sleep = orig_place, orig_sleep
+        construction.place_block, construction.goto, construction.time.sleep = orig_place, orig_goto, orig_sleep
         utils.time.sleep = orig_usleep
 
-    assert placed == [], f"the three placed blocks must be recovered, left {placed}"
+    assert len(placed) == 3, "verified partial blocks must remain for same-site reconciliation"
+    assert all(state[position] in {"minecraft:obsidian", "minecraft:cobblestone"} for position in placed)
+
+
+def test_resumed_partial_frame_spends_only_missing_obsidian(monkeypatch):
+    """A durable two-block partial frame resumes in place without replay."""
+    from baritone_client.common import portal_construction as construction
+
+    origin = (0, 64, 0)
+    frame = nether._frame_positions(*origin)
+    blocks = {(x, 63, z): "minecraft:stone" for x in range(4) for z in (-1, 0, 1)}
+    blocks[frame[0]] = "minecraft:obsidian"
+    blocks[frame[1]] = "minecraft:obsidian"
+    placed = []
+
+    class Transport:
+        def dispatch(self, route, payload):
+            key = (payload.get("x"), payload.get("y"), payload.get("z"))
+            if route == "get_block":
+                return {"id": blocks.get(key, "minecraft:air")}
+            if route == "get_inventory":
+                return {"inventory": [
+                    {"id": "minecraft:obsidian", "count": 8},
+                    {"id": "minecraft:cobblestone", "count": 4},
+                ], "armor": [], "offhand": []}
+            return {}
+
+    client = SimpleNamespace(
+        transport=Transport(),
+        mission=SimpleNamespace(checkpoint=lambda *_a, **_k: None),
+    )
+
+    def place(_client, x, y, z, item):
+        placed.append((x, y, z, item))
+        blocks[(x, y, z)] = item
+        return True
+
+    monkeypatch.setattr(construction, "place_block", place)
+    monkeypatch.setattr(construction, "goto", _goto_stopped)
+    monkeypatch.setattr(construction.time, "sleep", lambda _seconds: None)
+    assert nether.build_nether_portal(client, *origin)
+    assert sum(item == "minecraft:obsidian" for *_p, item in placed) == 8
+    assert sum(item == "minecraft:cobblestone" for *_p, item in placed) == 4
+    assert set(frame) <= {position for position in blocks if blocks[position] == "minecraft:obsidian"}

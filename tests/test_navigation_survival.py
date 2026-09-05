@@ -77,4 +77,4 @@ def test_navigation_propagates_player_death(horizontal):
             navigation.goto_xz(client, 20, 0)
         else:
             navigation.goto(client, 20, 64, 0)
-    assert transport.calls[-1] == ("cancel", {})
+        assert transport.calls[-2:] == [("cancel", {}), ("get_state", {})]

@@ -9,7 +9,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.level.block.state.BlockState;
 
-public class GetBlockCommandHandler implements CommandHandler {
+public class GetBlockCommandHandler extends AbstractBaseCommandHandler {
 
     @Override
     public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
@@ -23,7 +23,7 @@ public class GetBlockCommandHandler implements CommandHandler {
             int z = params.get("z").getAsInt();
             BlockPos pos = new BlockPos(x, y, z);
             
-            CommandResult result = client.submit(() -> {
+            return executeOnMainThread(client, () -> {
                 BlockState state = client.level.getBlockState(pos);
                 JsonObject data = new JsonObject();
                 String id = "";
@@ -41,9 +41,7 @@ public class GetBlockCommandHandler implements CommandHandler {
                 }
                 data.addProperty("id", id);
                 return CommandResult.success(data);
-            }).get();
-            
-            return CompletableFuture.completedFuture(result);
+            });
         } catch (Exception e) {
             return CompletableFuture.completedFuture(CommandResult.error("GetBlock failed: " + e.getMessage()));
         }

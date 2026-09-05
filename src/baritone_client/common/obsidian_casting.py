@@ -9,9 +9,9 @@ pickaxe, at y=-51, where lava is abundant.
 
 Pouring water onto a lava source turns it to obsidian, which makes the supply
 renewable and removes the blocker permanently rather than widening a search
-radius. This needs no bridge change: `interact_block` calls `useItemOn` with
-the held item, which is exactly a right-click with a bucket, and `get_block`
-already returns the full blockstate.
+radius. The bridge's `use_bucket` route performs vanilla bucket item use
+against a real ray and verifies both fluid and held-item effects. Generic
+`interact_block` acceptance is not a substitute for that operation.
 
 Only the *source* matters. Water meeting flowing lava produces cobblestone, not
 obsidian, and a caster that skips that check spends its bucket and reports a
@@ -71,7 +71,7 @@ def is_lava_source(client, x: int, y: int, z: int) -> bool:
 
 
 def _is_air(client, position: Position) -> bool:
-    return "air" in _block_id(_read(client, *position))
+    return _block_id(_read(client, *position)) in {"minecraft:air", "minecraft:cave_air"}
 
 
 def _safe(client) -> bool:
@@ -136,40 +136,37 @@ def cast_one(client, lava: Position, *, timeout: float = 12.0) -> bool:
         print("  cast: no water bucket in hand")
         return False
 
+    from ..observability import emit_event
+    water_before = count_item(client, WATER_BUCKET)
     payload = {"x": above[0], "y": above[1], "z": above[2]}
-    try:
-        client.transport.dispatch("interact_block", dict(payload))
-    except Exception as exc:
-        print(f"  cast: pouring water failed: {exc}")
-        return False
-
-    # Dispatching the pour is not evidence it happened. If no water landed the
-    # bucket was never spent, so return before the reclaim dance rather than
-    # right-clicking a dry block and calling it a recovery.
-    if "water" not in _block_id(_read(client, *above)):
-        print(f"  cast: water did not land above {lava}")
-        return False
-
-    converted = False
     deadline = time.monotonic() + max(1.0, float(timeout))
+    emit_event("obsidian_cast_started", lava=list(lava), water_target=list(above), water_buckets_before=water_before)
+    try:
+        client.transport.dispatch("use_bucket", {**payload, "operation": "place"})
+    except Exception as exc:
+        emit_event("obsidian_cast_dispatch_uncertain", error=str(exc), lava=list(lava))
+    # Reconcile delayed or timed-out dispatch without pouring twice.
+    water_landed = False
+    converted = False
     while time.monotonic() < deadline:
-        time.sleep(0.5)
-        if _block_id(_read(client, x, y, z)) == OBSIDIAN:
-            converted = True
+        water_landed |= _block_id(_read(client, *above)) == "minecraft:water"
+        converted = _block_id(_read(client, *lava)) == OBSIDIAN
+        if water_landed and converted:
             break
-
-    # Reclaim whether or not the cast worked: the source is standing right
-    # there either way, and losing the bucket ends the capability. Verify it
-    # came back -- an unnoticed empty bucket turns every later candidate into
-    # "no water bucket in hand", which reads like a different bug entirely.
+        time.sleep(0.25)
+    if not water_landed:
+        emit_event("obsidian_cast_failed", lava=list(lava), reason="water_not_observed")
+        return False
     if select_item(client, EMPTY_BUCKET, allow_swap=True):
         try:
-            client.transport.dispatch("interact_block", dict(payload))
+            client.transport.dispatch("use_bucket", {**payload, "operation": "pickup"})
         except Exception:
             pass
-    if count_item(client, WATER_BUCKET) < 1:
-        print(f"  cast: water bucket not recovered at {above}")
-    return converted
+    recovered = (count_item(client, WATER_BUCKET) >= water_before
+                 and _block_id(_read(client, *above)) in {"minecraft:air", "minecraft:cave_air"})
+    emit_event("obsidian_cast_verified", lava=list(lava), converted=converted,
+               water_recovered=recovered, postcondition_verified=converted and recovered)
+    return converted and recovered
 
 
 def _lava_candidates(client, radius: int, limit: int = 256) -> List[Position]:

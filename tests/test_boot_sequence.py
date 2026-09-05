@@ -583,10 +583,11 @@ def test_boot_wood_check_defers_reserve_on_ledge_with_nearby_table(monkeypatch):
 def test_boot_wood_check_yields_to_low_food_recovery(monkeypatch):
     client = SimpleNamespace(
         transport=SimpleNamespace(
-            dispatch=lambda route, _payload: {
-                "health": 20,
-                "food_level": 5,
-            }
+            dispatch=lambda route, _payload: (
+                {"health": 20, "food_level": 5}
+                if route != "get_inventory"
+                else {"inventory": [], "armor": [], "offhand": []}
+            )
         )
     )
     monkeypatch.setattr(
@@ -1070,6 +1071,8 @@ def test_optional_boot_hunts_are_deferred_at_low_hunger(
         def dispatch(self, route, payload):
             if route == "get_state":
                 return {"world_time": 9000, "food_level": 6}
+            if route == "get_inventory":
+                return {"inventory": [], "armor": [], "offhand": []}
             return {}
 
     client = SimpleNamespace(transport=Transport())

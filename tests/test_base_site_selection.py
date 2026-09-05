@@ -145,6 +145,73 @@ def test_surface_recovery_aborts_if_surface_command_moves_downward(monkeypatch):
     assert ("cancel", {}) in transport.calls
 
 
+def test_breathing_air_budget_includes_preliminary_shore_attempt(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        surface_recovery,
+        "_swim_to_loaded_dry_shore",
+        lambda *_args, **kwargs: calls.append(kwargs) or None,
+    )
+    monkeypatch.setattr(
+        surface_recovery,
+        "_start_loaded_column_ascent",
+        lambda *_args, **_kwargs: False,
+    )
+    clock_values = iter((0.0, 6.0)).__next__
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                return {"block_position": {"x": 0, "y": 60, "z": 0}}
+            return {}
+
+    assert not surface_recovery.reach_breathing_air(
+        SimpleNamespace(transport=Transport()),
+        timeout=5.0,
+        ensure_alive=lambda *_args: None,
+        sleep=lambda _seconds: None,
+        clock=clock_values,
+    )
+    assert calls and calls[0]["timeout"] == 5.0
+    assert calls[0]["deadline"] == 5.0
+
+
+def test_breathing_air_does_not_claim_success_with_zero_oxygen(monkeypatch):
+    monkeypatch.setattr(
+        surface_recovery, "_swim_to_loaded_dry_shore", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        surface_recovery,
+        "_start_loaded_column_ascent",
+        lambda *_a, **_k: False,
+    )
+    states = iter(
+        (
+            {"block_position": {"x": 0, "y": 60, "z": 0}},
+            {
+                "block_position": {"x": 0, "y": 64, "z": 0},
+                "oxygen": 0,
+            },
+        )
+    )
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                return next(states)
+            if route == "get_block":
+                return {"id": "minecraft:air"}
+            return {}
+
+    assert not surface_recovery.reach_breathing_air(
+        SimpleNamespace(transport=Transport()),
+        timeout=5.0,
+        ensure_alive=lambda *_args: None,
+        sleep=lambda _seconds: None,
+        clock=iter((0.0, 0.5, 5.0)).__next__,
+    )
+
+
 def test_surface_recovery_uses_loaded_dry_terrain_before_surface_command():
     class Transport:
         def dispatch(self, route, payload):
@@ -242,7 +309,8 @@ def test_loaded_breathing_ascent_falls_back_to_surface_when_stalled():
             return {}
 
     transport = Transport()
-    clock = iter((0.0, 0.5, 3.1, 4.0)).__next__
+    clock_values = iter((0.0, 0.5, 3.1, 4.0))
+    clock = lambda: next(clock_values, 4.0)
 
     assert surface_recovery.reach_breathing_air(
         SimpleNamespace(transport=transport),
@@ -252,7 +320,9 @@ def test_loaded_breathing_ascent_falls_back_to_surface_when_stalled():
         clock=clock,
     )
     assert ("goal", {"type": "yLevel", "value": 62}) in transport.calls
-    assert ("chat", {"message": "#surface"}) in transport.calls
+    # Reaching y=61 resets the ascent progress window; the fallback must not
+    # fire merely because the original window elapsed while the route climbed.
+    assert ("chat", {"message": "#surface"}) not in transport.calls
 
 
 def test_breathing_air_reaches_loaded_shore_before_sinking(monkeypatch):
@@ -1075,7 +1145,14 @@ def test_setup_base_requires_verified_storage(monkeypatch, advancing_clock):
 
     from baritone_client.common.base import setup_base
 
-    success, location = setup_base(SimpleNamespace(), (10, 64, 20))
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda _route, _payload: {
+                "inventory": [], "armor": [], "offhand": []
+            }
+        )
+    )
+    success, location = setup_base(client, (10, 64, 20))
 
     assert not success
     assert location == (10, 64, 20)

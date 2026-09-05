@@ -13,7 +13,12 @@ import websockets
 
 from .enums import TransportEvent
 from .tcp_protocol import BEST_EFFORT_ROUTES, READ_ONLY_ROUTES
-from .tcp_protocol import is_traced_command, translate_route
+from .tcp_protocol import (
+    is_traced_command,
+    observe_response,
+    translate_route,
+    validate_response_sequence,
+)
 from ..events.event_manager import EventManager, EventFilter
 from ..events.event_storage import EventStorage
 from ..core.exceptions import (
@@ -195,6 +200,10 @@ class TcpTransport(Transport):
         for attempt in range(attempts):
             try:
                 response = self._dispatch_once(route, payload, timeout)
+                if route == "get_inventory":
+                    from ..inventory_evidence import valid_inventory
+                    if not valid_inventory(response):
+                        raise CommandError("Malformed inventory snapshot; current inventory unknown")
                 try:
                     if route == "get_inventory":
                         observe_inventory_response(response)
@@ -238,7 +247,14 @@ class TcpTransport(Transport):
                         isinstance(exc, TransportError)
                         or (
                             isinstance(exc, CommandError)
-                            and self._is_transient_command_error(exc)
+                            and (
+                                self._is_transient_command_error(exc)
+                                or (
+                                    route == "get_inventory"
+                                    and "inventory" in str(exc).lower()
+                                    and "unknown" in str(exc).lower()
+                                )
+                            )
                         )
                     )
                 ):
@@ -262,6 +278,7 @@ class TcpTransport(Transport):
                             ),
                             error_type=type(exc).__name__,
                             reason=str(exc),
+                            response=getattr(exc, "response", None),
                         )
                     if is_cancel:
                         emit_event(
@@ -334,16 +351,16 @@ class TcpTransport(Transport):
 
             resp = q.get(timeout=effective_timeout)
 
+            validate_response_sequence(resp, seq)
             if resp.get("status") == "error":
-                raise CommandError(resp.get("error", "Bridge error"))
+                error = resp.get("error", "Bridge error")
+                if isinstance(error, dict):
+                    error = error.get("message", str(error))
+                raise CommandError(str(error), response=resp)
 
             return resp.get("data", {})
 
         except queue.Empty:
-            # Inventory requests should be treated as immediate: if the bridge
-            # does not respond in time, return an empty inventory structure
-            # rather than raising and bubbling up a TransportError which can
-            # cause phase failures. Other routes keep the timeout behavior.
             if route in self._BEST_EFFORT_RETRY_ROUTES:
                 logger.warning(
                     "Best-effort route %s timed out; "
@@ -351,8 +368,6 @@ class TcpTransport(Transport):
                     route,
                 )
                 return {}
-            if route == "get_inventory":
-                return {"inventory": [], "armor": [], "offhand": []}
             with self._lock:
                 peer_inflight = any(
                     peer_id != req_id for peer_id in self._response_queues
@@ -480,6 +495,8 @@ class WebSocketTransport(Transport):
         self._response_queues: Dict[int, queue.Queue] = {}
         self._response_lock = threading.RLock()
         self._best_effort_retry_routes = {"close_screen"}
+        self._read_only_retry_routes = READ_ONLY_ROUTES
+        self._read_retry_attempts = 3
 
         # Advanced subscription management with filtering
         self._event_subscriptions: Dict[str, EventFilter] = {}
@@ -810,84 +827,9 @@ class WebSocketTransport(Transport):
             ) from exc
 
     def dispatch(self, route: str, payload: Dict[str, Any], timeout: Optional[float] = None) -> Dict[str, Any]:
-        """Dispatch request over WebSocket with sequence tracking."""
-        attempts = 3 if route in self._best_effort_retry_routes else 1
-        last_error: Optional[Exception] = None
-
-        for attempt in range(attempts):
-            req_id = None
-            request_sent = False
-            try:
-                with self._lock:
-                    self._seq += 1
-                    req_id = self._seq
-
-                # Translate route to JSON-RPC method
-                rpc_method = route.replace("/", ".")
-                req = {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "method": rpc_method,
-                    "params": payload
-                }
-
-                # Create response queue
-                response_queue = queue.Queue()
-                with self._response_lock:
-                    self._response_queues[req_id] = response_queue
-
-                # Send request asynchronously
-                future = asyncio.run_coroutine_threadsafe(self._send_message(req), self._loop)
-                future.result(timeout=1.0)  # Wait for send to complete
-                request_sent = True
-
-                # Wait for response
-                effective_timeout = self.timeout if timeout is None else timeout
-                response = response_queue.get(timeout=effective_timeout)
-
-                if response.get("error"):
-                    raise CommandError(response["error"].get("message", "RPC error"))
-
-                return response.get("result", {})
-
-            except queue.Empty:
-                last_error = BridgeResponseTimeout(
-                    route,
-                    transport_type="websocket",
-                    request_sent=request_sent,
-                )
-                if attempt + 1 < attempts:
-                    logger.warning(
-                        "Read route %s retryable failure (attempt %d/%d); retrying",
-                        route,
-                        attempt + 1,
-                        attempts,
-                    )
-                    time.sleep(0.5)
-                    continue
-                if route in self._best_effort_retry_routes:
-                    logger.warning(
-                        "Best-effort route %s timed out after %d attempts; "
-                        "continuing as no-op",
-                        route,
-                        attempts,
-                    )
-                    return {}
-                raise last_error
-            except (CommandError, TransportError):
-                raise
-            except Exception as exc:
-                raise TransportError(
-                    f"WebSocket dispatch error: {exc}",
-                    original_error=exc,
-                ) from exc
-            finally:
-                if req_id is not None:
-                    with self._response_lock:
-                        self._response_queues.pop(req_id, None)
-
-        assert last_error is not None
-        raise last_error
+        """Dispatch through the shared WebSocket request/correlation helper."""
+        from .websocket_dispatch import dispatch
+        return dispatch(self, route, payload, timeout)
 
     def emit(self, event: Union[TransportEvent, str], payload: Dict[str, Any], priority: int = 0) -> None:
         """Emit event with priority-based processing and bidirectional streaming."""

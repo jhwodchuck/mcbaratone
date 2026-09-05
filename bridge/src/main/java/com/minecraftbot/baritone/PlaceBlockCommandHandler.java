@@ -9,6 +9,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
@@ -55,7 +57,16 @@ public class PlaceBlockCommandHandler extends AsyncCommandHandler {
             
             BlockPos targetPos = new BlockPos(x, y, z);
             
-            return executeOnMainThread(client, () -> {
+            final String[] expected = {null};
+            return ObservedMutation.run(client::execute, () -> client.level.getGameTime(), () -> {
+                if (!(client.player.getMainHandItem().getItem() instanceof BlockItem held)) {
+                    return CommandResult.error("Main hand must contain a block item");
+                }
+                expected[0] = BuiltInRegistries.BLOCK.getKey(held.getBlock()).toString();
+                if (params.has("block") && !expected[0].equals(params.get("block").getAsString())) {
+                    return CommandResult.error("Requested block does not match main hand");
+                }
+                String heldItem = BuiltInRegistries.ITEM.getKey(client.player.getMainHandItem().getItem()).toString();
                 BlockState currentTargetState = client.level.getBlockState(targetPos);
                 if (!currentTargetState.canBeReplaced()) {
                     return CommandResult.error("Target position is already occupied: " + targetPos);
@@ -92,6 +103,9 @@ public class PlaceBlockCommandHandler extends AsyncCommandHandler {
                 
                 Vec3 hitPos = new Vec3(centerX + dirX * 0.5, centerY + dirY * 0.5, centerZ + dirZ * 0.5);
                 
+                if (client.player.getEyePosition().distanceTo(hitPos) > client.player.blockInteractionRange()) {
+                    return CommandResult.error("Placement face outside interaction reach");
+                }
                 // Verify item is in hand
                 if (client.player.getMainHandItem().isEmpty()) {
                      return CommandResult.error("Main hand is empty!");
@@ -105,13 +119,14 @@ public class PlaceBlockCommandHandler extends AsyncCommandHandler {
                 client.player.swing(InteractionHand.MAIN_HAND);
                 
                 JsonObject data = new JsonObject();
-                data.addProperty("placed", actionResult.consumesAction());
+                data.addProperty("placed", false);
+                data.addProperty("expected_block", expected[0]);
                 data.addProperty("status", actionResult.toString());
                 data.addProperty("accepted", actionResult.consumesAction());
                 data.addProperty("x", x);
                 data.addProperty("y", y);
                 data.addProperty("z", z);
-                data.addProperty("item", client.player.getMainHandItem().getHoverName().getString());
+                data.addProperty("item", heldItem);
                 
                 if (actionResult.consumesAction()) {
                     return CommandResult.success(data);
@@ -121,7 +136,11 @@ public class PlaceBlockCommandHandler extends AsyncCommandHandler {
                             + "; item=" + client.player.getMainHandItem().getHoverName().getString()
                             + "; target=" + targetPos);
                 }
-            });
+            }, data -> {
+                String actual = BuiltInRegistries.BLOCK.getKey(client.level.getBlockState(targetPos).getBlock()).toString();
+                data.addProperty("observed_block", actual);
+                return actual.equals(expected[0]);
+            }, "placed");
         } catch (Exception e) {
             return CompletableFuture.completedFuture(CommandResult.error("Place failed: " + e.getMessage()));
         }

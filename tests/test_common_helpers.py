@@ -240,7 +240,7 @@ class GetInventoryResilienceTest(unittest.TestCase):
         self.assertEqual(result, {"minecraft:stick": 4})
         self.assertEqual(inventory_module._last_inventory, {"minecraft:stick": 4})
 
-    def test_after_nonempty_cache_fully_failing_returns_cache(self):
+    def test_after_nonempty_cache_fully_failing_raises_unknown(self):
         class Transport:
             def dispatch(self, route, payload):
                 return {
@@ -253,27 +253,27 @@ class GetInventoryResilienceTest(unittest.TestCase):
         client = type("Client", (), {"transport": Transport()})()
         inventory_module.get_inventory(client)
         self.assertEqual(inventory_module._last_inventory, {"minecraft:iron_ingot": 9})
-        # Now make all future reads fail
+        # Now make all future reads fail.  A last-known snapshot is not
+        # current evidence and must not be returned as if it were fresh.
         class FailTransport:
             attempt = 0
             def dispatch(self, route, payload):
                 self.attempt += 1
                 raise Exception("still failing")
         client_fail = type("Client", (), {"transport": FailTransport()})()
-        result = inventory_module.get_inventory(client_fail)
-        # Should return cached non-empty dict, not {}
-        self.assertEqual(result, {"minecraft:iron_ingot": 9})
+        with self.assertRaises(RuntimeError):
+            inventory_module.get_inventory(client_fail)
         self.assertEqual(inventory_module._last_inventory, {"minecraft:iron_ingot": 9})
 
-    def test_fully_failing_no_prior_success_returns_empty(self):
+    def test_fully_failing_no_prior_success_raises_unknown(self):
         class FailTransport:
             attempt = 0
             def dispatch(self, route, payload):
                 self.attempt += 1
                 raise Exception("always fail")
         client = type("Client", (), {"transport": FailTransport()})()
-        result = inventory_module.get_inventory(client)
-        self.assertEqual(result, {})
+        with self.assertRaises(RuntimeError):
+            inventory_module.get_inventory(client)
         self.assertEqual(inventory_module._last_inventory, {})
 
 

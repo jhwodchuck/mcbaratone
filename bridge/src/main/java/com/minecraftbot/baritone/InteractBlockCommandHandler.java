@@ -16,13 +16,13 @@ import net.minecraft.world.phys.Vec3;
 /**
  * Command handler for interact_block: Simulates a right-click on a block.
  */
-public class InteractBlockCommandHandler implements CommandHandler {
+public class InteractBlockCommandHandler extends AbstractBaseCommandHandler {
 
     @Override
     public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
         try {
-            CommandResult result = client.submit(() -> {
-                if (client.player == null || client.gameMode == null) {
+            return executeOnMainThread(client, () -> {
+                if (client.player == null || client.level == null || client.gameMode == null) {
                     return CommandResult.error("Player not available");
                 }
 
@@ -46,16 +46,20 @@ public class InteractBlockCommandHandler implements CommandHandler {
                 );
                 BlockHitResult hitResult = client.level.clip(context);
                 if (hitResult.getType() == HitResult.Type.MISS || !hitResult.getBlockPos().equals(pos)) {
-                    // Fallback to a direct hit on the target block if raycast misses
-                    Vec3 hitPos = new Vec3(x + 0.5, y + 0.5, z + 0.5);
-                    hitResult = new BlockHitResult(hitPos, Direction.UP, pos, false);
+                    return CommandResult.error("Target is not visible on a real block ray; fluid use requires use_item");
                 }
 
+                if (start.distanceTo(hitResult.getLocation()) > client.player.blockInteractionRange()) {
+                    return CommandResult.error("Interaction outside reach");
+                }
                 var actionResult = client.gameMode.useItemOn(client.player, hand, hitResult);
                 client.player.swing(hand);
 
                 JsonObject data = new JsonObject();
-                data.addProperty("interacted", true);
+                data.addProperty("interacted", actionResult.consumesAction());
+                data.addProperty("accepted", actionResult.consumesAction());
+                data.addProperty("action_status", actionResult.consumesAction() ? "accepted" : "rejected");
+                data.addProperty("postcondition_verified", false);
                 data.addProperty("x", x);
                 data.addProperty("y", y);
                 data.addProperty("z", z);
@@ -63,9 +67,8 @@ public class InteractBlockCommandHandler implements CommandHandler {
                 data.addProperty("hit_x", hitResult.getBlockPos().getX());
                 data.addProperty("hit_y", hitResult.getBlockPos().getY());
                 data.addProperty("hit_z", hitResult.getBlockPos().getZ());
-                return CommandResult.success(data);
-            }).get();
-            return CompletableFuture.completedFuture(result);
+                return new CommandResult(actionResult.consumesAction(), data, actionResult.consumesAction() ? null : "Interaction rejected");
+            });
         } catch (Exception e) {
             return CompletableFuture.completedFuture(CommandResult.error("Interact failed: " + e.getMessage()));
         }

@@ -19,7 +19,15 @@ import baritone_client.actions.boot_sequence as boot_sequence
 
 
 def make_context():
-    return ActionContext(client=SimpleNamespace(transport=MagicMock()), state=SimpleNamespace())
+    transport = MagicMock()
+    transport.dispatch.return_value = {
+        "inventory": [],
+        "armor": [],
+        "offhand": [],
+    }
+    return ActionContext(
+        client=SimpleNamespace(transport=transport), state=SimpleNamespace()
+    )
 
 
 def test_default_handlers_register_terraform_and_city():

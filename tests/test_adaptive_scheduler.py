@@ -620,13 +620,25 @@ def test_crop_opportunity_rebuilds_farm_when_nothing_to_harvest_or_replant(monke
 
 
 def test_crop_opportunity_fails_when_rebuild_also_finds_nothing(monkeypatch):
-    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: (
+                {"inventory": [], "armor": [], "offhand": []}
+                if route == "get_inventory"
+                else {}
+            )
+        )
+    )
     scheduler = AdaptiveScheduler(client, SimpleNamespace(), _state())
     monkeypatch.setattr(adaptive, "get_inventory", lambda _client: {"minecraft:wheat": 0})
     monkeypatch.setattr(adaptive, "goto", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(adaptive.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(
         "baritone_client.common.farming.establish_wheat_farm",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.farming.reestablish_wheat_farm",
         lambda *_a, **_k: None,
     )
     opportunity = LocalOpportunity(
@@ -640,7 +652,15 @@ def test_crop_opportunity_fails_when_rebuild_also_finds_nothing(monkeypatch):
 
 
 def test_crop_opportunity_relocates_an_unusable_saved_patch(monkeypatch):
-    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: (
+                {"inventory": [], "armor": [], "offhand": []}
+                if route == "get_inventory"
+                else {}
+            )
+        )
+    )
     state = _state()
     scheduler = AdaptiveScheduler(client, SimpleNamespace(), state)
     monkeypatch.setattr(adaptive, "get_inventory", lambda _client: {})
@@ -648,6 +668,10 @@ def test_crop_opportunity_relocates_an_unusable_saved_patch(monkeypatch):
     monkeypatch.setattr(adaptive.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(
         "baritone_client.common.farming.establish_wheat_farm",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.farming.reestablish_wheat_farm",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(

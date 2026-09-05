@@ -41,11 +41,10 @@ def test_goto_fails_fast_when_goal_is_rejected_without_movement(monkeypatch):
 
     state_reads = [call for call in transport.calls if call[0] == "get_state"]
     # Three route observations plus one fresh state sample per defense tick,
-    # plus one pre-flight read for the critical-health travel gate. The gate
-    # must decide before any movement starts, so it cannot reuse the loop's
-    # first sample.
-    assert len(state_reads) == 7
-    assert transport.calls[-1][0] == "cancel"
+    # one pre-flight read for the critical-health travel gate, and one
+    # post-cancel evidence read. The gate must decide before movement starts.
+    assert len(state_reads) == 8
+    assert transport.calls[-1][0] == "get_state"
 
 
 def test_goto_cancels_when_defense_intervenes(monkeypatch):
@@ -76,7 +75,7 @@ def test_goto_cancels_when_defense_intervenes(monkeypatch):
         on_defense=lambda: defended.append(True) or True,
     )
     assert defended == [True]
-    assert transport.calls[-1] == ("cancel", {})
+    assert transport.calls[-2:] == [("cancel", {}), ("get_state", {})]
 
 
 def test_recovery_goto_uses_recovery_aware_defense(monkeypatch):

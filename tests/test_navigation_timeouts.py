@@ -229,3 +229,126 @@ def test_callback_failure_cancels_and_propagates(monkeypatch):
             on_defense=lambda: False,
         )
     assert transport.cancels == 1
+
+
+def test_arrival_is_observed_before_cleanup_cancel(monkeypatch):
+    """A cleanup cancel must not turn an accepted arrival into cancellation."""
+    _prepare(monkeypatch)
+    states = iter([_state(), _state(10.0), {**_state(10.0), "is_pathing": False}])
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append(route)
+            if route == "get_state":
+                return next(states)
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    assert navigation.goto(
+        client, 10, 64, 0, tolerance=0.5, on_defense=lambda: False
+    )
+    assert client._last_navigation_outcome == "arrived"
+    assert client._last_navigation_evidence["observed_arrival"] is True
+    assert client._last_navigation_cancel["cancel_status"] == "stopped"
+    assert client.transport.calls.count("goto") == 1
+    assert client.transport.calls.count("cancel") == 1
+
+
+def test_stalled_navigation_uses_elapsed_progress_budget(monkeypatch):
+    """The no movement watchdog is 30 seconds, independent of sample cadence."""
+    _prepare(monkeypatch)
+    elapsed = [0.0]
+    monkeypatch.setattr(navigation.time, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(
+        navigation.time,
+        "sleep",
+        lambda seconds: elapsed.__setitem__(0, elapsed[0] + seconds),
+    )
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append(route)
+            if route == "get_state":
+                return _state()
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    assert not navigation.goto(
+        client,
+        100,
+        64,
+        0,
+        timeout=100,
+        check_interval=2,
+        on_defense=lambda: False,
+    )
+    assert elapsed[0] >= 30.0
+    assert elapsed[0] < 100.0
+    assert client._last_navigation_outcome == "unknown"
+    assert client._last_navigation_evidence["requested_outcome"] == "stalled"
+
+
+def test_cancel_with_pathing_still_true_is_explicitly_unknown(monkeypatch):
+    _prepare(monkeypatch)
+
+    class Transport:
+        def __init__(self):
+            self.states = iter([{**_state(), "is_pathing": False}, _state()])
+
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                return next(self.states)
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    assert not navigation.goto(
+        client, 100, 64, 0, timeout=0, on_defense=lambda: False
+    )
+    assert client._last_navigation_outcome == "unknown"
+    assert client._last_navigation_evidence["cancel_status"] == "unknown"
+
+
+def test_cancel_status_uses_post_cancel_state_not_pre_cancel_state(monkeypatch):
+    _prepare(monkeypatch)
+
+    class Transport:
+        def __init__(self):
+            self.states = iter([_state(), {**_state(), "is_pathing": False}])
+
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                return next(self.states)
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    assert not navigation.goto(
+        client, 100, 64, 0, timeout=0, on_defense=lambda: False
+    )
+    assert client._last_navigation_cancel["cancel_status"] == "stopped"
+
+
+def test_malformed_initial_state_does_not_start_a_goal(monkeypatch):
+    _prepare(monkeypatch)
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def dispatch(self, route, payload):
+            self.calls.append(route)
+            if route == "get_state":
+                return {"health": 20, "block_position": {"x": 0}}
+            return {}
+
+    transport = Transport()
+    assert not navigation.goto(
+        SimpleNamespace(transport=transport), 10, 64, 0
+    )
+    assert "goto" not in transport.calls
+    assert "cancel" not in transport.calls
