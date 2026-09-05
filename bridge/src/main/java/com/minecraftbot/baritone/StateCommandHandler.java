@@ -17,6 +17,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.phys.AABB;
 
@@ -104,6 +105,9 @@ public class StateCommandHandler extends AsyncCommandHandler {
             data.addProperty("max_air_supply", player.getMaxAirSupply());
             data.addProperty("eyes_in_water", player.isEyeInFluid(net.minecraft.tags.FluidTags.WATER));
             data.addProperty("on_fire", player.isOnFire());
+            data.addProperty("fall_distance", player.fallDistance);
+            data.add("last_damage_source", lastDamageSourceSnapshot(player));
+            data.add("navigation", NavigationLifecycleTracker.getInstance().snapshot());
             data.addProperty("saturation", player.getFoodData().getSaturationLevel());
             data.addProperty("experience_level", player.experienceLevel);
             data.addProperty("experience_total", player.totalExperience);
@@ -240,6 +244,37 @@ public class StateCommandHandler extends AsyncCommandHandler {
         } catch (Exception e) {
             return CommandResult.error("Failed to get state: " + e.getMessage());
         }
+    }
+
+    /**
+     * The player's last recorded damage, if any. Live A1 deaths repeatedly
+     * showed sustained health loss with no attributable cause because
+     * nothing recorded a source; ClientTickHandler already tracks the same
+     * fields on a per-tick DAMAGE event, but that stream is separate from
+     * this polled snapshot and was not what every state sample carried.
+     */
+    JsonObject lastDamageSourceSnapshot(LocalPlayer player) {
+        JsonObject snapshot = new JsonObject();
+        DamageSource source = player.getLastDamageSource();
+        snapshot.addProperty("available", source != null);
+        if (source == null) {
+            return snapshot;
+        }
+        snapshot.addProperty("type", source.getMsgId());
+        Entity attacker = source.getEntity();
+        Entity directSource = source.getDirectEntity();
+        if (attacker != null) {
+            snapshot.addProperty("attacker_id", attacker.getId());
+            snapshot.addProperty("attacker_uuid", attacker.getStringUUID());
+            snapshot.addProperty("attacker_type", safeEntityType(attacker));
+        }
+        if (directSource != null && directSource != attacker) {
+            snapshot.addProperty("direct_source_id", directSource.getId());
+            snapshot.addProperty("direct_source_uuid", directSource.getStringUUID());
+            snapshot.addProperty("direct_source_type", safeEntityType(directSource));
+        }
+        snapshot.addProperty("is_projectile", directSource != null && directSource != attacker);
+        return snapshot;
     }
 
     private CommandResult handleGetEntities(Minecraft client, JsonObject params) {

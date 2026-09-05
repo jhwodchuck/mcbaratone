@@ -29,11 +29,13 @@ public class BreakBlockCommandHandler extends AsyncCommandHandler {
 
         return executeOnMainThread(client, () -> {
             // Use Baritone's builder process to break the block
+            long goalId = NavigationLifecycleTracker.getInstance().beginGeneration(baritone);
             baritone.getBuilderProcess().clearArea(pos, pos);
             JsonObject data = new JsonObject();
             data.addProperty("started", true);
             data.addProperty("accepted", true);
             data.addProperty("applied", true);
+            data.addProperty("goal_id", goalId);
             data.addProperty("x", pos.getX());
             data.addProperty("y", pos.getY());
             data.addProperty("z", pos.getZ());

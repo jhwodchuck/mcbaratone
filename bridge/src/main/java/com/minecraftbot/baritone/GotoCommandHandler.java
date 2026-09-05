@@ -53,6 +53,7 @@ public class GotoCommandHandler extends AsyncCommandHandler {
         int radius = params.has("radius") ? params.get("radius").getAsInt() : 0;
 
         return executeOnMainThread(client, () -> {
+            long goalId = NavigationLifecycleTracker.getInstance().beginGeneration(baritone);
             if (radius > 0) {
                 baritone.getCustomGoalProcess().setGoalAndPath(new GoalNear(new BlockPos(x, y, z), radius));
             } else {
@@ -60,6 +61,7 @@ public class GotoCommandHandler extends AsyncCommandHandler {
             }
 
             JsonObject data = appliedData(client, baritone);
+            data.addProperty("goal_id", goalId);
             data.addProperty("x", x);
             data.addProperty("y", y);
             data.addProperty("z", z);
@@ -75,8 +77,10 @@ public class GotoCommandHandler extends AsyncCommandHandler {
                 return CommandResult.error("Player not available");
             }
             BlockPos targetPos = client.player.blockPosition();
+            long goalId = NavigationLifecycleTracker.getInstance().beginGeneration(baritone);
             baritone.getCustomGoalProcess().setGoalAndPath(new GoalBlock(targetPos));
             JsonObject data = appliedData(client, baritone);
+            data.addProperty("goal_id", goalId);
             data.addProperty("target_x", targetPos.getX());
             data.addProperty("target_y", targetPos.getY());
             data.addProperty("target_z", targetPos.getZ());
