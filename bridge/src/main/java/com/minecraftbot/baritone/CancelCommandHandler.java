@@ -16,6 +16,7 @@ public class CancelCommandHandler implements CommandHandler {
         CompletableFuture<CommandResult> result = new CompletableFuture<>();
         Runnable cancel = () -> {
             try {
+                NavigationLifecycleTracker.getInstance().markCancelRequested();
                 baritone.getPathingBehavior().cancelEverything();
                 ManualMiningController.getInstance().stop();
                 JsonObject data = new JsonObject();

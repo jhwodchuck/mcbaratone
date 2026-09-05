@@ -52,8 +52,10 @@ public class MineCommandHandler extends AsyncCommandHandler {
         net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(x, y, z);
         
         return executeOnMainThread(client, () -> {
+            long goalId = NavigationLifecycleTracker.getInstance().beginGeneration(baritone);
             baritone.getBuilderProcess().clearArea(pos, pos);
             JsonObject data = appliedData(client);
+            data.addProperty("goal_id", goalId);
             data.addProperty("x", x);
             data.addProperty("y", y);
             data.addProperty("z", z);
@@ -73,8 +75,10 @@ public class MineCommandHandler extends AsyncCommandHandler {
 
         Block block = BuiltInRegistries.BLOCK.getValue(id);
         return executeOnMainThread(client, () -> {
+            long goalId = NavigationLifecycleTracker.getInstance().beginGeneration(baritone);
             baritone.getMineProcess().mine(count, block);
             JsonObject data = appliedData(client);
+            data.addProperty("goal_id", goalId);
             data.addProperty("block", blockId);
             data.addProperty("count", count);
             return CommandResult.success(data);
@@ -106,8 +110,10 @@ public class MineCommandHandler extends AsyncCommandHandler {
 
         Block[] blockArray = lookup.toArray(new Block[0]);
         return executeOnMainThread(client, () -> {
+            long goalId = NavigationLifecycleTracker.getInstance().beginGeneration(baritone);
             baritone.getMineProcess().mine(count, blockArray);
             JsonObject data = appliedData(client);
+            data.addProperty("goal_id", goalId);
             data.addProperty("blocks_found", lookup.size());
             data.addProperty("count", count);
             return CommandResult.success(data);
