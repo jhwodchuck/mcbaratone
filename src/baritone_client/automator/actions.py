@@ -265,76 +265,26 @@ class EatAction(Action):
         """Execute eating."""
         try:
             self.status = ActionStatus.RUNNING
-            
-            # Find item in inventory
-            response = client.transport.dispatch("get_inventory", {})
-            found_slot = -1
-            
-            # Check hotbar first (slots 0-8)
-            # In serialized inventory, hotbar is usually present.
-            # We need to find the item and its slot.
-            
-            # Scan inventory response structure
-            # Bridge returns: "inventory": [...], "armor": [...], "offhand": [...]
-            # Items have "slot" field.
-            
-            # Flatten search
-            all_items = response.get("inventory", []) + response.get("offhand", [])
-            
-            target_slot = -1
-            
-            for item in all_items:
-                if item.get("id") == self.item_id and item.get("count", 0) > 0:
-                    target_slot = item.get("slot")
-                    break
-            
-            if target_slot == -1:
-                return ActionResult.fail(f"Food not found: {self.item_id}")
-            
-            # If in main inventory (9-35), swap to hotbar (0-8)
-            # For simplicity, bridge's select_slot only works for hotbar.
-            # If item is not in hotbar, we must swap it.
-            # Ideally, we swap to currently selected slot.
-            
-            current_slot = response.get("selected_slot", 0)
-            
-            # Determine if we need to swap
-            # Slots 0-8 are hotbar
-            # Slots 9-35 are main inventory
-            # Slot 40 is offhand (sometimes 45 depending on version/protocol)
-            
-            if 0 <= target_slot <= 8:
-                # Already in hotbar, just select it
-                if current_slot != target_slot:
-                    client.transport.dispatch("select_slot", {"slot": target_slot})
-            else:
-                # Need to swap to hotbar
-                # Swap target_slot with current_slot (which is in hotbar 0-8)
-                # Bridge handleInventoryClick takes "slot" and "type"="SWAP" maybe?
-                # Or PICKUP logic. "PICKUP" click on target, then click on hotbar slot.
-                
-                # Simplified: Just fail if not in hotbar for V1, or try simple swap
-                # Let's try to swap: Click source, Click dest
-                
-                # 1. Click source (pickup)
-                client.transport.dispatch("inventory_click", {
-                    "slot": target_slot,
-                    "type": "PICKUP"
-                })
-                import time
-                time.sleep(0.1)
-                
-                # 2. Click dest (current hotbar slot)
-                # Note: This swaps them.
-                # Slot mapping in inventory_click might be container-based (0 is crafting output in inventory screen)
-                # This is risky without robust inventory manager.
-                # SAFETY FALLBACK: Only eat if in hotbar for now.
-                return ActionResult.fail(f"Food {self.item_id} at slot {target_slot} must be in hotbar (0-8) to eat.")
+
+            # select_hotbar_item moves the item into an empty hotbar slot
+            # (displacing an occupied one only if it must) and selects it --
+            # this used to be a hand-rolled PICKUP-click swap here that was
+            # never finished ("SAFETY FALLBACK: only eat if in hotbar"), so
+            # any food carried outside the hotbar could never be eaten at
+            # all. Live A1 2026-09-06: HungerSystem picked cooked_beef and
+            # cooked_porkchop while at critical health and failed to eat
+            # both for exactly this reason, immediately before a death.
+            # ensure_item_in_hotbar's own history records the same class of
+            # bug stranding Bot16's torches and Bot18's furnace and chest.
+            from ..common import harness_ops
+
+            if not harness_ops.select_hotbar_item(client, self.item_id):
+                return ActionResult.fail(f"Food not found or could not be moved to hotbar: {self.item_id}")
 
             # Eat (use item)
             # Duration for food is usually 32 ticks (1.6s)
             dispatch_held_item_use(client, 1600)
-            
+
             self.status = ActionStatus.COMPLETED
             return ActionResult.ok(f"Ate {self.item_id}")
 

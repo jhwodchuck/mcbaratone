@@ -26,49 +26,115 @@ class TestHungerSystem(unittest.TestCase):
     def test_eating_trigger(self):
         # Setup low hunger
         state_response = {"food_level": 10, "food": 10} # < 18 check
-        
-        # Setup inventory with apple
-        inventory_response = {
-            "inventory": [
-                {"id": "minecraft:stone", "count": 64, "slot": 0},
-                {"id": "minecraft:apple", "count": 5, "slot": 8}
-            ],
-            "offhand": []
-        }
-        
+
+        # Setup inventory with apple already in the hotbar. select_hotbar_item
+        # reads back selected_slot after select_slot to verify the switch
+        # actually happened, so the fixture must track that state like a
+        # real bridge would rather than return one static snapshot forever.
+        selected_slot = {"value": 0}
+
         def dispatch_side_effect(command, params, timeout=None):
             if command == "get_state":
                 return state_response
             if command == "get_inventory":
-                return inventory_response
+                return {
+                    "inventory": [
+                        {"id": "minecraft:stone", "count": 64, "slot": 0},
+                        {"id": "minecraft:apple", "count": 5, "slot": 8},
+                    ],
+                    "offhand": [],
+                    "selected_slot": selected_slot["value"],
+                }
             if command == "select_slot":
+                selected_slot["value"] = params["slot"]
                 return {"success": True}
             if command == "use_item":
                 return {"used": True}
             return {}
-            
+
         self.mock_client.transport.dispatch.side_effect = dispatch_side_effect
 
         # Run tick without spending real time in the held-use quarantine.
         with patch("baritone_client.common.combat_action.time.sleep"):
             self.hunger_system.tick()
-        
+
         # Verify get_state called
         self.mock_client.transport.dispatch.assert_any_call("get_state", {}, timeout=1.0)
-        
+
         # Verify get_inventory called (because hunger < 18)
         self.mock_client.transport.dispatch.assert_any_call("get_inventory", {})
-        
+
         # Verify select_slot called for apple (slot 8) - Checking logic in EatAction
         # EatAction logic: check inventory, find apple at slot 8.
         # Current slot defaults to 0 in mock if not specified.
         # EatAction should switch to slot 8.
         self.mock_client.transport.dispatch.assert_any_call("select_slot", {"slot": 8})
-        
+
         # Verify use_item called
         self.mock_client.transport.dispatch.assert_any_call(
             "use_item", {"hand": "MAIN_HAND", "duration_ms": 1600}
         )
+
+    def test_eating_food_stranded_outside_the_hotbar_gets_swapped_in(self):
+        """Food outside the hotbar must be swapped in and eaten, not abandoned.
+
+        Live A1 2026-09-06: at critical health, HungerSystem picked
+        cooked_beef and cooked_porkchop, both carried in main-inventory slot
+        16, and failed to eat either -- "Food ... must be in hotbar (0-8) to
+        eat" -- immediately before a death. EatAction's own swap-to-hotbar
+        logic had never been finished (a comment above the fail read "SAFETY
+        FALLBACK: only eat if in hotbar for now") even though
+        harness_ops.select_hotbar_item already does exactly this move
+        safely elsewhere in the codebase.
+        """
+        inventory_state = {
+            0: {"id": "minecraft:air", "count": 0},
+            16: {"id": "minecraft:cooked_beef", "count": 3},
+        }
+        selected_slot = {"value": 0}
+
+        def dispatch_side_effect(command, params, timeout=None):
+            if command == "get_state":
+                return {"food_level": 5}
+            if command == "get_inventory":
+                return {
+                    "inventory": [
+                        {"id": data["id"], "count": data["count"], "slot": slot}
+                        for slot, data in inventory_state.items()
+                    ],
+                    "offhand": [],
+                    "selected_slot": selected_slot["value"],
+                }
+            if command == "close_screen":
+                return {}
+            if command == "inventory_click":
+                # SWAP: button is the raw hotbar index, slot is the menu slot
+                # (identity-mapped for the 9-35 main-inventory range used here).
+                inv_slot, target_hotbar = params["slot"], params["button"]
+                inventory_state[target_hotbar], inventory_state[inv_slot] = (
+                    inventory_state[inv_slot], inventory_state[target_hotbar],
+                )
+                return {"clicked": True}
+            if command == "select_slot":
+                selected_slot["value"] = params["slot"]
+                return {"success": True}
+            if command == "use_item":
+                return {"used": True}
+            return {}
+
+        self.mock_client.transport.dispatch.side_effect = dispatch_side_effect
+
+        with patch("baritone_client.common.combat_action.time.sleep"):
+            self.hunger_system.tick()
+
+        self.mock_client.transport.dispatch.assert_any_call(
+            "inventory_click", {"slot": 16, "type": "SWAP", "button": 0}
+        )
+        self.mock_client.transport.dispatch.assert_any_call("select_slot", {"slot": 0})
+        self.mock_client.transport.dispatch.assert_any_call(
+            "use_item", {"hand": "MAIN_HAND", "duration_ms": 1600}
+        )
+        self.assertEqual(inventory_state[0]["id"], "minecraft:cooked_beef")
 
     def test_no_food_found(self):
         # Setup low hunger
