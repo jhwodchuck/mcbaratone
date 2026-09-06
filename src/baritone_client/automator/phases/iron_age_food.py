@@ -4,6 +4,66 @@ from __future__ import annotations
 
 from typing import Optional, Tuple
 
+from ...common.combat import eat_until_hunger
+from ...common.farming import harvest_wheat_farm
+from ...common.husbandry import visit_known_herd_for_loot
+from ...common.inventory import withdraw_required_from_catalog
+
+
+def recover_food_from_known_sources(client, state, *, minimum_food: int = 12) -> bool:
+    """Harvest the established wheat farm, or hunt the operator-known
+    distant herd, then eat -- the fallback for a biome with nothing
+    huntable near base. Cheapest option (the nearby farm) first; the herd
+    trip is a genuine expedition and only worth it once the farm can't (or
+    doesn't yet) supply enough.
+
+    Shared by FOOD_AND_IRON and NETHER_AND_BLAZE: both phases can run a
+    bounded local hunt to zero success in an animal-sparse biome and retry
+    that same empty search forever without ever reaching for a location
+    already proven to work. Live A1 2026-09-06: NETHER_AND_BLAZE's rearm
+    step only called the bounded local search (acquire_emergency_food),
+    with no equivalent fallback, and rotated through a dozen empty
+    64-block sweeps -- across several failed rearm attempts and two
+    deaths -- while a verified farm or herd location sat unused in the
+    same checkpoint FOOD_AND_IRON had already written.
+    """
+    if state is not None:
+        moved = withdraw_required_from_catalog(
+            client,
+            {
+                "minecraft:bread": 8,
+                "minecraft:cooked_beef": 8,
+                "minecraft:cooked_porkchop": 8,
+                "minecraft:cooked_chicken": 8,
+                "minecraft:baked_potato": 8,
+            },
+            state=state,
+            max_travel_distance=96.0,
+        )
+        if moved > 0 and eat_until_hunger(client, minimum_food=minimum_food):
+            return True
+
+    farm = (state.custom_data.get("wheat_farm") if state else None) or {}
+    origin = farm.get("origin")
+    if isinstance(origin, (list, tuple)) and len(origin) == 3:
+        fx, fy, fz = (int(v) for v in origin)
+        if harvest_wheat_farm(client, fx, fy, fz) and eat_until_hunger(
+            client, minimum_food=minimum_food
+        ):
+            return True
+
+    source = persisted_food_source(state)
+    if not source:
+        return False
+    animal_type = str(source.get("animal_type", "cow"))
+    return visit_known_herd_for_loot(
+        client,
+        {"minecraft:beef": 3},
+        animal_type,
+        preserve_breeding_pair=True,
+        location=source["location"],
+    ) and eat_until_hunger(client, minimum_food=minimum_food)
+
 
 FOOD_ANIMALS = {
     "cow": ("minecraft:beef", "minecraft:cooked_beef"),

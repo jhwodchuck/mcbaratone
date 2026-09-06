@@ -24,6 +24,7 @@ from ...common.combat import (
 from ...common.landmark_scanner import import_shared_landmarks
 from ...common.health_recovery import recover_health
 from ...common.storage_catalog import catalog_for
+from .iron_age_food import recover_food_from_known_sources
 from ...common.nether import (
     _block_id,
     _frame_positions,
@@ -460,15 +461,29 @@ class NetherAndBlazeHandler(PhaseHandler):
         self._craft_armor_from_carried_iron(client)
 
         if not eat_until_hunger(client, minimum_food=18):
-            if not acquire_emergency_food(
-                client,
-                minimum_health=12.0,
-                minimum_food=18,
-                timeout=180.0,
-                max_exploration_distance=64.0,
-            ) or not eat_until_hunger(client, minimum_food=18):
-                print("  Nether rearm paused until hunger can be stabilized.")
-                return False
+            if (
+                not acquire_emergency_food(
+                    client,
+                    minimum_health=12.0,
+                    minimum_food=18,
+                    timeout=180.0,
+                    max_exploration_distance=64.0,
+                )
+                or not eat_until_hunger(client, minimum_food=18)
+            ):
+                # The bounded local hunt above can never succeed in an
+                # animal-sparse biome -- it retries the same empty area
+                # forever. Live A1 2026-09-06: rearm rotated through a dozen
+                # empty 64-block sweeps across several failed attempts (and
+                # two deaths) while a farm or herd FOOD_AND_IRON had already
+                # verified sat unused in this same checkpoint. Try it before
+                # giving up, the same fallback FOOD_AND_IRON's own hunger
+                # gate already uses.
+                if not recover_food_from_known_sources(
+                    client, state, minimum_food=18
+                ):
+                    print("  Nether rearm paused until hunger can be stabilized.")
+                    return False
         if not recover_health(client, minimum_health=18.0, timeout=60.0):
             print("  Nether rearm paused until health can be stabilized.")
             return False
@@ -541,6 +556,8 @@ class NetherAndBlazeHandler(PhaseHandler):
                 timeout=180.0,
                 max_exploration_distance=64.0,
             )
+            if _emergency_food_count(client) < 6:
+                recover_food_from_known_sources(client, state, minimum_food=18)
         eat_until_hunger(client, minimum_food=18)
         verified = self._nether_loadout_ready(client)
         if not verified:

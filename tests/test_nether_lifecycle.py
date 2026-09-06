@@ -411,6 +411,59 @@ def test_nether_rearm_requests_a_six_item_food_reserve(
     assert requested[0]["minimum_reserve"] == 6
 
 
+def test_nether_rearm_falls_back_to_known_food_source_when_local_search_fails(
+    monkeypatch, tmp_path
+):
+    """The bounded local hunt can never succeed in an animal-sparse biome --
+    it retries the same empty area forever. Live A1 2026-09-06: rearm
+    rotated through a dozen empty 64-block sweeps across several failed
+    attempts (and two deaths) while a farm or herd FOOD_AND_IRON had
+    already verified sat unused in this same checkpoint. The rearm gate
+    must try that known source before giving up, the same fallback
+    FOOD_AND_IRON's own hunger gate already uses.
+    """
+    handler, client, state = _portal_reuse_handler(tmp_path)
+    readiness = iter((False, True))
+    monkeypatch.setattr(handler, "_nether_loadout_ready", lambda *_a: next(readiness))
+    monkeypatch.setattr(handler, "_provision_iron_gear", lambda *_a, **_k: True)
+    monkeypatch.setattr(nether_prep, "equip_best_armor", lambda *_a: 4)
+    monkeypatch.setattr(nether_prep, "equip_best_weapon", lambda *_a: True)
+    monkeypatch.setattr(nether_prep, "recover_health", lambda *_a, **_k: True)
+    monkeypatch.setattr(nether_prep, "eat_until_hunger", lambda *_a, **_k: False)
+    monkeypatch.setattr(nether_prep, "acquire_emergency_food", lambda *_a, **_k: False)
+    monkeypatch.setattr(nether_prep, "_emergency_food_count", lambda *_a: 6)
+
+    fallback_calls = []
+
+    def fallback(_client, _state, **kwargs):
+        fallback_calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(nether_prep, "recover_food_from_known_sources", fallback)
+
+    assert handler._ensure_nether_readiness(client, state)
+    assert fallback_calls == [{"minimum_food": 18}]
+
+
+def test_nether_rearm_still_pauses_when_no_known_food_source_helps(
+    monkeypatch, tmp_path
+):
+    """Unchanged safety behavior when nothing -- local search or known
+    source -- can restore hunger: rearm must still pause, not proceed
+    naked."""
+    handler, client, state = _portal_reuse_handler(tmp_path)
+    monkeypatch.setattr(handler, "_nether_loadout_ready", lambda *_a: False)
+    monkeypatch.setattr(nether_prep, "equip_best_armor", lambda *_a: 4)
+    monkeypatch.setattr(nether_prep, "equip_best_weapon", lambda *_a: True)
+    monkeypatch.setattr(nether_prep, "eat_until_hunger", lambda *_a, **_k: False)
+    monkeypatch.setattr(nether_prep, "acquire_emergency_food", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        nether_prep, "recover_food_from_known_sources", lambda *_a, **_k: False
+    )
+
+    assert handler._ensure_nether_readiness(client, state) is False
+
+
 def test_nether_rearm_equips_recovered_armor_before_any_mining(monkeypatch, tmp_path):
     handler, client, state = _portal_reuse_handler(tmp_path)
     events = []

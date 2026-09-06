@@ -42,13 +42,16 @@ from ...common.inventory import (
 from ...common.navigation import find_nearby_block, goto, staged_goto
 from ...common import harness_ops
 from ...common.combat import acquire_emergency_food, eat_until_hunger, recover_health
-from ...common.farming import harvest_wheat_farm
 from ...common.husbandry import (
     KNOWN_HERD_WAYPOINTS,
     discover_herd,
     visit_known_herd_for_loot,
 )
-from .iron_age_food import persisted_food_source, remember_food_source
+from .iron_age_food import (
+    persisted_food_source,
+    recover_food_from_known_sources,
+    remember_food_source,
+)
 from . import iron_age_progress, iron_age_provisioning
 
 class FoodAndIronHandler(PhaseHandler):
@@ -175,49 +178,8 @@ class FoodAndIronHandler(PhaseHandler):
         )
 
     def _recover_food_from_known_sources(self, client) -> bool:
-        """Harvest the established wheat farm, or hunt the operator-known
-        distant herd, then eat -- the fallback for a biome with nothing
-        huntable near base. Cheapest option (the nearby farm) first; the
-        herd trip is a genuine expedition and only worth it once the farm
-        can't (or doesn't yet) supply enough.
-        """
-        if self.state is not None:
-            moved = withdraw_required_from_catalog(
-                client,
-                {
-                    "minecraft:bread": 8,
-                    "minecraft:cooked_beef": 8,
-                    "minecraft:cooked_porkchop": 8,
-                    "minecraft:cooked_chicken": 8,
-                    "minecraft:baked_potato": 8,
-                },
-                state=self.state,
-                max_travel_distance=96.0,
-            )
-            if moved > 0 and eat_until_hunger(client, minimum_food=12):
-                return True
-
-        farm = (self.state.custom_data.get("wheat_farm") if self.state else None) or {}
-        origin = farm.get("origin")
-        if isinstance(origin, (list, tuple)) and len(origin) == 3:
-            fx, fy, fz = (int(v) for v in origin)
-            if harvest_wheat_farm(client, fx, fy, fz) and eat_until_hunger(
-                client, minimum_food=12
-            ):
-                return True
-
-        source = persisted_food_source(self.state)
-        if not source:
-            return False
-        kwargs = {"preserve_breeding_pair": True}
-        animal_type = str(source.get("animal_type", "cow"))
-        kwargs["location"] = source["location"]
-        return visit_known_herd_for_loot(
-            client,
-            {"minecraft:beef": 3},
-            animal_type,
-            **kwargs,
-        ) and eat_until_hunger(client, minimum_food=12)
+        """See iron_age_food.recover_food_from_known_sources."""
+        return recover_food_from_known_sources(client, self.state)
 
     def _remember_renewable_food_source(
         self,

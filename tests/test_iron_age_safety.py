@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from baritone_client.automator.phases import iron_age, iron_age_provisioning
+from baritone_client.automator.phases import iron_age, iron_age_food, iron_age_provisioning
 from baritone_client.common import resources
 from baritone_client.common.tasks import SurvivalRecoveryRequired
 
@@ -40,7 +40,7 @@ def test_iron_phase_checks_cataloged_food_before_hunting(monkeypatch, tmp_path):
     )
     calls = []
     monkeypatch.setattr(
-        iron_age,
+        iron_age_food,
         "withdraw_required_from_catalog",
         lambda _client, requirements, state=None, max_travel_distance=None: calls.append(
             (requirements, max_travel_distance)
@@ -48,7 +48,7 @@ def test_iron_phase_checks_cataloged_food_before_hunting(monkeypatch, tmp_path):
         or 1,
     )
     monkeypatch.setattr(
-        iron_age,
+        iron_age_food,
         "eat_until_hunger",
         lambda _client, minimum_food: minimum_food == 12,
     )
@@ -2290,9 +2290,10 @@ def test_stabilize_hunger_falls_back_to_farm_when_local_search_fails(
 
     monkeypatch.setattr(iron_age, "eat_until_hunger", eat_until_hunger_stub)
     monkeypatch.setattr(iron_age, "acquire_emergency_food", lambda *_a, **_k: False)
-    monkeypatch.setattr(iron_age, "harvest_wheat_farm", harvest_then_allow_eating)
+    monkeypatch.setattr(iron_age_food, "eat_until_hunger", eat_until_hunger_stub)
+    monkeypatch.setattr(iron_age_food, "harvest_wheat_farm", harvest_then_allow_eating)
     monkeypatch.setattr(
-        iron_age, "visit_known_herd_for_loot",
+        iron_age_food, "visit_known_herd_for_loot",
         lambda *_a, **_k: (_ for _ in ()).throw(
             AssertionError("must not travel to the herd when the farm already worked")
         ),
@@ -2344,13 +2345,14 @@ def test_stabilize_hunger_falls_back_to_known_herd_when_no_farm_established(
 
     monkeypatch.setattr(iron_age, "eat_until_hunger", eat_until_hunger_stub)
     monkeypatch.setattr(iron_age, "acquire_emergency_food", lambda *_a, **_k: False)
+    monkeypatch.setattr(iron_age_food, "eat_until_hunger", eat_until_hunger_stub)
     monkeypatch.setattr(
-        iron_age, "harvest_wheat_farm",
+        iron_age_food, "harvest_wheat_farm",
         lambda *_a, **_k: (_ for _ in ()).throw(
             AssertionError("must not try to harvest a farm that was never established")
         ),
     )
-    monkeypatch.setattr(iron_age, "visit_known_herd_for_loot", visit_herd)
+    monkeypatch.setattr(iron_age_food, "visit_known_herd_for_loot", visit_herd)
 
     assert handler._stabilize_hunger(client) is True
     assert visited == [
@@ -2489,10 +2491,11 @@ def test_stabilize_hunger_health_branch_falls_back_to_known_sources(
     # farm harvest + eat below makes natural regen (and thus recovery) possible.
     monkeypatch.setattr(iron_age, "recover_health", lambda *_a, **_k: fed["v"])
     monkeypatch.setattr(iron_age, "acquire_emergency_food", lambda *_a, **_k: False)
-    monkeypatch.setattr(iron_age, "harvest_wheat_farm", harvest_then_allow_regen)
     monkeypatch.setattr(iron_age, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(iron_age_food, "harvest_wheat_farm", harvest_then_allow_regen)
+    monkeypatch.setattr(iron_age_food, "eat_until_hunger", lambda *_a, **_k: True)
     monkeypatch.setattr(
-        iron_age,
+        iron_age_food,
         "visit_known_herd_for_loot",
         lambda *_a, **_k: (_ for _ in ()).throw(
             AssertionError("farm already restored health; no herd trip needed")
@@ -2526,9 +2529,10 @@ def test_stabilize_hunger_health_branch_still_yields_when_no_food_source(
 
     monkeypatch.setattr(iron_age, "recover_health", lambda *_a, **_k: False)
     monkeypatch.setattr(iron_age, "acquire_emergency_food", lambda *_a, **_k: False)
-    monkeypatch.setattr(iron_age, "harvest_wheat_farm", lambda *_a, **_k: False)
-    monkeypatch.setattr(iron_age, "visit_known_herd_for_loot", lambda *_a, **_k: False)
     monkeypatch.setattr(iron_age, "eat_until_hunger", lambda *_a, **_k: False)
+    monkeypatch.setattr(iron_age_food, "harvest_wheat_farm", lambda *_a, **_k: False)
+    monkeypatch.setattr(iron_age_food, "visit_known_herd_for_loot", lambda *_a, **_k: False)
+    monkeypatch.setattr(iron_age_food, "eat_until_hunger", lambda *_a, **_k: False)
 
     with pytest.raises(SurvivalRecoveryRequired):
         handler._stabilize_hunger(client)
