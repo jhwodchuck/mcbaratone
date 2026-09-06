@@ -656,13 +656,10 @@ def test_out_of_reach_container_is_approached_before_giving_up(monkeypatch):
     )
 
     # The open itself fails against this stub transport; the reach gate is
-    # what matters -- it must no longer short-circuit before moving. Every
-    # subsequent failed interact attempt also forces its own reposition (a
-    # separate, later fix), so more than one approach is now expected --
-    # the point here is that the very first one happens at all.
+    # what matters -- it must no longer short-circuit before moving.
     inventory_ops.do_open_container(ctx, (-188, 104, -382), timeout=0.1)
 
-    assert approached[0] == (-188, 104, -382), "must walk to the container"
+    assert approached == [(-188, 104, -382)], "must walk to the container"
     assert not any("Still cannot reach container" in e for e in ctx.events)
 
 
@@ -713,26 +710,55 @@ def test_container_on_a_different_floor_forces_a_real_reposition(monkeypatch):
 
     inventory_ops.do_open_container(ctx, (-8, 160, 8), timeout=0.1)
 
-    # Every failed interact attempt also forces its own reposition (a
-    # separate, later fix), so more than one call is expected here too --
-    # the point is that the very first one is forced, not distance-trusted.
-    assert calls[0] == (-8, 160, 8, True), "must force a real reposition, not trust dist alone"
-    assert all(force_reposition for *_pos, force_reposition in calls)
+    assert calls == [(-8, 160, 8, True)], "must force a real reposition, not trust dist alone"
 
 
-def test_container_blocked_by_a_same_floor_obstruction_reroutes_on_interact_failure(monkeypatch):
-    """A raycast miss can come from a corner, not just a different floor.
+# Real block geometry read live from A1 2026-09-06 around the failing
+# crafting table at (-4, 162, 5). Only the columns exercised by
+# _find_clear_approach's candidates and sightline samples are populated;
+# anything else defaults to air.
+_A1_CRAFTING_TABLE_GEOMETRY = {
+    (-4, 162, 5): "minecraft:crafting_table",
+    (-4, 161, 5): "minecraft:snow_block",   # table's own floor
+    (-5, 162, 4): "minecraft:snow_block",   # the diagonal obstruction
+    (-5, 162, 5): "minecraft:snow_block",
+    (-4, 162, 4): "minecraft:spruce_log",   # not walkable: rejects this candidate
+    (-3, 161, 5): "minecraft:snow_block",   # floor for the one clear approach
+    (-3, 162, 5): "minecraft:air",
+    (-3, 163, 5): "minecraft:air",
+}
+
+
+def test_find_clear_approach_picks_the_neighbour_with_an_actual_sightline(monkeypatch):
+    """_find_clear_approach must verify line of sight, not just walkability.
 
     Live A1 2026-09-06: a bot 2.2 blocks from its own crafting table, same
-    y-level as the table (vertical_gap=0, so the floor-mismatch gate above
-    never fires), failed "Target is not visible on a real block ray" on
-    every one of at least 7 consecutive campaign attempts. Diagnosed via
-    live block geometry: a solid snow_block sat on the direct diagonal
-    between the bot's eye and the table's center. No distance-based
-    precondition can enumerate every obstruction shape in advance, so the
-    fix instead reacts to the interact failure itself -- the one signal
-    that is always right -- and forces a reposition before the next
-    attempt rather than retrying blind from the same spot.
+    y-level (vertical_gap=0, so the floor-mismatch gate never fires), failed
+    "Target is not visible on a real block ray" on at least 7 consecutive
+    campaign attempts. A solid snow_block sat on the direct diagonal between
+    the bot's eye and the table's center. This reproduces that exact
+    geometry and checks the one clear neighbour, (-3, 162, 5), is the one
+    returned -- not the walkable-but-blocked corner the bot was stuck in.
+    """
+    monkeypatch.setattr(
+        inventory_ops, "block_id_at",
+        lambda _ctx, x, y, z: _A1_CRAFTING_TABLE_GEOMETRY.get((x, y, z), "minecraft:air"),
+    )
+
+    approach = inventory_ops._find_clear_approach(object(), (-4, 162, 5))
+
+    assert approach == (-3, 162, 5)
+
+
+def test_container_blocked_by_a_same_floor_obstruction_reroutes_via_clear_approach(monkeypatch):
+    """do_open_container must route through a verified sightline, not retry blind.
+
+    move_near(force_reposition=True) was tried here first and made things
+    worse: find_stand_positions' radius=3 area scan is ~600 sequential
+    block_id_at calls with no line-of-sight check at all, took ~80s on live
+    A1 network latency, and still re-selected a walkable-but-blocked
+    candidate every time. This confirms do_open_container now reaches the
+    one actually-clear neighbour instead.
     """
 
     class Transport:
@@ -754,27 +780,28 @@ def test_container_blocked_by_a_same_floor_obstruction_reroutes_on_interact_fail
         def get_position(self):
             return self.position
 
-    ctx = Context()
-    calls = []
+        def get_block(self, x, y, z):
+            return _A1_CRAFTING_TABLE_GEOMETRY.get((x, y, z), "minecraft:air")
 
-    def fake_move_near(_ctx, x, y, z, timeout=20.0, force_reposition=False):
-        calls.append((x, y, z, force_reposition))
+    ctx = Context()
+    goto_calls = []
+
+    def fake_do_goto(_ctx, target, **_kwargs):
+        goto_calls.append(target)
         return True
 
-    monkeypatch.setattr(inventory_ops, "block_id_at", lambda *_a: "minecraft:crafting_table")
-    monkeypatch.setattr(inventory_ops, "move_near", fake_move_near)
+    monkeypatch.setattr(inventory_ops, "block_id_at", lambda _ctx, x, y, z: _ctx.get_block(x, y, z))
     monkeypatch.setattr(inventory_ops, "close_screen", lambda *_a, **_k: None)
     monkeypatch.setattr(inventory_ops.time, "sleep", lambda _s: None)
     monkeypatch.setattr(inventory_ops, "robust_interact_block", lambda *_a, **_k: False)
 
+    from tests.utils.mc_harness import actions
+
+    monkeypatch.setattr(actions, "do_goto", fake_do_goto)
+
     inventory_ops.do_open_container(ctx, (-4, 162, 5), timeout=0.1)
 
-    # No precondition gate should have fired (dist and vertical_gap are
-    # both fine); every reposition here comes from reacting to the actual
-    # interact failures, and each one must skip move_near's own
-    # close-enough shortcut too.
-    assert calls, "a failed interact must trigger a reposition"
-    assert all(call == (-4, 162, 5, True) for call in calls)
+    assert {"x": -3, "y": 162, "z": 5} in goto_calls, "must route to the verified clear neighbour"
 
 
 def test_container_still_out_of_reach_after_approach_gives_up(monkeypatch):

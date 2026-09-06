@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 from tests.functional.shared.block_ops import (
     block_id_at,
+    is_liquid,
     move_near,
     place_block_at,
     bot_place_block,
@@ -347,6 +348,78 @@ def ensure_player_crafting_output_space(ctx, screen=None) -> bool:
     return ensure_crafting_output_space(ctx, screen=screen)
 
 
+#: Vanilla eye height for a standing player.
+_EYE_HEIGHT = 1.62
+
+
+def _line_of_sight_clear(
+    ctx,
+    eye: Tuple[float, float, float],
+    center: Tuple[float, float, float],
+    target: Tuple[int, int, int],
+) -> bool:
+    """Sample the straight line eye->center for a solid block.
+
+    Mirrors the bridge's own interact_block raycast: a real line between two
+    points, independent of look direction. Distance and walkability say
+    nothing about whether that line is actually clear. The target block
+    itself is solid by definition -- that is what we are aiming at -- so a
+    sample that lands inside it (the last stretch of any short line
+    necessarily does) is the goal being reached, not an obstruction.
+    """
+    ex, ey, ez = eye
+    cx, cy, cz = center
+    for step in range(1, 8):
+        t = step / 8
+        x = ex + (cx - ex) * t
+        y = ey + (cy - ey) * t
+        z = ez + (cz - ez) * t
+        cell = (int(x // 1), int(y // 1), int(z // 1))
+        if cell == target:
+            continue
+        block = block_id_at(ctx, *cell)
+        if block and "air" not in block:
+            return False
+    return True
+
+
+def _find_clear_approach(ctx, pos: Tuple[int, int, int]) -> Optional[Tuple[int, int, int]]:
+    """Find a neighbour of pos with an actually-unobstructed view of it.
+
+    find_stand_positions/move_near only check walkability -- never line of
+    sight -- so a "close enough" candidate they pick can still have a wall
+    or pillar between its eye and the target. That is exactly the shape of
+    a raycast-miss failure, which no distance or walkability heuristic
+    predicts. This checks only the target's immediate neighbours (a
+    handful of block_id_at calls) and verifies each one's sightline
+    directly, since that is the one thing that actually predicts success --
+    unlike a full-radius area scan, which costs hundreds of bridge round
+    trips and still cannot tell you this.
+    """
+    tx, ty, tz = pos
+    center = (tx + 0.5, ty + 0.5, tz + 0.5)
+    candidates = (
+        (tx + 1, ty, tz), (tx - 1, ty, tz),
+        (tx, ty, tz + 1), (tx, ty, tz - 1),
+        (tx + 1, ty, tz + 1), (tx - 1, ty, tz - 1),
+        (tx + 1, ty, tz - 1), (tx - 1, ty, tz + 1),
+    )
+    for cx, cy, cz in candidates:
+        floor = block_id_at(ctx, cx, cy - 1, cz)
+        if not floor or "air" in floor or is_liquid(floor):
+            continue
+        stand = block_id_at(ctx, cx, cy, cz)
+        if not stand or "air" not in stand:
+            continue
+        head = block_id_at(ctx, cx, cy + 1, cz)
+        if not head or "air" not in head:
+            continue
+        eye = (cx + 0.5, cy + _EYE_HEIGHT, cz + 0.5)
+        if _line_of_sight_clear(ctx, eye, center, pos):
+            return (cx, cy, cz)
+    return None
+
+
 def do_open_container(
     ctx,
     pos: Tuple[int, int, int],
@@ -464,15 +537,31 @@ def do_open_container(
             # 2.2 blocks from its own crafting table, same y-level, failed
             # this raycast on every one of at least 7 consecutive campaign
             # attempts because a snow_block sat on the direct line between
-            # its eye and the table's center. Force a real reposition off
-            # the interact failure itself, the same signal that already
-            # proved the current spot cannot work, rather than retrying
-            # blind from it again.
+            # its eye and the table's center.
+            #
+            # move_near(force_reposition=True) was tried here first and made
+            # this worse: find_stand_positions' radius=3 area scan is ~600
+            # sequential block_id_at calls with no line-of-sight check at
+            # all, which took ~80s on live A1 network latency, starved
+            # concurrent bridge users badly enough to trip a "Hunger Check
+            # Failed: Timeout waiting for bridge response", and still ended
+            # up re-selecting the same unobstructed-by-its-own-criteria but
+            # sightline-blocked candidate every time. _find_clear_approach
+            # checks only the target's immediate neighbours and verifies
+            # the one thing that actually predicts success -- a real
+            # sightline -- for a small fraction of the cost.
             if attempt < attempts:
-                move_near(
-                    ctx, pos[0], pos[1], pos[2], timeout=8.0,
-                    force_reposition=True,
-                )
+                approach = _find_clear_approach(ctx, pos)
+                if approach is not None:
+                    from tests.utils.mc_harness.actions import do_goto
+
+                    do_goto(
+                        ctx, {"x": approach[0], "y": approach[1], "z": approach[2]},
+                        timeout=8.0, arrival_radius=1.0,
+                        require_arrival=True, allow_incomplete=False,
+                    )
+                else:
+                    ctx.log_event(f"No line-of-sight approach found near {pos}")
 
         deadline = time.time() + per_attempt_timeout
         while time.time() < deadline:
