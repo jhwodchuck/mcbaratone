@@ -62,8 +62,11 @@ def run_crop_opportunity(
     # If the farm command didn't change inventories but crop blocks are present
     # in the world, the patch is already planted and waiting to mature. Accept
     # it as productive instead of cycling through rebuild attempts forever.
-    if block_finder(client, list(CROP_BLOCKS), radius=12):
-        return True, "crop blocks present; awaiting maturation", before, after
+    # The player may have moved during the farm command; re-center at the farm
+    # location so the block search covers the actual patch.
+    if traveler(client, *location, timeout=30, tolerance=3.0):
+        if block_finder(client, list(CROP_BLOCKS), radius=12):
+            return True, "crop blocks present; awaiting maturation", before, after
 
     from ...common.farming import (
         establish_wheat_farm,

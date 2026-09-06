@@ -787,3 +787,73 @@ def test_run_crop_opportunity_accepts_crop_blocks_without_inventory_change():
 
     assert result[0] is True
     assert "crop" in result[1]
+
+
+def test_run_crop_opportunity_recenters_before_final_crop_check(monkeypatch):
+    """When the player drifts away during #farm, the final verification must
+    re-center at the farm location to detect existing crops.
+
+    Regression for: crop_farm blocker with 178 no-progress streak where
+    crops existed but block_finder searched near the wrong position.
+    """
+    import baritone_client.automator.common.crop_opportunity as crop_opp
+    from types import SimpleNamespace
+
+    # Track player position: starts at farm, moves away after farm command
+    player_pos = {"x": 0, "y": 64, "z": 0}
+    travel_calls = []
+    block_finder_calls = []
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, payload=None: {
+                "block_position": player_pos.copy()
+            } if route == "get_state" else {}
+        )
+    )
+    opp = SimpleNamespace(location=(0, 64, 0))
+
+    def inv_reader(_client):
+        return {"minecraft:wheat": 0, "minecraft:wheat_seeds": 5}
+
+    def traveler(_client, x, y, z, **_kwargs):
+        travel_calls.append((x, y, z))
+        player_pos["x"], player_pos["y"], player_pos["z"] = x, y, z
+        return True
+
+    # block_finder searches near current player_pos; crops are at (0,64,0)
+    def found_crop(_client, block_ids, **kwargs):
+        block_finder_calls.append((player_pos["x"], player_pos["y"], player_pos["z"]))
+        # Only find crops if search center is near the farm
+        if abs(player_pos["x"] - 0) <= 12 and abs(player_pos["z"] - 0) <= 12:
+            return (0, 64, 1)
+        return None
+
+    sleeper = lambda _seconds: None
+
+    # Simulate: initial travel to farm succeeds, then farm command runs,
+    # player drifts to (100, 64, 100), then final check should re-center
+    result = crop_opp.run_crop_opportunity(
+        client,
+        opp,
+        0.01,  # short timeout to exit loop quickly
+        inventory_reader=inv_reader,
+        traveler=traveler,
+        block_finder=found_crop,
+        sleeper=sleeper,
+        state=None,
+    )
+
+    # Should succeed because final check re-centers and finds crops
+    assert result[0] is True, f"Expected success, got: {result}"
+    assert "crop" in result[1]
+
+    # Verify traveler was called twice: initial + re-center before final check
+    assert len(travel_calls) >= 2, f"Expected at least 2 travel calls, got {travel_calls}"
+    # First call to farm location (0,64,0), last call also to farm location
+    assert travel_calls[0] == (0, 64, 0)
+    assert travel_calls[-1] == (0, 64, 0)
+
+    # Verify block_finder was called at least once at farm location
+    farm_searches = [c for c in block_finder_calls if abs(c[0]) <= 12 and abs(c[2]) <= 12]
+    assert len(farm_searches) >= 1, f"block_finder never searched near farm: {block_finder_calls}"
