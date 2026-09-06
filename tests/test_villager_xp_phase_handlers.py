@@ -7,6 +7,7 @@ from baritone_client.automator.phases import xp_engine as xp_phase
 from baritone_client.automator.resource_manager import ResourceManager
 from baritone_client.automator.state_manager import Phase
 from baritone_client.common import mob_farm, villager
+from baritone_client.common.combat import entity_position
 
 
 REGISTERED_ROUTES = {
@@ -290,3 +291,111 @@ def test_resource_requirements_are_real_nonzero_preconditions():
     assert resources.check_phase_requirements(Phase.XP_ENGINE) == {
         "minecraft:iron_sword": 1
     }
+
+
+class VillageTransport:
+    """Stubs get_state/get_entities/explore/goto for locate_village."""
+
+    def __init__(self, entity_batches, position=None):
+        self.calls = []
+        self._entity_batches = list(entity_batches)
+        self.position = dict(position or {"x": 0, "y": 64, "z": 0})
+
+    def dispatch(self, route, payload, **_kwargs):
+        self.calls.append((route, dict(payload) if isinstance(payload, dict) else payload))
+        if route == "get_state":
+            return {"block_position": dict(self.position)}
+        if route == "get_entities":
+            batch = (
+                self._entity_batches.pop(0)
+                if len(self._entity_batches) > 1
+                else self._entity_batches[0]
+            )
+            return {"entities": batch}
+        return {"accepted": True}
+
+
+def test_locate_village_finds_two_adults_on_the_first_scan():
+    transport = VillageTransport([[adult(1, 40), adult(2, 44)]])
+    client = SimpleNamespace(transport=transport)
+
+    anchor = villager.locate_village(client)
+
+    assert anchor == (42, 64, 10)
+    assert any(route == "explore" for route, _payload in transport.calls)
+    assert any(route == "get_entities" for route, _payload in transport.calls)
+
+
+def test_locate_village_gives_up_after_the_timeout_when_none_is_found(monkeypatch):
+    transport = VillageTransport([[]])
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(villager.time, "sleep", lambda _seconds: None)
+
+    assert villager.locate_village(client, timeout=1) is None
+
+
+def test_villager_handler_travels_to_a_located_village_before_failing(monkeypatch):
+    state = DummyState()
+    handler = villager_phase.VillagerInfraHandler()
+
+    villagers = [adult(1, 10), adult(2, 12)]
+    positions = [entity_position(entity) for entity in villagers]
+    observations = [([], [], []), (villagers, villagers, positions)]
+
+    monkeypatch.setattr(
+        villager_phase.VillagerInfraHandler,
+        "_observe_nearby_adult_villagers",
+        staticmethod(lambda _client: observations.pop(0)),
+    )
+    traveled = []
+    monkeypatch.setattr(
+        villager_phase.VillagerInfraHandler,
+        "_travel_to_a_located_village",
+        staticmethod(lambda *_a, **_k: traveled.append(True) or True),
+    )
+    monkeypatch.setattr(
+        villager_phase,
+        "build_villager_breeder",
+        lambda *_args, **_kwargs: {
+            "location": [11, 64, 10],
+            "required_beds": 3,
+            "bed_blocks": [[10 + index, 64, 12] for index in range(6)],
+            "verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        villager_phase,
+        "start_villager_multiplication",
+        lambda *_args, **_kwargs: {
+            "offspring_uuid": "new-baby",
+            "offspring_observed": True,
+        },
+    )
+
+    result = handler.execute(
+        SimpleNamespace(), DummyResources(), state
+    )
+
+    assert traveled == [True]
+    assert result.success
+
+
+def test_villager_handler_still_fails_closed_when_no_village_is_reachable(monkeypatch):
+    state = DummyState()
+    handler = villager_phase.VillagerInfraHandler()
+    monkeypatch.setattr(
+        villager_phase,
+        "get_nearby_entities",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        villager_phase.VillagerInfraHandler,
+        "_travel_to_a_located_village",
+        staticmethod(lambda *_a, **_k: False),
+    )
+
+    result = handler.execute(SimpleNamespace(), DummyResources(), state)
+
+    assert not result.success
+    assert result.data["capability_blocker"] == "villager_transport"
+    assert result.data["observed_adults"] == 0

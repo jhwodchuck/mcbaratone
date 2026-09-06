@@ -4,9 +4,13 @@ from ...common import TaskResult
 from ...common.combat import entity_position, get_nearby_entities
 from ...common.farming import harvest_wheat_farm
 from ...common.inventory import count_item, withdraw_required_from_catalog
-from ...common.navigation import staged_goto
+from ...common.navigation import goto, staged_goto
 from ...common.resources import ensure_supplies
-from ...common.villager import build_villager_breeder, start_villager_multiplication
+from ...common.villager import (
+    build_villager_breeder,
+    locate_village,
+    start_villager_multiplication,
+)
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
@@ -33,23 +37,32 @@ class VillagerInfraHandler(PhaseHandler):
             )
 
         try:
-            villagers = [
-                entity
-                for entity in get_nearby_entities(client, 32, raise_on_error=True)
-                if entity.get("type") == "minecraft:villager"
-            ]
+            villagers, adults, positions = self._observe_nearby_adult_villagers(client)
         except Exception as exc:
             return TaskResult.fail("Could not observe nearby villagers", error=str(exc))
 
-        adults = [entity for entity in villagers if not bool(entity.get("is_baby"))]
-        positions = [entity_position(entity) for entity in adults]
-        positions = [position for position in positions if position is not None]
         if len(adults) < 2 or len(positions) < 2:
-            return TaskResult.fail(
-                "Two nearby adult villagers are required; the current bridge cannot safely prove villager transport",
-                observed_adults=len(adults),
-                capability_blocker="villager_transport",
-            )
+            if not self._travel_to_a_located_village(client, state):
+                return TaskResult.fail(
+                    "Two nearby adult villagers are required and no village could be located",
+                    observed_adults=len(adults),
+                    capability_blocker="villager_transport",
+                )
+            try:
+                villagers, adults, positions = self._observe_nearby_adult_villagers(client)
+            except Exception as exc:
+                return TaskResult.fail(
+                    "Could not observe nearby villagers after reaching a village",
+                    error=str(exc),
+                )
+            if len(adults) < 2 or len(positions) < 2:
+                return TaskResult.fail(
+                    "Village travel did not surface two adult villagers; "
+                    "the current bridge cannot safely prove villager transport"
+                    " to relocate more",
+                    observed_adults=len(adults),
+                    capability_blocker="villager_transport",
+                )
 
         anchor = tuple(
             round(sum(position[index] for position in positions) / len(positions))
@@ -80,6 +93,67 @@ class VillagerInfraHandler(PhaseHandler):
         state.record_phase_payload(Phase.VILLAGER_INFRA, payload)
         state.save_checkpoint(resources.get_summary()["inventory"])
         return TaskResult.ok("Villager breeder verified by new offspring", **payload)
+
+    @staticmethod
+    def _observe_nearby_adult_villagers(client):
+        """Return (all_villagers, adults, positions) observed within 32 blocks."""
+        villagers = [
+            entity
+            for entity in get_nearby_entities(client, 32, raise_on_error=True)
+            if entity.get("type") == "minecraft:villager"
+        ]
+        adults = [entity for entity in villagers if not bool(entity.get("is_baby"))]
+        positions = [entity_position(entity) for entity in adults]
+        positions = [position for position in positions if position is not None]
+        return villagers, adults, positions
+
+    @staticmethod
+    def _travel_to_a_located_village(client, state: StateManager) -> bool:
+        """Reach a village with two adult villagers, without ever moving them.
+
+        This never captures or transports a villager -- capture_villager
+        fails closed because the bridge cannot yet prove boat/minecart
+        passenger capture is safe. Instead it brings the bot to villagers
+        that are already where the world generator put them, which is
+        exactly the population VillagerInfraHandler already knows how to
+        breed once they are within its 32-block observation radius.
+        """
+        known = state.get_locations("village").get("village", [])
+        if known:
+            village = known[0]
+            try:
+                target = (int(village["x"]), int(village["y"]), int(village["z"]))
+            except (KeyError, TypeError, ValueError):
+                target = None
+        else:
+            target = None
+
+        if target is None:
+            target = locate_village(client)
+            if target is None:
+                return False
+            state.add_location(
+                "village", *target, dimension="overworld", tags=["verified"]
+            )
+
+        try:
+            live = client.transport.dispatch("get_state", {})
+        except Exception:
+            live = {}
+        position = live.get("block_position", live.get("position", {})) if isinstance(live, dict) else {}
+        try:
+            current = (
+                int(position.get("x", target[0])),
+                int(position.get("y", target[1])),
+                int(position.get("z", target[2])),
+            )
+        except (TypeError, ValueError):
+            current = target
+
+        horizontal = ((current[0] - target[0]) ** 2 + (current[2] - target[2]) ** 2) ** 0.5
+        if horizontal > 48.0:
+            return staged_goto(client, target, current)
+        return goto(client, *target, timeout=120, tolerance=8.0)
 
     @staticmethod
     def _provision_breeding_bread(client, state: StateManager) -> bool:

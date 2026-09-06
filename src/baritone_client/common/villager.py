@@ -18,6 +18,14 @@ BED_BLOCKS = tuple(
     )
 )
 
+#: A village generates wherever the world seed put it, not near spawn, so a
+#: bot that only ever scans its own feet (_villagers' 32-block radius) can
+#: run an entire campaign without ever seeing one. Same eight-direction
+#: push idiom nether.find_nether_fortress uses to escape a stalled search.
+_SEARCH_HEADINGS = (
+    (1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1),
+)
+
 
 def _villagers(client, radius: int = 32) -> List[Dict[str, Any]]:
     return [
@@ -162,6 +170,116 @@ def start_villager_multiplication(
         time.sleep(max(0.01, float(poll_interval)))
 
 
+def locate_village(
+    client,
+    max_distance: int = 800,
+    timeout: int = 600,
+) -> Optional[Tuple[int, int, int]]:
+    """Wander outward, scanning for two adult villagers, until one is found.
+
+    Unlike a Nether fortress, a village has no distinctive block the bridge
+    can search for at range -- so this scans for the villagers themselves,
+    the same signal VillagerInfraHandler already checks at close range, and
+    pushes to a new heading (via explore + goto) whenever a scan produces no
+    movement, so the search does not stall at a single stationary point.
+    Read-only until an anchor is returned: no capture, no transport.
+    """
+    try:
+        state = client.transport.dispatch("get_state", {})
+    except Exception:
+        return None
+    if not isinstance(state, dict):
+        return None
+    origin = state.get("block_position", state.get("position", {}))
+    try:
+        start_x = int(origin.get("x", 0))
+        start_z = int(origin.get("z", 0))
+    except (TypeError, ValueError):
+        return None
+
+    try:
+        client.transport.dispatch("explore", {"x": start_x, "z": start_z})
+    except Exception:
+        pass
+
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    scan_interval = 10.0
+    next_scan = 0.0
+    last_position = None
+    stationary_scans = 0
+    heading_index = 0
+
+    while time.monotonic() < deadline:
+        now = time.monotonic()
+        if now < next_scan:
+            time.sleep(min(1.0, next_scan - now))
+            continue
+        next_scan = now + scan_interval
+
+        try:
+            current_state = client.transport.dispatch("get_state", {})
+        except Exception:
+            continue
+        if not isinstance(current_state, dict):
+            continue
+        position = current_state.get("block_position", current_state.get("position", {}))
+        try:
+            current_x = int(position.get("x", start_x))
+            current_y = int(position.get("y", 64))
+            current_z = int(position.get("z", start_z))
+        except (TypeError, ValueError):
+            continue
+
+        distance = ((current_x - start_x) ** 2 + (current_z - start_z) ** 2) ** 0.5
+        if distance > max_distance:
+            return None
+
+        try:
+            adults = [entity for entity in _villagers(client, radius=48) if not bool(entity.get("is_baby"))]
+        except Exception:
+            adults = []
+        positions = [
+            position for position in (entity_position(entity) for entity in adults)
+            if position is not None
+        ]
+        if len(positions) >= 2:
+            return tuple(
+                round(sum(pos[index] for pos in positions) / len(positions))
+                for index in range(3)
+            )
+
+        if (
+            last_position is not None
+            and abs(current_x - last_position[0]) <= 3
+            and abs(current_z - last_position[1]) <= 3
+        ):
+            stationary_scans += 1
+        else:
+            stationary_scans = 0
+        last_position = (current_x, current_z)
+
+        if stationary_scans >= 2:
+            stationary_scans = 0
+            heading = _SEARCH_HEADINGS[heading_index % len(_SEARCH_HEADINGS)]
+            heading_index += 1
+            leg = min(192, max(64, int(max_distance) // 4))
+            waypoint = (
+                start_x + int(heading[0] * leg),
+                current_y,
+                start_z + int(heading[1] * leg),
+            )
+            try:
+                client.transport.dispatch(
+                    "goto",
+                    {"x": waypoint[0], "y": waypoint[1], "z": waypoint[2], "radius": 12},
+                )
+                client.transport.dispatch("explore", {"x": waypoint[0], "z": waypoint[2]})
+            except Exception:
+                pass
+
+    return None
+
+
 def find_villager_workstation(
     client, profession: str = "librarian"
 ) -> Optional[Tuple[int, int, int]]:
@@ -181,6 +299,7 @@ __all__ = [
     "build_villager_breeder",
     "capture_villager",
     "find_villager_workstation",
+    "locate_village",
     "lock_librarian",
     "start_villager_multiplication",
 ]
