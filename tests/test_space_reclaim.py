@@ -655,3 +655,104 @@ def test_the_break_glass_pass_still_keeps_one_spare_of_duplicate_gear(monkeypatc
     space_reclaim.reclaim_drop_tier(_NS(), 3)
     assert seen[-1] is not None, seen
     assert seen[-1].get("minecraft:iron_helmet", 0) >= 1, seen[-1]
+
+
+# ---------------------------------------------------------------------------
+# _retreat_from_drop: a thrown item must not be walked straight back onto
+# ---------------------------------------------------------------------------
+def _corridor_client(open_directions):
+    """A client whose world is solid-floored, clear air everywhere, except
+    that each (dx, dz) key in ``open_directions`` is clear only up to the
+    given number of blocks -- beyond that (or in any unlisted direction) the
+    next step is a wall (solid feet) so retreat cannot continue past it.
+    """
+    from types import SimpleNamespace
+
+    def dispatch(route, payload=None):
+        if route == "get_state":
+            return {"block_position": {"x": 0, "y": 64, "z": 0}}
+        if route == "get_block":
+            x, y, z = payload["x"], payload["y"], payload["z"]
+            if y == 63:
+                return {"id": "minecraft:stone"}  # floor is solid everywhere
+            # y in (64, 65): feet/head clearance, open only up to each
+            # direction's listed depth and walled off beyond it.
+            if z == 0 and x != 0:
+                direction, n = (1 if x > 0 else -1, 0), abs(x)
+            elif x == 0 and z != 0:
+                direction, n = (0, 1 if z > 0 else -1), abs(z)
+            else:
+                direction, n = None, 0
+            if direction is not None and n <= open_directions.get(direction, 0):
+                return {"id": "minecraft:air"}
+            return {"id": "minecraft:stone"}
+        return {}
+
+    return SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+
+
+def test_retreat_from_drop_takes_the_full_three_blocks_when_clear(monkeypatch):
+    """The common case (an open corridor) must retreat the full distance."""
+    from baritone_client.common import inventory_disposal, navigation
+
+    client = _corridor_client({(1, 0): 3})
+    calls = []
+    monkeypatch.setattr(
+        navigation, "goto",
+        lambda _c, x, y, z, **kw: calls.append((x, y, z)) or True,
+    )
+
+    assert inventory_disposal._retreat_from_drop(client) is True
+    assert calls == [(3, 64, 0)]
+
+
+def test_retreat_from_drop_takes_a_partial_step_when_that_is_all_there_is(monkeypatch):
+    """THE A1Bot 2026-09-06 bug: every direction was clear for exactly 1
+    block and walled beyond that. The old all-or-nothing check retreated
+    nowhere, so the bot stood on its own drop through the whole vanilla
+    self-pickup delay and picked it straight back up.
+    """
+    from baritone_client.common import inventory_disposal, navigation
+
+    client = _corridor_client({(1, 0): 1, (-1, 0): 1, (0, 1): 1, (0, -1): 1})
+    calls = []
+    monkeypatch.setattr(
+        navigation, "goto",
+        lambda _c, x, y, z, **kw: calls.append((x, y, z)) or True,
+    )
+
+    assert inventory_disposal._retreat_from_drop(client) is True
+    assert calls == [(1, 64, 0)], (
+        "a 1-block retreat is still far enough to clear pickup range and "
+        "must be taken rather than discarded for not reaching 3"
+    )
+
+
+def test_retreat_from_drop_prefers_the_deepest_available_direction(monkeypatch):
+    """Among unequal partial retreats, take the one that goes furthest."""
+    from baritone_client.common import inventory_disposal, navigation
+
+    client = _corridor_client({(1, 0): 1, (0, 1): 2})
+    calls = []
+    monkeypatch.setattr(
+        navigation, "goto",
+        lambda _c, x, y, z, **kw: calls.append((x, y, z)) or True,
+    )
+
+    assert inventory_disposal._retreat_from_drop(client) is True
+    assert calls == [(0, 64, 2)]
+
+
+def test_retreat_from_drop_gives_up_only_when_truly_boxed_in(monkeypatch):
+    """No direction offers even 1 clear block: nothing to retreat to."""
+    from baritone_client.common import inventory_disposal, navigation
+
+    client = _corridor_client({})
+    calls = []
+    monkeypatch.setattr(
+        navigation, "goto",
+        lambda _c, x, y, z, **kw: calls.append((x, y, z)) or True,
+    )
+
+    assert inventory_disposal._retreat_from_drop(client) is False
+    assert calls == []

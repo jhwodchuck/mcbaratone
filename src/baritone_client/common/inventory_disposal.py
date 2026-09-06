@@ -127,6 +127,23 @@ def _wait_for_empty_slot(client: Any, inventory_slot: int) -> bool:
 
 
 def _retreat_from_drop(client):
+    """Step away far enough that a just-thrown item is not re-picked up.
+
+    Vanilla gives a player-dropped item a ~2-second self-pickup delay
+    specifically so the dropper can step away; PICKUP_SAFE_SETTLE_SECONDS
+    waits just past that window. But the previous version required a full
+    3-block clear line in one direction or did nothing at all, so a bot in a
+    mined tunnel -- clear for 1 block but blocked or open-floored beyond that
+    in every direction -- never moved, stood over its own drop for the whole
+    delay, and auto-picked it back up the instant the delay lapsed.
+
+    Live A1 2026-09-06 at (-300, 68, 191): every cardinal direction had a
+    valid first step but failed at step 2 or 3, so disposal reported
+    "no_slot_gain" and cooled down for 5 minutes, repeatedly, with 12 slots
+    of duplicate gear sitting there unshed. Take the longest safe
+    straight-line retreat available, even if that is only 1 block --
+    reaching pickup range is what matters, not reaching 3 blocks.
+    """
     from .automation_utils import _block_at, _is_solid
     from .navigation import goto
     try:
@@ -134,12 +151,25 @@ def _retreat_from_drop(client):
         pos = state.get("block_position", {})
         x, y, z = (int(pos[k]) for k in ("x", "y", "z"))
         air = {"minecraft:air", "minecraft:cave_air"}
+        best_direction, best_n = None, 0
         for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            if all(_is_solid(client, x + dx * n, y - 1, z + dz * n)
-                   and _block_at(client, x + dx * n, y, z + dz * n) in air
-                   and _block_at(client, x + dx * n, y + 1, z + dz * n) in air
-                   for n in (1, 2, 3)):
-                return goto(client, x + dx * 3, y, z + dz * 3, timeout=6, tolerance=0.8)
+            reached = 0
+            for n in (1, 2, 3):
+                if (
+                    _is_solid(client, x + dx * n, y - 1, z + dz * n)
+                    and _block_at(client, x + dx * n, y, z + dz * n) in air
+                    and _block_at(client, x + dx * n, y + 1, z + dz * n) in air
+                ):
+                    reached = n
+                else:
+                    break
+            if reached > best_n:
+                best_direction, best_n = (dx, dz), reached
+        if best_direction is None:
+            return False
+        dx, dz = best_direction
+        return goto(
+            client, x + dx * best_n, y, z + dz * best_n, timeout=6, tolerance=0.8
+        )
     except Exception:
         return False
-    return False
