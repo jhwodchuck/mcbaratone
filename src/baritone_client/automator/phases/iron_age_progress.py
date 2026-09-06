@@ -192,6 +192,10 @@ def build_phase_tasks(
                     handler._ensure_expedition_pickaxe,
                 ),
                 ActionTask(
+                    "Ensure expedition food reserve",
+                    handler._ensure_expedition_food,
+                ),
+                ActionTask(
                     "Checkpoint deep-mining task boundary",
                     lambda client: mark_deep_mining_stage(
                         client,

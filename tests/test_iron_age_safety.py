@@ -90,6 +90,85 @@ def test_expedition_pickaxe_restores_banked_iron_tool(monkeypatch, tmp_path):
     assert withdrawals == [{"minecraft:iron_pickaxe": 1}]
 
 
+def test_expedition_food_already_sufficient_needs_no_action(monkeypatch):
+    """A bot already carrying a real reserve should not craft or forage."""
+    handler = iron_age.FoodAndIronHandler()
+    monkeypatch.setattr(iron_age_provisioning, "emergency_food_count", lambda _client: 6)
+    monkeypatch.setattr(
+        iron_age_provisioning,
+        "craft_emergency_bread_from_carried_wheat",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("must not craft when the reserve is already met")
+        ),
+    )
+
+    assert handler._ensure_expedition_food(SimpleNamespace())
+
+
+def test_expedition_food_crafts_bread_from_carried_wheat_first(monkeypatch):
+    """Cheap carried-wheat bread should be tried before any foraging trip."""
+    handler = iron_age.FoodAndIronHandler()
+    monkeypatch.setattr(iron_age_provisioning, "emergency_food_count", lambda _client: 1)
+    monkeypatch.setattr(
+        iron_age_provisioning, "craft_emergency_bread_from_carried_wheat",
+        lambda _client, *, minimum_reserve: minimum_reserve == 6,
+    )
+    monkeypatch.setattr(
+        handler,
+        "_recover_food_from_known_sources",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("must not forage when carried wheat already closed the gap")
+        ),
+    )
+
+    assert handler._ensure_expedition_food(SimpleNamespace())
+
+
+def test_expedition_food_falls_back_to_known_sources_when_no_wheat_carried(monkeypatch):
+    """Live A1 2026-09-06: a bot went deep mining without a packed food
+    reserve, ran low underground, could not reach the surface for an
+    emergency search, and was reduced to eating rotten_flesh. This
+    reproduces the fallback path: carried-wheat crafting has nothing to
+    work with, so the established farm/herd recovery must be tried before
+    the expedition is allowed to proceed.
+    """
+    handler = iron_age.FoodAndIronHandler()
+    counts = {"value": 1}
+    monkeypatch.setattr(
+        iron_age_provisioning, "emergency_food_count", lambda _client: counts["value"]
+    )
+    monkeypatch.setattr(
+        iron_age_provisioning, "craft_emergency_bread_from_carried_wheat",
+        lambda *_a, **_k: False,
+    )
+    recovered = []
+
+    def recover(_client):
+        recovered.append(True)
+        counts["value"] = 6
+        return True
+
+    monkeypatch.setattr(handler, "_recover_food_from_known_sources", recover)
+
+    assert handler._ensure_expedition_food(SimpleNamespace())
+    assert recovered == [True]
+
+
+def test_expedition_food_refuses_departure_when_no_source_can_help(monkeypatch):
+    """If nothing can raise the reserve, the expedition must not proceed."""
+    handler = iron_age.FoodAndIronHandler()
+    monkeypatch.setattr(iron_age_provisioning, "emergency_food_count", lambda _client: 0)
+    monkeypatch.setattr(
+        iron_age_provisioning, "craft_emergency_bread_from_carried_wheat",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr(
+        handler, "_recover_food_from_known_sources", lambda *_a, **_k: False
+    )
+
+    assert not handler._ensure_expedition_food(SimpleNamespace())
+
+
 def test_iron_phase_resume_counts_existing_ingots_before_mining(monkeypatch):
     client = SimpleNamespace()
     gathered = []

@@ -58,6 +58,7 @@ class FoodAndIronHandler(PhaseHandler):
     _IRON_BANK_TARGET = 30
     _IRON_BANK_BATCH = 8
     _INITIAL_IRON_TRANSITION_Y = 15
+    _EXPEDITION_FOOD_RESERVE = 6
 
     def __init__(self) -> None:
         self.state: Optional[StateManager] = None
@@ -1276,6 +1277,10 @@ class FoodAndIronHandler(PhaseHandler):
                 return False
 
         return kit_ready()[0]
+
+    def _ensure_expedition_food(self, client) -> bool:
+        """See iron_age_provisioning.ensure_expedition_food."""
+        return iron_age_provisioning.ensure_expedition_food(self, client)
 
     def _ensure_expedition_pickaxe(self, client) -> bool:
         """Restore a banked iron pick before committing to deep mining."""

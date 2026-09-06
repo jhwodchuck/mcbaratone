@@ -13,6 +13,10 @@ from ...common.inventory import (
     craft,
     withdraw_required_from_chest,
 )
+from ...common.emergency_food import (
+    craft_emergency_bread_from_carried_wheat,
+    emergency_food_count,
+)
 from ...common.resources import ensure_supplies, gather_wood
 from ...common.tasks import IncrementalProgressRequired, PacingHoldRequired
 from .iron_age_food import persisted_food_source
@@ -333,6 +337,29 @@ def bake_durable_food(handler: "FoodAndIronHandler", client) -> bool:
             f"prepared {affordable} bread toward T1204"
         )
     return True
+
+
+def ensure_expedition_food(handler: "FoodAndIronHandler", client) -> bool:
+    """Carry a real food reserve before committing to a deep descent.
+
+    handler._ensure_durable_food only records a renewable SOURCE for later
+    recovery trips; it never checks what is actually packed for THIS trip. A
+    bot that departs at the stat-minimum food_level>=12 but carrying nothing
+    can run out mid-descent with no easy way back to a farm. Live A1
+    2026-09-06: a bot mining underground at y=144-164 ran low on food, could
+    not reach safe surface terrain for an emergency search, and was reduced
+    to eating rotten_flesh as a last resort. nether_prep.py already requires
+    this same reserve before a Nether departure; deep mining -- which
+    routinely runs longer and further from home -- had no equivalent floor
+    at all.
+    """
+    reserve = handler._EXPEDITION_FOOD_RESERVE
+    if emergency_food_count(client) >= reserve:
+        return True
+    if craft_emergency_bread_from_carried_wheat(client, minimum_reserve=reserve):
+        return True
+    handler._recover_food_from_known_sources(client)
+    return emergency_food_count(client) >= reserve
 
 
 def harvest_persisted_crop_farm(
