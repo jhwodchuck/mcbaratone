@@ -25,6 +25,7 @@ import pytest
 
 from baritone_client.common.space_reclaim import (
     SPACE_RECLAIM_RETAIN_COUNTS,
+    equipment_retain_floors,
     is_protected,
     space_reclaim_deposit_items,
 )
@@ -53,10 +54,12 @@ IRON_MINING_SLOTS_REQUIRED = 3
 def _banked(carried):
     """Item -> surplus count that would actually leave the inventory."""
     deposit = space_reclaim_deposit_items(carried)
+    floors = dict(SPACE_RECLAIM_RETAIN_COUNTS)
+    floors.update(equipment_retain_floors(carried))
     return {
-        item_id: carried[item_id] - SPACE_RECLAIM_RETAIN_COUNTS.get(item_id, 0)
+        item_id: carried[item_id] - floors.get(item_id, 0)
         for item_id in deposit
-        if carried[item_id] - SPACE_RECLAIM_RETAIN_COUNTS.get(item_id, 0) > 0
+        if carried[item_id] - floors.get(item_id, 0) > 0
     }
 
 
@@ -76,8 +79,6 @@ def test_the_deadlocked_inventory_frees_more_than_iron_mining_needs():
         "minecraft:stone_pickaxe",   # no pickaxe means no mining at all
         "minecraft:iron_axe",
         "minecraft:iron_shovel",
-        "minecraft:diamond_sword",
-        "minecraft:iron_chestplate",
         "minecraft:shield",
         "minecraft:bow",
         "minecraft:arrow",
@@ -86,6 +87,31 @@ def test_the_deadlocked_inventory_frees_more_than_iron_mining_needs():
 def test_never_banks_the_tools_or_armour_it_needs_to_survive(item_id):
     """Banking a bot's only pickaxe strands it exactly like a lost grave."""
     assert is_protected(item_id), f"{item_id} would be banked"
+
+
+@pytest.mark.parametrize(
+    "item_id",
+    [
+        "minecraft:iron_sword",
+        "minecraft:iron_chestplate",
+        "minecraft:iron_helmet",
+        "minecraft:iron_leggings",
+        "minecraft:iron_boots",
+    ],
+)
+def test_duplicate_armour_and_swords_are_capped_not_unprotected(item_id):
+    """Only one of each can ever be worn, so these are eligible for disposal
+    once _KEEP_TOKENS stops blanket-protecting them -- but equipment_retain_
+    floors must still keep exactly one spare.
+
+    Live A1 2026-09-06: 4 iron_helmet, 2 iron_boots, 2 iron_chestplate, 2
+    iron_leggings and 2 iron_sword -- 12 of 36 slots, none of it wearable
+    beyond the first of each -- permanently blocked the 3 free slots iron
+    gathering needed, because every copy matched a protected substring
+    regardless of count.
+    """
+    assert not is_protected(item_id), f"{item_id} would never be reclaimable"
+    assert equipment_retain_floors({item_id: 3}) == {item_id: 1}
 
 
 @pytest.mark.parametrize(
@@ -155,6 +181,53 @@ def test_redundant_flint_and_steel_is_shed_but_one_is_kept():
     assert carried["minecraft:flint_and_steel"] - banked["minecraft:flint_and_steel"] == 1
 
 
+# A1Bot 2026-09-06, 36/36 slots, stuck at "Verify Nether expedition loadout"
+# unable to gather the 4 iron it needed for a replacement iron_boots: none of
+# these 12 slots of spare gear -- only one of each ever wearable -- was ever
+# offered to disposal, because every copy matched a _KEEP_TOKENS substring
+# regardless of count.
+A1BOT_DUPLICATE_GEAR_INVENTORY = {
+    "minecraft:iron_helmet": 4, "minecraft:enchanted_book": 3,
+    "minecraft:iron_boots": 2, "minecraft:iron_chestplate": 2,
+    "minecraft:iron_sword": 2, "minecraft:iron_leggings": 2,
+    "minecraft:carrot": 1, "minecraft:rabbit_hide": 1,
+    "minecraft:wheat_seeds": 1, "minecraft:snowball": 1,
+    "minecraft:stone_pickaxe": 1, "minecraft:oak_planks": 1,
+    "minecraft:netherrack": 1, "minecraft:flint_and_steel": 1,
+    "minecraft:water_bucket": 1, "minecraft:spruce_planks": 1,
+    "minecraft:lead": 1, "minecraft:flint": 1, "minecraft:iron_shovel": 1,
+    "minecraft:cobblestone": 1, "minecraft:bone": 1, "minecraft:arrow": 1,
+    "minecraft:stick": 1, "minecraft:wheat": 1, "minecraft:dirt": 1,
+    "minecraft:oak_log": 1,
+}
+
+
+def test_duplicate_gear_frees_the_slots_iron_gathering_needs():
+    """THE A1Bot 2026-09-06 bug: 12 slots of unwearable duplicates, 0 freed."""
+    banked = _banked(A1BOT_DUPLICATE_GEAR_INVENTORY)
+
+    assert len(banked) >= IRON_MINING_SLOTS_REQUIRED, (
+        f"only {len(banked)} slot(s) would be freed from duplicate gear; "
+        f"iron gathering needs {IRON_MINING_SLOTS_REQUIRED}"
+    )
+
+
+@pytest.mark.parametrize(
+    "item_id",
+    [
+        "minecraft:iron_helmet", "minecraft:iron_boots",
+        "minecraft:iron_chestplate", "minecraft:iron_leggings",
+        "minecraft:iron_sword",
+    ],
+)
+def test_duplicate_gear_keeps_exactly_one_spare(item_id):
+    """Freeing the slots must not leave the bot unable to re-equip a piece."""
+    banked = _banked(A1BOT_DUPLICATE_GEAR_INVENTORY)
+
+    remaining = A1BOT_DUPLICATE_GEAR_INVENTORY[item_id] - banked.get(item_id, 0)
+    assert remaining == 1, f"expected exactly one {item_id} kept, got {remaining}"
+
+
 def test_working_building_stock_survives_the_sweep():
     """Cobblestone at its floor is not surplus, so it must not be banked."""
     banked = _banked(A1BOT_STUCK_INVENTORY)
@@ -165,7 +238,12 @@ def test_working_building_stock_survives_the_sweep():
 
 
 def test_an_all_protected_inventory_banks_nothing():
-    """No false positives: a lean survival kit is left completely alone."""
+    """No false positives: a lean survival kit is left completely alone.
+
+    iron_sword is type-eligible now that equipment is capped rather than
+    fully protected, but at count 1 it sits exactly on its one-spare floor,
+    so nothing is actually banked -- check the real outcome, not eligibility.
+    """
     lean = {
         "minecraft:iron_pickaxe": 1,
         "minecraft:iron_sword": 1,
@@ -173,7 +251,7 @@ def test_an_all_protected_inventory_banks_nothing():
         "minecraft:raw_iron": 12,
     }
 
-    assert space_reclaim_deposit_items(lean) == set()
+    assert _banked(lean) == {}
 
 
 def test_an_empty_or_unreadable_inventory_is_safe():
@@ -270,12 +348,17 @@ def _whole_stacks_droppable(carried):
 
     inventory_disposal.drop_items skips a slot when dropping it would fall
     below the retain floor, and it only moves whole stacks -- so an item under
-    its own floor is undroppable no matter how useless it is.
+    its own floor is undroppable no matter how useless it is. Equipment now
+    carries a dynamic one-spare floor (equipment_retain_floors) rather than a
+    static entry, so it must be folded in here the same way reclaim_drop_tier
+    folds it in for real.
     """
+    floors = dict(SPACE_RECLAIM_RETAIN_COUNTS)
+    floors.update(equipment_retain_floors(carried))
     return sorted(
         item_id
         for item_id in space_reclaim_deposit_items(carried)
-        if carried[item_id] - carried[item_id] >= SPACE_RECLAIM_RETAIN_COUNTS.get(item_id, 0)
+        if carried[item_id] - carried[item_id] >= floors.get(item_id, 0)
     )
 
 
@@ -304,12 +387,21 @@ def test_the_deep_mining_deadlock_keeps_everything_that_matters():
 
     for item_id in (
         "minecraft:iron_pickaxe", "minecraft:stone_pickaxe",
-        "minecraft:iron_sword", "minecraft:iron_shovel", "minecraft:shield",
-        "minecraft:leather_boots", "minecraft:diamond",
+        "minecraft:iron_shovel", "minecraft:shield",
+        "minecraft:diamond",
         "minecraft:iron_ingot", "minecraft:bread", "minecraft:beef",
         "minecraft:golden_apple", "minecraft:enchanted_book",
     ):
         assert item_id not in shed, f"{item_id} must survive the sweep"
+
+    # iron_sword and leather_boots are now type-eligible (equipment is capped
+    # rather than fully protected), but the outcome must still respect the
+    # one-spare floor: leather_boots (carried: 1) sits at the floor and is
+    # never actually removed; iron_sword (carried: 2) banks its one surplus
+    # copy and keeps the rest.
+    banked = _banked(A1BOT_DEEP_MINING_INVENTORY)
+    assert "minecraft:leather_boots" not in banked, "the only boots must survive"
+    assert banked.get("minecraft:iron_sword") == 1, banked
 
 
 def test_reclaim_drop_tier_stops_once_enough_slots_are_free():
@@ -532,3 +624,34 @@ def test_the_last_resort_still_keeps_enough_fuel_to_light_a_furnace(monkeypatch)
     assert seen[-1] is not None, seen
     assert seen[-1].get("minecraft:oak_planks", 0) >= 8, seen[-1]
     assert space_reclaim.LAST_DITCH_FLOORS["minecraft:coal"] >= 1
+
+
+def test_the_break_glass_pass_still_keeps_one_spare_of_duplicate_gear(monkeypatch):
+    """LAST_DITCH_FLOORS only names fuel, so equipment must be merged in too --
+    otherwise break-glass would zero out even the last spare helmet rather
+    than just the redundant copies, the same failure mode fixed for fuel
+    above.
+    """
+    from baritone_client.common import space_reclaim
+
+    seen = []
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.drop_items",
+        lambda _c, _i, max_stacks=None, retain_counts=None: seen.append(retain_counts) or 0,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.free_inventory_slots", lambda _c: 0
+    )
+    monkeypatch.setattr(
+        space_reclaim, "carried_items", lambda _c: {"minecraft:iron_helmet": 4}
+    )
+    monkeypatch.setattr(
+        space_reclaim, "space_reclaim_deposit_items",
+        lambda _carried: {"minecraft:iron_helmet"},
+    )
+
+    from types import SimpleNamespace as _NS
+
+    space_reclaim.reclaim_drop_tier(_NS(), 3)
+    assert seen[-1] is not None, seen
+    assert seen[-1].get("minecraft:iron_helmet", 0) >= 1, seen[-1]

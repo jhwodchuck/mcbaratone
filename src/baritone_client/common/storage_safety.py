@@ -273,6 +273,7 @@ def store_surplus_in_chest(
     from .space_reclaim import (
         SPACE_RECLAIM_RETAIN_COUNTS,
         carried_items,
+        equipment_retain_floors,
         space_reclaim_deposit_items,
     )
 
@@ -307,6 +308,8 @@ def store_surplus_in_chest(
             )
             selected_items |= reclaim
             for item_id, floor in SPACE_RECLAIM_RETAIN_COUNTS.items():
+                selected_retains.setdefault(item_id, floor)
+            for item_id, floor in equipment_retain_floors(carried).items():
                 selected_retains.setdefault(item_id, floor)
 
     def deposit(position) -> int:

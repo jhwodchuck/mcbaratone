@@ -29,11 +29,16 @@ from typing import Any, Dict, Set
 
 # Never banked while reclaiming space, matched as substrings so material tiers
 # (wooden/stone/iron/diamond/netherite) and wood types are all covered.
+#
+# helmet/chestplate/leggings/boots/sword are deliberately absent: only one of
+# each can ever be worn, so unconditional protection let spares accumulate
+# forever. See _SINGLE_SLOT_EQUIPMENT_TOKENS below -- they are still kept, but
+# capped at one spare instead of unlimited.
 _KEEP_TOKENS = (
-    # tools and weapons -- banking these strands the bot mid-phase
-    "pickaxe", "_axe", "sword", "shovel", "_hoe", "shears",
-    # armour and defence
-    "helmet", "chestplate", "leggings", "boots", "shield", "elytra",
+    # tools -- banking these strands the bot mid-phase
+    "pickaxe", "_axe", "shovel", "_hoe", "shears",
+    # ranged and defence gear with no duplicate-accumulation problem observed
+    "shield", "elytra",
     "bow", "arrow", "crossbow", "trident", "totem",
     # progression materials the End run cannot be completed without
     "diamond", "netherite", "emerald", "obsidian", "ender_", "eye_of_ender",
@@ -80,6 +85,31 @@ SPACE_RECLAIM_RETAIN_COUNTS: Dict[str, int] = {
     "minecraft:birch_log": 16,
     "minecraft:spruce_log": 16,
 }
+
+# Only one of each can ever be worn, so a floor of 1 keeps a durability-
+# failure spare without hoarding the rest. Matched as substrings, like
+# _KEEP_TOKENS, so all material tiers share the same cap.
+_SINGLE_SLOT_EQUIPMENT_TOKENS = ("helmet", "chestplate", "leggings", "boots", "sword")
+_SINGLE_SLOT_EQUIPMENT_RETAIN = 1
+
+
+def equipment_retain_floors(carried: Dict[str, int]) -> Dict[str, int]:
+    """Cap carried helmets/chestplates/leggings/boots/swords at one spare.
+
+    Live A1 2026-09-06: 4 iron_helmet, 2 iron_boots, 2 iron_chestplate, 2
+    iron_leggings and 2 iron_sword -- 12 of 36 slots, none of it wearable
+    beyond the first of each -- permanently blocked the 3 free slots iron
+    gathering needed, because every copy matched a _KEEP_TOKENS substring
+    regardless of count and so was never offered to disposal at all.
+    """
+    return {
+        item_id: _SINGLE_SLOT_EQUIPMENT_RETAIN
+        for item_id in (carried or {})
+        if any(
+            token in str(item_id or "").lower()
+            for token in _SINGLE_SLOT_EQUIPMENT_TOKENS
+        )
+    }
 
 
 def is_protected(item_id: str) -> bool:
@@ -155,9 +185,12 @@ def reclaim_drop_tier(
     """
     from .inventory import drop_items, free_inventory_slots
 
+    carried = carried_items(client)
+    equipment_floors = equipment_retain_floors(carried)
     floors = dict(SPACE_RECLAIM_RETAIN_COUNTS)
+    floors.update(equipment_floors)
     floors.update(retain_counts or {})
-    reclaim = sorted(space_reclaim_deposit_items(carried_items(client)))
+    reclaim = sorted(space_reclaim_deposit_items(carried))
     while reclaim and free_inventory_slots(client) < required:
         needed = required - free_inventory_slots(client)
         if drop_items(client, reclaim, max_stacks=needed, retain_counts=floors) <= 0:
@@ -175,16 +208,23 @@ def reclaim_drop_tier(
     # for hours without moving a block.
     #
     # `reclaim` already excludes everything _KEEP_TOKENS protects, so this can
-    # only shed bulk: tools, armour, food, ores and portal materials are never
-    # in it. Losing some cobblestone is strictly better than losing the run.
+    # only shed bulk plus equipment spares above their one-per-type floor:
+    # tools, food, ores and portal materials are never in it. Losing some
+    # cobblestone -- or a redundant third iron helmet -- is strictly better
+    # than losing the run.
     #
     # Fuel keeps a small floor even here. Planks and logs are bulk by every
     # other measure, and dropping the last of them strands the bot in front of
     # a furnace it can no longer light -- which is exactly what happened on A1
     # 2026-09-03, where this pass took oak planks from 9 to 4 while the iron
-    # phase was blocked on a furnace reporting "stalled without fuel".
+    # phase was blocked on a furnace reporting "stalled without fuel". The
+    # same reasoning keeps the one-spare equipment floor here too, rather than
+    # letting break-glass zero it out.
     if reclaim and drop_items(
-        client, reclaim, max_stacks=required - free, retain_counts=LAST_DITCH_FLOORS
+        client,
+        reclaim,
+        max_stacks=required - free,
+        retain_counts={**equipment_floors, **LAST_DITCH_FLOORS},
     ) > 0:
         free = free_inventory_slots(client)
         if free >= required:
