@@ -44,12 +44,37 @@ from ...common.nether import (
 #: failed "Could not gather portal materials" for hours holding 9 obsidian.
 PORTAL_FRAME_OBSIDIAN = 10
 
-# Candidate origins are relative to the bot's current feet position. They are
-# deliberately finite: changing sites after a partial placement is how the
-# old implementation scattered obsidian through the world. A candidate is
-# selected only while it is pristine and every read needed to prove that fact
-# is current and loaded.
-_PORTAL_SITE_OFFSETS = ((3, 0), (3, 2), (0, 3), (-3, 0), (0, -2), (0, 2))
+# Candidate origins are relative to the bot's current feet position, nearest
+# ring first -- the same expanding-ring idiom obsidian_casting._lava_candidates
+# already uses. A home base accumulates chests, a furnace, and a house right
+# where the bot spends most of its time, and the original six points at one
+# fixed radius all sat inside that clutter: live A1 2026-09-05 failed site
+# selection on 100% of NETHER_AND_BLAZE attempts over an hour. A live probe
+# from the bot's actual position found nothing pristine within radius 7 in any
+# of 8 directions -- the first clear pocket was at radius 16. Radii go to 20
+# to leave margin past that measured worst case, not because 16 was assumed
+# sufficient elsewhere.
+#
+# Cost is paid only in the failure case: the loop returns on the first match,
+# and open ground resolves within the first ring or two (a separate live
+# check succeeded at radius 3 from open terrain). It is the base-adjacent
+# case, which is also the common one, that needs the full width.
+#
+# This widens the search only. Once found, a candidate must still pass the
+# identical pristine/reachable check below -- read-only, no mutation until one
+# fully qualifies -- and once a plan is saved the code reuses that exact
+# origin forever after. Widening the candidate list cannot reintroduce the
+# site-scattering the original finite set was written to prevent; only a
+# saved plan controls that, and this list is never consulted once one exists.
+_PORTAL_SITE_RADII = (3, 5, 7, 9, 11, 13, 16, 20)
+_PORTAL_SITE_ANGLES = (
+    (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1),
+)
+_PORTAL_SITE_OFFSETS = tuple(
+    (radius * dx, radius * dz)
+    for radius in _PORTAL_SITE_RADII
+    for dx, dz in _PORTAL_SITE_ANGLES
+)
 _PORTAL_AIR = {"minecraft:air", "minecraft:cave_air"}
 _PORTAL_UNKNOWN = {"", "minecraft:void_air", "minecraft:unloaded"}
 

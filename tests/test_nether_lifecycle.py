@@ -1,3 +1,4 @@
+import unittest.mock as mock
 from types import SimpleNamespace
 
 import pytest
@@ -1670,3 +1671,56 @@ def test_armor_is_equipped_and_crafted_before_the_hunger_gate(monkeypatch):
         "armor was gated behind hunger; that is the fleet-wide deadlock"
     )
     assert order.index("craft_from_carried") < order.index("hunger_gate")
+
+
+def test_portal_site_offsets_widen_to_the_measured_a1_worst_case():
+    """A1 2026-09-05 needed radius 16 to clear its base clutter.
+
+    The original search was six fixed points at one small radius and failed
+    site selection on 100% of NETHER_AND_BLAZE attempts over an hour. A live
+    probe against the bot's actual position found nothing pristine within
+    radius 7 in any of 8 directions; the first clear pocket was radius 16.
+    This pins the widened ring search so a future edit cannot silently shrink
+    it back below that measured floor.
+    """
+    assert 16 in nether_prep._PORTAL_SITE_RADII, (
+        "16 is the measured worst-case radius on live A1 -- it must stay covered"
+    )
+    assert max(nether_prep._PORTAL_SITE_RADII) >= 16
+    assert len(nether_prep._PORTAL_SITE_ANGLES) == 8, "expects 8 compass directions"
+
+    offsets = nether_prep._PORTAL_SITE_OFFSETS
+    assert len(offsets) == len(nether_prep._PORTAL_SITE_RADII) * 8
+    assert len(offsets) == len(set(offsets)), "no duplicate candidate origins"
+
+    # Nearest-ring-first ordering matters: _choose_portal_site returns the
+    # first match, so a base-adjacent site must never be skipped in favor of
+    # a farther one just because of list order.
+    radii_in_offset_order = [max(abs(dx), abs(dz)) for dx, dz in offsets]
+    assert radii_in_offset_order == sorted(radii_in_offset_order), (
+        "offsets must be sorted nearest-first, matching _lava_candidates"
+    )
+
+
+def test_choose_portal_site_returns_the_first_qualifying_ring():
+    """_choose_portal_site must not overshoot to a farther valid site.
+
+    The search exists to prefer nearby ground; once a nearer candidate passes
+    the pristine/reachable check it must win even though farther candidates
+    later in the list would also pass.
+    """
+    position = {"x": 0, "y": 64, "z": 0}
+    snapshot = {"block_position": position}
+
+    qualifying_offset = nether_prep._PORTAL_SITE_OFFSETS[10]
+    qualifying_origin = (position["x"] + qualifying_offset[0], 64, position["z"] + qualifying_offset[1])
+
+    def fake_check(_client, origin):
+        return origin == qualifying_origin
+
+    with mock.patch.object(
+        nether_prep, "_portal_site_is_pristine_and_reachable", side_effect=fake_check
+    ):
+        chosen = nether_prep._choose_portal_site(client=None, snapshot=snapshot)
+
+    assert chosen == qualifying_origin
