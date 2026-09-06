@@ -368,14 +368,15 @@ def do_open_container(
     block_at = block_id_at(ctx, pos[0], pos[1], pos[2])
     px, py, pz = ctx.get_position()
     dist = ((px - pos[0]) ** 2 + (py - pos[1]) ** 2 + (pz - pos[2]) ** 2) ** 0.5
-    
+    vertical_gap = abs(py - pos[1])
+
     ctx.log_event(f"Opening container at {pos}: block={block_at}, player=({px:.1f},{py:.1f},{pz:.1f}), dist={dist:.1f}")
-    
+
     if "chest" not in block_at and "container" not in block_at and "crafting_table" not in block_at and "furnace" not in block_at and "shulker" not in block_at and "barrel" not in block_at:
         ctx.log_event(f"No interactable block at {pos}, found: {block_at}")
         return False
-    
-    if dist > 5.0:
+
+    if dist > 5.0 or vertical_gap > 2:
         # Walk into reach before giving up. Callers that already approach (see
         # the chest path above) never hit this, but the smelting path opens a
         # furnace straight from a stored coordinate, and a bot that drifted a
@@ -384,16 +385,32 @@ def do_open_container(
         # Live 2026-08-01: Bot07 sat 6.1 blocks from its own furnace -- barely
         # outside the ~4.5 block reach -- and logged 419 retries with zero
         # blocks placed, because nothing ever moved it those two blocks.
+        #
+        # A large vertical_gap despite dist <= 5.0 is a different failure: a
+        # multi-level base can put a bot one floor below its own chest, well
+        # under Euclidean reach, with a solid floor sitting directly between
+        # eye and target -- interact_block's own raycast then reports the
+        # floor block, not the chest, on every attempt. Live A1 2026-09-06:
+        # a bot at y=157 retried a chest at y=160 (dist=3.2) 24 times with
+        # "Target is not visible on a real block ray" every time, because
+        # dist alone said "close enough" and nothing ever moved it up a
+        # level. force_reposition=True skips move_near's own close-enough
+        # shortcut, which uses the same blind Euclidean check.
         ctx.log_event(
-            f"Too far from container at {pos}: {dist:.1f} blocks; approaching"
+            f"Cannot reach container at {pos} from here: "
+            f"dist={dist:.1f}, vertical_gap={vertical_gap:.1f}; approaching"
         )
-        move_near(ctx, pos[0], pos[1], pos[2], timeout=15.0)
+        move_near(
+            ctx, pos[0], pos[1], pos[2], timeout=15.0,
+            force_reposition=vertical_gap > 2,
+        )
         px, py, pz = ctx.get_position()
         dist = ((px - pos[0]) ** 2 + (py - pos[1]) ** 2 + (pz - pos[2]) ** 2) ** 0.5
-        if dist > 5.0:
+        vertical_gap = abs(py - pos[1])
+        if dist > 5.0 or vertical_gap > 2:
             ctx.log_event(
-                f"Still too far from container at {pos} after approach: "
-                f"{dist:.1f} blocks"
+                f"Still cannot reach container at {pos} after approach: "
+                f"dist={dist:.1f}, vertical_gap={vertical_gap:.1f}"
             )
             return False
 

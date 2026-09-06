@@ -642,7 +642,7 @@ def test_out_of_reach_container_is_approached_before_giving_up(monkeypatch):
     ctx = Context()
     approached = []
 
-    def fake_move_near(_ctx, x, y, z, timeout=20.0):
+    def fake_move_near(_ctx, x, y, z, timeout=20.0, **_kwargs):
         approached.append((x, y, z))
         _ctx.position = (x + 1.0, y, z)  # now within reach
         return True
@@ -660,7 +660,57 @@ def test_out_of_reach_container_is_approached_before_giving_up(monkeypatch):
     inventory_ops.do_open_container(ctx, (-188, 104, -382), timeout=0.1)
 
     assert approached == [(-188, 104, -382)], "must walk to the container"
-    assert not any("Still too far" in e for e in ctx.events)
+    assert not any("Still cannot reach container" in e for e in ctx.events)
+
+
+def test_container_on_a_different_floor_forces_a_real_reposition(monkeypatch):
+    """Euclidean distance alone cannot tell a bot it is on the wrong floor.
+
+    Live A1 2026-09-06: a bot at y=157 tried to open its own chest at
+    y=160 (dist=3.2, well inside the old dist>5.0 gate) and got "Target is
+    not visible on a real block ray" every one of 24 attempts, because a
+    solid floor block sat directly between its eye and the chest. Nothing
+    ever moved it up a level since dist alone said "close enough". The fix
+    also gates on vertical_gap and must call move_near with
+    force_reposition=True so move_near's own close-enough shortcut (the
+    same blind Euclidean check) cannot no-op the approach.
+    """
+
+    class Transport:
+        def dispatch(self, _route, _payload=None):
+            return {}
+
+    class Context:
+        def __init__(self):
+            self.events = []
+            # 3.2 blocks away in 3D (within the old reach gate), but three
+            # floors below the chest.
+            self.position = (-8.0, 157.0, 9.0)
+            self.client = type("C", (), {"transport": Transport()})()
+
+        def log_event(self, event):
+            self.events.append(event)
+
+        def get_position(self):
+            return self.position
+
+    ctx = Context()
+    calls = []
+
+    def fake_move_near(_ctx, x, y, z, timeout=20.0, force_reposition=False):
+        calls.append((x, y, z, force_reposition))
+        _ctx.position = (x, y, z)  # now standing right on the chest's floor
+        return True
+
+    monkeypatch.setattr(inventory_ops, "block_id_at", lambda *_a: "minecraft:chest")
+    monkeypatch.setattr(inventory_ops, "move_near", fake_move_near)
+    monkeypatch.setattr(inventory_ops, "close_screen", lambda *_a, **_k: None)
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(inventory_ops, "robust_interact_block", lambda *_a, **_k: False)
+
+    inventory_ops.do_open_container(ctx, (-8, 160, 8), timeout=0.1)
+
+    assert calls == [(-8, 160, 8, True)], "must force a real reposition, not trust dist alone"
 
 
 def test_container_still_out_of_reach_after_approach_gives_up(monkeypatch):
@@ -687,7 +737,7 @@ def test_container_still_out_of_reach_after_approach_gives_up(monkeypatch):
     )
 
     assert inventory_ops.do_open_container(ctx, (-188, 104, -382), timeout=0.1) is False
-    assert any("Still too far" in e for e in ctx.events)
+    assert any("Still cannot reach container" in e for e in ctx.events)
 
 
 def test_catalog_container_probe_can_limit_open_attempts(monkeypatch):

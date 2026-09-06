@@ -341,7 +341,15 @@ def find_ground_place_pos(ctx, radius: int = 5) -> Optional[Tuple[int, int, int]
 
 
 
-def move_near(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, float], timeout: float = 20.0) -> bool:
+def move_near(
+    ctx,
+    x: Union[int, float],
+    y: Union[int, float],
+    z: Union[int, float],
+    timeout: float = 20.0,
+    *,
+    force_reposition: bool = False,
+) -> bool:
     """Move to a suitable position near coordinates.
 
     Args:
@@ -350,6 +358,14 @@ def move_near(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, flo
         y: Y coordinate.
         z: Z coordinate.
         timeout: Movement timeout.
+        force_reposition: Skip the already-close shortcut below. Euclidean
+            distance says nothing about line of sight: a bot one floor below
+            its own chest can be well under 4.5 blocks away in 3D while a
+            solid floor sits directly between it and the target, so callers
+            that already know they cannot interact from here (e.g. a
+            container's own raycast keeps reporting a miss) need a real
+            reposition instead of this function trusting the same distance
+            check that already failed them.
 
     Returns:
         True if movement successful.
@@ -365,7 +381,7 @@ def move_near(ctx, x: Union[int, float], y: Union[int, float], z: Union[int, flo
     # target. Do this before generating stand candidates or issuing a goto;
     # live Bot16 was already 3.5m from a usable staging point but burned every
     # movement timeout because Baritone quite correctly did not start moving.
-    if in_range(ctx, x, y, z, max_dist=4.5):
+    if not force_reposition and in_range(ctx, x, y, z, max_dist=4.5):
         return True
 
     stand_candidates = find_stand_positions(ctx, x, y, z, radius=3)
