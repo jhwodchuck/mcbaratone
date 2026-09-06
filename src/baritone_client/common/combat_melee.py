@@ -31,7 +31,7 @@ def _has_shield(entries) -> bool:
 
 
 def _prepare_shield(client) -> bool:
-    """Equip and verify a carried shield for a forced ranged approach."""
+    """Equip and verify a carried shield for the current fight."""
     try:
         with exclusive_combat_action(client) as acquired:
             if not acquired:
@@ -61,10 +61,17 @@ def _is_ranged_target(target, state) -> bool:
     return bool(assessments and assessments[0].style == api.AttackStyle.RANGED)
 
 
-def _prepare_ranged_shield(client, target, state, shield) -> bool:
-    """Prepare a carried shield when the current target attacks at range."""
-    if not _is_ranged_target(target, state):
-        return False
+def _prepare_combat_shield(client, target, state, shield) -> bool:
+    """Prepare a carried shield for the current fight, whatever it is.
+
+    Previously gated on _is_ranged_target, so shield use existed only
+    against skeletons and blazes. A vanilla shield blocks melee damage
+    just as well as projectiles, but zombies -- ordinary melee mobs --
+    never got it: live A1 2026-09-06 death telemetry showed
+    is_blocking=false in every one of 15 deaths, including 6 to zombies,
+    despite a shield in the off-hand in most of them. There is no
+    attack-style reason to withhold this from a melee fight.
+    """
     if not shield["checked"]:
         shield["ready"] = _prepare_shield(client)
         shield["checked"] = True
@@ -182,7 +189,7 @@ def _supervise_approach(
     no_retreat,
     abort_on_other_hostiles,
     intervention,
-    ranged_approach,
+    shielding,
     shield,
 ) -> bool:
     """Keep target approaches survival-aware and sensitive to new threats."""
@@ -231,7 +238,7 @@ def _supervise_approach(
             return True
     now = time.monotonic()
     if (
-        ranged_approach["active"]
+        shielding["active"]
         and shield["ready"]
         and now >= shield["refresh_at"]
     ):
@@ -274,7 +281,7 @@ def execute_safe_combat(
 ) -> bool:
     """Fight one target while preserving survival and truthful outcomes."""
     intervention = {"reason": None}
-    ranged_approach = {"active": False}
+    shielding = {"active": False}
     shield = {
         "checked": False,
         "ready": False,
@@ -297,7 +304,7 @@ def execute_safe_combat(
         no_retreat=no_retreat,
         abort_on_other_hostiles=abort_on_other_hostiles,
         intervention=intervention,
-        ranged_approach=ranged_approach,
+        shielding=shielding,
         shield=shield,
     )
 
@@ -392,10 +399,9 @@ def execute_safe_combat(
             client.transport.dispatch("cancel", {})
             return finish("weapon_unavailable")
 
-        # Keep shielding ranged mobs even inside 4.5m. Live Bot16 bypassed its
-        # shield when a spawner placed a blaze at 1.2m and burned to death.
-        ranged_approach["active"] = _prepare_ranged_shield(client, target, state, shield)
-        if ranged_approach["active"] and navigation_watchdog():
+        # Shield any target, including inside 4.5m -- see _prepare_combat_shield.
+        shielding["active"] = _prepare_combat_shield(client, target, state, shield)
+        if shielding["active"] and navigation_watchdog():
             client.transport.dispatch("cancel", {})
             return finish(str(intervention["reason"] or "shield_unavailable"))
 

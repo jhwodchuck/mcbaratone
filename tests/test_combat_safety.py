@@ -1406,30 +1406,73 @@ def test_close_ranged_target_aborts_when_offhand_hold_is_unverified(monkeypatch)
     assert not any(route == "attack_entity" for route, _ in transport.calls)
 
 
-def test_melee_approach_does_not_raise_shield(monkeypatch):
+def test_melee_target_also_raises_a_carried_shield(monkeypatch):
+    """A shield blocks melee damage as well as projectiles, so an ordinary
+    zombie must not be denied one just because it isn't a ranged attacker.
+    Live A1 2026-09-06 death telemetry showed is_blocking=false in every
+    one of 15 deaths, 6 of them to zombies, because shield-raising was
+    gated entirely behind _is_ranged_target -- this mirrors the proven
+    close-range-blaze scenario above with a zombie instead, to confirm
+    the same mechanics now apply regardless of attack style.
+    """
     zombie = {
         "id": 42,
         "type": "minecraft:zombie",
-        "distance": 8.0,
-        "position": {"x": 8, "y": 64, "z": 0},
+        "distance": 1.2,
+        "position": {"x": 1, "y": 64, "z": 0},
     }
-    transport = CombatTransport(health=5.0)
+
+    class ShieldTransport(CombatTransport):
+        def __init__(self):
+            super().__init__(health=20.0)
+            self.equipped = False
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_inventory":
+                return {
+                    "inventory": [] if self.equipped else [
+                        {"id": "minecraft:shield", "count": 1}
+                    ],
+                    "offhand": [
+                        {"id": "minecraft:shield", "count": 1}
+                    ] if self.equipped else [],
+                }
+            if route == "equip":
+                self.equipped = True
+                return {"equipped": True}
+            if route == "use_item":
+                return {
+                    "holding": True,
+                    "hand": "OFF_HAND",
+                    "active_hand": "OFF_HAND",
+                    "held_item": "minecraft:shield",
+                    "is_using_item": True,
+                }
+            if route == "attack_entity":
+                self.attacked = True
+                return {"attacked": True}
+            return super().dispatch(route, payload)
+
+    transport = ShieldTransport()
+    transport.attacked = False
     client = SimpleNamespace(transport=transport)
-    snapshots = iter(
-        (
-            {"player": {"health": 5.0}, "entities": [zombie]},
-            {
-                "player": {"health": 5.0},
-                "entities": [{**zombie, "health": 0}],
-            },
-        )
-    )
-    monkeypatch.setattr(
-        combat, "_get_combat_snapshot", lambda *_args, **_kwargs: next(snapshots)
-    )
+    clock = {"now": 0.0}
+
+    def monotonic():
+        clock["now"] += 0.1
+        return clock["now"]
+
+    def snapshot(*_args, **_kwargs):
+        target = {**zombie, "health": 0} if transport.attacked else zombie
+        return {"player": {"health": 20.0}, "entities": [target]}
+
+    monkeypatch.setattr(combat, "_get_combat_snapshot", snapshot)
     monkeypatch.setattr(combat, "equip_best_weapon", lambda _client: True)
-    monkeypatch.setattr(combat, "goto", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(combat.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(combat, "look_at_entity", lambda *_args: True)
+    monkeypatch.setattr(combat, "_attack_cooldown", lambda _state: 1.0)
+    monkeypatch.setattr(combat_melee.time, "monotonic", monotonic)
+    monkeypatch.setattr(combat_melee.time, "sleep", lambda _seconds: None)
 
     assert combat.safe_combat(
         client,
@@ -1437,10 +1480,22 @@ def test_melee_approach_does_not_raise_shield(monkeypatch):
         no_retreat=True,
         max_duration=2,
     )
-    assert not any(
-        route in {"get_inventory", "equip", "use_item"}
-        for route, _payload in transport.calls
+    shield_call = transport.calls.index(
+        (
+            "use_item",
+            {"hand": "OFF_HAND", "duration_ms": combat_melee.SHIELD_HOLD_MS},
+        )
     )
+    attack_call = transport.calls.index(
+        (
+            "attack_entity",
+            {
+                "entity_id": zombie["id"],
+                "min_cooldown": combat.MELEE_ATTACK_COOLDOWN_THRESHOLD,
+            },
+        )
+    )
+    assert shield_call < attack_call
 
 
 def test_hunt_steps_onto_kill_position_before_rechecking_loot(monkeypatch):
