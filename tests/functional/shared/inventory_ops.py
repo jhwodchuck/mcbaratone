@@ -456,6 +456,23 @@ def do_open_container(
         )
         if not ok_interact:
             ctx.log_event(f"Container interact failed (attempt {attempt}/{attempts}) at {pos}")
+            # A missed raycast at "in range" distance means something is
+            # physically between eye and target -- a different floor
+            # (vertical_gap catches that above), but also a wall corner or
+            # pillar cutting the diagonal at the SAME floor, which no
+            # distance check predicts in advance. Live A1 2026-09-06: a bot
+            # 2.2 blocks from its own crafting table, same y-level, failed
+            # this raycast on every one of at least 7 consecutive campaign
+            # attempts because a snow_block sat on the direct line between
+            # its eye and the table's center. Force a real reposition off
+            # the interact failure itself, the same signal that already
+            # proved the current spot cannot work, rather than retrying
+            # blind from it again.
+            if attempt < attempts:
+                move_near(
+                    ctx, pos[0], pos[1], pos[2], timeout=8.0,
+                    force_reposition=True,
+                )
 
         deadline = time.time() + per_attempt_timeout
         while time.time() < deadline:

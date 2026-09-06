@@ -656,10 +656,13 @@ def test_out_of_reach_container_is_approached_before_giving_up(monkeypatch):
     )
 
     # The open itself fails against this stub transport; the reach gate is
-    # what matters -- it must no longer short-circuit before moving.
+    # what matters -- it must no longer short-circuit before moving. Every
+    # subsequent failed interact attempt also forces its own reposition (a
+    # separate, later fix), so more than one approach is now expected --
+    # the point here is that the very first one happens at all.
     inventory_ops.do_open_container(ctx, (-188, 104, -382), timeout=0.1)
 
-    assert approached == [(-188, 104, -382)], "must walk to the container"
+    assert approached[0] == (-188, 104, -382), "must walk to the container"
     assert not any("Still cannot reach container" in e for e in ctx.events)
 
 
@@ -710,7 +713,68 @@ def test_container_on_a_different_floor_forces_a_real_reposition(monkeypatch):
 
     inventory_ops.do_open_container(ctx, (-8, 160, 8), timeout=0.1)
 
-    assert calls == [(-8, 160, 8, True)], "must force a real reposition, not trust dist alone"
+    # Every failed interact attempt also forces its own reposition (a
+    # separate, later fix), so more than one call is expected here too --
+    # the point is that the very first one is forced, not distance-trusted.
+    assert calls[0] == (-8, 160, 8, True), "must force a real reposition, not trust dist alone"
+    assert all(force_reposition for *_pos, force_reposition in calls)
+
+
+def test_container_blocked_by_a_same_floor_obstruction_reroutes_on_interact_failure(monkeypatch):
+    """A raycast miss can come from a corner, not just a different floor.
+
+    Live A1 2026-09-06: a bot 2.2 blocks from its own crafting table, same
+    y-level as the table (vertical_gap=0, so the floor-mismatch gate above
+    never fires), failed "Target is not visible on a real block ray" on
+    every one of at least 7 consecutive campaign attempts. Diagnosed via
+    live block geometry: a solid snow_block sat on the direct diagonal
+    between the bot's eye and the table's center. No distance-based
+    precondition can enumerate every obstruction shape in advance, so the
+    fix instead reacts to the interact failure itself -- the one signal
+    that is always right -- and forces a reposition before the next
+    attempt rather than retrying blind from the same spot.
+    """
+
+    class Transport:
+        def dispatch(self, _route, _payload=None):
+            return {}
+
+    class Context:
+        def __init__(self):
+            self.events = []
+            # 2.2 blocks away, same floor as the table -- the vertical_gap
+            # gate does not trigger, and dist is well within the old
+            # dist > 5.0 gate too.
+            self.position = (-6.0, 162.0, 4.0)
+            self.client = type("C", (), {"transport": Transport()})()
+
+        def log_event(self, event):
+            self.events.append(event)
+
+        def get_position(self):
+            return self.position
+
+    ctx = Context()
+    calls = []
+
+    def fake_move_near(_ctx, x, y, z, timeout=20.0, force_reposition=False):
+        calls.append((x, y, z, force_reposition))
+        return True
+
+    monkeypatch.setattr(inventory_ops, "block_id_at", lambda *_a: "minecraft:crafting_table")
+    monkeypatch.setattr(inventory_ops, "move_near", fake_move_near)
+    monkeypatch.setattr(inventory_ops, "close_screen", lambda *_a, **_k: None)
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(inventory_ops, "robust_interact_block", lambda *_a, **_k: False)
+
+    inventory_ops.do_open_container(ctx, (-4, 162, 5), timeout=0.1)
+
+    # No precondition gate should have fired (dist and vertical_gap are
+    # both fine); every reposition here comes from reacting to the actual
+    # interact failures, and each one must skip move_near's own
+    # close-enough shortcut too.
+    assert calls, "a failed interact must trigger a reposition"
+    assert all(call == (-4, 162, 5, True) for call in calls)
 
 
 def test_container_still_out_of_reach_after_approach_gives_up(monkeypatch):
