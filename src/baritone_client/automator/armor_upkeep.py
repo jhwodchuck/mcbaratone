@@ -366,7 +366,8 @@ def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
     # boots leaves the worn count unchanged, which is why this reports success
     # on its own terms rather than through the before/after delta.
     if needs_freeze_boots(client):
-        if _count(client, FREEZE_BOOTS) < 1:
+        if (_count(client, FREEZE_BOOTS) < 1
+                and _count(client, "minecraft:leather") >= FREEZE_BOOTS_LEATHER):
             try:
                 craft(client, FREEZE_BOOTS, 1)
             except (PlayerDeathDetected, SurvivalRecoveryRequired):
