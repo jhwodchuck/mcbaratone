@@ -257,6 +257,7 @@ class CapacityTransport:
         self.clicks = []
         self.sync_id = 39
         self.error = None
+        self.furnace_open = False
 
     def dispatch(self, route, payload):
         if route == "get_inventory":
@@ -264,10 +265,16 @@ class CapacityTransport:
                 dict(item, slot=item["slot"] - 27) for item in self.slots[27:]
             ])
         if route == "get_screen":
+            if self.furnace_open:
+                return dict(type="FurnaceMenu", total_slots=39)
             return dict(type="ChestMenu", total_slots=63, sync_id=self.sync_id,
                         slots=[dict(item) for item in self.slots])
         if route == "get_block":
-            return {"id": "minecraft:chest"}
+            return {"id": "minecraft:furnace" if payload.get("x") == 1 else "minecraft:chest"}
+        if route == "find_blocks":
+            return {"found": [{"x": 1, "y": 64, "z": 0}]}
+        if route == "close_screen":
+            self.furnace_open = False
         if route == "get_state":
             return dict(block_position=dict(x=0, y=64, z=0), health=20, food_level=20)
         if route == "inventory_click":
@@ -275,7 +282,7 @@ class CapacityTransport:
             if self.error:
                 raise self.error
             assert payload == dict(slot=28, type="QUICK_MOVE", button=0, sync_id=39)
-            self.slots[12]["count"] += 4
+            self.slots[12]["count"] += self.slots[28]["count"]
             self.slots[28].update(id="minecraft:air", count=0)
         return {}
 
@@ -352,3 +359,48 @@ def test_unknown_click_outcome_is_not_retried_or_hidden():
         module.verified_quick_move(SimpleNamespace(transport=transport),
             slot=28, item_id="minecraft:furnace", before_count=4, sync_id=39)
     assert len(transport.clicks) == 1
+
+
+@pytest.mark.parametrize("failure", [None, "closed", "wrong_menu", "distant", "unknown", "explicit_reserve"])
+def test_cleanup_banks_last_furnace_only_with_a_verified_installed_one(monkeypatch, failure):
+    from baritone_client.common import inventory, storage_safety
+
+    transport = CapacityTransport()
+    transport.slots[28]["count"] = 1
+    client = SimpleNamespace(transport=transport)
+    reads = transport.dispatch
+
+    def dispatch(route, payload):
+        if route == "get_block" and payload.get("x") == 1 and failure == "unknown":
+            return {"id": ""}
+        return reads(route, payload)
+
+    transport.dispatch = dispatch
+    opened_furnaces = []
+
+    def open_container(_client, pos, **_kwargs):
+        if pos == (1, 64, 0):
+            opened_furnaces.append(pos)
+            transport.furnace_open = failure != "wrong_menu"
+            return failure != "closed"
+        transport.furnace_open = False
+        return True
+
+    monkeypatch.setattr(module.harness_ops, "available", lambda: True)
+    monkeypatch.setattr(module.harness_ops, "open_container", open_container)
+    chest = (8, 64, 0) if failure == "distant" else (0, 64, 0)
+    if failure == "distant":
+        # The ordinary tour could reach this chest; the workstation exception
+        # must still refuse it without trying another long approach.
+        monkeypatch.setattr(inventory, "deposit_excess_to_chest", lambda *_a, **_k: 0)
+    monkeypatch.setattr(storage_safety, "nearby_storage_positions", lambda *_a: [chest])
+    monkeypatch.setattr(storage_safety, "create_overflow_storage", lambda *_a: None)
+    reserves = {"minecraft:furnace": 1} if failure == "explicit_reserve" else None
+    result = storage_safety.store_surplus_in_chest(client, 35, retain_counts=reserves)
+    assert result is (failure is None)
+    assert inventory.free_inventory_slots(client) == (35 if failure is None else 34)
+    assert transport.slots[12]["count"] == (2 if failure is None else 1)
+    assert len(transport.clicks) == (1 if failure is None else 0)
+    if failure is None:
+        assert opened_furnaces == [(1, 64, 0)]
+    assert not transport.furnace_open
