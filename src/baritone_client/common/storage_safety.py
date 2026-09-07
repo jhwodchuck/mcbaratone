@@ -358,6 +358,10 @@ def store_surplus_in_chest(
             if deposit(position) > 0:
                 if free_inventory_slots(client) >= required:
                     return True
+            from .storage_workstations import bank_installed_furnace_spare
+
+            if "minecraft:furnace" not in (retain_counts or {}) and bank_installed_furnace_spare(client, position, required):
+                return True
         except Exception as exc:
             print(f"  STORAGE: deposit to {tuple(position)} failed ({exc})")
 
