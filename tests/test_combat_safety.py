@@ -1959,6 +1959,64 @@ def test_survival_tick_noop_when_dry():
     ) is False
 
 
+def test_survival_tick_equips_leather_boots_in_freezing_biome(monkeypatch):
+    """THE A1Bot 2026-09-07 bug: armor_upkeep's own opportunity check only
+    runs at objective-selection boundaries, so a bot that walks into a
+    freezing biome mid-task -- even one already carrying leather boots --
+    froze to death (last_damage_source: freeze) with no "freezing biome" log
+    line anywhere in the run-up. survival_tick is the shared reflex every
+    long-running wait loop already polls each tick for drowning; the same
+    swap must fire from there too.
+    """
+    from baritone_client.automator import armor_upkeep
+
+    client = SimpleNamespace(transport=SubmergedTransport("minecraft:air"))
+    state = {"block_position": {"x": 0, "y": 70, "z": 0}, "biome": "minecraft:grove"}
+    monkeypatch.setattr(armor_upkeep, "wearing_freeze_boots", lambda _c: False)
+    equipped = []
+    monkeypatch.setattr(
+        armor_upkeep, "equip_freeze_boots", lambda _c: equipped.append(True) or True
+    )
+
+    assert combat.survival_tick(client, state) is True
+    assert equipped == [True]
+
+
+def test_survival_tick_freeze_guard_noop_when_already_wearing_leather_boots(
+    monkeypatch,
+):
+    from baritone_client.automator import armor_upkeep
+
+    client = SimpleNamespace(transport=SubmergedTransport("minecraft:air"))
+    state = {"block_position": {"x": 0, "y": 70, "z": 0}, "biome": "minecraft:grove"}
+    monkeypatch.setattr(armor_upkeep, "wearing_freeze_boots", lambda _c: True)
+    monkeypatch.setattr(
+        armor_upkeep,
+        "equip_freeze_boots",
+        lambda *_a: (_ for _ in ()).throw(
+            AssertionError("must not re-equip boots already worn")
+        ),
+    )
+
+    assert combat.survival_tick(client, state) is False
+
+
+def test_survival_tick_freeze_guard_noop_outside_freezing_biomes(monkeypatch):
+    from baritone_client.automator import armor_upkeep
+
+    client = SimpleNamespace(transport=SubmergedTransport("minecraft:air"))
+    state = {"block_position": {"x": 0, "y": 70, "z": 0}, "biome": "minecraft:plains"}
+    monkeypatch.setattr(
+        armor_upkeep,
+        "equip_freeze_boots",
+        lambda *_a: (_ for _ in ()).throw(
+            AssertionError("must not touch boots outside a freezing biome")
+        ),
+    )
+
+    assert combat.survival_tick(client, state) is False
+
+
 def test_submerged_too_long_times_out_then_fires(monkeypatch):
     client = SimpleNamespace(transport=SubmergedTransport("minecraft:water"))
     clock = iter([100.0, 109.0])

@@ -350,19 +350,20 @@ def escape_water_if_submerged(client, state) -> bool:
 def survival_tick(client, state=None) -> bool:
     """Central per-poll survival reflex for any long-running wait loop.
 
-    Hooking the drowning check only into ``defend_or_flee`` covered gather/base
-    loops but missed the activity where bots actually drown -- pathing across
-    water -- because ``goto``'s wait loop never called it.  This is the shared
-    entry point those blocking primitives call each poll so the reflex fires
-    during ALL activity.  Currently it surfaces a submerged player; returns
-    True if it intervened (the caller should assume the current Baritone
-    process was cancelled and re-issue it).
+    The shared entry point every blocking primitive (goto, nether_travel,
+    wood_gathering) already calls each poll: surfaces a submerged player,
+    then equips leather boots in a freezing biome. Returns True if it
+    intervened (the caller should assume Baritone was cancelled and reissue).
     """
+    from .freeze_survival import guard_against_freezing
+
     try:
         if state is None:
             state = client.transport.dispatch("get_state", {})
         ensure_alive(client, state)
-        return escape_water_if_submerged(client, state)
+        if escape_water_if_submerged(client, state):
+            return True
+        return guard_against_freezing(client, state)
     except PlayerDeathDetected:
         raise
     except Exception:
