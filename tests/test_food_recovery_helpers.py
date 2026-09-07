@@ -346,6 +346,14 @@ def test_submerged_food_search_reaches_dry_surface_even_above_y_floor(
         "baritone_client.common.surface_recovery.reach_dry_surface",
         lambda _client, **kwargs: recovered.append(kwargs) or (12, 64, 21),
     )
+    # Isolate the pre-existing reach_dry_surface path from the fast
+    # surface-for-air call now tried ahead of it (covered by its own tests);
+    # this transport mock returns {} for every dispatch, so an unmocked
+    # emergency-surface attempt would run for real against it.
+    monkeypatch.setattr(
+        "baritone_client.common.combat._surface_after_aquatic_hunt",
+        lambda *_args, **_kwargs: False,
+    )
 
     assert emergency_food.reach_food_search_surface(client, state)
     assert recovered[0]["origin"] == (10, 58, 20)

@@ -376,6 +376,30 @@ def reach_food_search_surface(client: Any, state: Dict) -> bool:
         _remember_dry_food_anchor(client, position)
         return True
 
+    if in_water:
+        # Every fallback below (anchor return, dry-surface search, then
+        # excavation) is bounded by navigation timeouts from several seconds
+        # to 90s+, none of which track the ~15-35s a player actually has
+        # before drowning kills them. Live A1 2026-09-06/07: a bot already
+        # submerged here spent 67s retrying reach_dry_surface ->
+        # excavate_surface_egress across three different target columns and
+        # drowned mid-attempt. Surface for air first, on the same fast,
+        # bounded budget the rest of the codebase already uses for an active
+        # drowning emergency, before spending any more time picking a good
+        # spot to search for food from.
+        from . import combat as api
+
+        if api._surface_after_aquatic_hunt(client, timeout=12.0):
+            state = client.transport.dispatch("get_state", {})
+            position = block_position(state)
+            expected_y = _expected_food_search_y(client, position)
+            in_water = player_is_in_water(client, state) or head_block_is_water(
+                client, state
+            )
+            if position[1] >= expected_y - 3 and not in_water:
+                _remember_dry_food_anchor(client, position)
+                return True
+
     if in_water and _return_to_recent_dry_food_anchor(
         client,
         state,

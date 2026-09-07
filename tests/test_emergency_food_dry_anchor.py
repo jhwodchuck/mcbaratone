@@ -62,6 +62,15 @@ def test_submerged_food_search_returns_to_recent_dry_anchor(monkeypatch):
         "baritone_client.common.build_site_recovery.excavate_surface_egress",
         lambda *_args, **_kwargs: None,
     )
+    # This test exercises the anchor-return path specifically; the emergency
+    # surface-for-air call added ahead of it (fast, bounded, tried before any
+    # of these slower fallbacks) is covered by its own tests and must not
+    # short-circuit this one via the transport's always-returns-dry_state
+    # get_state mock.
+    monkeypatch.setattr(
+        "baritone_client.common.combat._surface_after_aquatic_hunt",
+        lambda *_args, **_kwargs: False,
+    )
 
     assert emergency_food.reach_food_search_surface(client, dry_state)
     assert emergency_food.reach_food_search_surface(client, wet_state)
@@ -69,6 +78,58 @@ def test_submerged_food_search_returns_to_recent_dry_anchor(monkeypatch):
         "goto",
         {"x": -174, "y": 67, "z": -331},
     ) in client.transport.calls
+
+
+def test_reach_food_search_surface_tries_the_fast_reflex_first(monkeypatch):
+    """THE A1Bot 2026-09-06/07 bug: reach_dry_surface and
+    excavate_surface_egress are bounded by navigation timeouts from several
+    seconds to 90s+, none of which track the ~15-35s a player actually has
+    before drowning kills them. Live: a bot spent 67s retrying those two
+    across three target columns and drowned mid-attempt. The fast, bounded
+    (12s) emergency reflex must run first and short-circuit the slower
+    fallbacks entirely when it succeeds.
+    """
+    wet_state = {
+        "health": 15.0,
+        "is_pathing": False,
+        "block_position": {"x": 5, "y": 40, "z": 5},
+    }
+    dry_state = {
+        "health": 15.0,
+        "is_pathing": False,
+        "block_position": {"x": 5, "y": 70, "z": 5},
+    }
+    states = iter([dry_state])
+
+    class Transport:
+        def dispatch(self, route, payload=None):
+            if route == "get_state":
+                return dict(next(states, dry_state))
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+
+    monkeypatch.setattr(
+        emergency_food,
+        "player_is_in_water",
+        lambda _client, state: state.get("block_position", {}).get("y") == 40,
+    )
+    monkeypatch.setattr(emergency_food, "head_block_is_water", lambda *_a: False)
+    monkeypatch.setattr(emergency_food, "_expected_food_search_y", lambda *_a: 63)
+    surface_calls = []
+    monkeypatch.setattr(
+        "baritone_client.common.combat._surface_after_aquatic_hunt",
+        lambda _client, timeout: surface_calls.append(timeout) or True,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.surface_recovery.reach_dry_surface",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("slow fallback ran despite the fast reflex succeeding")
+        ),
+    )
+
+    assert emergency_food.reach_food_search_surface(client, wet_state)
+    assert surface_calls == [12.0]
 
 
 def test_exhausted_food_search_returns_to_checkpoint_anchor(monkeypatch):
