@@ -259,6 +259,10 @@ class CapacityTransport:
         self.error = None
 
     def dispatch(self, route, payload):
+        if route == "get_inventory":
+            return dict(snapshot_valid=True, inventory=[
+                dict(item, slot=item["slot"] - 27) for item in self.slots[27:]
+            ])
         if route == "get_screen":
             return dict(type="ChestMenu", total_slots=63, sync_id=self.sync_id,
                         slots=[dict(item) for item in self.slots])
@@ -319,6 +323,26 @@ def test_stale_source_or_incompatible_destination_prevents_dispatch(change):
     assert module.verified_quick_move(SimpleNamespace(transport=transport),
         slot=28, item_id="minecraft:furnace", before_count=4, sync_id=39) == 0
     assert transport.clicks == []
+
+
+def test_cleanup_tour_banks_compatible_items_in_a_chest_with_no_empty_slots(monkeypatch):
+    from baritone_client.common import inventory, storage_safety
+
+    transport = CapacityTransport()
+    client = SimpleNamespace(transport=transport)
+    monkeypatch.setattr(module.harness_ops, "available", lambda: True)
+    monkeypatch.setattr(module.harness_ops, "open_container", lambda *_a, **_k: True)
+    monkeypatch.setattr(module.harness_ops, "chest_is_full", lambda *_a: True)
+    monkeypatch.setattr(storage_safety, "nearby_storage_positions", lambda *_a: [(0, 64, 0)])
+    # 34 free player slots before, 35 after. Every chest slot is occupied.
+    assert inventory.free_inventory_slots(client) == 34
+    assert storage_safety.store_surplus_in_chest(
+        client, 35, deposit_items={"minecraft:furnace"}, retain_counts={"minecraft:furnace": 0},
+    )
+    assert inventory.free_inventory_slots(client) == 35
+    assert transport.slots[12]["count"] == 5
+    assert transport.slots[27]["count"] == 46
+    assert len(transport.clicks) == 1
 
 
 def test_unknown_click_outcome_is_not_retried_or_hidden():

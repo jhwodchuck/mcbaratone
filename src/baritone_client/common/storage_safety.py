@@ -352,8 +352,9 @@ def store_surplus_in_chest(
             print("  STORAGE: stopping cleanup tour for survival recovery")
             return False
         try:
-            if harness_ops.chest_is_full(client, position):
-                continue
+            # Occupied slots do not mean every carried item is blocked: a
+            # compatible stack can still merge. The deposit checks each
+            # item's live capacity and verifies its transfer before counting it.
             if deposit(position) > 0:
                 if free_inventory_slots(client) >= required:
                     return True
