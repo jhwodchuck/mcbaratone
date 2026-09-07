@@ -404,3 +404,63 @@ def test_cleanup_banks_last_furnace_only_with_a_verified_installed_one(monkeypat
     if failure is None:
         assert opened_furnaces == [(1, 64, 0)]
     assert not transport.furnace_open
+
+
+def test_overflow_storage_crafts_a_chest_when_none_is_carried(monkeypatch):
+    """THE A1Bot 2026-09-07 bug: create_overflow_storage gave up silently
+    (no log line at all) the moment no chest was carried, even with 11
+    planks in hand -- more than the 8-plank chest recipe needs, and craft()
+    already supports chests via its manual-grid fallback. A bot whose home
+    chest was completely full (27/27 slots) and carried no spare chest had
+    no route to overflow storage at all.
+    """
+    from baritone_client.common import inventory, storage_safety
+
+    counts = {"minecraft:chest": 0}
+    monkeypatch.setattr(
+        inventory, "count_item", lambda _c, item_id: counts.get(item_id, 0)
+    )
+    crafted = []
+
+    def fake_craft(_client, item_id, count=1):
+        crafted.append(item_id)
+        counts["minecraft:chest"] = 1
+        return True
+
+    monkeypatch.setattr(inventory, "craft", fake_craft)
+    harness_ops = SimpleNamespace(find_single_chest_spot=lambda _c: None)
+
+    storage_safety.create_overflow_storage(SimpleNamespace(), harness_ops)
+
+    assert crafted == ["minecraft:chest"]
+
+
+def test_overflow_storage_gives_a_reason_when_no_chest_can_be_made(
+    monkeypatch, capsys
+):
+    """Crafting can fail (not enough planks); this must not fail silently
+    the way the missing-chest case used to.
+    """
+    from baritone_client.common import inventory, storage_safety
+
+    monkeypatch.setattr(inventory, "count_item", lambda *_a: 0)
+    monkeypatch.setattr(inventory, "craft", lambda *_a, **_k: False)
+    harness_ops = SimpleNamespace(find_single_chest_spot=lambda _c: None)
+
+    result = storage_safety.create_overflow_storage(SimpleNamespace(), harness_ops)
+
+    assert result is None
+    assert "no chest carried and none could be crafted" in capsys.readouterr().out
+
+
+def test_overflow_storage_does_not_craft_when_a_chest_is_already_carried(monkeypatch):
+    from baritone_client.common import inventory, storage_safety
+
+    monkeypatch.setattr(inventory, "count_item", lambda *_a: 1)
+    monkeypatch.setattr(
+        inventory, "craft",
+        lambda *_a, **_k: pytest.fail("must not craft when a chest is already carried"),
+    )
+    harness_ops = SimpleNamespace(find_single_chest_spot=lambda _c: None)
+
+    storage_safety.create_overflow_storage(SimpleNamespace(), harness_ops)

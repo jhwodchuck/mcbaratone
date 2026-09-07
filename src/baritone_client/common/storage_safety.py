@@ -210,11 +210,28 @@ def load_storage_chunk(client, target: Tuple[int, int, int], goto) -> bool:
 
 
 def create_overflow_storage(client, harness_ops):
-    """Build double storage when possible, or one emergency carried chest."""
-    from .inventory import count_item
+    """Build double storage when possible, or one emergency carried chest.
+
+    Craft one from carried planks first when none is carried. A bot with a
+    genuinely full home chest and no spare chest previously had no route to
+    overflow storage at all: this returned None silently (no log line at
+    all), store_surplus_in_chest fell through to the drop-only last resort,
+    and that alone could not keep pace with the volume a bot can accumulate
+    -- live A1 2026-09-07 carried 34/36 inventory slots, including several
+    duplicate armour pieces already correctly flagged for disposal but with
+    nowhere to actually go, while its home chest sat completely full (27/27
+    slots) and it carried 11 planks -- enough for the 8-plank chest recipe
+    the whole time. ``craft`` already supports chests via its manual-grid
+    fallback for exactly this recipe.
+    """
+    from .inventory import count_item, craft
 
     chest_count = count_item(client, "minecraft:chest")
     if chest_count < 1:
+        craft(client, "minecraft:chest", 1)
+        chest_count = count_item(client, "minecraft:chest")
+    if chest_count < 1:
+        print("  STORAGE: no chest carried and none could be crafted")
         return None
     first = harness_ops.find_single_chest_spot(client)
     try:
