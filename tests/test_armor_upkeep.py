@@ -49,6 +49,27 @@ def _signals(health=20.0, hostiles=0):
     )
 
 
+@pytest.mark.parametrize("leather,boots", [(0, 0), (3, 0), (4, 0), (0, 1)])
+def test_freeze_upkeep_only_crafts_affordable_boots(monkeypatch, leather, boots):
+    import baritone_client.common.inventory as inv
+
+    crafts = []
+    client = _Client(worn=4)
+    monkeypatch.setattr(inv, "equip_best_armor", lambda _c: None)
+    monkeypatch.setattr(armor_upkeep, "needs_freeze_boots", lambda _c: True)
+    monkeypatch.setattr(armor_upkeep, "_count", lambda _c, item:
+                        leather if item == "minecraft:leather" else boots + len(crafts))
+    monkeypatch.setattr(armor_upkeep, "craft", lambda _c, item, qty:
+                        crafts.append((item, qty)) or True)
+    monkeypatch.setattr(armor_upkeep, "equip_freeze_boots", lambda _c: bool(boots or crafts))
+    ok, detail, before, after = armor_upkeep.run_armor_upkeep(client, SimpleNamespace())
+    assert crafts == ([("minecraft:leather_boots", 1)] if leather >= 4 and not boots else [])
+    assert ok is bool(boots or leather >= 4)
+    assert (before, after) == (4, 4)
+    if not ok:
+        assert "needs 4 leather" in detail
+
+
 def test_bot15s_exact_state_produces_an_opportunity():
     """94 ingots, 19 raw iron, nothing worn -- the fleet's cheapest win."""
     opportunity = armor_upkeep.select_armor_opportunity(
