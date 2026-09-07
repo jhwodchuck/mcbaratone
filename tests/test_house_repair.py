@@ -341,6 +341,72 @@ def test_open_crafting_table_uses_verified_adjacent_harness_not_solid_goal(monke
     assert opened == [(-8, 79, -121)]
 
 
+def test_open_crafting_table_native_fallback_survives_a_blocked_raycast(monkeypatch):
+    """A raw interact_block dispatch can raise, not just return falsy.
+
+    Live A1 2026-09-07: once do_open_container stopped matching the
+    player's own always-open screen as a false success (see
+    tests/test_functional_harness.py's
+    test_crafting_table_screen_check_rejects_the_default_player_screen),
+    the verified harness path here started reporting a genuinely blocked
+    table honestly instead of a false True -- so this legacy native
+    fallback started running far more often. Its unguarded dispatch let
+    the bridge's raycast-failure error ("Target is not visible on a real
+    block ray") propagate out as an uncaught exception, crashing the whole
+    Nether-readiness task every ~3 minutes instead of returning a clean
+    False like every other failure path in this function.
+    """
+    client = SimpleNamespace(transport=SimpleNamespace())
+    monkeypatch.setattr(
+        base,
+        "find_nearby_block",
+        lambda *_args, **_kwargs: (-7, 123, 4),
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.harness_ops.available", lambda: True
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.harness_ops.ensure_crafting_table_open",
+        lambda _client, table_pos: False,
+    )
+    monkeypatch.setattr(base, "goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(base.time, "sleep", lambda _seconds: None)
+
+    def _raise_on_interact(route, _payload=None, **_kwargs):
+        if route == "interact_block":
+            raise RuntimeError(
+                "Target is not visible on a real block ray; fluid use requires use_item"
+            )
+        return {}
+
+    client.transport.dispatch = _raise_on_interact
+
+    assert base.open_crafting_table(client) is False
+
+
+def test_open_furnace_survives_a_blocked_raycast(monkeypatch):
+    """Same unguarded-dispatch defect as open_crafting_table, same fix."""
+    client = SimpleNamespace(transport=SimpleNamespace())
+    monkeypatch.setattr(
+        base,
+        "find_nearby_block",
+        lambda *_args, **_kwargs: (-7, 123, 4),
+    )
+    monkeypatch.setattr(base, "goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(base.time, "sleep", lambda _seconds: None)
+
+    def _raise_on_interact(route, _payload=None, **_kwargs):
+        if route == "interact_block":
+            raise RuntimeError(
+                "Target is not visible on a real block ray; fluid use requires use_item"
+            )
+        return {}
+
+    client.transport.dispatch = _raise_on_interact
+
+    assert base.open_furnace(client) is False
+
+
 def test_house_stages_beside_door_before_placing_it(monkeypatch):
     origin = (10, 64, 20)
     plan = base._good_house_plan(*origin)

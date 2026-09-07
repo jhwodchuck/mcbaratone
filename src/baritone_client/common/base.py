@@ -130,17 +130,11 @@ def safe_place_block(client, x, y, z, max_depth=2, block_id: str | None = None) 
     except Exception as e:
         msg = str(e)
         if "No solid block found to place against" in msg and max_depth > 0:
-            # The bridge already scans all six directions for something to
-            # place against, so reaching here means the target is genuinely
-            # floating and we must manufacture a neighbour.
-            #
-            # This used to only ever build downward. Under a roof that means
-            # dropping support blocks into the room below: wrong material in
-            # the wrong place, and each of those is itself unsupported, so one
-            # miss cascades into a column of junk through the interior. Try
-            # the lateral neighbours first -- for a roof course or a wall the
-            # real support is the block beside it -- and fall back to below
-            # only when nothing else works.
+            # The bridge already scans all six directions, so reaching here
+            # means the target is genuinely floating and needs a manufactured
+            # neighbour. Building only downward (the old behaviour) drops
+            # unsupported junk through a roofed room below, so try lateral
+            # neighbours first and fall back to below only when nothing else works.
             for sx, sy, sz in (
                 (x - 1, y, z),
                 (x + 1, y, z),
@@ -602,9 +596,12 @@ def open_crafting_table(client, x: Optional[int] = None, y: Optional[int] = None
     except Exception:
         pass  # look_at might not be implemented
     
-    # Interact
-    client.transport.dispatch("interact_block", {"x": tx, "y": ty, "z": tz})
-    
+    # A blocked sightline raises CommandError here; nothing else guards it.
+    try:
+        client.transport.dispatch("interact_block", {"x": tx, "y": ty, "z": tz})
+    except Exception as exc:
+        print(f"  Crafting table interact failed: {exc}")
+        return False
     # Wait for screen - Fabric uses obfuscated class names, so check for any non-'none' screen
     # since we just interacted with a crafting table, any screen opening is likely it
     print(f"  Waiting for crafting table screen to open...")
@@ -646,10 +643,15 @@ def open_furnace(client) -> bool:
     x, y, z = furnace_pos
     
     goto(client, x, y, z, timeout=30, tolerance=2)
-    
-    client.transport.dispatch("interact_block", {"x": x, "y": y, "z": z})
+
+    # See open_crafting_table's matching try/except above.
+    try:
+        client.transport.dispatch("interact_block", {"x": x, "y": y, "z": z})
+    except Exception as exc:
+        print(f"  Furnace interact failed: {exc}")
+        return False
     time.sleep(0.5)
-    
+
     return True
 
 
@@ -1232,11 +1234,9 @@ def build_emergency_shelter(client) -> bool:
 
         if count_item(client, "minecraft:dirt") < 20 and count_item(client, "minecraft:cobblestone") < 20:
             # No stock to build with, so dig a hole and cap it with the spoil.
-            # This previously fired a coordinate-less Baritone `mine` (which
-            # could walk the bot away), dug three unverified blocks, and then
-            # capped with a hardcoded cobblestone it did not own -- so an
-            # empty-handed bot ended up standing in an open three-deep shaft,
-            # cornered and unable to flee, while the function reported failure.
+            # A coordinate-less Baritone `mine` previously walked the bot away
+            # and capped an unverified shaft with cobblestone it did not own,
+            # leaving it cornered and unable to flee even as this reported failure.
             print("Not enough blocks for shelter. Digging down...")
             from .night_shelter import dig_and_seal_night_hole
 
