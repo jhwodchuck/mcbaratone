@@ -105,12 +105,46 @@ class SafetySystem(BackgroundSystem):
                 ))
             
             self._last_health = health
-            
+
             # Check for physical entanglements (vines, webs)
             self._clear_entanglements(state)
-            
+
+            # Ambient defense: only goto()'s own periodic tick calls
+            # defend_or_flee today, so mining, harvesting, and other
+            # stationary work had zero threat-checking of their own -- a
+            # hostile could close in and land several free hits before any
+            # other system reacted. Live A1 2026-09-06: 6 deaths in under two
+            # hours, every one with a shield equipped but never raised and a
+            # tool (not a weapon) in hand, always mid stationary work rather
+            # than inside a supervised goto or combat loop.
+            self.try_defend()
+
         except Exception as e:
             logger.error(f"Safety Check Failed: {e}")
+
+    @exclusive_client_action
+    def try_defend(self):
+        """Advance the shared defense state machine once, if nothing else
+        currently owns it.
+
+        Skips while a supervised combat loop (combat_melee.execute_safe_combat)
+        is already handling a fight, so this never issues a second,
+        uncoordinated evade/attack decision against the same target.
+        exclusive_client_action's non-blocking acquire additionally defers
+        to any in-progress item-use action (e.g. eating, raising a shield).
+        """
+        from ..common.combat import defend_or_flee
+        from ..common.combat_melee import SUPERVISED_COMBAT_FLAG
+        from ..common.navigation import _DEFENSE_GUARD
+
+        if getattr(self.client, SUPERVISED_COMBAT_FLAG, False):
+            return
+        if getattr(self.client, _DEFENSE_GUARD, False):
+            return
+        try:
+            defend_or_flee(self.client)
+        except Exception as e:
+            logger.error(f"Defense Check Failed: {e}")
 
     def _clear_entanglements(self, state: dict):
         """Check if stuck in vines/webs and clear them."""

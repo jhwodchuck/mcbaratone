@@ -318,5 +318,89 @@ class TestHungerSystem(unittest.TestCase):
         )
         self.assertEqual(combat._snapshot_skipped_count({"skipped_count": -1}), 1)
 
+    def _clear_terrain_client(self):
+        """A SimpleNamespace client with vine-free terrain and full health.
+
+        Uses SimpleNamespace rather than self.mock_client: a bare MagicMock
+        auto-creates a truthy attribute for any unset flag name, which would
+        make SUPERVISED_COMBAT_FLAG/_DEFENSE_GUARD checks always read True.
+        """
+        def dispatch(command, params=None, timeout=None):
+            if command == "get_state":
+                return {"health": 15, "block_position": {"x": 0, "y": 64, "z": 0}}
+            if command == "get_block":
+                return {"id": "minecraft:air"}
+            return {}
+
+        return SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+
+    def test_safety_system_calls_defend_or_flee_when_nothing_owns_combat(self):
+        """The ambient defense gap: only goto's own tick called defend_or_flee,
+        so mining, harvesting, and other stationary work had no threat check
+        at all. Live A1 2026-09-06: 6 deaths in under two hours, every one
+        with a shield equipped but never raised and a tool -- not a weapon --
+        in hand, always mid stationary work.
+        """
+        client = self._clear_terrain_client()
+        safety = SafetySystem(client, self.mock_coordination)
+
+        with patch("baritone_client.common.combat.defend_or_flee") as mock_defend:
+            safety.tick()
+
+        mock_defend.assert_called_once_with(client)
+
+    def test_safety_system_skips_defense_during_supervised_combat(self):
+        """A fight already owns the decision; a second, uncoordinated
+        evade/attack call against the same target must not fire alongside it.
+        """
+        from baritone_client.common.combat_melee import SUPERVISED_COMBAT_FLAG
+
+        client = self._clear_terrain_client()
+        setattr(client, SUPERVISED_COMBAT_FLAG, True)
+        safety = SafetySystem(client, self.mock_coordination)
+
+        with patch("baritone_client.common.combat.defend_or_flee") as mock_defend:
+            safety.tick()
+
+        mock_defend.assert_not_called()
+
+    def test_safety_system_skips_defense_during_navigation_defense_callback(self):
+        """goto's own periodic defense tick already covers this instant."""
+        from baritone_client.common.navigation import _DEFENSE_GUARD
+
+        client = self._clear_terrain_client()
+        setattr(client, _DEFENSE_GUARD, True)
+        safety = SafetySystem(client, self.mock_coordination)
+
+        with patch("baritone_client.common.combat.defend_or_flee") as mock_defend:
+            safety.tick()
+
+        mock_defend.assert_not_called()
+
+    def test_safety_system_defers_defense_while_combat_owns_item_use(self):
+        """Mirrors test_hunger_defers_while_combat_owns_item_use: the same
+        non-blocking lock must defer ambient defense too, not just eating.
+        """
+        client = self._clear_terrain_client()
+        ready = threading.Event()
+        release = threading.Event()
+
+        def hold_combat_action():
+            with exclusive_combat_action(client):
+                ready.set()
+                release.wait(timeout=2)
+
+        owner = threading.Thread(target=hold_combat_action)
+        owner.start()
+        self.assertTrue(ready.wait(timeout=1))
+
+        safety = SafetySystem(client, self.mock_coordination)
+        with patch("baritone_client.common.combat.defend_or_flee") as mock_defend:
+            safety.try_defend()
+        release.set()
+        owner.join(timeout=2)
+
+        mock_defend.assert_not_called()
+
 if __name__ == '__main__':
     unittest.main()

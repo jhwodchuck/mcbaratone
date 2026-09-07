@@ -1,7 +1,7 @@
 """Supervised melee execution behind :func:`combat.safe_combat`."""
 
 import time
-from functools import partial
+from functools import partial, wraps
 
 from . import combat as api
 from .combat_action import dispatch_held_item_use, exclusive_combat_action
@@ -11,6 +11,26 @@ from .combat_action import dispatch_held_item_use, exclusive_combat_action
 # 1.8-second shield pulse postponed the finishing hit past the retreat floor.
 SHIELD_HOLD_MS = 900
 SHIELD_REFRESH_SECONDS = 1.1
+
+# Set on the client for the whole life of a supervised fight so ambient,
+# background-thread defense (SafetySystem.try_defend) knows to back off
+# rather than issue a second, uncoordinated evade/attack decision against the
+# same target this loop is already handling.
+SUPERVISED_COMBAT_FLAG = "_mcbaratone_supervised_combat_active"
+
+
+def _mark_supervised_combat(function):
+    """Flag the client as owning combat for one call, regardless of exit path."""
+
+    @wraps(function)
+    def wrapped(client, *args, **kwargs):
+        setattr(client, SUPERVISED_COMBAT_FLAG, True)
+        try:
+            return function(client, *args, **kwargs)
+        finally:
+            setattr(client, SUPERVISED_COMBAT_FLAG, False)
+
+    return wrapped
 
 
 def _inventory_payload(response):
@@ -270,6 +290,7 @@ def _supervise_approach(
     return False
 
 
+@_mark_supervised_combat
 def execute_safe_combat(
     client,
     target_id: int,
