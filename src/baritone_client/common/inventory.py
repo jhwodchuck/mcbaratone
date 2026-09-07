@@ -1714,8 +1714,8 @@ def deposit_excess_to_chest(
         if moved_count is None:
             continue
         if moved_count <= 0:
-            print(f"STORAGE: target chest is full; {item_id} did not move")
-            break
+            print(f"STORAGE: no verified transfer for {item_id}; checking other stacks")
+            continue
         player_totals[item_id] = max(0, player_totals.get(item_id, 0) - moved_count)
         deposited += 1
 

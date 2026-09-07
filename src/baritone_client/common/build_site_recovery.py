@@ -53,6 +53,7 @@ def relocate_build_site_search(
     search_radius: int = 64,
     attempt_limit: int = 8,
     minimum_y: Optional[int] = None,
+    candidate_validator: Optional[Callable[..., bool]] = None,
 ) -> bool:
     """Move far enough to load a different dry-surface candidate view."""
     if goto is None:
@@ -81,19 +82,22 @@ def relocate_build_site_search(
         distance_sq = (x - origin[0]) ** 2 + (z - origin[2]) ** 2
         if 16**2 <= distance_sq <= search_radius**2:
             candidate = (x, y, z)
-            if destination_safe(client, *candidate):
-                candidates.append((distance_sq, candidate))
+            candidates.append((distance_sq, candidate))
     ranked = [
         candidate
         for _distance, candidate in sorted(
             candidates,
-            key=lambda item: (-item[1][1], item[0]),
+            key=lambda item: (abs(item[1][1] - origin[1]), item[0]),
         )
     ]
     if ranked:
         offset = max(0, int(attempt) - 1) % len(ranked)
         ranked = ranked[offset:] + ranked[:offset]
     for candidate in ranked[:attempt_limit]:
+        if not destination_safe(client, *candidate):
+            continue
+        if candidate_validator is not None and not candidate_validator(client, candidate):
+            continue
         print(f"  Relocating build-site search to {candidate}")
         if not goto(client, *candidate, timeout=120.0, tolerance=3.0):
             continue
@@ -102,7 +106,8 @@ def relocate_build_site_search(
             (current[0] - origin[0]) ** 2
             + (current[2] - origin[2]) ** 2
         )
-        if moved_sq >= 12**2 and destination_safe(client, *current):
+        if (moved_sq >= 12**2 and destination_safe(client, *current)
+                and (candidate_validator is None or candidate_validator(client, current))):
             return True
     return False
 

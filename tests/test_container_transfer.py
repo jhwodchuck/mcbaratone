@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from baritone_client.common import container_transfer as module
 
 
@@ -239,3 +241,90 @@ def test_deposit_respecting_reserve_splits_a_single_slot_to_honor_the_floor():
     assert transport.player_count == 2
     assert transport.container_count == 15
     assert not any(click["type"] == "QUICK_MOVE" for click in transport.clicks)
+
+
+class CapacityTransport:
+    """A1 shape: every chest slot occupied, dirt full, furnace merge possible."""
+
+    def __init__(self):
+        self.slots = [dict(slot=i, id="minecraft:cobblestone", count=64, max_count=64)
+                      for i in range(27)]
+        self.slots += [dict(slot=i, id="minecraft:air", count=0) for i in range(27, 63)]
+        self.slots[12].update(id="minecraft:furnace", count=1)
+        self.slots[13].update(id="minecraft:dirt", count=64)
+        self.slots[27].update(id="minecraft:dirt", count=46, max_count=64)
+        self.slots[28].update(id="minecraft:furnace", count=4, max_count=64)
+        self.clicks = []
+        self.sync_id = 39
+        self.error = None
+
+    def dispatch(self, route, payload):
+        if route == "get_screen":
+            return dict(type="ChestMenu", total_slots=63, sync_id=self.sync_id,
+                        slots=[dict(item) for item in self.slots])
+        if route == "get_block":
+            return {"id": "minecraft:chest"}
+        if route == "get_state":
+            return dict(block_position=dict(x=0, y=64, z=0), health=20, food_level=20)
+        if route == "inventory_click":
+            self.clicks.append(dict(payload))
+            if self.error:
+                raise self.error
+            assert payload == dict(slot=28, type="QUICK_MOVE", button=0, sync_id=39)
+            self.slots[12]["count"] += 4
+            self.slots[28].update(id="minecraft:air", count=0)
+        return {}
+
+
+def test_known_full_destination_never_dispatches_a_noop_click():
+    transport = CapacityTransport()
+    assert module.verified_quick_move(SimpleNamespace(transport=transport),
+        slot=27, item_id="minecraft:dirt", before_count=46, sync_id=39) == 0
+    assert transport.clicks == []
+
+
+def test_full_chest_can_still_accept_a_compatible_stack():
+    transport = CapacityTransport()
+    assert module.verified_quick_move(SimpleNamespace(transport=transport),
+        slot=28, item_id="minecraft:furnace", before_count=4, sync_id=39) == 4
+    assert transport.slots[12]["count"] == 5
+    assert transport.slots[28]["count"] == 0
+    assert len(transport.clicks) == 1
+
+
+def test_deposit_skips_full_item_and_banks_a_later_compatible_item(monkeypatch):
+    from baritone_client.common import inventory
+
+    transport = CapacityTransport()
+    monkeypatch.setattr(module.harness_ops, "open_container", lambda *_a, **_k: True)
+    assert inventory.deposit_excess_to_chest(SimpleNamespace(transport=transport), (0,64,0),
+        deposit_items={"minecraft:dirt", "minecraft:furnace"}) == 1
+    assert transport.slots[27]["count"] == 46
+    assert transport.slots[28]["count"] == 0
+    assert transport.slots[12]["count"] == 5
+    assert len(transport.clicks) == 1
+
+
+@pytest.mark.parametrize("change", ["sync", "count", "components", "missing_capacity"])
+def test_stale_source_or_incompatible_destination_prevents_dispatch(change):
+    transport = CapacityTransport()
+    if change == "sync":
+        transport.sync_id = 40
+    elif change == "count":
+        transport.slots[28]["count"] = 3
+    elif change == "components":
+        transport.slots[12]["components"] = {"minecraft:custom_name": "other furnace"}
+    else:
+        transport.slots[12].pop("max_count")
+    assert module.verified_quick_move(SimpleNamespace(transport=transport),
+        slot=28, item_id="minecraft:furnace", before_count=4, sync_id=39) == 0
+    assert transport.clicks == []
+
+
+def test_unknown_click_outcome_is_not_retried_or_hidden():
+    transport = CapacityTransport()
+    transport.error = RuntimeError("Observed effect deadline exceeded; reconcile before retry")
+    with pytest.raises(RuntimeError, match="reconcile"):
+        module.verified_quick_move(SimpleNamespace(transport=transport),
+            slot=28, item_id="minecraft:furnace", before_count=4, sync_id=39)
+    assert len(transport.clicks) == 1

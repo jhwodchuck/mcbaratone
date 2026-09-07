@@ -1281,6 +1281,7 @@ def test_stale_high_ring_column_is_rebased_onto_the_anchor_floor(monkeypatch):
         (4, 113, 0): "minecraft:stone",
         # ...and the real floor at anchor level, where it belongs.
         (4, 105, 0): "minecraft:stone",
+        (0, 104, 0): "minecraft:stone",  # support the home itself
         # The homestead's own structures, at the anchor's level. The shared
         # defaults sit at y=64, which is ~40 blocks below this y=105 anchor --
         # outside the envelope, so they would un-verify infrastructure and

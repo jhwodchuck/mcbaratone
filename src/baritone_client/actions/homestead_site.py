@@ -194,6 +194,7 @@ def relocate_homestead(
     dead build site rather than inventing a second relocation strategy.
     """
     from ..common.build_site_recovery import relocate_build_site_search
+    from ..common.home_site import suitable_home_site
 
     relocations = int(homestead.get(SITE_RELOCATIONS, 0) or 0) + 1
     # Persisted up front, against the attempt rather than the outcome. A
@@ -210,7 +211,9 @@ def relocate_homestead(
         f"(move {relocations}/{MAX_SITE_RELOCATIONS})"
     )
     try:
-        moved = relocate_build_site_search(client, attempt=relocations)
+        moved = relocate_build_site_search(
+            client, attempt=relocations, candidate_validator=suitable_home_site,
+        )
     except Exception as error:  # search is best-effort; never kill the run
         moved = False
         print(f"  Homestead relocation search failed ({error})")
@@ -233,8 +236,8 @@ def relocate_homestead(
             return False
 
     new_anchor = helper.current_position()
-    if not helper._dry_ground(new_anchor):
-        print(f"  Relocation landed on non-dry ground at {new_anchor}; keeping old site")
+    if not helper._dry_ground(new_anchor) or not suitable_home_site(client, new_anchor):
+        print(f"  Exploration at {new_anchor} did not prove a suitable home; keeping old site")
         return False
 
     homestead["anchor"] = new_anchor
@@ -283,3 +286,27 @@ def read_block_counting_unloaded(client: Any, position: Any) -> tuple[str, bool]
     except Exception:
         value = ""
     return value, classify_block(value) == "unknown"
+
+
+def screen_rehome(helper: Any, homestead: dict[str, Any], current: Any) -> Any:
+    """Keep emergency shelter separate from committing a replacement home."""
+    from ..common.home_site import suitable_home_site
+    from ..common.tasks import ProgressRecoveryRequired
+
+    if not suitable_home_site(helper.client, current):
+        attempts = int(homestead.get(SITE_RELOCATIONS, 0) or 0)
+        if attempts >= MAX_SITE_RELOCATION_HARD_CAP or not relocate_homestead(
+            helper.client, homestead, "dry_anchor", helper,
+        ):
+            helper.record(homestead)
+            raise ProgressRecoveryRequired(
+                "no surveyed replacement home; retained existing anchor and infrastructure"
+            )
+        return helper.current_position()
+    # Old site evidence cannot be carried to a newly selected anchor.
+    for name in helper.ordered_steps():
+        record = helper.step(homestead, name)
+        record.update(verified=False, evidence="site_relocated")
+        record.pop("intended", None)
+        record.pop("verified_positions", None)
+    return current

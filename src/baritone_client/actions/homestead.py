@@ -47,7 +47,7 @@ ANCHOR_UNREACHABLE = "anchor_unreachable"
 # Upper bound on re-home attempts for one checkpoint. Guard against an
 # infinite reselect loop if every candidate anchor is also unreachable.
 MAX_ANCHOR_REHOME_ATTEMPTS = 2
-from .homestead_site import carry_site_state, read_block_counting_unloaded  # noqa: E402
+from .homestead_site import carry_site_state, read_block_counting_unloaded, screen_rehome  # noqa: E402
 LOG_ITEMS = (
     "minecraft:oak_log",
     "minecraft:birch_log",
@@ -318,13 +318,7 @@ class IncrementalHomestead:
                 # The bot is now on dry shore; use it as the new anchor so a
                 # later return home lands on solid ground, not open water.
                 current = (int(dry[0]), int(dry[1]), int(dry[2]))
-            # Re-home succeeded: the bot's current dry position becomes the
-            # new anchor and is by construction reachable. Reset the counter
-            # so it bounds *consecutive* failures, not lifetime re-homes --
-            # otherwise two re-homes anywhere in the run permanently latch
-            # every future goto failure into a fatal loop (live 2026-08-08:
-            # BOOT_SEQUENCE spun on "re-home exhausted after 2 attempt(s)"
-            # forever with rehome_attempts persisted at the 2 cap).
+            current = screen_rehome(self, homestead, current)
             homestead["rehome_attempts"] = 0
             homestead.pop(ANCHOR_UNREACHABLE, None)
             homestead.pop("anchor_unreachable_at", None)
@@ -497,9 +491,7 @@ class IncrementalHomestead:
                         "cannot re-home onto non-dry ground at current position"
                     )
                 current = (int(dry[0]), int(dry[1]), int(dry[2]))
-            # Re-home succeeded: adopt the current dry position as the new
-            # anchor and reset the budget so it bounds consecutive failures
-            # only (see enforce_anchor re-home block for the same fix).
+            current = screen_rehome(self, homestead, current)
             homestead["rehome_attempts"] = 0
             homestead.pop(ANCHOR_UNREACHABLE, None)
             homestead.pop("anchor_unreachable_at", None)
@@ -936,8 +928,8 @@ class IncrementalHomestead:
         return value
 
     def _dry_ground(self, anchor: Sequence[int]) -> bool:
-        ground = self._block_at((anchor[0], anchor[1] - 1, anchor[2]))
-        return bool(ground) and "water" not in ground and "lava" not in ground
+        from ..common.home_site import supported_home_ground
+        return supported_home_ground(self._block_at((anchor[0], anchor[1] - 1, anchor[2])))
 
     def _has_edible(self) -> bool:
         # Raw meat and fish count. They restore less hunger than cooked, but a
