@@ -750,6 +750,28 @@ def test_find_clear_approach_picks_the_neighbour_with_an_actual_sightline(monkey
     assert approach == (-3, 162, 5)
 
 
+def test_container_approach_finds_the_observed_a1_outer_ring_stand(monkeypatch):
+    blocks = {(-8,160,8): "minecraft:chest", (-7,159,6): "minecraft:stone",
+              (-7,160,7): "minecraft:furnace", (-6,160,8): "minecraft:cobblestone",
+              (-6,161,8): "minecraft:cobblestone"}
+    reads = []
+
+    def read(_ctx, x, y, z):
+        reads.append((x,y,z))
+        return blocks.get((x,y,z), "minecraft:air")
+
+    monkeypatch.setattr(inventory_ops, "block_id_at", read)
+    assert inventory_ops._find_clear_approach(object(), (-8,160,8)) == (-7,160,6)
+    assert len(reads) < 60
+
+
+def test_container_approach_rejects_powder_snow_and_unknown_rays(monkeypatch):
+    monkeypatch.setattr(inventory_ops, "block_id_at", lambda *_: "minecraft:powder_snow")
+    assert inventory_ops._find_clear_approach(object(), (0,64,0)) is None
+    monkeypatch.setattr(inventory_ops, "block_id_at", lambda *_: "minecraft:void_air")
+    assert not inventory_ops._line_of_sight_clear(object(), (0.5,65.62,0.5), (3.5,64.5,0.5), (3,64,0))
+
+
 def test_container_blocked_by_a_same_floor_obstruction_reroutes_via_clear_approach(monkeypatch):
     """do_open_container must route through a verified sightline, not retry blind.
 

@@ -378,7 +378,7 @@ def _line_of_sight_clear(
         if cell == target:
             continue
         block = block_id_at(ctx, *cell)
-        if block and "air" not in block:
+        if not block or block == "minecraft:void_air" or "air" not in block:
             return False
     return True
 
@@ -390,23 +390,34 @@ def _find_clear_approach(ctx, pos: Tuple[int, int, int]) -> Optional[Tuple[int, 
     sight -- so a "close enough" candidate they pick can still have a wall
     or pillar between its eye and the target. That is exactly the shape of
     a raycast-miss failure, which no distance or walkability heuristic
-    predicts. This checks only the target's immediate neighbours (a
-    handful of block_id_at calls) and verifies each one's sightline
+    predicts. This checks the target's immediate neighbours, then the
+    second ring, and verifies each candidate's sightline
     directly, since that is the one thing that actually predicts success --
-    unlike a full-radius area scan, which costs hundreds of bridge round
+    unlike an unbounded area scan, which costs hundreds of bridge round
     trips and still cannot tell you this.
     """
     tx, ty, tz = pos
     center = (tx + 0.5, ty + 0.5, tz + 0.5)
-    candidates = (
+    immediate = (
         (tx + 1, ty, tz), (tx - 1, ty, tz),
         (tx, ty, tz + 1), (tx, ty, tz - 1),
         (tx + 1, ty, tz + 1), (tx - 1, ty, tz - 1),
         (tx + 1, ty, tz - 1), (tx - 1, ty, tz + 1),
     )
+    # A1's floating chest has no usable immediate neighbour. A clear, supported
+    # position two blocks north and one east opens it successfully. Extend the
+    # bounded search to that ring rather than repeating an impossible ray.
+    candidates = immediate + tuple(
+        (tx + dx, ty, tz + dz)
+        for dx in range(-2, 3) for dz in range(-2, 3)
+        if max(abs(dx), abs(dz)) == 2
+    )
     for cx, cy, cz in candidates:
         floor = block_id_at(ctx, cx, cy - 1, cz)
-        if not floor or "air" in floor or is_liquid(floor):
+        if (not floor or "air" in floor or is_liquid(floor)
+                or floor in {"minecraft:powder_snow", "minecraft:magma_block",
+                             "minecraft:campfire", "minecraft:soul_campfire",
+                             "minecraft:cactus", "minecraft:pointed_dripstone"}):
             continue
         stand = block_id_at(ctx, cx, cy, cz)
         if not stand or "air" not in stand:
@@ -547,7 +558,7 @@ def do_open_container(
             # Failed: Timeout waiting for bridge response", and still ended
             # up re-selecting the same unobstructed-by-its-own-criteria but
             # sightline-blocked candidate every time. _find_clear_approach
-            # checks only the target's immediate neighbours and verifies
+            # checks a bounded pair of neighbour rings and verifies
             # the one thing that actually predicts success -- a real
             # sightline -- for a small fraction of the cost.
             if attempt < attempts:

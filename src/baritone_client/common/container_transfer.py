@@ -89,18 +89,56 @@ def verified_quick_move(
     sync_id: Any,
 ) -> int:
     """Quick-move one stack and return only its observed count delta."""
-    _click(client, slot, "QUICK_MOVE", 0, sync_id)
-    time.sleep(0.05)
     opened = _screen_data(client)
     if opened is None:
+        return 0
+    slots, container_slots, live_sync_id = opened
+    source = next((item for item in slots if int(item.get("slot", -1)) == slot), None)
+    if (source is None or source.get("id") != item_id
+            or int(source.get("count", 0)) != before_count
+            or (sync_id is not None and sync_id != live_sync_id)):
+        return 0
+    if not any(_quick_move_destination(source, item, container_slots) for item in slots):
+        return 0
+    _click(client, slot, "QUICK_MOVE", 0, live_sync_id)
+    time.sleep(0.05)
+    opened = _screen_data(client)
+    if opened is None or opened[2] != live_sync_id:
         return 0
     updated_entry = next(
         (item for item in opened[0] if int(item.get("slot", -1)) == slot),
         None,
     )
-    updated_id = updated_entry.get("id") if updated_entry else None
+    if updated_entry is None:
+        return 0
+    updated_id = updated_entry.get("id")
     updated_count = int(updated_entry.get("count", 0) or 0) if updated_entry else 0
     return before_count if updated_id != item_id else before_count - updated_count
+
+
+def _quick_move_destination(source, target, container_slots: int) -> bool:
+    """A full chest may accept one item type while rejecting another.
+
+    Do not dispatch a known no-op: the bridge correctly cannot verify an
+    inventory change for a shift-click that has nowhere to put its stack.
+    Missing slot/capacity evidence never implies room for a stack merge.
+    """
+    source_slot = int(source.get("slot", -1))
+    target_slot = int(target.get("slot", -1))
+    if not 0 <= target_slot < container_slots + 36:
+        return False
+    if (source_slot < container_slots) == (target_slot < container_slots):
+        return False
+    count = int(target.get("count", 0) or 0)
+    if target.get("id") in ("", "minecraft:air") and count == 0:
+        return True
+    if source.get("id") != target.get("id"):
+        return False
+    if any(source.get(key, default) != target.get(key, default) for key, default in (
+        ("components", {}), ("enchantments", []), ("stored_enchantments", []), ("damage", 0),
+    )):
+        return False
+    return 0 < count < int(target.get("max_count", 1) or 1)
 
 
 def verified_partial_move(
