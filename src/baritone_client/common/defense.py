@@ -568,10 +568,10 @@ def assess_armor_for_environment(client, environment: str) -> ArmorAssessment:
             recommended_boots="minecraft:leather_boots",
         )
 
-    # No leather boots available
+    # No leather boots available - signal need for leather
     return ArmorAssessment(
-        "none",
-        "no leather boots available for freezing protection",
+        "gather_leather",
+        "freezing biome but no leather boots; needs 4 leather",
         current_boots=current_boots,
         recommended_boots="minecraft:leather_boots",
     )

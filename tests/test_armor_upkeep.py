@@ -196,6 +196,21 @@ def test_unreadable_equipment_never_loops_the_scheduler(monkeypatch):
         _Client(iron=94), _signals(), True
     ) is None
 
+def test_freezing_biome_requires_leather_boots(monkeypatch):
+    """Regression: freezing biome needs leather boots, not just iron."""
+    from baritone_client.common import defense
+
+    client = _Client(worn=0)
+    # Mock inventory to have no leather boots
+    monkeypatch.setattr(
+        client.transport, "dispatch",
+        lambda cmd, params: {"armor": [], "inventory": []}
+    )
+
+    assessment = defense.assess_armor_for_environment(client, "freezing")
+    assert assessment.action == "gather_leather"
+    assert "no leather boots" in assessment.reason
+
 
 def test_death_during_crafting_is_not_swallowed(monkeypatch):
     """PlayerDeathDetected is control flow, not an error.
