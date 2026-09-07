@@ -16,6 +16,7 @@ def recover_health(
         _emergency_food_count,
         ensure_alive,
         heal_if_needed,
+        survival_tick,
     )
 
     state = client.transport.dispatch("get_state", {})
@@ -31,6 +32,15 @@ def recover_health(
     last_food_attempt = 0.0
     while time.time() < deadline:
         state = client.transport.dispatch("get_state", {})
+        # This loop otherwise just holds position and sleeps, unlike every
+        # other long-running wait loop (goto, nether_travel, wood_gathering),
+        # none of which call survival_tick either -- except this one is the
+        # one recovery itself routes through. Live A1 2026-09-06/07: 5
+        # drowning deaths, several during "Verify Nether expedition loadout"
+        # and acquire_emergency_food (which calls this first), because
+        # holding position in water for up to a minute has no reflex to
+        # surface -- it just keeps eating while the air meter runs out.
+        survival_tick(client, state)
         health = float(state.get("health", 20) or 0)
         if health >= minimum_health:
             print(f"RECOVERY: safe to resume at {health:.1f} health")
