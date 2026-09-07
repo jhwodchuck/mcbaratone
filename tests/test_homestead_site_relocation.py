@@ -126,6 +126,7 @@ def test_relocation_budget_is_bounded():
 def test_relocating_reopens_every_step(monkeypatch):
     """Old evidence describes the abandoned site, so it cannot stand."""
     helper = _homestead_helper(position=(120, 68, -40))
+    monkeypatch.setattr("baritone_client.common.home_site.suitable_home_site", lambda *_: True)
     progress = _progress()
     for name in ORDERED_HOMESTEAD_STEPS:
         progress["steps"][name] = {"verified": True, "evidence": "live_check"}
@@ -171,6 +172,7 @@ def test_heading_move_fallback_relocates_when_search_finds_nothing(monkeypatch):
     """When the build-site search can't move the bot off a barren site, the
     camp-break heading move relocates it instead of parking."""
     helper = _homestead_helper(position=(120, 68, -40))
+    monkeypatch.setattr("baritone_client.common.home_site.suitable_home_site", lambda *_: True)
     progress = _progress()
     for name in ORDERED_HOMESTEAD_STEPS:
         progress["steps"][name] = {"verified": True, "evidence": "live_check"}
@@ -415,6 +417,7 @@ def test_relocating_discards_the_old_perimeter_ring(monkeypatch):
     "no solid support face".
     """
     helper = _homestead_helper(position=(120, 68, -40))
+    monkeypatch.setattr("baritone_client.common.home_site.suitable_home_site", lambda *_: True)
     progress = _progress()
     progress["steps"]["light_perimeter"] = {
         "verified": True,
