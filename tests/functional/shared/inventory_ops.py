@@ -522,7 +522,23 @@ def do_open_container(
             if total_slots > 0 and int(data.get("sync_id", -1)) != -1:
                 return True, data
             return False, data
-        return total_slots in expected_total_slots, data
+        if total_slots not in expected_total_slots:
+            return False, data
+        if expected_total_slots == {46}:
+            # A real crafting table screen and the player's own always-open
+            # 2x2-crafting inventory screen both report exactly 46 total
+            # slots, so slot count alone cannot tell a genuinely opened table
+            # from a raycast miss that left the default player screen in
+            # place. Live A1 2026-09-06: a blocked-sightline crafting-table
+            # interact failed every one of 6 raw retries, but this check
+            # still reported success on attempt 1/4 because the player
+            # screen matched on slot count -- skipping the retry+reposition
+            # loop below entirely and only surfacing as a failure later, in
+            # the manual recipe grid's own (correct) screen-type check.
+            screen_type = str(data.get("type", ""))
+            if "Player" in screen_type or screen_type in {"class_1723", "PlayerScreenHandler"}:
+                return False, data
+        return True, data
 
     # Retry opening; we frequently see a stale 46-slot screen returned. Callers
     # probing an untrusted catalog landmark may choose one bounded attempt so a

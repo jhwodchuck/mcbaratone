@@ -901,6 +901,59 @@ def test_catalog_container_probe_can_limit_open_attempts(monkeypatch):
     assert interactions == [True]
 
 
+def test_crafting_table_screen_check_rejects_the_default_player_screen(monkeypatch):
+    """total_slots=46 alone cannot prove a crafting table actually opened.
+
+    A real crafting table screen and the player's own always-present
+    2x2-crafting inventory screen both report exactly 46 total slots. Live
+    A1 2026-09-06: a blocked-sightline interact failed all 6 raw raycast
+    retries, but do_open_container still reported success on attempt 1/4 --
+    skipping the retry+reposition loop built for exactly this scenario --
+    because the untouched player screen matched on slot count alone. The
+    failure only surfaced later, downstream, in the manual recipe grid's own
+    screen-type check ("expected crafting table, got PlayerScreenHandler
+    (46 slots)").
+    """
+
+    class Transport:
+        def dispatch(self, route, _payload=None):
+            if route == "get_screen":
+                return {
+                    "data": {
+                        "type": "PlayerScreenHandler",
+                        "sync_id": 0,
+                        "total_slots": 46,
+                    }
+                }
+            return {}
+
+    class Context:
+        client = type("Client", (), {"transport": Transport()})()
+
+        def __init__(self):
+            self.events = []
+
+        def log_event(self, event):
+            self.events.append(event)
+
+        def get_position(self):
+            return (1.0, 65.0, 1.0)
+
+    monkeypatch.setattr(inventory_ops, "block_id_at", lambda *_args: "minecraft:crafting_table")
+    monkeypatch.setattr(inventory_ops, "close_screen", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        inventory_ops, "robust_interact_block", lambda *_args, **_kwargs: False
+    )
+
+    assert not inventory_ops.do_open_container(
+        Context(),
+        (1, 65, 1),
+        timeout=0.01,
+        attempts=1,
+    )
+
+
 def test_adjacent_support_finds_a_lateral_neighbour():
     """A roof interior has air below but a solid block beside it.
 
