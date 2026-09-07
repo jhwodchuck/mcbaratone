@@ -399,3 +399,135 @@ def test_villager_handler_still_fails_closed_when_no_village_is_reachable(monkey
     assert not result.success
     assert result.data["capability_blocker"] == "villager_transport"
     assert result.data["observed_adults"] == 0
+
+
+class VillageLocationState:
+    """A minimal state stub carrying a growable list of village locations,
+    matching StateManager.get_locations/add_location's real shape.
+    """
+
+    def __init__(self, villages):
+        self._villages = list(villages)
+        self.saved = []
+
+    def get_locations(self, category=None):
+        return {
+            "village": [
+                {"x": x, "y": y, "z": z} for x, y, z in self._villages
+            ]
+        }
+
+    def add_location(self, category, x, y, z, **kwargs):
+        self._villages.append((x, y, z))
+        self.saved.append((category, x, y, z, kwargs))
+
+
+class TravelTransport:
+    """Stubs get_state/get_entities for _travel_to_a_located_village.
+
+    goto/staged_goto are monkeypatched directly at the module level (they
+    are plain navigation calls, not bridge routes this transport handles),
+    and update `position` themselves to simulate arrival.
+    """
+
+    def __init__(self, position, populations):
+        self.position = dict(position)
+        self._populations = populations
+
+    def dispatch(self, route, payload=None, **_kwargs):
+        if route == "get_state":
+            return {"block_position": dict(self.position)}
+        if route == "get_entities":
+            key = (self.position["x"], self.position["y"], self.position["z"])
+            return {"entities": self._populations.get(key, [])}
+        return {"accepted": True}
+
+
+def _fake_goto(transport):
+    def goto(_client, x, y, z, **_kwargs):
+        transport.position = {"x": x, "y": y, "z": z}
+        return True
+
+    return goto
+
+
+def test_travel_advances_past_a_depleted_known_village(monkeypatch):
+    """THE regression this fixes: the nearer known village has gone quiet
+    (its villagers wandered off, or the population never really held), but
+    a second known village -- farther away -- still has two adults.
+    Previously only known[0] was ever tried, forever, regardless of how many
+    other villages the bot already knew about.
+    """
+    near, far = (10, 64, 10), (500, 64, 500)
+    state = VillageLocationState([near, far])
+    populations = {far: [adult(1, far[0]), adult(2, far[0] + 2)]}
+    transport = TravelTransport(position={"x": 0, "y": 64, "z": 0}, populations=populations)
+    client = SimpleNamespace(transport=transport)
+
+    goto = _fake_goto(transport)
+    monkeypatch.setattr(villager_phase, "goto", goto)
+    monkeypatch.setattr(
+        villager_phase, "staged_goto",
+        lambda _client, target, _current: goto(_client, *target),
+    )
+    scanned = {"value": False}
+    monkeypatch.setattr(
+        villager_phase, "locate_village",
+        lambda *_a, **_k: scanned.__setitem__("value", True) or None,
+    )
+
+    reached = villager_phase.VillagerInfraHandler._travel_to_a_located_village(
+        client, state
+    )
+
+    assert reached is True
+    assert transport.position == {"x": far[0], "y": far[1], "z": far[2]}
+    assert not scanned["value"], "must not scan fresh while a known village still works"
+
+
+def test_travel_falls_back_to_a_fresh_scan_when_all_known_villages_are_depleted(
+    monkeypatch,
+):
+    depleted = (10, 64, 10)
+    fresh_spot = (300, 64, 300)
+    state = VillageLocationState([depleted])
+    populations = {fresh_spot: [adult(1, fresh_spot[0]), adult(2, fresh_spot[0] + 2)]}
+    transport = TravelTransport(position={"x": 0, "y": 64, "z": 0}, populations=populations)
+    client = SimpleNamespace(transport=transport)
+
+    goto = _fake_goto(transport)
+    monkeypatch.setattr(villager_phase, "goto", goto)
+    monkeypatch.setattr(
+        villager_phase, "staged_goto",
+        lambda _client, target, _current: goto(_client, *target),
+    )
+    monkeypatch.setattr(villager_phase, "locate_village", lambda *_a, **_k: fresh_spot)
+
+    reached = villager_phase.VillagerInfraHandler._travel_to_a_located_village(
+        client, state
+    )
+
+    assert reached is True
+    assert (
+        "village",
+        fresh_spot[0], fresh_spot[1], fresh_spot[2],
+        {"dimension": "overworld", "tags": ["verified"]},
+    ) in state.saved
+
+
+def test_travel_fails_closed_when_everything_is_exhausted(monkeypatch):
+    depleted = (10, 64, 10)
+    state = VillageLocationState([depleted])
+    transport = TravelTransport(position={"x": 0, "y": 64, "z": 0}, populations={})
+    client = SimpleNamespace(transport=transport)
+
+    monkeypatch.setattr(villager_phase, "goto", _fake_goto(transport))
+    monkeypatch.setattr(
+        villager_phase, "staged_goto",
+        lambda _client, target, _current: _fake_goto(transport)(_client, *target),
+    )
+    monkeypatch.setattr(villager_phase, "locate_village", lambda *_a, **_k: None)
+
+    assert villager_phase.VillagerInfraHandler._travel_to_a_located_village(
+        client, state
+    ) is False

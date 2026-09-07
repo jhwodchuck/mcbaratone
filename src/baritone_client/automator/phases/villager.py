@@ -117,25 +117,15 @@ class VillagerInfraHandler(PhaseHandler):
         that are already where the world generator put them, which is
         exactly the population VillagerInfraHandler already knows how to
         breed once they are within its 32-block observation radius.
+
+        Previously used only ``known[0]`` -- the first village ever
+        recorded -- and never looked past it, even after arriving to find
+        its population had wandered out of observation range or otherwise
+        come up short. Every later attempt then retried that exact same
+        stale coordinate forever, no matter how many other villages sat
+        within easy reach. Tries every known village, nearest first, before
+        spending time on a fresh wandering scan.
         """
-        known = state.get_locations("village").get("village", [])
-        if known:
-            village = known[0]
-            try:
-                target = (int(village["x"]), int(village["y"]), int(village["z"]))
-            except (KeyError, TypeError, ValueError):
-                target = None
-        else:
-            target = None
-
-        if target is None:
-            target = locate_village(client)
-            if target is None:
-                return False
-            state.add_location(
-                "village", *target, dimension="overworld", tags=["verified"]
-            )
-
         try:
             live = client.transport.dispatch("get_state", {})
         except Exception:
@@ -143,17 +133,76 @@ class VillagerInfraHandler(PhaseHandler):
         position = live.get("block_position", live.get("position", {})) if isinstance(live, dict) else {}
         try:
             current = (
-                int(position.get("x", target[0])),
-                int(position.get("y", target[1])),
-                int(position.get("z", target[2])),
+                int(position.get("x", 0)),
+                int(position.get("y", 64)),
+                int(position.get("z", 0)),
             )
         except (TypeError, ValueError):
-            current = target
+            current = (0, 64, 0)
 
-        horizontal = ((current[0] - target[0]) ** 2 + (current[2] - target[2]) ** 2) ** 0.5
-        if horizontal > 48.0:
-            return staged_goto(client, target, current)
-        return goto(client, *target, timeout=120, tolerance=8.0)
+        def distance_sq(entry) -> float:
+            try:
+                return (int(entry["x"]) - current[0]) ** 2 + (
+                    int(entry["z"]) - current[2]
+                ) ** 2
+            except (KeyError, TypeError, ValueError):
+                return float("inf")
+
+        known = state.get_locations("village").get("village", [])
+        candidates = []
+        for entry in sorted(known, key=distance_sq):
+            try:
+                candidates.append(
+                    (int(entry["x"]), int(entry["y"]), int(entry["z"]))
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+
+        def try_candidate(target) -> bool:
+            nonlocal current
+            horizontal = (
+                (current[0] - target[0]) ** 2 + (current[2] - target[2]) ** 2
+            ) ** 0.5
+            reached = (
+                staged_goto(client, target, current)
+                if horizontal > 48.0
+                else goto(client, *target, timeout=120, tolerance=8.0)
+            )
+            if not reached:
+                return False
+            try:
+                _, adults, positions = (
+                    VillagerInfraHandler._observe_nearby_adult_villagers(client)
+                )
+            except Exception:
+                return False
+            if len(adults) < 2 or len(positions) < 2:
+                try:
+                    fresh_state = client.transport.dispatch("get_state", {})
+                    fresh_pos = fresh_state.get(
+                        "block_position", fresh_state.get("position", {})
+                    )
+                    current = (
+                        int(fresh_pos.get("x", target[0])),
+                        int(fresh_pos.get("y", target[1])),
+                        int(fresh_pos.get("z", target[2])),
+                    )
+                except Exception:
+                    current = target
+                return False
+            return True
+
+        for target in candidates:
+            if try_candidate(target):
+                return True
+
+        target = locate_village(client)
+        if target is None:
+            return False
+        state.add_location(
+            "village", *target, dimension="overworld", tags=["verified"]
+        )
+        return try_candidate(target)
 
     @staticmethod
     def _provision_breeding_bread(client, state: StateManager) -> bool:
