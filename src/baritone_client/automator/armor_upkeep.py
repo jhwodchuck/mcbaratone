@@ -112,6 +112,32 @@ def missing_pieces(client: Any) -> list[Tuple[str, int]]:
     ]
 
 
+def worn_out_pieces(client: Any) -> list[Tuple[str, int]]:
+    """Equipped pieces below the combat durability floor, worth replacing.
+
+    `missing_pieces` only notices a piece once it has broken and vanished
+    outright -- by then the bot already fought at least one encounter with
+    that slot empty. Live A1 2026-09-07: a helmet at 153/165 damage and a
+    chestplate at 194/240 sat unreplaced through a five-death spiral because
+    nothing outside `nether_prep`'s own Nether-readiness gate ever asked "is
+    this piece about to break", only "is it already gone". `equip_best_armor`
+    already swaps in a fresher same-tier piece once one is crafted -- this
+    only has to make sure crafting one is offered in the first place.
+    """
+    from ..common.inventory import armor_piece_is_durable, get_equipped_armor
+
+    try:
+        equipped = get_equipped_armor(client)
+    except Exception:
+        return []
+    return [
+        (piece, cost)
+        for piece, cost in ARMOR_PLAN
+        if (item_id := equipped.get(piece.rsplit("_", 1)[-1]))
+        and not armor_piece_is_durable(client, item_id)
+    ]
+
+
 def unworn_carried_pieces(client: Any) -> list[str]:
     """Armour sitting in ordinary slots that is not already being worn.
 
@@ -234,7 +260,15 @@ def equip_freeze_boots(client: Any) -> bool:
 
 
 def needs_armor(client: Any) -> bool:
-    """True when a cheap, high-value equip is available right now."""
+    """True when a cheap, high-value equip or durability replacement is
+    available right now.
+
+    A worn-out piece is checked ahead of the "already 4/4" exit below: it is
+    still equipped, so that count alone hides exactly the case that needs
+    the most urgent replacement.
+    """
+    if worn_out_pieces(client) and spendable_iron(client) >= MIN_IRON_TO_EQUIP:
+        return True
     if equipped_pieces(client) >= TARGET_ARMOR_PIECES:
         return False
     if not missing_pieces(client):
@@ -277,6 +311,17 @@ def select_armor_opportunity(client: Any, signals: Any, cooldown_ready: bool):
             OpportunityKind.ARMOR_UPKEEP,
             200,
             f"freezing biome without leather boots ({worn}/4 armour worn)",
+        )
+    # A worn-out piece also outranks the "already dressed" exit below: a
+    # helmet at 153/165 damage is still counted in `worn`, so that count
+    # alone would hide the one piece about to break outright.
+    worn_out = worn_out_pieces(client)
+    if worn_out and spendable_iron(client) >= MIN_IRON_TO_EQUIP:
+        return LocalOpportunity(
+            OpportunityKind.ARMOR_UPKEEP,
+            180,
+            f"{len(worn_out)} armour piece(s) nearly broken "
+            f"with {carried_iron(client)} iron carried",
         )
     if worn >= TARGET_ARMOR_PIECES:
         return None
@@ -345,15 +390,21 @@ def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
                 before,
                 after,
             )
-    if equipped_pieces(client) >= TARGET_ARMOR_PIECES:
+    worn_out_before = worn_out_pieces(client)
+    if equipped_pieces(client) >= TARGET_ARMOR_PIECES and not worn_out_before:
         after = equipped_pieces(client)
         return True, f"equipped carried armour ({before}->{after})", before, after
 
     # Armour recipes consume ingots, not raw ore.  Leave raw-iron conversion
     # to FOOD_AND_IRON instead of burning a timeout on unaffordable recipes.
+    # A worn-out piece is a craft target even at 4/4 equipped -- the count
+    # alone hides the one about to break outright, and equip_best_armor
+    # already swaps in a fresher same-tier piece once one is crafted.
     budget = min(spendable_iron(client), FULL_SET_IRON)
+    targets = list(missing_pieces(client))
+    targets += [item for item in worn_out_before if item not in targets]
     crafted = []
-    for piece, cost in missing_pieces(client):
+    for piece, cost in targets:
         if budget < cost:
             continue
         try:
@@ -377,7 +428,11 @@ def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
             equip_best_armor(client)
 
     after = equipped_pieces(client)
-    if after > before:
+    # A durability swap leaves the equipped count unchanged -- one worn iron
+    # helmet out, one fresh iron helmet in -- so the count alone would report
+    # this as a no-op and reset a caller's no-progress streak on real work.
+    replaced_worn_out = len(worn_out_pieces(client)) < len(worn_out_before)
+    if after > before or replaced_worn_out:
         made = ", ".join(crafted) if crafted else "carried pieces"
         return True, f"armour {before}->{after} ({made})", before, after
     return (

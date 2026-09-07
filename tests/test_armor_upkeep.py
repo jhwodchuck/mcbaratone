@@ -395,3 +395,107 @@ def test_successful_craft_attempts_equip_even_when_inventory_count_does_not_incr
     assert len(equip_calls) >= 2, (
         "expected at least two equip attempts: initial plus after a crafted piece"
     )
+
+
+_FULL_IRON_SET = {
+    "helmet": "minecraft:iron_helmet",
+    "chestplate": "minecraft:iron_chestplate",
+    "leggings": "minecraft:iron_leggings",
+    "boots": "minecraft:iron_boots",
+}
+
+
+def test_worn_out_helmet_survives_the_already_dressed_exit(monkeypatch):
+    """THE A1Bot 2026-09-07 bug: a helmet at 153/165 damage sat unreplaced
+    through a five-death spiral because a 4/4 equipped count alone satisfied
+    the "already dressed" exit before anything asked about durability.
+    """
+    import baritone_client.common.inventory as inv
+
+    monkeypatch.setattr(inv, "get_equipped_armor", lambda _c: dict(_FULL_IRON_SET))
+    monkeypatch.setattr(
+        inv, "armor_piece_is_durable",
+        lambda _c, item_id: item_id != "minecraft:iron_helmet",
+    )
+
+    opportunity = armor_upkeep.select_armor_opportunity(
+        _Client(iron=20, worn=4), _signals(), True
+    )
+
+    assert opportunity is not None
+    assert "nearly broken" in opportunity.reason
+
+
+def test_a_durable_full_set_is_never_offered_the_work(monkeypatch):
+    """No false positives: nothing worn out means the exit still applies."""
+    import baritone_client.common.inventory as inv
+
+    monkeypatch.setattr(inv, "get_equipped_armor", lambda _c: dict(_FULL_IRON_SET))
+    monkeypatch.setattr(inv, "armor_piece_is_durable", lambda *_a: True)
+
+    assert armor_upkeep.select_armor_opportunity(
+        _Client(iron=20, worn=4), _signals(), True
+    ) is None
+
+
+def test_worn_out_piece_is_never_offered_without_spendable_iron(monkeypatch):
+    """A replacement nobody can afford is not an opportunity."""
+    import baritone_client.common.inventory as inv
+
+    monkeypatch.setattr(inv, "get_equipped_armor", lambda _c: dict(_FULL_IRON_SET))
+    monkeypatch.setattr(
+        inv, "armor_piece_is_durable",
+        lambda _c, item_id: item_id != "minecraft:iron_helmet",
+    )
+
+    assert armor_upkeep.select_armor_opportunity(
+        _Client(iron=0, worn=4), _signals(), True
+    ) is None
+
+
+def test_run_armor_upkeep_crafts_a_replacement_for_a_worn_out_piece(monkeypatch):
+    """End to end: a worn helmet gets a fresh replacement crafted and worn,
+    and this must count as success even though the equipped count (4) never
+    changes -- one worn iron helmet out, one fresh iron helmet in.
+    """
+    import baritone_client.common.inventory as inv
+
+    still_worn = {"value": True}
+    monkeypatch.setattr(inv, "get_equipped_armor", lambda _c: dict(_FULL_IRON_SET))
+    monkeypatch.setattr(
+        inv, "armor_piece_is_durable",
+        lambda _c, item_id: not (
+            item_id == "minecraft:iron_helmet" and still_worn["value"]
+        ),
+    )
+    monkeypatch.setattr(inv, "equip_best_armor", lambda _c: 4)
+    crafted_calls = []
+
+    def fake_craft(_c, item_id, count=1):
+        crafted_calls.append(item_id)
+        still_worn["value"] = False
+        return True
+
+    monkeypatch.setattr(armor_upkeep, "craft", fake_craft)
+
+    # carried must list all four pieces: this fixture's count_item stub has
+    # no notion that "worn" implies "carried" the way the real bridge's
+    # merged inventory+armor counts do, so without this missing_pieces would
+    # (wrongly, for this fixture only) also treat every piece as absent.
+    client = _Client(
+        iron=20,
+        worn=4,
+        carried=(
+            "minecraft:iron_helmet",
+            "minecraft:iron_boots",
+            "minecraft:iron_leggings",
+            "minecraft:iron_chestplate",
+        ),
+    )
+    ok, detail, before, after = armor_upkeep.run_armor_upkeep(
+        client, SimpleNamespace()
+    )
+
+    assert ok is True
+    assert crafted_calls == ["minecraft:iron_helmet"]
+    assert before == after == 4
