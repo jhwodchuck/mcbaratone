@@ -3574,7 +3574,7 @@ def test_surplus_storage_builds_a_double_chest_when_all_are_full(monkeypatch):
                         lambda _c: SimpleNamespace(
                             list_containers=lambda: [{"x": 5, "y": 64, "z": 5}]))
     monkeypatch.setattr("baritone_client.common.inventory.deposit_excess_to_chest",
-                        lambda *a, **k: 4)
+                        lambda _c, pos, **k: 0 if pos == (5, 64, 5) else 4)
     monkeypatch.setattr("baritone_client.common.inventory.free_inventory_slots",
                         lambda _c: 6)
 
