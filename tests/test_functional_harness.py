@@ -809,7 +809,7 @@ def test_container_blocked_by_a_same_floor_obstruction_reroutes_via_clear_approa
     goto_calls = []
 
     def fake_do_goto(_ctx, target, **_kwargs):
-        goto_calls.append(target)
+        goto_calls.append((target, _kwargs))
         return True
 
     monkeypatch.setattr(inventory_ops, "block_id_at", lambda _ctx, x, y, z: _ctx.get_block(x, y, z))
@@ -823,7 +823,92 @@ def test_container_blocked_by_a_same_floor_obstruction_reroutes_via_clear_approa
 
     inventory_ops.do_open_container(ctx, (-4, 162, 5), timeout=0.1)
 
-    assert {"x": -3, "y": 162, "z": 5} in goto_calls, "must route to the verified clear neighbour"
+    assert any(
+        target == {"x": -3, "y": 162, "z": 5}
+        for target, _kwargs in goto_calls
+    ), "must route to the verified clear neighbour"
+    assert all(
+        kwargs["arrival_radius"] < 1.0 for _target, kwargs in goto_calls
+    ), "a one-block tolerance may accept the obstructed neighbouring block"
+
+
+def test_container_approach_requires_leaving_the_obstructed_neighbour(monkeypatch):
+    """A1 must enter the clear block instead of accepting the blocked neighbour.
+
+    Live A1 2026-09-08 stood at (-6, 122, 5) beside a furnace at
+    (-5, 122, 5).  Stone above the furnace blocked that short eye ray.  The
+    clear approach was (-7, 122, 5), but a one-block arrival radius treated
+    the original block as already arrived and repeated the impossible ray.
+    """
+
+    blocks = {
+        (-5, 122, 5): "minecraft:furnace",
+        (-5, 123, 5): "minecraft:stone",
+        (-6, 121, 5): "minecraft:stone",
+        (-6, 122, 5): "minecraft:air",
+        (-6, 123, 5): "minecraft:air",
+        (-7, 121, 5): "minecraft:stone",
+        (-7, 122, 5): "minecraft:air",
+        (-7, 123, 5): "minecraft:air",
+    }
+
+    class Transport:
+        def dispatch(self, route, _payload=None):
+            if route == "get_screen":
+                return {
+                    "data": {
+                        "type": "PlayerScreenHandler",
+                        "sync_id": 0,
+                        "total_slots": 46,
+                    }
+                }
+            return {}
+
+    class Context:
+        def __init__(self):
+            self.events = []
+            self.position = (-6, 122, 5)
+            self.client = type("C", (), {"transport": Transport()})()
+
+        def log_event(self, event):
+            self.events.append(event)
+
+        def get_position(self):
+            return self.position
+
+    ctx = Context()
+    goto_calls = []
+
+    def fake_do_goto(_ctx, target, **kwargs):
+        goto_calls.append((target, kwargs))
+        return True
+
+    monkeypatch.setattr(
+        inventory_ops,
+        "block_id_at",
+        lambda _ctx, x, y, z: blocks.get((x, y, z), "minecraft:stone"),
+    )
+    monkeypatch.setattr(inventory_ops, "close_screen", lambda *_a, **_k: None)
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(inventory_ops, "robust_interact_block", lambda *_a, **_k: False)
+
+    from tests.utils.mc_harness import actions
+
+    monkeypatch.setattr(actions, "do_goto", fake_do_goto)
+
+    inventory_ops.do_open_container(ctx, (-5, 122, 5), timeout=0.1, attempts=2)
+
+    assert goto_calls == [
+        (
+            {"x": -7, "y": 122, "z": 5},
+            {
+                "timeout": 8.0,
+                "arrival_radius": 0.25,
+                "require_arrival": True,
+                "allow_incomplete": False,
+            },
+        )
+    ]
 
 
 def test_container_still_out_of_reach_after_approach_gives_up(monkeypatch):

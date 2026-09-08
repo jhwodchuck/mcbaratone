@@ -582,11 +582,15 @@ def do_open_container(
                 if approach is not None:
                     from tests.utils.mc_harness.actions import do_goto
 
-                    do_goto(
+                    arrived = do_goto(
                         ctx, {"x": approach[0], "y": approach[1], "z": approach[2]},
-                        timeout=8.0, arrival_radius=1.0,
+                        timeout=8.0, arrival_radius=0.25,
                         require_arrival=True, allow_incomplete=False,
                     )
+                    if not arrived:
+                        ctx.log_event(
+                            f"Could not reach clear container approach {approach} for {pos}"
+                        )
                 else:
                     ctx.log_event(f"No line-of-sight approach found near {pos}")
 
