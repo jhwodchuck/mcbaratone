@@ -49,14 +49,24 @@ def test_ordinary_snow_still_supports_a_flee_endpoint():
     assert destination_safe(client, 10, 70, 10)
 
 
-def _armour_client(biome: str, boots: str | None):
+def _armour_client(
+    biome: str,
+    boots: str | None,
+    *,
+    leather: int = 0,
+):
     armor = [{"id": boots, "count": 1}] if boots else []
+    inventory = (
+        [{"id": "minecraft:leather", "count": leather}]
+        if leather > 0
+        else []
+    )
 
     def dispatch(route, _payload):
         if route == "get_state":
             return {"biome": biome, "health": 20.0}
         if route == "get_inventory":
-            return {"armor": armor, "inventory": []}
+            return {"armor": armor, "inventory": inventory}
         raise AssertionError(f"unexpected route {route}")
 
     return SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
@@ -83,8 +93,16 @@ def test_an_ordinary_biome_does_not_ask_for_leather_boots():
 
 
 def test_freezing_outranks_the_already_dressed_exit():
-    """4/4 iron normally ends the opportunity; freezing must override that."""
-    client = _armour_client("minecraft:grove", "minecraft:iron_boots")
+    """4/4 iron normally ends the opportunity; freezing must override that.
+
+    To make a freeze-boot upgrade we need enough leather to craft them.  Pass
+    that leather into the fixture so the game logic sees a viable work item.
+    """
+    client = _armour_client(
+        "minecraft:grove",
+        "minecraft:iron_boots",
+        leather=armor_upkeep.FREEZE_BOOTS_LEATHER,
+    )
     signals = SimpleNamespace(health=20.0)
 
     opportunity = armor_upkeep.select_armor_opportunity(

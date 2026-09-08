@@ -25,6 +25,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
 from ..common.inventory import craft
+from .local_opportunity import LocalOpportunity, OpportunityKind
 
 #: Iron cost of each piece, cheapest first. Boots and helmet come first on
 #: purpose: three cheap pieces beat one expensive one for survival, and the
@@ -298,7 +299,6 @@ def armor_work_allowed(signals: Any) -> bool:
 
 def select_armor_opportunity(client: Any, signals: Any, cooldown_ready: bool):
     """Offer one bounded armour upkeep action, if it is worth taking."""
-    from .local_opportunity import LocalOpportunity, OpportunityKind
 
     if not cooldown_ready or not armor_work_allowed(signals):
         return None
@@ -307,6 +307,11 @@ def select_armor_opportunity(client: Any, signals: Any, cooldown_ready: bool):
     # a 4/4 iron set is no protection at all against powder snow, so a fully
     # armoured bot in a grove still needs this.
     if needs_freeze_boots(client):
+        # Only offer freeze boot work if we have leather or already carry the boots.
+        # Otherwise, leather gathering (signaled by defense.assess_armor_for_environment)
+        # should run first. Offering armor_upkeep without leather just burns retries.
+        if _count(client, "minecraft:leather") < FREEZE_BOOTS_LEATHER and _count(client, FREEZE_BOOTS) < 1:
+            return None
         return LocalOpportunity(
             OpportunityKind.ARMOR_UPKEEP,
             200,
@@ -453,6 +458,7 @@ __all__ = [
     "FULL_SET_IRON",
     "MIN_IRON_TO_EQUIP",
     "TARGET_ARMOR_PIECES",
+    "OpportunityKind",
     "armor_work_allowed",
     "carried_iron",
     "equip_freeze_boots",

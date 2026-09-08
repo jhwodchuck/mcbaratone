@@ -233,6 +233,61 @@ def test_freezing_biome_requires_leather_boots(monkeypatch):
     assert "no leather boots" in assessment.reason
 
 
+def test_select_armor_opportunity_declines_when_freezing_without_leather(monkeypatch):
+    """select_armor_opportunity must not offer armor_upkeep in a freezing biome
+    when leather is unavailable -- that just burns retries with no progress.
+    Leather gathering (signaled by defense.assess_armor_for_environment) should
+    run first.
+    """
+    from baritone_client.automator import armor_upkeep
+
+    # In freezing biome, no leather, no leather boots carried
+    client = _Client(worn=0)
+    monkeypatch.setattr(armor_upkeep, "_count", lambda _c, item: 0)
+    monkeypatch.setattr(armor_upkeep, "in_freezing_biome", lambda _c: True)
+    monkeypatch.setattr(armor_upkeep, "wearing_freeze_boots", lambda _c: False)
+
+    signals = _signals()
+    opportunity = armor_upkeep.select_armor_opportunity(client, signals, True)
+    assert opportunity is None, "should not offer armor_upkeep when leather is missing"
+
+
+def test_select_armor_opportunity_offers_when_freezing_with_leather(monkeypatch):
+    """select_armor_opportunity should offer armor_upkeep in a freezing biome
+    when leather is available (>=4) or leather boots are already carried.
+    """
+    from baritone_client.automator import armor_upkeep
+
+    # In freezing biome, has 4 leather
+    client = _Client(worn=0)
+    monkeypatch.setattr(armor_upkeep, "_count", lambda _c, item: 4 if item == "minecraft:leather" else 0)
+    monkeypatch.setattr(armor_upkeep, "in_freezing_biome", lambda _c: True)
+    monkeypatch.setattr(armor_upkeep, "wearing_freeze_boots", lambda _c: False)
+
+    signals = _signals()
+    opportunity = armor_upkeep.select_armor_opportunity(client, signals, True)
+    assert opportunity is not None
+    assert opportunity.kind == armor_upkeep.OpportunityKind.ARMOR_UPKEEP
+
+
+def test_select_armor_opportunity_offers_when_freezing_with_leather_boots_carried(monkeypatch):
+    """select_armor_opportunity should offer armor_upkeep in a freezing biome
+    when leather boots are already in inventory (just need equipping).
+    """
+    from baritone_client.automator import armor_upkeep
+
+    # In freezing biome, has leather boots in inventory
+    client = _Client(worn=0)
+    monkeypatch.setattr(armor_upkeep, "_count", lambda _c, item: 1 if item == "minecraft:leather_boots" else 0)
+    monkeypatch.setattr(armor_upkeep, "in_freezing_biome", lambda _c: True)
+    monkeypatch.setattr(armor_upkeep, "wearing_freeze_boots", lambda _c: False)
+
+    signals = _signals()
+    opportunity = armor_upkeep.select_armor_opportunity(client, signals, True)
+    assert opportunity is not None
+    assert opportunity.kind == armor_upkeep.OpportunityKind.ARMOR_UPKEEP
+
+
 def test_death_during_crafting_is_not_swallowed(monkeypatch):
     """PlayerDeathDetected is control flow, not an error.
 
