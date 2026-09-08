@@ -514,7 +514,7 @@ def test_nether_rearm_equips_recovered_armor_before_any_mining(monkeypatch, tmp_
 
 
 def test_nether_rearm_crafts_a_replacement_for_worn_armor(monkeypatch, tmp_path):
-    handler, client, _state = _portal_reuse_handler(tmp_path)
+    handler, client, state = _portal_reuse_handler(tmp_path)
     counts = {
         "minecraft:iron_chestplate": 1,
         "minecraft:iron_ingot": 8,
@@ -534,11 +534,78 @@ def test_nether_rearm_crafts_a_replacement_for_worn_armor(monkeypatch, tmp_path)
 
     assert handler._provision_iron_gear(
         client,
+        state,
         "minecraft:iron_chestplate",
         8,
         force_replacement=True,
     )
     assert requested == [{"minecraft:iron_chestplate": 2}]
+
+
+def test_provision_iron_gear_withdraws_banked_ingots_before_gathering(
+    monkeypatch, tmp_path
+):
+    """Already-banked iron must be withdrawn before mining more from scratch.
+
+    ensure_supplies deliberately never touches storage (see resources.py's
+    own comment on _missing_requirements), so an explicit, checkpointed
+    objective like Nether rearm has to ask a catalog withdrawal itself, the
+    same way villager.py's bread provisioning already does. Live A1
+    2026-09-08: this gather-from-scratch step alone took ~10 minutes per
+    Nether-readiness attempt even when the home chest already held spare
+    iron.
+    """
+    handler, client, state = _portal_reuse_handler(tmp_path)
+    counts = {"minecraft:iron_ingot": 0}
+    withdrawals = []
+
+    def fake_withdraw(_client, requirements, **kwargs):
+        counts["minecraft:iron_ingot"] += requirements["minecraft:iron_ingot"]
+        withdrawals.append((requirements, kwargs.get("state")))
+        return 1
+
+    gathered = []
+    monkeypatch.setattr(
+        nether_prep, "count_item", lambda _client, item_id: counts.get(item_id, 0)
+    )
+    monkeypatch.setattr(nether_prep, "withdraw_required_from_catalog", fake_withdraw)
+    monkeypatch.setattr(
+        nether_prep,
+        "ensure_supplies",
+        lambda _client, required, **_kwargs: gathered.append(required)
+        or TaskResult.ok(),
+    )
+
+    assert handler._provision_iron_gear(client, state, "minecraft:iron_sword", 2)
+    assert withdrawals == [({"minecraft:iron_ingot": 2}, state)]
+    # The withdrawal alone satisfied the ingot requirement, so the slow
+    # gather-from-scratch strategy must never run for it.
+    assert {"minecraft:iron_ingot": 2} not in gathered
+    assert {"minecraft:iron_sword": 1} in gathered
+
+
+def test_provision_iron_gear_still_gathers_when_storage_is_short(
+    monkeypatch, tmp_path
+):
+    """A partial or empty catalog withdrawal must fall back to gathering."""
+    handler, client, state = _portal_reuse_handler(tmp_path)
+    counts = {"minecraft:iron_ingot": 0}
+    gathered = []
+    monkeypatch.setattr(
+        nether_prep, "count_item", lambda _client, item_id: counts.get(item_id, 0)
+    )
+    monkeypatch.setattr(
+        nether_prep, "withdraw_required_from_catalog", lambda *_a, **_k: 0
+    )
+    monkeypatch.setattr(
+        nether_prep,
+        "ensure_supplies",
+        lambda _client, required, **_kwargs: gathered.append(required)
+        or TaskResult.ok(),
+    )
+
+    assert handler._provision_iron_gear(client, state, "minecraft:iron_sword", 2)
+    assert {"minecraft:iron_ingot": 2} in gathered
 
 
 def _portal_reuse_handler(tmp_path):

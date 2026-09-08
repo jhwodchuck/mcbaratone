@@ -15,6 +15,7 @@ from ...common.inventory import (
     equip_best_weapon,
     has_durable_full_armor,
     has_full_armor,
+    withdraw_required_from_catalog,
 )
 from ...common.combat import (
     _emergency_food_count,
@@ -508,7 +509,7 @@ class NetherAndBlazeHandler(PhaseHandler):
                 client, item_id
             )
             if not self._provision_iron_gear(
-                client, item_id, iron_cost, force_replacement=replace
+                client, state, item_id, iron_cost, force_replacement=replace
             ):
                 return False
             equip_best_armor(client)
@@ -525,7 +526,7 @@ class NetherAndBlazeHandler(PhaseHandler):
             and not equip_best_weapon(client)
         )
         if not self._provision_iron_gear(
-            client, "minecraft:iron_sword", 2, force_replacement=replace_sword
+            client, state, "minecraft:iron_sword", 2, force_replacement=replace_sword
         ):
             return False
         equip_best_weapon(client)
@@ -537,6 +538,7 @@ class NetherAndBlazeHandler(PhaseHandler):
         )
         if not self._provision_iron_gear(
             client,
+            state,
             "minecraft:iron_chestplate",
             8,
             force_replacement=replace_chestplate,
@@ -544,7 +546,7 @@ class NetherAndBlazeHandler(PhaseHandler):
             return False
         equip_best_armor(client)
 
-        if not self._provision_iron_gear(client, "minecraft:shield", 1):
+        if not self._provision_iron_gear(client, state, "minecraft:shield", 1):
             return False
 
         if _emergency_food_count(client) < 6:
@@ -600,6 +602,7 @@ class NetherAndBlazeHandler(PhaseHandler):
     @staticmethod
     def _provision_iron_gear(
         client,
+        state: StateManager,
         item_id: str,
         iron_cost: int,
         *,
@@ -609,6 +612,21 @@ class NetherAndBlazeHandler(PhaseHandler):
         current = count_item(client, item_id)
         if current >= 1 and not force_replacement:
             return True
+        if count_item(client, "minecraft:iron_ingot") < iron_cost:
+            # Withdraw already-banked ingots before mining and smelting more
+            # from scratch. Live A1 2026-09-08: this gather step alone took
+            # ~10 minutes per attempt even though the home chest already held
+            # spare iron gear -- ensure_supplies deliberately never touches
+            # storage (see resources.py), so an explicit, checkpointed
+            # objective like this one must ask first, the same way
+            # villager.py's bread provisioning already does.
+            withdraw_required_from_catalog(
+                client,
+                {"minecraft:iron_ingot": iron_cost},
+                state=state,
+                max_travel_distance=96.0,
+                max_vertical_distance=32.0,
+            )
         if count_item(client, "minecraft:iron_ingot") < iron_cost:
             ingots = ensure_supplies(
                 client,
