@@ -194,9 +194,21 @@ def relocate_homestead(
     dead build site rather than inventing a second relocation strategy.
     """
     from ..common.build_site_recovery import relocate_build_site_search
-    from ..common.home_site import suitable_home_site
+    from ..automator.strategic_state import StrategicState
+    from ..common.home_site import assess_home_site, suitable_home_site
 
     relocations = int(homestead.get(SITE_RELOCATIONS, 0) or 0) + 1
+    old_anchor = homestead.get("anchor")
+    current_assessment = None
+    if isinstance(old_anchor, (list, tuple)) and len(old_anchor) == 3:
+        try:
+            current_assessment = assess_home_site(
+                client, tuple(int(value) for value in old_anchor), state=helper.state,
+            ).to_dict()
+        except Exception:
+            # The old anchor may be outside loaded chunks after recovery.  An
+            # unreadable old site is not proof that its infrastructure is gone.
+            current_assessment = None
     # Persisted up front, against the attempt rather than the outcome. A
     # search that finds nowhere better still spends budget -- otherwise a
     # genuinely barren region (nothing better within the search radius, not a
@@ -210,9 +222,25 @@ def relocate_homestead(
         f"stalled attempts; relocating the homestead "
         f"(move {relocations}/{MAX_SITE_RELOCATIONS})"
     )
+    strategy = StrategicState(helper.state)
+
+    def score_candidate(candidate_client: Any, position: Any) -> float:
+        assessment = assess_home_site(
+            candidate_client,
+            tuple(int(value) for value in position),
+            state=helper.state,
+            include_context=False,
+        )
+        strategy.record_home_candidate(
+            assessment.to_dict(), trigger=f"{step_name} stalled survey",
+        )
+        return float(assessment.score) if assessment.eligible else -1.0
+
     try:
         moved = relocate_build_site_search(
-            client, attempt=relocations, candidate_validator=suitable_home_site,
+            client, attempt=relocations,
+            candidate_scorer=score_candidate,
+            minimum_candidate_score=StrategicState.HOME_MINIMUM_SCORE,
         )
     except Exception as error:  # search is best-effort; never kill the run
         moved = False
@@ -236,8 +264,39 @@ def relocate_homestead(
             return False
 
     new_anchor = helper.current_position()
-    if not helper._dry_ground(new_anchor) or not suitable_home_site(client, new_anchor):
+    candidate = assess_home_site(client, new_anchor, state=helper.state)
+    if not candidate.eligible and suitable_home_site(client, new_anchor):
+        # A custom validator/test seam may have already proved the mandatory
+        # screen while optional scoring context was unavailable.  Preserve
+        # that proof at the minimum commitment score rather than fabricating
+        # biome or landmark bonuses.
+        from ..common.home_site import HomeSiteAssessment
+
+        candidate = HomeSiteAssessment(
+            position=tuple(int(value) for value in new_anchor),
+            score=StrategicState.HOME_MINIMUM_SCORE,
+            eligible=True,
+            factors={"mandatory_screen": True},
+            reasons=("mandatory home-site screen passed; optional context unavailable",),
+        )
+    if not helper._dry_ground(new_anchor) or not candidate.eligible:
         print(f"  Exploration at {new_anchor} did not prove a suitable home; keeping old site")
+        return False
+
+    compelling = not current_assessment or not bool(current_assessment.get("eligible"))
+    decision = strategy.consider_home(
+        candidate.to_dict(),
+        trigger=f"{step_name} stalled",
+        current_assessment=current_assessment,
+        compelling=compelling,
+    )
+    print(
+        f"  Candidate score: {decision['candidate_score']}/100; "
+        f"current home score: {decision['current_home_score']}; "
+        f"decision: {decision['decision']}"
+    )
+    print(f"  Reason: {decision['reason']}")
+    if decision["decision"] != "relocate":
         return False
 
     homestead["anchor"] = new_anchor
@@ -290,10 +349,12 @@ def read_block_counting_unloaded(client: Any, position: Any) -> tuple[str, bool]
 
 def screen_rehome(helper: Any, homestead: dict[str, Any], current: Any) -> Any:
     """Keep emergency shelter separate from committing a replacement home."""
-    from ..common.home_site import suitable_home_site
+    from ..automator.strategic_state import StrategicState
+    from ..common.home_site import assess_home_site
     from ..common.tasks import ProgressRecoveryRequired
 
-    if not suitable_home_site(helper.client, current):
+    assessment = assess_home_site(helper.client, current, state=helper.state)
+    if not assessment.eligible or assessment.score < StrategicState.HOME_MINIMUM_SCORE:
         attempts = int(homestead.get(SITE_RELOCATIONS, 0) or 0)
         if attempts >= MAX_SITE_RELOCATION_HARD_CAP or not relocate_homestead(
             helper.client, homestead, "dry_anchor", helper,
@@ -303,6 +364,15 @@ def screen_rehome(helper: Any, homestead: dict[str, Any], current: Any) -> Any:
                 "no surveyed replacement home; retained existing anchor and infrastructure"
             )
         return helper.current_position()
+    decision = StrategicState(helper.state).consider_home(
+        assessment.to_dict(), trigger="unreachable home anchor", compelling=True,
+    )
+    print(
+        f"  Candidate score: {decision['candidate_score']}/100; "
+        f"decision: {decision['decision']}; reason: {decision['reason']}"
+    )
+    if decision["decision"] != "relocate":
+        raise ProgressRecoveryRequired(decision["reason"])
     # Old site evidence cannot be carried to a newly selected anchor.
     for name in helper.ordered_steps():
         record = helper.step(homestead, name)

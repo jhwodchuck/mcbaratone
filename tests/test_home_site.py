@@ -4,7 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from baritone_client.common.home_site import suitable_home_site, supported_home_ground
+from baritone_client.common.home_site import (
+    assess_home_site,
+    suitable_home_site,
+    supported_home_ground,
+)
 from baritone_client.common.build_site_recovery import relocate_build_site_search
 from baritone_client.actions.homestead_site import screen_rehome, relocate_homestead
 from baritone_client.actions.homestead import IncrementalHomestead
@@ -50,6 +54,48 @@ def test_local_supported_pad_with_resources_passes_read_only_screen():
     assert {route for route, _ in terrain.calls} == {"get_block", "find_blocks"}
 
 
+def test_home_assessment_scores_expansion_biomes_and_landmarks():
+    class RichTerrain(Terrain):
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                return {
+                    "block_position": {"x": 0, "y": 64, "z": 0},
+                    "dimension": "minecraft:overworld",
+                }
+            if route == "scan_biomes":
+                return {
+                    "current_biome": "minecraft:plains",
+                    "biomes": [
+                        {"id": "minecraft:forest"},
+                        {"id": "minecraft:river"},
+                    ],
+                }
+            if route == "find_blocks" and payload["blocks"] == ["minecraft:water"]:
+                return {"found": [{"x": 2, "y": 63, "z": 0}]}
+            if route == "find_blocks" and "minecraft:oak_log" in payload["blocks"]:
+                return {"found": [{"x": 4, "y": 63, "z": 0}]}
+            if route == "find_blocks":
+                return {"found": [
+                    {"x": dx, "y": 63, "z": dz}
+                    for dx in range(-4, 5)
+                    for dz in range(-4, 5)
+                ]}
+            return super().dispatch(route, payload)
+
+    state = SimpleNamespace(custom_data={
+        "locations": {
+            "village": [{"x": 120, "y": 64, "z": 0}],
+        }
+    })
+    assessment = assess_home_site(RichTerrain(), (0, 64, 0), state=state)
+
+    assert assessment.eligible
+    assert assessment.score >= 85
+    assert assessment.factors["expansion_space"] == 15
+    assert assessment.factors["useful_biomes"] == ["forest", "plains", "river"]
+    assert assessment.factors["valuable_landmarks"] == ["village"]
+
+
 def test_resources_far_below_mountain_do_not_qualify_site():
     assert not suitable_home_site(Terrain(resource_y=20), (0, 64, 0))
 
@@ -92,6 +138,37 @@ def test_relocation_prefers_nearby_level_ground_and_verifies_arrival(monkeypatch
     assert relocate_build_site_search(client, attempt=1, goto=travel, candidate_validator=survey)
     assert routes == [(20, 64, 0)]
     assert surveys == [(20, 64, 0), (20, 64, 0)]
+
+
+def test_relocation_travels_to_highest_scoring_qualified_candidate(monkeypatch):
+    current = {"x": 0, "y": 64, "z": 0}
+    routes = []
+
+    def dispatch(route, payload):
+        if route == "get_state":
+            return {"block_position": dict(current)}
+        return {"found": [
+            {"x": 20, "y": 63, "z": 0},
+            {"x": 32, "y": 63, "z": 0},
+        ]}
+
+    def travel(_client, x, y, z, **_kwargs):
+        routes.append((x, y, z))
+        current.update(x=x, y=y, z=z)
+        return True
+
+    monkeypatch.setattr("baritone_client.common.build_site_recovery.destination_safe", lambda *_: True)
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+
+    assert relocate_build_site_search(
+        client,
+        attempt=1,
+        goto=travel,
+        candidate_validator=lambda *_: True,
+        candidate_scorer=lambda _client, candidate: 90 if candidate[0] == 32 else 70,
+        minimum_candidate_score=65,
+    )
+    assert routes == [(32, 64, 0)]
 
 
 def test_successful_route_without_displacement_does_not_relocate(monkeypatch):

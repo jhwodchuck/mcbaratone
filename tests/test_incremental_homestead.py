@@ -711,6 +711,12 @@ def test_first_homestead_returns_to_bootstrap_home_after_remote_recovery(
         return True
 
     monkeypatch.setattr("baritone_client.actions.homestead.goto", return_home)
+    # This test isolates the return-to-bootstrap behavior. Permanent-home
+    # candidate scoring has its own terrain and strategy regressions.
+    monkeypatch.setattr(
+        "baritone_client.actions.homestead.screen_rehome",
+        lambda _helper, _homestead, current: current,
+    )
     runner = IncrementalHomestead(
         SimpleNamespace(transport=transport),
         state,

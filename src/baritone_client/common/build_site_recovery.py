@@ -54,6 +54,8 @@ def relocate_build_site_search(
     attempt_limit: int = 8,
     minimum_y: Optional[int] = None,
     candidate_validator: Optional[Callable[..., bool]] = None,
+    candidate_scorer: Optional[Callable[..., float]] = None,
+    minimum_candidate_score: Optional[float] = None,
 ) -> bool:
     """Move far enough to load a different dry-surface candidate view."""
     if goto is None:
@@ -93,21 +95,49 @@ def relocate_build_site_search(
     if ranked:
         offset = max(0, int(attempt) - 1) % len(ranked)
         ranked = ranked[offset:] + ranked[:offset]
-    for candidate in ranked[:attempt_limit]:
-        if not destination_safe(client, *candidate):
-            continue
-        if candidate_validator is not None and not candidate_validator(client, candidate):
-            continue
+    def try_candidate(candidate: tuple[int, int, int]) -> bool:
         print(f"  Relocating build-site search to {candidate}")
         if not goto(client, *candidate, timeout=120.0, tolerance=3.0):
-            continue
+            return False
         current = block_position(client.transport.dispatch("get_state", {}))
         moved_sq = (
             (current[0] - origin[0]) ** 2
             + (current[2] - origin[2]) ** 2
         )
-        if (moved_sq >= 12**2 and destination_safe(client, *current)
-                and (candidate_validator is None or candidate_validator(client, current))):
+        return bool(
+            moved_sq >= 12**2
+            and destination_safe(client, *current)
+            and (candidate_validator is None or candidate_validator(client, current))
+        )
+
+    if candidate_scorer is None:
+        for candidate in ranked[:attempt_limit]:
+            if not destination_safe(client, *candidate):
+                continue
+            if candidate_validator is not None and not candidate_validator(client, candidate):
+                continue
+            if try_candidate(candidate):
+                return True
+        return False
+
+    qualified = []
+    for rank, candidate in enumerate(ranked[:attempt_limit]):
+        if not destination_safe(client, *candidate):
+            continue
+        if candidate_validator is not None and not candidate_validator(client, candidate):
+            continue
+        try:
+            score = float(candidate_scorer(client, candidate)) if candidate_scorer else 0.0
+        except Exception:
+            continue
+        if minimum_candidate_score is not None and score < float(minimum_candidate_score):
+            continue
+        qualified.append((score, rank, candidate))
+    if candidate_scorer is not None:
+        qualified.sort(key=lambda item: (-item[0], item[1]))
+    for score, _rank, candidate in qualified:
+        print(f"  Home candidate {candidate} scored {score:.0f}/100")
+        if try_candidate(candidate):
             return True
     return False
 

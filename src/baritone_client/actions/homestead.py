@@ -504,7 +504,7 @@ class IncrementalHomestead:
             )
             return True
 
-        anchor = self._initial_homestead_anchor(homestead)
+        anchor = list(screen_rehome(self, homestead, tuple(self._initial_homestead_anchor(homestead))))
         if not self._dry_ground(anchor):
             record["verified"] = False
             raise ProgressRecoveryRequired("dry anchor requires non-liquid ground")

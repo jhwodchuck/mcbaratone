@@ -17,6 +17,7 @@ from .progress_control import progression_fingerprint
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
 from .systems import SafetySystem, HungerSystem, MappingSystem
 from .telemetry import TelemetrySystem
+from .strategic_state import StrategicState, strategy_for
 from ..common.nether import find_nearest_portal
 from ..common.tasks import PlayerDeathDetected, TaskResult
 from ..actions.death_recovery_action import DeathRecoveryAction
@@ -24,7 +25,6 @@ from ..core.interfaces import ActionContext, ActionResult
 from ..actions.base import BaseAction
 from ..actions.suites import SUITES
 from ..world_identity import WorldIdentity
-
 
 class EndGameAutomator:
     """
@@ -97,7 +97,7 @@ class EndGameAutomator:
         self.planner = ObjectivePlanner(default_objectives())
         self.scheduler = AdaptiveScheduler(client, self.resources, self.state)
         self.postgame = PersistentPostgameLifecycle(self.state, self.scheduler, client)
-
+        self.strategy = StrategicState(self.state)
         self.auto_checkpoint = auto_checkpoint
         self.checkpoint_interval = checkpoint_interval
         self._last_checkpoint = 0.0
@@ -230,6 +230,7 @@ class EndGameAutomator:
             self._revalidate_completed_objectives()
         else:
             print("Starting fresh automation")
+        self.strategy.refresh(current=self.state.get_current_phase(), completed=self.planner.completed_phases())
 
         try:
             from ..common.storage_catalog import seed_from_state
@@ -373,17 +374,15 @@ class EndGameAutomator:
                  self.state.add_location("spawn", int(pos.get("x")), int(pos.get("y")), int(pos.get("z")), tags=["start"], client=self.client)
         except:
              pass
-        
         # Start background systems
         for system in self.systems:
             system.start()
-        
         print(f"\n{'#'*60}")
         print(f"#  EndGame Automator Started")
         print(f"#  Current Phase: {self.state.get_current_phase().name}")
         print(f"#  Overall Progress: {self.state.get_overall_progress()*100:.1f}%")
         print(f"{'#'*60}\n")
-        
+        print("\n".join(strategy_for(self).status_lines()) + "\n")
         try:
             postgame_iterations = 0
             while self._running:
@@ -744,6 +743,7 @@ class EndGameAutomator:
             p.name for p in self.planner.completed_phases()
         ]
         self.state.custom_data["objective_runtime"] = self.planner.runtime_state()
+        strategy_for(self).refresh(current=self.state.get_current_phase(), completed=self.planner.completed_phases())
 
     def _activate_objective(self, objective) -> None:
         """Persist ownership and its consumed attempt before gameplay starts."""
@@ -796,4 +796,5 @@ class EndGameAutomator:
             "overall_progress": self.state.get_overall_progress(),
             "resources": self.resources.get_summary(),
             "adaptive_scheduler": self.state.custom_data.get("adaptive_scheduler", {}),
+            "strategic_state": dict(strategy_for(self).data),
         }
