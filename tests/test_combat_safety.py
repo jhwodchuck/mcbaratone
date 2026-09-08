@@ -1871,6 +1871,43 @@ def test_hunt_does_not_classify_requested_hostile_as_other_hostile(monkeypatch):
         )
 
 
+def test_passive_hunt_defends_against_the_intruder_before_giving_up(monkeypatch):
+    """Aborting the hunt must not leave the bot standing next to the threat.
+
+    Live: a zombie repeatedly killed the bot outright during "Gather 46
+    leather" -- this check correctly detected the zombie and aborted the cow
+    hunt every time, but nothing ever fought or fled it, so the bot just
+    stood there and absorbed hits until one cycle lost the healing race.
+    """
+    client = SimpleNamespace(transport=CombatTransport())
+    zombie = {
+        "id": 42,
+        "type": "minecraft:zombie",
+        "distance": 5.0,
+        "position": {"x": 5, "y": 64, "z": 0},
+    }
+    monkeypatch.setattr(combat, "count_item", lambda *_args: 0)
+    monkeypatch.setattr(combat, "heal_if_needed", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        combat, "get_nearby_entities", lambda *_args, **_kwargs: [zombie]
+    )
+    defended = []
+    monkeypatch.setattr(
+        combat, "defend_or_flee", lambda _client: defended.append(True) or False
+    )
+
+    result = combat.hunt_mobs(
+        client,
+        ["cow"],
+        {"minecraft:leather": 1},
+        timeout=30,
+        abort_on_other_hostiles=True,
+    )
+    assert not result.success
+    assert "zombie" in result.reason
+    assert defended == [True]
+
+
 def test_get_nearby_entities_raises_on_bridge_failure_when_requested():
     """A failed bridge query must be distinguishable from a genuinely empty
     area. Silently returning [] on a transport error made a route-timeout

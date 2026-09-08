@@ -997,6 +997,8 @@ def hunt_mobs(
             if threat is not None:
                 client.transport.dispatch("chat", {"message": "#stop"})
                 client.transport.dispatch("cancel", {})
+                from .hunt_safety import resolve_intruding_hostile
+                resolve_intruding_hostile(client)
                 return TaskResult.fail(
                     f"Hostile {threat.get('type')} entered passive-hunt radius",
                     kills=kills,
@@ -1007,12 +1009,9 @@ def hunt_mobs(
                 client, mob_types, radius=search_radius, raise_on_error=True
             )
         except EntityQueryError as exc:
-            # The bridge could not answer the entity query (route timeout /
-            # transport error). This is NOT an empty area -- do not "explore"
-            # away from mobs that may be right here. Back off and let the
-            # controller's route-timeout-flood detector recover the bridge.
-            # Swallowing this into "no targets found" is what made Bot07 hunt
-            # leather for many minutes with a cow three blocks away.
+            # A bridge query failure is NOT an empty area -- do not "explore"
+            # away from mobs that may be right here; back off instead. Bot07
+            # once hunted for minutes with a cow three blocks away this way.
             print(f"  Entity query failed (bridge issue: {exc}); pausing hunt scan.")
             exploration.stop(client)
             time.sleep(3)
