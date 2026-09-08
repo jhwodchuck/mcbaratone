@@ -228,7 +228,6 @@ class PhaseExecutor:
         
         Args:
             phase: Phase to execute
-            
         Returns:
             True if phase completed successfully
         """
@@ -443,6 +442,7 @@ class PhaseExecutor:
             
             retries += 1
             if retries <= self.max_retries:
+                self._save_progress_checkpoint()
                 print(f"Retry {retries}/{self.max_retries} in {self.retry_delay}s...")
                 _wait_before_retry(self.client, self.retry_delay)
         
@@ -453,6 +453,25 @@ class PhaseExecutor:
         
         handler.on_exit(self.client, self.resources, self.state)
         return False
+
+    def _save_progress_checkpoint(self) -> None:
+        """Refresh the checkpoint file between a phase's own internal retries.
+
+        execute_phase can retry one phase up to max_retries times, each
+        potentially taking many minutes -- the checkpoint was previously only
+        rewritten once this whole call returned. The watchdog restarts the
+        controller once the checkpoint file goes 20 minutes without a write,
+        treating that as a wedge; a slow-but-working retry loop looks
+        identical to one. Live A1 2026-09-08: NETHER_AND_BLAZE's loadout
+        check alone now takes ~10 minutes per attempt, so two retries already
+        exceeded the watchdog's window and it killed the controller mid-retry
+        every cycle, all day, before the phase's own retry budget ever ran out.
+        """
+        try:
+            self.resources.refresh_inventory()
+            self.state.save_checkpoint(self.resources.cached_inventory)
+        except Exception as exc:
+            print(f"  Checkpoint heartbeat failed (non-fatal): {exc}")
 
     def _log_result_details(self, phase: Phase, result: TaskResult) -> None:
         """Pretty-print TaskResult data for easier debugging."""

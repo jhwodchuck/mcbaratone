@@ -161,3 +161,56 @@ def test_failed_phase_retry_uses_combat_aware_wait(monkeypatch):
     assert not executor.execute_phase(Phase.BOOT_SEQUENCE)
     assert waits == [(client, 5)]
     assert blind_sleeps == []
+
+
+def test_phase_retry_refreshes_the_checkpoint_between_attempts(monkeypatch):
+    """A slow-but-working retry must not go unreported to the watchdog.
+
+    execute_phase's own retry loop can run one phase up to max_retries
+    times, each potentially taking many minutes -- the checkpoint file was
+    previously only rewritten once this whole call returned. The watchdog
+    restarts the controller once that file goes 20 minutes without a write,
+    treating a legitimately slow retry loop as a wedge. Live A1 2026-09-08:
+    NETHER_AND_BLAZE's loadout check alone took ~10 minutes per attempt, so
+    two retries already exceeded the watchdog's window and it killed the
+    controller mid-retry every cycle, all day.
+    """
+
+    class FailingHandler(PhaseHandler):
+        def execute(self, _client, _resources, _state):
+            return TaskResult.fail("hostile interrupted work")
+
+        def get_name(self):
+            return "Threatened work"
+
+        def on_exit(self, _client, _resources, _state):
+            pass
+
+    client = SimpleNamespace()
+    state = SimpleNamespace(
+        update_progress=lambda *_args, **_kwargs: None,
+        record_phase_payload=lambda *_args, **_kwargs: None,
+        save_checkpoint=lambda _inventory: checkpoints.append(_inventory),
+    )
+    checkpoints = []
+    resources = SimpleNamespace(
+        refresh_inventory=lambda: None, cached_inventory={"minecraft:dirt": 1}
+    )
+    monkeypatch.setattr(
+        phase_executor_module,
+        "wait_with_bridge_keepalive",
+        lambda *_args, **_kwargs: True,
+        raising=False,
+    )
+    executor = PhaseExecutor(
+        client,
+        resources,
+        state,
+        max_retries=2,
+        retry_delay=5,
+        screenshot_enabled=False,
+    )
+    executor.register_handler(Phase.BOOT_SEQUENCE, FailingHandler())
+
+    assert not executor.execute_phase(Phase.BOOT_SEQUENCE)
+    assert checkpoints == [{"minecraft:dirt": 1}, {"minecraft:dirt": 1}]
