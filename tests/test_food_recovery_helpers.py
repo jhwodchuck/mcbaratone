@@ -1,11 +1,13 @@
 from types import SimpleNamespace
 
 from baritone_client.automator.food_recovery_state import (
+    checkpointed_wheat_farm_origin,
     get_food_search_anchor,
     get_food_search_center,
     record_failed_food_source,
     recover_food_from_known_sources,
     remember_renewable_food_source,
+    verified_food_herd_source,
 )
 from baritone_client.common.food_recovery import (
     bounded_exploration_origin,
@@ -156,6 +158,32 @@ def test_food_search_anchor_prefers_reanchored_spawn_home():
     ]
 
 
+def test_food_search_anchor_prefers_current_base_over_stale_bootstrap_origin():
+    state = SimpleNamespace(
+        custom_data={
+            "base_location": [-413, 78, -15],
+            "homestead_anchor": [-433, 78, 0],
+            "phase_payloads": {
+                "SPAWN_BOOTSTRAP": {"return_home": {"origin": [8, 162, 10]}}
+            },
+            "survival_recovery": {"food_search_anchor": [8, 162, 10]},
+        }
+    )
+
+    anchor = get_food_search_anchor(
+        None,
+        state,
+        lambda *_args: {"block_position": {"x": -430, "y": 70, "z": -200}},
+    )
+
+    assert anchor == (-413.0, 78.0, -15.0)
+    assert state.custom_data["survival_recovery"]["food_search_anchor"] == [
+        -413.0,
+        78.0,
+        -15.0,
+    ]
+
+
 def test_phase_food_search_returns_home_instead_of_rebasing(
     monkeypatch, advancing_clock
 ):
@@ -228,6 +256,80 @@ def test_repeatedly_unharvestable_food_source_is_retired():
     assert source["verified"]
     assert record_failed_food_source(source) == 2
     assert not source["verified"]
+
+
+def test_legacy_crop_checkpoint_is_reused_without_becoming_an_animal_herd():
+    crop_source = {
+        "type": "starter_crop_farm",
+        "location": [-426, 79, -20],
+        "verified": True,
+        "plots": [[-429, 80, -23, "minecraft:wheat"]],
+    }
+    state = SimpleNamespace(
+        checkpoint_dir=None,
+        custom_data={
+            "farm_location": [-426, 79, -20],
+            "structures": {"food_source": crop_source},
+        },
+    )
+    calls = []
+
+    recovered = recover_food_from_known_sources(
+        SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a: {})),
+        state,
+        {"cow": ("minecraft:beef", "minecraft:cooked_beef")},
+        harvest_fn=lambda _client, x, y, z: calls.append(
+            ("harvest", x, y, z)
+        )
+        or True,
+        eat_fn=lambda *_args, **_kwargs: calls.append(("eat",)) or True,
+        visit_herd_fn=lambda *_args, **_kwargs: calls.append(("herd",)) or True,
+    )
+
+    assert checkpointed_wheat_farm_origin(state) == (-426, 79, -20)
+    assert verified_food_herd_source(
+        state, {"cow": ("minecraft:beef", "minecraft:cooked_beef")}
+    ) == {}
+    assert recovered
+    assert calls == [("harvest", -426, 79, -20), ("eat",)]
+
+
+def test_crop_landmark_is_not_reinterpreted_as_a_cow_herd():
+    source = {
+        "type": "starter_crop_farm",
+        "location": [5, 64, 5],
+        "verified": False,
+        "failed_visits": 2,
+    }
+    state = SimpleNamespace(
+        checkpoint_dir=None,
+        custom_data={
+            "structures": {"food_source": source},
+            "locations": {
+                "farm": [
+                    {"x": 5, "y": 64, "z": 5, "tags": ["food", "crops"]}
+                ]
+            },
+        },
+    )
+    visits = []
+
+    recovered = recover_food_from_known_sources(
+        SimpleNamespace(
+            transport=SimpleNamespace(
+                dispatch=lambda *_a: {"block_position": {"x": 0, "y": 64, "z": 0}}
+            )
+        ),
+        state,
+        {"cow": ("minecraft:beef", "minecraft:cooked_beef")},
+        harvest_fn=lambda *_args: False,
+        eat_fn=lambda *_args, **_kwargs: False,
+        visit_herd_fn=lambda *_args, **_kwargs: visits.append(True) or False,
+    )
+
+    assert not recovered
+    assert visits == []
+    assert source["failed_visits"] == 2
 
 
 def test_observed_herd_persistence_is_centralized():

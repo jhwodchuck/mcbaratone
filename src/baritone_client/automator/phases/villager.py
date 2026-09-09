@@ -11,6 +11,7 @@ from ...common.villager import (
     locate_village,
     start_villager_multiplication,
 )
+from ..food_recovery_state import checkpointed_wheat_farm_origin
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import Phase, StateManager
@@ -226,12 +227,11 @@ class VillagerInfraHandler(PhaseHandler):
 
         wheat_target = target * 3
         if count_item(client, "minecraft:wheat") < wheat_target:
-            farm = state.custom_data.get("wheat_farm", {})
-            origin = farm.get("origin") if isinstance(farm, dict) else None
-            if not isinstance(origin, (list, tuple)) or len(origin) != 3:
+            origin = checkpointed_wheat_farm_origin(state)
+            if origin is None:
                 print("  No checkpointed wheat farm can supply villager bread.")
                 return False
-            farm_position = tuple(int(value) for value in origin)
+            farm_position = origin
             live = client.transport.dispatch("get_state", {})
             position = live.get("block_position", live.get("position", {}))
             current = (

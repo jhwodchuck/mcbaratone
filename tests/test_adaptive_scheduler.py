@@ -371,6 +371,20 @@ def test_iron_role_selects_food_recovery_before_holding_when_hungry():
     assert opportunity.kind is OpportunityKind.FOOD_RECOVERY
 
 
+def test_balanced_agent_selects_food_recovery_before_retrying_objectives():
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), _state())
+
+    opportunity = scheduler.select_local_opportunity(
+        _signals(food=11),
+        [Phase.SPAWN_BOOTSTRAP, Phase.INITIAL_GATHERING],
+        now=1000.0,
+        role=FleetRole.BALANCED,
+    )
+
+    assert opportunity is not None
+    assert opportunity.kind is OpportunityKind.FOOD_RECOVERY
+
+
 def test_village_food_role_recovers_hunger_before_production():
     scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), _state())
 
@@ -507,6 +521,45 @@ def test_collect_game_signals_reads_entities_inventory_and_crop(monkeypatch):
     assert signals.adult_villagers == 1
     assert signals.crop_location == (12, 64, 12)
     assert signals.experience_level == 27
+
+
+def test_collect_game_signals_ignores_hostile_sealed_far_below_player(monkeypatch):
+    """A cave mob must not starve all surface farming as SELF_DEFENSE work."""
+
+    class Transport:
+        @staticmethod
+        def dispatch(route, _payload=None, **_kwargs):
+            if route == "get_state":
+                return {
+                    "health": 20,
+                    "food_level": 18,
+                    "dimension": "minecraft:overworld",
+                    "block_position": {"x": -410, "y": 79, "z": -17},
+                }
+            if route == "get_entities":
+                return {
+                    "entities": [
+                        {
+                            "id": 1,
+                            "type": "minecraft:creeper",
+                            "distance": 20.3,
+                            "position": {"x": -400, "y": 61, "z": -17},
+                            "is_aggressive": False,
+                            "can_see_player": False,
+                        }
+                    ]
+                }
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    resources = SimpleNamespace(refresh_inventory=lambda: {})
+    monkeypatch.setattr(adaptive, "find_nearby_block", lambda *_a, **_k: None)
+
+    signals = collect_game_signals(client, resources, _state())
+
+    assert signals.entities_observed
+    assert signals.nearby_hostiles == 0
+    assert signals.safe_for_local_work
 
 
 def test_animal_opportunity_records_verified_herd_growth(monkeypatch):

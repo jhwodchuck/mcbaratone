@@ -276,6 +276,47 @@ def test_villager_handler_acquires_missing_bread_before_observation(monkeypatch)
     assert provisioned == [True]
 
 
+def test_villager_bread_provisioning_reuses_legacy_farm_location(monkeypatch):
+    state = DummyState()
+    state.custom_data["farm_location"] = [-426, 79, -20]
+    counts = {"minecraft:bread": 0, "minecraft:wheat": 0}
+    harvested = []
+
+    monkeypatch.setattr(
+        villager_phase, "withdraw_required_from_catalog", lambda *_a, **_k: 0
+    )
+    monkeypatch.setattr(
+        villager_phase, "count_item", lambda _client, item: counts.get(item, 0)
+    )
+    monkeypatch.setattr(
+        villager_phase,
+        "harvest_wheat_farm",
+        lambda _client, x, y, z: harvested.append((x, y, z))
+        or counts.__setitem__("minecraft:wheat", 18)
+        or True,
+    )
+
+    def craft(_client, requirements, **_kwargs):
+        counts["minecraft:bread"] = requirements["minecraft:bread"]
+        return SimpleNamespace(success=True)
+
+    monkeypatch.setattr(villager_phase, "ensure_supplies", craft)
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: {
+                "block_position": {"x": -410, "y": 79, "z": -17}
+            }
+            if route == "get_state"
+            else {}
+        )
+    )
+
+    assert villager_phase.VillagerInfraHandler._provision_breeding_bread(
+        client, state
+    )
+    assert harvested == [(-426, 79, -20)]
+
+
 def test_resource_requirements_are_real_nonzero_preconditions():
     transport = RouteTransport()
     resources = ResourceManager(SimpleNamespace(transport=transport))

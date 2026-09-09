@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
-from ..common.combat import get_nearby_entities
+from ..common.combat import _threat_can_reach_player, get_nearby_entities
 from ..common.defense import assess_threats
 from ..common.husbandry import BREEDING_FOOD, breed_pair
 from ..common.forestry import run_wood_cycle
@@ -282,7 +282,7 @@ def collect_game_signals(client: Any, resources: Any, state: Any) -> GameSignals
                 adult_animals[family] = adult_animals.get(family, 0) + 1
 
     try:
-        threats = assess_threats(entities, dict(snapshot))
+        threats = [threat for threat in assess_threats(entities, dict(snapshot)) if _threat_can_reach_player(threat.entity, dict(snapshot))]
     except Exception:
         threats = []
 
@@ -555,7 +555,7 @@ class AdaptiveScheduler:
             allow_recovery=True,
         )
         specialty_candidates = []
-        if primary is not None and primary.kind is OpportunityKind.SELF_DEFENSE:
+        if primary is not None and primary.kind in (OpportunityKind.SELF_DEFENSE, OpportunityKind.FOOD_RECOVERY):
             return primary
         if primary is not None:
             specialty_candidates.append(replace(primary, assigned_role=role.value))

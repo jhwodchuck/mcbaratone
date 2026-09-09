@@ -1,6 +1,6 @@
 """Checkpoint-backed coordination for renewable food recovery."""
 
-from typing import Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from ..common.combat import eat_until_hunger
 from ..common.farming import harvest_wheat_farm
@@ -32,6 +32,62 @@ _STORED_FOOD_TARGETS = {
 MAX_FOOD_SEARCH_ANCHOR_DRIFT = 96.0
 
 
+def checkpointed_wheat_farm_origin(state: Any) -> Optional[tuple[int, int, int]]:
+    """Return a crop-farm candidate across current and legacy checkpoint keys.
+
+    This is a location hint, not proof that the farm is currently productive;
+    callers still have to observe a harvest or crop-block delta. A1's live
+    checkpoint predates ``wheat_farm.origin`` and stores the same farm under
+    ``farm_location`` and ``structures.food_source.location``.
+    """
+    custom = getattr(state, "custom_data", {}) if state is not None else {}
+    if not isinstance(custom, Mapping):
+        return None
+
+    wheat_farm = custom.get("wheat_farm", {})
+    canonical = wheat_farm.get("origin") if isinstance(wheat_farm, Mapping) else None
+    candidates = [canonical, custom.get("farm_location")]
+
+    structures = custom.get("structures", {})
+    source = structures.get("food_source", {}) if isinstance(structures, Mapping) else {}
+    if isinstance(source, Mapping):
+        source_type = str(source.get("type", "")).lower()
+        if "crop" in source_type or "wheat" in source_type or source.get("plots"):
+            candidates.append(source.get("location"))
+
+    for candidate in candidates:
+        if not isinstance(candidate, (list, tuple)) or len(candidate) != 3:
+            continue
+        try:
+            return tuple(int(float(value)) for value in candidate)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def verified_food_herd_source(
+    state: Any,
+    food_animals: Mapping[str, tuple[str, str]],
+) -> dict:
+    """Return only a verified animal herd, never a crop-farm record."""
+    custom = getattr(state, "custom_data", {}) if state is not None else {}
+    structures = custom.get("structures", {}) if isinstance(custom, Mapping) else {}
+    source = structures.get("food_source", {}) if isinstance(structures, Mapping) else {}
+    if not isinstance(source, dict) or not source.get("verified"):
+        return {}
+    source_type = str(source.get("type", "")).lower()
+    if "crop" in source_type or "wheat" in source_type or source.get("plots"):
+        return {}
+    animal_type = str(source.get("animal_type", "")).lower()
+    location = source.get("location")
+    # Older herd checkpoints predate ``animal_type`` and meant cow by default.
+    if animal_type and animal_type not in food_animals:
+        return {}
+    if not isinstance(location, (list, tuple)) or len(location) != 3:
+        return {}
+    return source
+
+
 def _horizontal_distance(
     first: tuple[float, float, float],
     second: tuple[float, float, float],
@@ -50,7 +106,7 @@ def recover_known_food(client, state) -> bool:
 
 
 def _durable_food_search_anchor(state) -> Optional[tuple[float, float, float]]:
-    """Prefer the re-anchored spawn-bootstrap home for survival searches."""
+    """Prefer the current base over stale bootstrap-era search anchors."""
     if state is None:
         return None
     custom_data = state.custom_data
@@ -58,9 +114,9 @@ def _durable_food_search_anchor(state) -> Optional[tuple[float, float, float]]:
     spawn_payload = phase_payloads.get("SPAWN_BOOTSTRAP", {})
     return_home = spawn_payload.get("return_home", {})
     candidates = (
-        return_home.get("origin"),
         custom_data.get("base_location"),
         custom_data.get("homestead_anchor"),
+        return_home.get("origin"),
     )
     for candidate in candidates:
         if isinstance(candidate, (list, tuple)) and len(candidate) == 3:
@@ -212,10 +268,9 @@ def recover_food_from_known_sources(
         if moved >= 0 and eat_fn(client, minimum_food=12):
             return True
 
-    farm = (state.custom_data.get("wheat_farm") if state else None) or {}
-    origin = farm.get("origin")
-    if isinstance(origin, (list, tuple)) and len(origin) == 3:
-        farm_x, farm_y, farm_z = (int(value) for value in origin)
+    origin = checkpointed_wheat_farm_origin(state)
+    if origin is not None:
+        farm_x, farm_y, farm_z = origin
         if harvest_fn(
             client, farm_x, farm_y, farm_z
         ) and eat_fn(client, minimum_food=12):
@@ -223,16 +278,12 @@ def recover_food_from_known_sources(
 
     if not allow_hunting:
         return False
-    source = (
-        state.custom_data.get("structures", {}).get("food_source", {})
-        if state
-        else {}
-    )
-    if not (isinstance(source, dict) and source.get("verified")) and state:
+    source = verified_food_herd_source(state, food_animals)
+    if not source and state:
         live = client.transport.dispatch("get_state", {})
         position = live.get("block_position", live.get("position", {}))
         source = _nearest_verified_food_location(
-            state,
+            state, food_animals,
             anchor=(position.get("x", 0), position.get("y", 0), position.get("z", 0)),
         )
     location = source.get("location") if isinstance(source, dict) else None
@@ -268,7 +319,7 @@ def recover_food_from_known_sources(
     return False
 
 
-def _nearest_verified_food_location(state, *, anchor=None) -> dict:
+def _nearest_verified_food_location(state, food_animals, *, anchor=None) -> dict:
     """Return the closest persisted food landmark that is not retired."""
     locations = state.custom_data.get("locations", {})
     farms = locations.get("farm", []) if isinstance(locations, dict) else []
@@ -289,10 +340,23 @@ def _nearest_verified_food_location(state, *, anchor=None) -> dict:
             continue
         distance = ((float(record["x"]) - float(anchor[0])) ** 2 +
                     (float(record["z"]) - float(anchor[2])) ** 2) ** 0.5
-        tags = record.get("tags", [])
+        tags = [str(tag).lower() for tag in record.get("tags", [])]
         animal_type = next(
-            (tag[:-5] for tag in tags if tag.endswith("_herd")), "cow"
+            (tag[:-5] for tag in tags if tag.endswith("_herd")), ""
         )
+        if not animal_type:
+            animal_type = next(
+                (
+                    tag
+                    for tag in tags
+                    if tag in food_animals
+                    and "renewable" in tags
+                    and "observed" in tags
+                ),
+                "",
+            )
+        if animal_type not in food_animals:
+            continue
         raw_items = {
             "cow": "beef", "mooshroom": "beef", "pig": "porkchop",
             "chicken": "chicken", "sheep": "mutton", "rabbit": "rabbit",
