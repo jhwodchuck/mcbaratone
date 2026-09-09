@@ -8,6 +8,10 @@ from ...common.combat import eat_until_hunger
 from ...common.farming import harvest_wheat_farm
 from ...common.husbandry import visit_known_herd_for_loot
 from ...common.inventory import withdraw_required_from_catalog
+from ..food_recovery_state import (
+    checkpointed_wheat_farm_origin,
+    verified_food_herd_source,
+)
 
 
 def recover_food_from_known_sources(client, state, *, minimum_food: int = 12) -> bool:
@@ -43,10 +47,9 @@ def recover_food_from_known_sources(client, state, *, minimum_food: int = 12) ->
         if moved > 0 and eat_until_hunger(client, minimum_food=minimum_food):
             return True
 
-    farm = (state.custom_data.get("wheat_farm") if state else None) or {}
-    origin = farm.get("origin")
-    if isinstance(origin, (list, tuple)) and len(origin) == 3:
-        fx, fy, fz = (int(v) for v in origin)
+    origin = checkpointed_wheat_farm_origin(state)
+    if origin is not None:
+        fx, fy, fz = origin
         if harvest_wheat_farm(client, fx, fy, fz) and eat_until_hunger(
             client, minimum_food=minimum_food
         ):
@@ -79,15 +82,7 @@ def persisted_food_source(state) -> dict:
     """Return a verified renewable source from checkpoint data."""
     if state is None:
         return {}
-    source = (
-        state.custom_data.get("structures", {}).get("food_source", {})
-    )
-    if not isinstance(source, dict) or not source.get("verified"):
-        return {}
-    location = source.get("location")
-    if not isinstance(location, (list, tuple)) or len(location) != 3:
-        return {}
-    return source
+    return verified_food_herd_source(state, FOOD_ANIMALS)
 
 
 def remember_food_source(

@@ -5,6 +5,7 @@ Phase 2: Iron & Diamond Phase
 import time
 from typing import Optional, Tuple
 
+from ..food_recovery_state import checkpointed_wheat_farm_origin
 from ..phase_executor import PhaseHandler
 from ..resource_manager import ResourceManager
 from ..state_manager import StateManager
@@ -193,7 +194,7 @@ class FoodAndIronHandler(PhaseHandler):
         """Prove a renewable source instead of crediting carried food alone."""
         if self.state is None:
             return False
-        if self.state.custom_data.get("wheat_farm", {}).get("origin"):
+        if checkpointed_wheat_farm_origin(self.state) is not None:
             return True
         if persisted_food_source(self.state):
             return True

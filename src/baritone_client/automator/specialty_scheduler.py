@@ -34,8 +34,6 @@ def select_specialty_opportunity(
     if recovery := select_self_defense(signals):
         return recovery
     completed_set = set(completed)
-    if role is FleetRole.BALANCED:
-        return None
     if allow_recovery:
         recovery = food_opportunity.select_food_recovery_opportunity(
             signals.food,
@@ -43,6 +41,8 @@ def select_specialty_opportunity(
         )
         if recovery is not None:
             return recovery
+    if role is FleetRole.BALANCED:
+        return None
     if role in {
         FleetRole.END_RUNNER,
         FleetRole.NETHER_SUPPLY,
