@@ -547,6 +547,38 @@ def test_automator_survival_gate_skips_recovery_at_safe_margin(monkeypatch):
     )
 
 
+def test_survival_gate_sets_and_clears_strategy_override(monkeypatch):
+    live = {"health": 5.2, "food_level": 7, "is_dead": False}
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda _route, _payload: dict(live))
+    )
+    calls = []
+    strategy = SimpleNamespace(
+        suspend_for_survival=lambda reason: calls.append(("suspend", reason)),
+        resume_from_survival=lambda: calls.append(("resume", None)),
+    )
+    monkeypatch.setattr(
+        objective_survival, "_has_carried_emergency_bread_materials", lambda _client: False
+    )
+    monkeypatch.setattr(
+        objective_survival, "_attempt_survival_recovery_food", lambda *_args: False
+    )
+    monkeypatch.setattr(
+        objective_survival, "_acquire_checkpointed_emergency_food", lambda *_args: False
+    )
+
+    assert not objective_survival.recover_survival_before_objective(
+        client, SimpleNamespace(), strategy
+    )
+    assert calls[0][0] == "suspend"
+
+    live.update(health=12.0, food_level=10)
+    assert objective_survival.recover_survival_before_objective(
+        client, SimpleNamespace(), strategy
+    )
+    assert calls[-1] == ("resume", None)
+
+
 def test_sequential_task_yields_dead_player_without_respawning():
     calls = []
 
@@ -644,6 +676,48 @@ def test_phase_executor_does_not_retry_safe_survival_hold(
     executor.register_handler(Phase.FOOD_AND_IRON, handler)
 
     assert not executor.execute_phase(Phase.FOOD_AND_IRON)
+    assert executor.interruption_reason == "survival_recovery"
+    assert handler.calls == 1
+    assert handler.exited
+
+
+def test_phase_executor_yields_failed_phase_before_retry_when_survival_is_unsafe():
+    class FailingHandler(PhaseHandler):
+        def __init__(self):
+            self.calls = 0
+            self.exited = False
+
+        def execute(self, client, resources, state):
+            self.calls += 1
+            return TaskResult.fail("house repair blocked")
+
+        def get_name(self):
+            return "Unsafe retry phase"
+
+        def on_exit(self, client, resources, state):
+            self.exited = True
+
+    class CriticalTransport:
+        def dispatch(self, route, payload):
+            assert route == "get_state"
+            return {"health": 5.2, "food_level": 7, "is_dead": False}
+
+    state = SimpleNamespace(
+        update_progress=lambda *_args, **_kwargs: None,
+        record_phase_payload=lambda *_args, **_kwargs: None,
+    )
+    handler = FailingHandler()
+    executor = PhaseExecutor(
+        SimpleNamespace(transport=CriticalTransport()),
+        SimpleNamespace(refresh_inventory=lambda: None),
+        state,
+        max_retries=3,
+        retry_delay=0,
+        screenshot_enabled=False,
+    )
+    executor.register_handler(Phase.ENCHANTING_PIPELINE, handler)
+
+    assert not executor.execute_phase(Phase.ENCHANTING_PIPELINE)
     assert executor.interruption_reason == "survival_recovery"
     assert handler.calls == 1
     assert handler.exited

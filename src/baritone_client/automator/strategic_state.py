@@ -127,6 +127,8 @@ class StrategicState:
         data = raw if isinstance(raw, dict) else {}
         data.setdefault("version", self.VERSION)
         data.setdefault("phase", StrategicPhase.SURVIVE.name)
+        data.setdefault("active_phase", data["phase"])
+        data.setdefault("survival_override", None)
         data.setdefault("phase_history", [])
         data.setdefault("current_major_objective", OBJECTIVE_TEXT[Phase.BRIDGE_CHECK])
         data.setdefault("blocking_condition", None)
@@ -301,6 +303,8 @@ class StrategicState:
         except KeyError:
             existing = StrategicPhase.SURVIVE
         if desired.value <= existing.value:
+            if not isinstance(self.data.get("survival_override"), Mapping):
+                self.data["active_phase"] = existing.name
             return
         phases = list(StrategicPhase)
         for next_phase in phases[existing.value + 1:desired.value + 1]:
@@ -313,6 +317,8 @@ class StrategicState:
             })
             emit_event("strategic_phase_transition", previous=existing.name, current=next_phase.name, reason=reason)
             existing = next_phase
+        if not isinstance(self.data.get("survival_override"), Mapping):
+            self.data["active_phase"] = existing.name
 
     def _blocker(self, current: Phase) -> Optional[str]:
         if current in {Phase.NETHER_AND_BLAZE, Phase.WORLD_UNLOCK}:
@@ -357,12 +363,70 @@ class StrategicState:
         }
         return self.data
 
+    def suspend_for_survival(self, reason: str) -> bool:
+        """Temporarily make survival the active strategy without losing progress."""
+        if isinstance(self.data.get("survival_override"), Mapping):
+            self.data["blocking_condition"] = str(reason)
+            return False
+        long_term_phase = str(self.data.get("phase", StrategicPhase.SURVIVE.name))
+        self.data["survival_override"] = {
+            "resume_phase": long_term_phase,
+            "resume_objective": self.data.get("current_major_objective"),
+            "since": time.time(),
+            "reason": str(reason),
+        }
+        self.data["active_phase"] = StrategicPhase.SURVIVE.name
+        self.data["current_major_objective"] = (
+            "Restore health, food, and a safe position before resuming progression"
+        )
+        self.data["blocking_condition"] = str(reason)
+        self.data["last_review"] = {
+            "at": time.time(),
+            "current_phase": StrategicPhase.SURVIVE.name,
+            "what_is_blocking": str(reason),
+            "activity_contributes_to_goal": True,
+            "repeating_completed_work": False,
+            "abandoning_infrastructure": False,
+            "higher_value_action": self.data["current_major_objective"],
+        }
+        emit_event(
+            "strategic_phase_transition",
+            previous=long_term_phase,
+            current=StrategicPhase.SURVIVE.name,
+            reason=str(reason),
+            temporary=True,
+        )
+        return True
+
+    def resume_from_survival(self) -> bool:
+        """Clear a temporary survival override after the admission gate passes."""
+        override = self.data.get("survival_override")
+        if not isinstance(override, Mapping):
+            return False
+        resumed = str(self.data.get("phase", override.get("resume_phase", StrategicPhase.SURVIVE.name)))
+        self.data["survival_override"] = None
+        self.data["active_phase"] = resumed
+        self.data["current_major_objective"] = override.get("resume_objective")
+        self.data["blocking_condition"] = None
+        emit_event(
+            "strategic_phase_transition",
+            previous=StrategicPhase.SURVIVE.name,
+            current=resumed,
+            reason="survival admission restored",
+            temporary=True,
+        )
+        return True
+
     def status_lines(self) -> list[str]:
         blocker = self.data.get("blocking_condition") or "none recorded"
         home = self.data.get("permanent_home")
         home_score = home.get("score") if isinstance(home, Mapping) else None
+        active_phase = self.data.get("active_phase", self.data["phase"])
+        phase_text = str(active_phase)
+        if active_phase != self.data["phase"]:
+            phase_text += f" (temporary; long-term {self.data['phase']})"
         return [
-            f"Current strategic phase: {self.data['phase']}",
+            f"Current strategic phase: {phase_text}",
             f"Current major objective: {self.data['current_major_objective']}",
             f"Blocking condition: {blocker}",
             f"Permanent home score: {home_score if home_score is not None else 'unscored'}",

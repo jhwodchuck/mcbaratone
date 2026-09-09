@@ -32,14 +32,23 @@ def _has_carried_emergency_bread_materials(client) -> bool:
         return False
 
 
-def recover_survival_before_objective(client, state) -> bool:
+def _survival_admitted(snapshot: Mapping[str, Any], strategy=None) -> bool:
+    safe = objective_survival_safe(snapshot)
+    if safe and strategy is not None:
+        strategy.resume_from_survival()
+    return safe
+
+
+def recover_survival_before_objective(client, state, strategy=None) -> bool:
     """Recover a critical player and fail closed until its margin is safe."""
     try:
         snapshot = client.transport.dispatch("get_state", {})
     except Exception as exc:
         print(f"RECOVERY: objective survival gate could not read state ({exc})")
+        if strategy is not None:
+            strategy.suspend_for_survival("live survival state is unavailable")
         return False
-    if objective_survival_safe(snapshot):
+    if _survival_admitted(snapshot, strategy):
         return True
 
     health = float(snapshot.get("health", 0) or 0)
@@ -53,20 +62,29 @@ def recover_survival_before_objective(client, state) -> bool:
             print("RECOVERY: using carried wheat before any storage navigation")
             _acquire_checkpointed_emergency_food(client, state)
             snapshot = client.transport.dispatch("get_state", {})
-            if objective_survival_safe(snapshot):
+            if _survival_admitted(snapshot, strategy):
                 return True
         _attempt_survival_recovery_food(client, state)
         snapshot = client.transport.dispatch("get_state", {})
-        if objective_survival_safe(snapshot):
+        if _survival_admitted(snapshot, strategy):
             return True
         _acquire_checkpointed_emergency_food(client, state)
         snapshot = client.transport.dispatch("get_state", {})
     except PlayerDeathDetected:
+        if strategy is not None:
+            strategy.suspend_for_survival("player death requires recovery")
         return False
     except Exception as exc:
         print(f"RECOVERY: objective survival gate failed non-fatally ({exc})")
+        if strategy is not None:
+            strategy.suspend_for_survival(f"survival recovery failed: {exc}")
         return False
-    if objective_survival_safe(snapshot):
+    if _survival_admitted(snapshot, strategy):
         return True
+    if strategy is not None:
+        strategy.suspend_for_survival(
+            f"critical survival margin: health={float(snapshot.get('health', 0) or 0):.1f}, "
+            f"food={int(snapshot.get('food_level', snapshot.get('food', 0)) or 0)}"
+        )
     print("RECOVERY: objective selection remains blocked by survival state")
     return False

@@ -52,6 +52,24 @@ def test_strategic_phase_does_not_regress_when_survival_recovery_runs():
     ]
 
 
+def test_survival_override_preserves_long_term_progress_and_resumes():
+    state = _state({}, phase=Phase.WORLD_UNLOCK)
+    strategy = StrategicState(state)
+    strategy.refresh(current=Phase.WORLD_UNLOCK, completed={Phase.NETHER_AND_BLAZE})
+
+    assert strategy.suspend_for_survival("health=5.2, food=7")
+    assert strategy.data["phase"] == StrategicPhase.PREPARE_FOR_END.name
+    assert strategy.data["active_phase"] == StrategicPhase.SURVIVE.name
+    assert strategy.data["survival_override"]["resume_phase"] == "PREPARE_FOR_END"
+    assert "Restore health" in strategy.data["current_major_objective"]
+    assert not strategy.suspend_for_survival("health=5.0, food=6")
+
+    assert strategy.resume_from_survival()
+    assert strategy.data["phase"] == StrategicPhase.PREPARE_FOR_END.name
+    assert strategy.data["active_phase"] == StrategicPhase.PREPARE_FOR_END.name
+    assert strategy.data["survival_override"] is None
+
+
 def test_refresh_rebinds_after_checkpoint_load_replaces_custom_data():
     state = _state({})
     strategy = StrategicState(state)

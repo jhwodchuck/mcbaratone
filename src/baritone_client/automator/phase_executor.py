@@ -85,6 +85,27 @@ def _wait_before_retry(client, retry_delay: float) -> None:
     wait_with_bridge_keepalive(client, duration=retry_delay)
 
 
+def _phase_retry_survival_safe(client) -> bool:
+    """Refuse another full phase attempt once live survival margins are unsafe."""
+    transport = getattr(client, "transport", None)
+    if transport is None:
+        return True
+    try:
+        snapshot = transport.dispatch("get_state", {})
+    except Exception as exc:
+        print(f"RECOVERY: phase retry survival check failed ({exc}); yielding")
+        return False
+    if not isinstance(snapshot, dict) or not any(
+        key in snapshot for key in ("health", "food", "food_level", "is_dead")
+    ):
+        # Lightweight unit-test transports and legacy adapters may not expose
+        # player state. The production bridge always supplies these fields.
+        return True
+    from .objective_survival import objective_survival_safe
+
+    return objective_survival_safe(snapshot)
+
+
 class PhaseHandler(ABC):
     """Abstract base class for phase handlers."""
     
@@ -441,10 +462,8 @@ class PhaseExecutor:
                         return False
             
             retries += 1
-            if retries <= self.max_retries:
-                self._save_progress_checkpoint()
-                print(f"Retry {retries}/{self.max_retries} in {self.retry_delay}s...")
-                _wait_before_retry(self.client, self.retry_delay)
+            if retries <= self.max_retries and not self._prepare_retry(phase, handler, retries):
+                return False
         
         print(f"Phase {phase.name} failed after {self.max_retries} retries")
         
@@ -453,6 +472,21 @@ class PhaseExecutor:
         
         handler.on_exit(self.client, self.resources, self.state)
         return False
+
+    def _prepare_retry(self, phase: Phase, handler: PhaseHandler, retries: int) -> bool:
+        """Checkpoint a safe retry or yield immediately to survival recovery."""
+        if not _phase_retry_survival_safe(self.client):
+            self.interruption_reason = "survival_recovery"
+            print(
+                f"Phase {phase.name} yielded before retry {retries}/"
+                f"{self.max_retries}: survival margin is unsafe"
+            )
+            handler.on_exit(self.client, self.resources, self.state)
+            return False
+        self._save_progress_checkpoint()
+        print(f"Retry {retries}/{self.max_retries} in {self.retry_delay}s...")
+        _wait_before_retry(self.client, self.retry_delay)
+        return True
 
     def _save_progress_checkpoint(self) -> None:
         """Refresh the checkpoint file between a phase's own internal retries.

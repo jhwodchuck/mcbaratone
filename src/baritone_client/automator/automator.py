@@ -404,7 +404,7 @@ class EndGameAutomator:
 
                 # Recover before an ordinary failure can turn into unsafe,
                 # unrelated objective work.
-                if not recover_survival_before_objective(self.client, self.state):
+                if not recover_survival_before_objective(self.client, self.state, self.strategy):
                     self._save_checkpoint()
                     wait_with_bridge_keepalive(self.client, duration=5.0)
                     continue
