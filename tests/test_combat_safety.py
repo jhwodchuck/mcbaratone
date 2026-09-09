@@ -731,6 +731,64 @@ def test_near_death_recovery_eventually_explores_instead_of_holding_forever(
         combat.acquire_emergency_food(client, minimum_health=12.0, timeout=60)
 
 
+def test_emergency_food_search_widens_after_repeated_failed_rotations(monkeypatch):
+    """A saturated waypoint rotation must widen, not repeat itself forever.
+
+    Live A1 2026-09-09: health sat pinned at 5/12 for 25+ minutes, retrying
+    the same four 96-block waypoints every cycle because the search bound
+    never grew past max_exploration_distance. client._emergency_food_waypoint_
+    cursor already persists across calls (see EmergencyExploration.resume_
+    waypoint_rotation); this asserts a high cursor produces a wider target
+    than the same cursor would under the old fixed-radius behavior.
+    """
+    class NearDeathTransport(CombatTransport):
+        def __init__(self):
+            super().__init__(health=5.0)
+
+        def dispatch(self, route, payload):
+            self.calls.append((route, payload))
+            if route == "get_state":
+                return {
+                    "health": self.health,
+                    "food_level": 10,
+                    "world_time": 1000,
+                    "block_position": {"x": 0, "y": 64, "z": 0},
+                }
+            if route == "get_inventory":
+                return {"inventory": [], "armor": [], "offhand": []}
+            return {}
+
+    client = SimpleNamespace(transport=NearDeathTransport())
+    client._emergency_food_waypoint_cursor = 32
+    monkeypatch.setattr(combat, "recover_health", lambda *_a, **_k: False)
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [])
+    monkeypatch.setattr(combat, "get_nearby_entities", lambda *_a, **_k: [])
+    monkeypatch.setattr(combat.time, "sleep", lambda _s: None)
+
+    explored = []
+
+    class StopAfterExplore(Exception):
+        pass
+
+    original_dispatch = client.transport.dispatch
+
+    def wrapped_dispatch(route, payload):
+        if route == "explore":
+            explored.append(payload)
+            raise StopAfterExplore()
+        return original_dispatch(route, payload)
+
+    client.transport.dispatch = wrapped_dispatch
+
+    with pytest.raises(StopAfterExplore):
+        combat.acquire_emergency_food(client, minimum_health=12.0, timeout=60)
+
+    # Ring 5 (index 32) at the unescalated 96-block cap would sit at exactly
+    # x=96 (min(24*5, 96)); two full rotations must have widened the cap so
+    # this ring reaches its uncapped 120-block distance instead.
+    assert explored == [{"x": 120, "z": 0}]
+
+
 def test_emergency_food_hunts_passive_target_then_recovers(monkeypatch):
     transport = CombatTransport(health=5.0)
     client = SimpleNamespace(transport=transport)

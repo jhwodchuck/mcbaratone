@@ -230,11 +230,9 @@ def _approach_aquatic_food(
     combat takes ownership of movement.
     """
     command_type = str(entity_type).split(":")[-1]
-    # Separation at the start, and the best (smallest) seen since. If the gap
-    # never shrinks the target is simply not reachable -- a fish in a sealed
-    # flooded chamber, say -- and burning the whole window on it is wasted.
-    # Live: Bot07 reported "safely hunting tropical_fish at 46.4m" over and
-    # over with the distance frozen to the decimal, never moving, at 8 health.
+    # Track the best (smallest) separation seen. If the gap never shrinks the
+    # target is unreachable (a fish in a sealed flooded chamber, say) -- live:
+    # Bot07 reported the same frozen distance for the whole window at 8 health.
     best_distance = None
     progress_deadline = time.time() + max(6.0, float(timeout) * 0.35)
     try:
@@ -580,6 +578,14 @@ def acquire_emergency_food(
     if state is None:
         return False
     position = state.get("block_position", state.get("position", {}))
+    # Widen the bound after repeated rotations find nothing -- a genuinely
+    # food-barren area otherwise saturates it and repeats forever. Live A1
+    # 2026-09-09: health sat pinned at 5/12 for 25+ min on the same waypoints.
+    try:
+        prior_cursor = int(getattr(client, "_emergency_food_waypoint_cursor", 0))
+    except (TypeError, ValueError):
+        prior_cursor = 0
+    search_radius = max_exploration_distance * (2 ** min(prior_cursor // 16, 2))
     stable_anchor = None
     if (
         return_to_exploration_center
@@ -592,12 +598,12 @@ def acquire_emergency_food(
         origin_x, origin_z = bounded_exploration_origin(
             position,
             exploration_center,
-            max_exploration_distance,
+            search_radius,
         )
     exploration = EmergencyExploration(
         origin_x,
         origin_z,
-        max_exploration_distance,
+        search_radius,
     )
     exploration.resume_waypoint_rotation(client)
     exploration.movement.reset(state)
@@ -614,7 +620,7 @@ def acquire_emergency_food(
             (current[0] - stable_anchor[0]) ** 2
             + (current[2] - stable_anchor[2]) ** 2
         ) ** 0.5
-        if distance_from_anchor > max_exploration_distance:
+        if distance_from_anchor > search_radius:
             if not return_to_food_search_anchor(client, stable_anchor):
                 stop_exploring()
                 return False
@@ -685,10 +691,10 @@ def acquire_emergency_food(
         current_x = float(position.get("x", state.get("x", origin_x)) or origin_x)
         current_z = float(position.get("z", state.get("z", origin_z)) or origin_z)
         distance = ((current_x - origin_x) ** 2 + (current_z - origin_z) ** 2) ** 0.5
-        if distance > max_exploration_distance:
+        if distance > search_radius:
             print(
                 "RECOVERY: emergency food search reached its "
-                f"{max_exploration_distance:.0f}-block safety radius"
+                f"{search_radius:.0f}-block safety radius"
             )
             if stable_anchor is not None:
                 client.transport.dispatch("cancel", {})
@@ -972,11 +978,9 @@ def hunt_mobs(
                     kills=kills,
                     food_level=food_level,
                 )
-            # These mob types (cow/mooshroom/sheep/pig/chicken/rabbit) drop
-            # raw meat on death, so hunting them is itself the path back to
-            # food. Aborting here deadlocked forever -- confirmed live on
-            # Bot07, stuck retrying "Gather 46 leather" with an empty food
-            # supply chest and nothing to eat.
+            # These mob types drop raw meat on death, so hunting them is
+            # itself the path back to food -- aborting here deadlocked Bot07
+            # forever, stuck retrying "Gather 46 leather" with nothing to eat.
             print(
                 f"  HUNGER: no carried food at {food_level}; continuing hunt "
                 "to find some"
@@ -1543,15 +1547,12 @@ def defend_or_flee(
             f"DEFENSE: evasion failed {runtime.evade_failures}x against "
             f"{primary.entity.get('type')}; fighting back as a last resort"
         )
-        # A fixed retreat_health floor does not work here: each failed flee
-        # attempt costs unpredictable HP, so health is often already below
-        # any floor by the time escalation fires. Live proof: this fired at
-        # 4.8hp with retreat_health=6.0, then again at 1.999hp with
-        # retreat_health=2.0 -- both times safe_combat retreated on its very
-        # first health check and never landed a single hit before the bot
-        # died anyway. Skip the retreat check entirely: evasion is already a
-        # proven 0% strategy against this threat, so committing to the fight
-        # is strictly better regardless of current health.
+        # A fixed retreat_health floor does not work here: failed flee
+        # attempts cost unpredictable HP, so health is often already below
+        # any floor by the time escalation fires -- live proof fired at both
+        # 4.8hp/floor=6.0 and 1.999hp/floor=2.0, retreating before landing a
+        # hit either time. Evasion is already a proven 0% strategy here, so
+        # committing to the fight is strictly better regardless of health.
         defeated = _fight_defensive_target(
             client,
             primary.entity,
