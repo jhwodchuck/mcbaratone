@@ -383,7 +383,12 @@ def _line_of_sight_clear(
     return True
 
 
-def _find_clear_approach(ctx, pos: Tuple[int, int, int]) -> Optional[Tuple[int, int, int]]:
+def _find_clear_approach(
+    ctx,
+    pos: Tuple[int, int, int],
+    *,
+    exclude: Optional[set[Tuple[int, int, int]]] = None,
+) -> Optional[Tuple[int, int, int]]:
     """Find a neighbour of pos with an actually-unobstructed view of it.
 
     find_stand_positions/move_near only check walkability -- never line of
@@ -412,7 +417,10 @@ def _find_clear_approach(ctx, pos: Tuple[int, int, int]) -> Optional[Tuple[int, 
         for dx in range(-2, 3) for dz in range(-2, 3)
         if max(abs(dx), abs(dz)) == 2
     )
+    rejected = exclude or set()
     for cx, cy, cz in candidates:
+        if (cx, cy, cz) in rejected:
+            continue
         floor = block_id_at(ctx, cx, cy - 1, cz)
         if (not floor or "air" in floor or is_liquid(floor)
                 or floor in {"minecraft:powder_snow", "minecraft:magma_block",
@@ -546,6 +554,7 @@ def do_open_container(
     attempts = max(1, int(attempts))
     per_attempt_timeout = max(0.3, timeout / attempts)
     last_data: Dict = {}
+    rejected_approaches: set[Tuple[int, int, int]] = set()
     for attempt in range(1, attempts + 1):
         close_screen(ctx, timeout=min(0.8, per_attempt_timeout))
         ctx.client.transport.dispatch("close_screen", {})
@@ -578,10 +587,16 @@ def do_open_container(
             # the one thing that actually predicts success -- a real
             # sightline -- for a small fraction of the cost.
             if attempt < attempts:
-                approach = _find_clear_approach(ctx, pos)
+                approach = _find_clear_approach(
+                    ctx, pos, exclude=rejected_approaches,
+                )
                 if approach is not None:
                     from tests.utils.mc_harness.actions import do_goto
 
+                    rejected_approaches.add(approach)
+                    ctx.log_event(
+                        f"Trying clear container approach {approach} for {pos}"
+                    )
                     arrived = do_goto(
                         ctx, {"x": approach[0], "y": approach[1], "z": approach[2]},
                         timeout=8.0, arrival_radius=0.25,

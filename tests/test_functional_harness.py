@@ -911,6 +911,64 @@ def test_container_approach_requires_leaving_the_obstructed_neighbour(monkeypatc
     ]
 
 
+def test_container_approach_does_not_repeat_a_disproved_clear_candidate(monkeypatch):
+    """A bridge-rejected approach must not be selected again on the next retry."""
+
+    class Transport:
+        def dispatch(self, route, _payload=None):
+            if route == "get_screen":
+                return {
+                    "data": {
+                        "type": "PlayerScreenHandler",
+                        "sync_id": 0,
+                        "total_slots": 46,
+                    }
+                }
+            return {}
+
+    class Context:
+        def __init__(self):
+            self.events = []
+            self.position = (0, 64, 2)
+            self.client = type("C", (), {"transport": Transport()})()
+
+        def log_event(self, event):
+            self.events.append(event)
+
+        def get_position(self):
+            return self.position
+
+    ctx = Context()
+    goto_calls = []
+
+    def blocks(_ctx, x, y, z):
+        if (x, y, z) == (0, 64, 0):
+            return "minecraft:crafting_table"
+        if y == 63:
+            return "minecraft:stone"
+        return "minecraft:air"
+
+    def fake_do_goto(_ctx, target, **_kwargs):
+        point = (target["x"], target["y"], target["z"])
+        goto_calls.append(point)
+        _ctx.position = point
+        return True
+
+    monkeypatch.setattr(inventory_ops, "block_id_at", blocks)
+    monkeypatch.setattr(inventory_ops, "close_screen", lambda *_a, **_k: None)
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(inventory_ops, "robust_interact_block", lambda *_a, **_k: False)
+
+    from tests.utils.mc_harness import actions
+
+    monkeypatch.setattr(actions, "do_goto", fake_do_goto)
+
+    assert not inventory_ops.do_open_container(ctx, (0, 64, 0), timeout=0.1, attempts=4)
+    assert len(goto_calls) == 3
+    assert len(set(goto_calls)) == 3
+    assert any("Trying clear container approach" in event for event in ctx.events)
+
+
 def test_container_still_out_of_reach_after_approach_gives_up(monkeypatch):
     """If the approach cannot close the gap, fail rather than loop."""
 
