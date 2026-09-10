@@ -1,8 +1,7 @@
 """State-driven scheduling and bounded local farming opportunities.
 
-The objective graph remains the authority for progression dependencies.  This
-module supplies *preference*, never completion: live observations can choose a better runnable
-sibling or justify one small renewable-resource action, but a phase still has to pass its normal handler and verifier before it is DONE.
+The objective graph remains authoritative. This module supplies preference,
+never completion: every phase must still pass its handler and verifier.
 """
 
 from __future__ import annotations
@@ -57,12 +56,9 @@ PLANTABLE_ITEMS = (
     "minecraft:potato",
     "minecraft:beetroot_seeds",
 )
-_ROLE_OPPORTUNITY_KINDS = frozenset({
-    OpportunityKind.END_SUPPLY, OpportunityKind.NETHER_SUPPLY,
-    OpportunityKind.ENCHANTING_XP, OpportunityKind.DIMENSION_ENTRY,
-    OpportunityKind.ENCHANTING_MATERIAL, OpportunityKind.END_FRONTIER,
-    OpportunityKind.END_CITY_ROUTE,
-})
+_ROLE_OPPORTUNITY_KINDS = frozenset({OpportunityKind.END_SUPPLY, OpportunityKind.NETHER_SUPPLY,
+    OpportunityKind.ENCHANTING_XP, OpportunityKind.DIMENSION_ENTRY, OpportunityKind.ENCHANTING_MATERIAL,
+    OpportunityKind.END_FRONTIER, OpportunityKind.END_CITY_ROUTE})
 LEATHER_ANIMALS = {
     "cow", "mooshroom", "horse", "donkey", "mule", "llama",
 }
@@ -482,9 +478,13 @@ class AdaptiveScheduler:
                 role=role,
             )
         if opportunity is not None:
-            return SchedulingDecision(
-                opportunity_result=self.run_local_opportunity(opportunity)
-            )
+            return SchedulingDecision(opportunity_result=self.run_local_opportunity(opportunity))
+
+        if role is FleetRole.BALANCED:
+            food_hold = food_opportunity.balanced_prepared_food_hold_reason(signals, self.state, completed)
+            if food_hold:
+                camp_breaker.clear_holds(self.state)
+                return SchedulingDecision(reasons=(food_hold,), role_hold=True)
 
         candidates, focus_reason, role_complete = role_focused_candidates(
             planner.runnable(),
