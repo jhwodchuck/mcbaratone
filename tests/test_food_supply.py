@@ -52,6 +52,23 @@ def test_retired_legacy_crop_farm_is_not_imported_as_a_worker_plot():
     assert food_supply._plots(state) == []
 
 
+def test_retired_crop_is_pruned_from_persisted_worker_rotation():
+    state = _state(
+        {
+            "food_worker": {"farm_plots": [{"origin": [-426, 79, -20]}]},
+            "structures": {
+                "food_source": {
+                    "type": "starter_crop_farm",
+                    "location": [-426, 79, -20],
+                    "verified": False,
+                }
+            },
+        }
+    )
+
+    assert food_supply._plots(state) == []
+
+
 def test_after_existing_plots_are_immature_expand_another_plot(monkeypatch):
     counts = {"minecraft:wheat": 0, "minecraft:wheat_seeds": 12}
     _inventory(monkeypatch, counts)
