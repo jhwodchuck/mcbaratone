@@ -421,9 +421,6 @@ def test_balanced_food_cooldown_holds_instead_of_selecting_nether(monkeypatch):
     planner = _post_food_planner()
     state = _state(
         {
-            "strategic_state": {
-                "blocking_condition": "pickaxe, prepared_food_32"
-            },
             "adaptive_scheduler": {
                 "opportunities": {
                     "food_recovery": {"last_attempt": 990.0, "success": False},
@@ -450,9 +447,7 @@ def test_balanced_food_cooldown_holds_instead_of_selecting_nether(monkeypatch):
 
 def test_balanced_food_hold_clears_when_live_reserve_reaches_target(monkeypatch):
     planner = _post_food_planner()
-    state = _state(
-        {"strategic_state": {"blocking_condition": "prepared_food_32"}}
-    )
+    state = _state()
     scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
     monkeypatch.setattr(
         scheduler,

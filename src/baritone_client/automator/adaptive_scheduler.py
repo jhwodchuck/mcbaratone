@@ -480,12 +480,6 @@ class AdaptiveScheduler:
         if opportunity is not None:
             return SchedulingDecision(opportunity_result=self.run_local_opportunity(opportunity))
 
-        if role is FleetRole.BALANCED:
-            food_hold = food_opportunity.balanced_prepared_food_hold_reason(signals, self.state, completed)
-            if food_hold:
-                camp_breaker.clear_holds(self.state)
-                return SchedulingDecision(reasons=(food_hold,), role_hold=True)
-
         candidates, focus_reason, role_complete = role_focused_candidates(
             planner.runnable(),
             planner.objectives,
@@ -496,6 +490,11 @@ class AdaptiveScheduler:
             candidates,
             utility=lambda candidate: self.objective_score(candidate, signals),
         )
+        if objective is not None and role is FleetRole.BALANCED and objective.phase in {Phase.NETHER_AND_BLAZE, Phase.WORLD_UNLOCK}:
+            food_hold = food_opportunity.balanced_prepared_food_hold_reason(signals)
+            if food_hold:
+                camp_breaker.clear_holds(self.state)
+                return SchedulingDecision(reasons=(food_hold,), role_hold=True)
         if objective is None:
             # A hold is a decision to do nothing; say why, and bound repeats.
             hold_reason = local_work_hold_reason(signals)
