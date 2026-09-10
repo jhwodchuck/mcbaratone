@@ -385,6 +385,38 @@ def test_balanced_agent_selects_food_recovery_before_retrying_objectives():
     assert opportunity.kind is OpportunityKind.FOOD_RECOVERY
 
 
+def test_balanced_agent_services_prepared_food_blocker_before_progression():
+    state = _state(
+        {"strategic_state": {"blocking_condition": "pickaxe, prepared_food_32"}}
+    )
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+
+    opportunity = scheduler.select_local_opportunity(
+        _signals(food=20, inventory={}),
+        [Phase.SPAWN_BOOTSTRAP, Phase.INITIAL_GATHERING, Phase.BOOT_SEQUENCE],
+        now=1000.0,
+        role=FleetRole.BALANCED,
+    )
+
+    assert opportunity is not None
+    assert opportunity.kind is OpportunityKind.FOOD_PRODUCTION
+    assert opportunity.assigned_role == FleetRole.BALANCED.value
+
+
+def test_balanced_agent_does_not_overproduce_prepared_food():
+    state = _state(
+        {"strategic_state": {"blocking_condition": "pickaxe, prepared_food_32"}}
+    )
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+
+    assert scheduler.select_local_opportunity(
+        _signals(food=20, inventory={"minecraft:bread": 32}),
+        [Phase.SPAWN_BOOTSTRAP, Phase.INITIAL_GATHERING, Phase.BOOT_SEQUENCE],
+        now=1000.0,
+        role=FleetRole.BALANCED,
+    ) is None
+
+
 def test_village_food_role_recovers_hunger_before_production():
     scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), _state())
 
@@ -845,6 +877,29 @@ def test_food_production_records_banked_food_progress(monkeypatch):
     assert result.success
     assert result.after == 24
     assert state.custom_data["adaptive_scheduler"]["food_banked"] == 24
+
+
+def test_balanced_food_production_records_carried_reserve_progress(monkeypatch):
+    state = _state()
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    monkeypatch.setattr(
+        adaptive.food_opportunity,
+        "run_balanced_food_production",
+        lambda *_args, **_kwargs: (True, "crafted 4 bread", 0, 4),
+    )
+    opportunity = LocalOpportunity(
+        OpportunityKind.FOOD_PRODUCTION,
+        215,
+        "prepared food reserve is 0/32",
+        assigned_role=FleetRole.BALANCED.value,
+    )
+
+    result = scheduler.run_local_opportunity(opportunity)
+
+    assert result.success
+    assert result.before == 0
+    assert result.after == 4
+    assert "food_banked" not in state.custom_data["adaptive_scheduler"]
 
 
 def test_ready_village_food_role_runs_production_instead_of_reopening_infra(
