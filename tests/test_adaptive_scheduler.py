@@ -417,6 +417,55 @@ def test_balanced_agent_does_not_overproduce_prepared_food():
     ) is None
 
 
+def test_balanced_food_cooldown_holds_instead_of_selecting_nether(monkeypatch):
+    planner = _post_food_planner()
+    state = _state(
+        {
+            "strategic_state": {
+                "blocking_condition": "pickaxe, prepared_food_32"
+            },
+            "adaptive_scheduler": {
+                "opportunities": {
+                    "food_recovery": {"last_attempt": 990.0, "success": False},
+                    "food_production": {"last_attempt": 990.0, "success": False},
+                }
+            },
+        }
+    )
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    monkeypatch.setattr(adaptive.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(
+        scheduler,
+        "observe",
+        lambda: _signals(food=11, inventory={"minecraft:wheat_seeds": 9}),
+    )
+
+    decision = scheduler.next_step(planner)
+
+    assert decision.objective is None
+    assert decision.role_hold
+    assert "prepared food reserve is 0/32" in decision.summary
+    assert "waiting for the next bounded food cycle" in decision.summary
+
+
+def test_balanced_food_hold_clears_when_live_reserve_reaches_target(monkeypatch):
+    planner = _post_food_planner()
+    state = _state(
+        {"strategic_state": {"blocking_condition": "prepared_food_32"}}
+    )
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    monkeypatch.setattr(
+        scheduler,
+        "observe",
+        lambda: _signals(food=20, inventory={"minecraft:bread": 32}),
+    )
+
+    decision = scheduler.next_step(planner)
+
+    assert decision.objective is not None
+    assert decision.objective.phase is Phase.NETHER_AND_BLAZE
+
+
 def test_village_food_role_recovers_hunger_before_production():
     scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), _state())
 

@@ -17,6 +17,36 @@ MIN_ROLE_FOOD = 14
 BALANCED_PREPARED_FOOD_TARGET = 32
 
 
+def balanced_prepared_food_hold_reason(
+    signals: Any,
+    state: Any,
+    completed: Iterable[Any],
+) -> str:
+    """Explain why balanced progression must wait for its next food cycle.
+
+    A bounded production or recovery attempt records a cooldown even when it
+    cannot secure food.  That cooldown is pacing, not evidence that a long
+    expedition is safe.  Keep the balanced agent out of progression phases
+    until the strategic reserve blocker is actually cleared by live inventory.
+    """
+    if not getattr(signals, "observed", False):
+        return ""
+    if not village_food_production_ready(completed):
+        return ""
+    custom = getattr(state, "custom_data", {}) or {}
+    strategic = custom.get("strategic_state", {}) if isinstance(custom, Mapping) else {}
+    blocker = str(strategic.get("blocking_condition", "")) if isinstance(strategic, Mapping) else ""
+    if "prepared_food_32" not in blocker:
+        return ""
+    prepared = sum(signals.count(item) for item in PREPARED_FOOD_ITEMS)
+    if prepared >= BALANCED_PREPARED_FOOD_TARGET:
+        return ""
+    return (
+        f"prepared food reserve is {prepared}/{BALANCED_PREPARED_FOOD_TARGET}; "
+        "waiting for the next bounded food cycle"
+    )
+
+
 def select_food_recovery_opportunity(
     food: int, cooldown_ready: bool
 ) -> LocalOpportunity | None:
@@ -247,6 +277,7 @@ def run_scheduled_food_recovery(
 __all__ = [
     "BALANCED_PREPARED_FOOD_TARGET",
     "MIN_ROLE_FOOD",
+    "balanced_prepared_food_hold_reason",
     "cooldown_ready",
     "reachable_farm_location",
     "run_scheduled_food_recovery",
