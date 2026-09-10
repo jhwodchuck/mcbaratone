@@ -111,6 +111,7 @@ def _plots(state: Any) -> list[Tuple[int, int, int]]:
         if "crop" in source_type or "wheat" in source_type or source.get("plots"):
             if source.get("verified") is False:
                 retired = _position(source)
+                found = [plot for plot in found if plot != retired]
             else:
                 candidates.append(source)
     for candidate in candidates:
