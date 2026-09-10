@@ -6,12 +6,15 @@ from math import hypot
 from typing import Any, Iterable, Mapping
 
 from ..common.combat import acquire_emergency_food
+from ..common.inventory import count_item
+from .end_readiness import PREPARED_FOOD_ITEMS
 from .local_opportunity import LocalOpportunity, OpportunityKind
 from .food_recovery_state import recover_food_from_known_sources
 from .phases.iron_age_food import FOOD_ANIMALS
 
 
 MIN_ROLE_FOOD = 14
+BALANCED_PREPARED_FOOD_TARGET = 32
 
 
 def select_food_recovery_opportunity(
@@ -36,6 +39,32 @@ def village_food_production_ready(completed: Iterable[Any]) -> bool:
     """
     names = {getattr(phase, "name", "") for phase in completed}
     return {"SPAWN_BOOTSTRAP", "INITIAL_GATHERING", "BOOT_SEQUENCE"}.issubset(names)
+
+
+def select_balanced_food_production_opportunity(
+    signals: Any,
+    state: Any,
+    completed: Iterable[Any],
+    cooldown_ready: bool,
+) -> LocalOpportunity | None:
+    """Prioritize a real expedition reserve when strategy says it is blocked."""
+    if not cooldown_ready or not village_food_production_ready(completed):
+        return None
+    custom = getattr(state, "custom_data", {}) or {}
+    strategic = custom.get("strategic_state", {}) if isinstance(custom, Mapping) else {}
+    blocker = str(strategic.get("blocking_condition", "")) if isinstance(strategic, Mapping) else ""
+    if "prepared_food_32" not in blocker:
+        return None
+    prepared = sum(signals.count(item) for item in PREPARED_FOOD_ITEMS)
+    if prepared >= BALANCED_PREPARED_FOOD_TARGET:
+        return None
+    return LocalOpportunity(
+        OpportunityKind.FOOD_PRODUCTION,
+        215,
+        f"prepared food reserve is {prepared}/{BALANCED_PREPARED_FOOD_TARGET}",
+        target_item="minecraft:bread",
+        assigned_role="balanced",
+    )
 
 
 def select_village_food_production_opportunity(
@@ -111,6 +140,38 @@ def run_village_food_production(
     return bool(cycle.success), str(cycle.detail), before, after
 
 
+def run_balanced_food_production(
+    client: Any,
+    state: Any,
+) -> tuple[bool, str, int, int]:
+    """Run one food cycle while retaining A1's required expedition reserve."""
+    from ..common.food_supply import run_food_cycle
+
+    def prepared_total() -> int:
+        return sum(count_item(client, item) for item in PREPARED_FOOD_ITEMS)
+
+    before = prepared_total()
+    cycle = run_food_cycle(
+        client,
+        state,
+        personal_food_reserve=BALANCED_PREPARED_FOOD_TARGET,
+    )
+    after = prepared_total()
+    return bool(cycle.success), str(cycle.detail), before, after
+
+
+def run_food_production(
+    client: Any,
+    state: Any,
+    runtime: Mapping[str, Any],
+    assigned_role: str,
+) -> tuple[bool, str, int, int]:
+    """Route balanced reserve work separately from a fleet banking cycle."""
+    if assigned_role == "balanced":
+        return run_balanced_food_production(client, state)
+    return run_village_food_production(client, state, runtime)
+
+
 def _food_level(client: Any) -> int:
     try:
         state = client.transport.dispatch("get_state", {})
@@ -184,12 +245,16 @@ def run_scheduled_food_recovery(
 
 
 __all__ = [
+    "BALANCED_PREPARED_FOOD_TARGET",
     "MIN_ROLE_FOOD",
     "cooldown_ready",
     "reachable_farm_location",
     "run_scheduled_food_recovery",
+    "run_balanced_food_production",
+    "run_food_production",
     "run_village_food_production",
     "select_food_recovery_opportunity",
+    "select_balanced_food_production_opportunity",
     "select_village_food_production_opportunity",
     "village_food_production_ready",
 ]

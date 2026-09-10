@@ -706,11 +706,12 @@ class AdaptiveScheduler:
             elif opportunity.kind is OpportunityKind.FOOD_PRODUCTION:
                 result = OpportunityResult(
                     opportunity,
-                    *food_opportunity.run_village_food_production(
-                        self.client, self.state, self._runtime()
+                    *food_opportunity.run_food_production(
+                        self.client, self.state, self._runtime(), opportunity.assigned_role
                     ),
                 )
-                self._runtime()["food_banked"] = result.after
+                if opportunity.assigned_role != FleetRole.BALANCED.value:
+                    self._runtime()["food_banked"] = result.after
             elif opportunity.kind is OpportunityKind.STORAGE_MAINTENANCE:
                 before_total = int(
                     self._runtime().get("quartermaster_items_moved", 0) or 0

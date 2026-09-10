@@ -81,7 +81,7 @@ def _count(inventory: Mapping[str, Any], item: str) -> int:
 
 def _position(value: Any) -> Optional[Tuple[int, int, int]]:
     if isinstance(value, Mapping):
-        value = value.get("origin", value.get("position"))
+        value = value.get("origin", value.get("position", value.get("location")))
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) >= 3:
         try:
             return tuple(int(value[i]) for i in range(3))
@@ -95,10 +95,24 @@ def _plots(state: Any) -> list[Tuple[int, int, int]]:
     worker = custom.get("food_worker", {}) if isinstance(custom, Mapping) else {}
     records = worker.get("farm_plots", []) if isinstance(worker, Mapping) else []
     found = [_position(record) for record in records if _position(record)]
-    # Earlier checkpoints only carried one wheat_farm origin.
-    legacy = _position(custom.get("wheat_farm")) if isinstance(custom, Mapping) else None
-    if legacy and legacy not in found:
-        found.append(legacy)
+    if not isinstance(custom, Mapping):
+        return found
+
+    # Earlier checkpoints used either a top-level farm_location or a
+    # structures.food_source record instead of food_worker.farm_plots. Import
+    # those locations into the worker rotation so the durable food cycle can
+    # actually revisit and verify them.
+    candidates = [custom.get("wheat_farm"), custom.get("farm_location")]
+    structures = custom.get("structures", {})
+    source = structures.get("food_source", {}) if isinstance(structures, Mapping) else {}
+    if isinstance(source, Mapping):
+        source_type = str(source.get("type", "")).lower()
+        if "crop" in source_type or "wheat" in source_type or source.get("plots"):
+            candidates.append(source)
+    for candidate in candidates:
+        plot = _position(candidate)
+        if plot and plot not in found:
+            found.append(plot)
     return found
 
 
