@@ -585,7 +585,7 @@ def acquire_emergency_food(
         prior_cursor = int(getattr(client, "_emergency_food_waypoint_cursor", 0))
     except (TypeError, ValueError):
         prior_cursor = 0
-    search_radius = max_exploration_distance * (2 ** min(prior_cursor // 16, 2))
+    search_radius = max_exploration_distance * (2 ** min(prior_cursor // 4, 2))
     stable_anchor = None
     if (
         return_to_exploration_center

@@ -50,13 +50,19 @@ def checkpointed_wheat_farm_origin(state: Any) -> Optional[tuple[int, int, int]]
 
     structures = custom.get("structures", {})
     source = structures.get("food_source", {}) if isinstance(structures, Mapping) else {}
+    retired = None
     if isinstance(source, Mapping):
         source_type = str(source.get("type", "")).lower()
         if "crop" in source_type or "wheat" in source_type or source.get("plots"):
-            candidates.append(source.get("location"))
+            if source.get("verified") is False:
+                retired = source.get("location")
+            else:
+                candidates.append(source.get("location"))
 
     for candidate in candidates:
         if not isinstance(candidate, (list, tuple)) or len(candidate) != 3:
+            continue
+        if retired is not None and list(candidate) == list(retired):
             continue
         try:
             return tuple(int(float(value)) for value in candidate)

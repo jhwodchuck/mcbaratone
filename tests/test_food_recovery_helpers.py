@@ -294,6 +294,24 @@ def test_legacy_crop_checkpoint_is_reused_without_becoming_an_animal_herd():
     assert calls == [("harvest", -426, 79, -20), ("eat",)]
 
 
+def test_retired_legacy_crop_checkpoint_is_not_retried_for_food_recovery():
+    state = SimpleNamespace(
+        custom_data={
+            "farm_location": [-426, 79, -20],
+            "structures": {
+                "food_source": {
+                    "type": "starter_crop_farm",
+                    "location": [-426, 79, -20],
+                    "verified": False,
+                    "failed_visits": 2,
+                }
+            },
+        }
+    )
+
+    assert checkpointed_wheat_farm_origin(state) is None
+
+
 def test_crop_landmark_is_not_reinterpreted_as_a_cow_herd():
     source = {
         "type": "starter_crop_farm",

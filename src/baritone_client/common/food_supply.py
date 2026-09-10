@@ -105,13 +105,17 @@ def _plots(state: Any) -> list[Tuple[int, int, int]]:
     candidates = [custom.get("wheat_farm"), custom.get("farm_location")]
     structures = custom.get("structures", {})
     source = structures.get("food_source", {}) if isinstance(structures, Mapping) else {}
+    retired = None
     if isinstance(source, Mapping):
         source_type = str(source.get("type", "")).lower()
         if "crop" in source_type or "wheat" in source_type or source.get("plots"):
-            candidates.append(source)
+            if source.get("verified") is False:
+                retired = _position(source)
+            else:
+                candidates.append(source)
     for candidate in candidates:
         plot = _position(candidate)
-        if plot and plot not in found:
+        if plot and plot != retired and plot not in found:
             found.append(plot)
     return found
 
