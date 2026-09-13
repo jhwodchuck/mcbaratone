@@ -214,7 +214,6 @@ The Python client connects to the bridge via TCP transport:
    - Upstream Baritone commit: `d93f1582`
    - Target: Minecraft 26.2; license: LGPL-3.0
    - SHA-256: `86d06fce44e8c2da1a46eb44fb7d934fe3712ce63738ecd5be5c68f03f71a9cf`
-   - `scripts/check_repository_hygiene.py` verifies its identity before builds
    - See [`libs/README.md`](libs/README.md) for provenance and update procedure
 
 ## Building
@@ -231,11 +230,11 @@ Open a terminal in the `bridge/` directory:
 ./gradlew --no-daemon --console=plain build
 ```
 
-The built JAR will be in `build/libs/baritone-api-bridge-1.0.31.jar`
+The built JAR will be in `build/libs/baritone-api-bridge-1.0.38.jar`.
 
 ## Installation
 
-1. Copy `baritone-api-bridge-1.0.31.jar` to your Minecraft `mods` folder
+1. Copy `baritone-api-bridge-1.0.38.jar` to your Minecraft `mods` folder
 2. Start Minecraft with Fabric loader
 3. Bridge automatically starts TCP server on port 5555
 

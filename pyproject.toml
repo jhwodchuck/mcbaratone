@@ -5,13 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "baritone-client"
 version = "0.1.0"
-description = "Python facade and optional HTTP client for controlling Baritone"
-authors = [{name = "mcbaratone contributors"}]
+description = "Safety-gated autonomous Minecraft agent with a Python controller and Java/Fabric bridge"
+authors = [{name = "Jason Harmon"}]
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
+    "License :: OSI Approved :: MIT License",
 ]
 dependencies = [
     "py4j>=0.10.9.9",

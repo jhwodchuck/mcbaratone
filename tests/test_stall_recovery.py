@@ -319,14 +319,11 @@ def test_default_rearm_cooldown_keeps_idle_time_bounded():
 
 
 def test_cooldown_stall_is_not_reported_as_terminal(monkeypatch, advancing_clock):
-    """scripts/monitor/autonomous_run.py treats the exact string "Automation
-    stalled: no runnable objective remains." as a terminal safety stop and
-    refuses to relaunch. rearm_any_abandoned_objectives is rate limited, so
-    during its cooldown it returns nothing even though the graph recovers on
-    the next pass -- printing the terminal string then permanently kills a bot
-    for a condition that self-heals. Live 2026-07-31: Bot18 and Bot19 were
-    both stopped with "objective graph has no runnable objective; manual
-    repair required"."""
+    """An external supervisor treats the exact terminal-stall string as a
+    safety stop and refuses to relaunch. rearm_any_abandoned_objectives is rate
+    limited, so during its cooldown it returns nothing even though the graph
+    recovers on the next pass; printing the terminal string then permanently
+    stops an agent for a condition that self-heals."""
     import io, contextlib
     from baritone_client.automator.automator import EndGameAutomator
 
