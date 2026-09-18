@@ -328,6 +328,16 @@ def _stock_seeds(client: Any, target: int) -> int:
         return 0
 
 
+#: Once the one-shot reset below has already fired for an anchor, keep
+#: reopening its frontier every this-many further exhausted misses instead
+#: of never again. Live A1: anchor (-413,78,-15) exhausted its single reset
+#: weeks into a run, then returned None on every one of 4000+ later calls
+#: over the following week -- the same transient setup failure (no bucket,
+#: no iron) can recur, and a resource that was scarce once can still be
+#: scarce the next time this exact frontier fills up.
+EXHAUSTED_FRONTIER_RETRY_STREAK = 20
+
+
 def _next_plot_candidate(
     anchor: Tuple[int, int, int],
     known: Sequence[Tuple[int, int, int]],
@@ -335,7 +345,7 @@ def _next_plot_candidate(
     distance: int,
     maximum_slots: int,
 ) -> Optional[Tuple[int, int, int]]:
-    """Choose a site, reopening one exhausted frontier per durable anchor."""
+    """Choose a site, periodically reopening an exhausted frontier."""
     rejected = [_position(site) for site in worker["failed_plot_sites"]]
     rejected = [site for site in rejected if site]
     cursor = int(worker.get("expansion_cursor", 0) or 0)
@@ -344,19 +354,21 @@ def _next_plot_candidate(
     )
     worker["expansion_cursor"] = cursor + 1
     anchor_key = list(anchor)
-    if (
-        candidate is None
-        and not known
-        and rejected
-        and worker.get("failed_site_reset_anchor") != anchor_key
-    ):
+    if candidate is None and not known and rejected:
         # Setup failures (notably a missing bucket) used to blacklist every
         # nearby coordinate. With no farm left, that made the bounded search
         # permanently return None even after the prerequisite was repaired.
-        worker["failed_plot_sites"] = []
-        worker["failed_site_reset_anchor"] = anchor_key
-        worker["expansion_cursor"] = 1
-        candidate = _candidate(anchor, known, [], distance, 0, maximum_slots)
+        streak = int(worker.get("exhausted_frontier_streak", 0) or 0) + 1
+        if (
+            worker.get("failed_site_reset_anchor") != anchor_key
+            or streak >= EXHAUSTED_FRONTIER_RETRY_STREAK
+        ):
+            worker["failed_plot_sites"] = []
+            worker["failed_site_reset_anchor"] = anchor_key
+            worker["expansion_cursor"] = 1
+            streak = 0
+            candidate = _candidate(anchor, known, [], distance, 0, maximum_slots)
+        worker["exhausted_frontier_streak"] = streak
     return candidate
 
 
