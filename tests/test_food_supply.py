@@ -305,6 +305,48 @@ def test_exhausted_empty_frontier_is_reopened_once_after_setup_repair():
     assert worker["failed_site_reset_anchor"] == list(anchor)
 
 
+def test_exhausted_frontier_reopens_again_after_the_one_shot_reset_is_spent():
+    """A second exhaustion at the same anchor must not deadlock forever.
+
+    Live A1: anchor (-413,78,-15) spent its one allotted reset weeks into a
+    run, then _next_plot_candidate returned None on every one of 4000+ later
+    calls over the following week -- the same transient setup failure (no
+    bucket, no iron) can recur, and the one-shot reset had nothing left to
+    give. This drives the same anchor through a second full exhaustion and
+    asserts the frontier reopens again instead of returning None forever.
+    """
+    anchor = (546, 79, -304)
+    rejected = [
+        [578, 79, -304],
+        [546, 79, -272],
+        [514, 79, -304],
+        [546, 79, -336],
+    ]
+    worker = {
+        "failed_plot_sites": list(rejected),
+        "expansion_cursor": 114,
+        # This anchor already spent its one-shot reset.
+        "failed_site_reset_anchor": list(anchor),
+    }
+
+    seen = []
+    for _ in range(food_supply.EXHAUSTED_FRONTIER_RETRY_STREAK):
+        candidate = food_supply._next_plot_candidate(anchor, [], worker, 32, 3)
+        seen.append(candidate)
+        if candidate is not None:
+            # A real candidate must count against the blacklist next time,
+            # same as the live worker does when establishment then fails.
+            worker["failed_plot_sites"].append(list(candidate))
+
+    assert seen[:-1] == [None] * (food_supply.EXHAUSTED_FRONTIER_RETRY_STREAK - 1)
+    assert seen[-1] == (578, 79, -304)
+    # The reset call itself cleared the blacklist; only this test's own
+    # post-loop bookkeeping (mirroring the live worker re-rejecting a site)
+    # put the just-returned candidate back.
+    assert worker["failed_plot_sites"] == [[578, 79, -304]]
+    assert worker["exhausted_frontier_streak"] == 0
+
+
 def test_first_checkpointed_plot_prefers_observed_natural_soil(monkeypatch):
     state = _state({"food_worker": {"farm_plots": []}})
     state.checkpoint_dir = "checkpoint"
