@@ -376,8 +376,11 @@ def test_first_checkpointed_plot_reuses_existing_irrigation(monkeypatch):
     state.checkpoint_dir = "checkpoint"
     client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
     monkeypatch.setattr(
+        food_supply, "find_nearby_block", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
         food_supply,
-        "find_nearby_block",
+        "find_water_source",
         lambda *_args, **_kwargs: (555, 72, -264),
     )
     monkeypatch.setattr(
@@ -599,3 +602,26 @@ def test_candidate_in_view_is_resolved_without_travel(monkeypatch):
     assert food_supply._establish_candidate(
         client, _state({"food_worker": {"farm_plots": []}}), (232, 78, -40), 5
     ) == (232, 78, -40)
+
+
+def test_first_plot_does_not_reuse_flowing_water_as_irrigation(monkeypatch):
+    # Flowing spill water is not irrigation the farm can keep: the center sits
+    # under it and ensure_farm_water refuses the site on every cycle.
+    state = _state({"food_worker": {"farm_plots": []}})
+    state.checkpoint_dir = "checkpoint"
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
+    lookups = []
+    monkeypatch.setattr(
+        food_supply, "find_nearby_block", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        food_supply,
+        "find_water_source",
+        lambda *_args, **_kwargs: lookups.append(_kwargs) or None,
+    )
+    monkeypatch.setattr(
+        food_supply, "find_natural_crop_center", lambda *_args: (None, False)
+    )
+
+    assert food_supply._establish_candidate(client, state, None, 5) is None
+    assert lookups == [{"radius": 20}]

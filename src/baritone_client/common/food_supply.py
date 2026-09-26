@@ -21,7 +21,7 @@ from .inventory import (
     get_inventory,
     resolve_storage_location,
 )
-from .navigation import find_nearby_block
+from .navigation import find_nearby_block, find_water_source
 from .farm_site_travel import (
     approach_candidate as _approach_candidate,
     horizontal_distance as _horizontal_distance,
@@ -397,7 +397,7 @@ def _establish_candidate(client: Any, state: Any, candidate, size: int):
         # irrigation instead of selecting fresh grass and spending another
         # bucket on every retry.
         try:
-            water = find_nearby_block(client, ["minecraft:water"], radius=20)
+            water = find_water_source(client, radius=20)
             if water is not None:
                 wx, wy, wz = (int(value) for value in water)
                 tillable = {
