@@ -404,7 +404,7 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
         ):
             print("  No bucket available/craftable to carry water to the farm.")
             return False
-        if not goto(client, source[0], source[1], source[2], timeout=120, tolerance=2):
+        if not goto(client, source[0], source[1], source[2], timeout=120, tolerance=3.5):
             print("  Could not reach a water source to fill a bucket.")
             return False
         if not select_item(client, "minecraft:bucket", allow_swap=True):
