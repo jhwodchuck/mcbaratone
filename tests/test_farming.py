@@ -907,3 +907,25 @@ def test_water_source_search_trusts_stateless_bridges():
     client = _water_client({(2, 64, 0): (2.0, None)})
 
     assert find_water_source(client) == (2, 64, 0)
+
+
+def test_bucket_fill_trip_stops_within_reach_of_the_source(monkeypatch):
+    # A source raised inside a spill cannot be stood in; requiring the feet
+    # within two blocks spent the whole 120s trip and never filled the bucket.
+    client, _calls, _ = _client()
+    monkeypatch.setattr(farming, "find_water_source", lambda *_a, **_k: (8, 65, 0))
+    monkeypatch.setattr(
+        farming,
+        "count_item",
+        lambda _c, item: 1 if item == "minecraft:bucket" else 0,
+    )
+    trips = []
+    monkeypatch.setattr(
+        farming,
+        "goto",
+        lambda _client, *target, **kwargs: trips.append((target, kwargs)) and False,
+    )
+
+    assert farming.ensure_farm_water(client, 0, 64, 0) is False
+    assert trips[0][0] == (8, 65, 0)
+    assert 3.0 <= trips[0][1]["tolerance"] <= 4.5
