@@ -22,6 +22,10 @@ from .inventory import (
     resolve_storage_location,
 )
 from .navigation import find_nearby_block
+from .farm_site_travel import (
+    approach_candidate as _approach_candidate,
+    horizontal_distance as _horizontal_distance,
+)
 
 
 WHEAT = "minecraft:wheat"
@@ -44,12 +48,6 @@ RETURN_HOME_TIMEOUT = 150
 #: Seed top-up runs every cycle, so it gets a short leash; partial stock is
 #: still progress and the next cycle tries again.
 SEED_STOCK_TIMEOUT = 45
-#: `get_view` only reports a small cube around the player, so a planned site
-#: can only be resolved to terrain once the worker is standing near it.
-CANDIDATE_VIEW_DISTANCE = 6.0
-#: Candidates sit within MAX_ANCHOR_RADIUS of base, so from base this is a
-#: short walk; a site that cannot be reached in this time is a poor site.
-CANDIDATE_TRAVEL_TIMEOUT = 60
 
 
 @dataclass(frozen=True)
@@ -378,45 +376,6 @@ def _next_plot_candidate(
     return candidate
 
 
-def _horizontal_distance(client: Any, target: Sequence[int]) -> float:
-    """Horizontal distance from the worker to a point, NaN when unknown."""
-    try:
-        snapshot = client.transport.dispatch("get_state", {})
-        position = snapshot.get("block_position", snapshot.get("position", {})) or {}
-        return hypot(
-            float(position["x"]) - float(target[0]),
-            float(position["z"]) - float(target[2]),
-        )
-    except Exception:
-        return float("nan")
-
-
-def _approach_candidate(client: Any, candidate: Sequence[int]) -> None:
-    """Walk to a planned site so its terrain is inside the observed view.
-
-    Siting used to resolve the candidate from wherever the worker stood. The
-    view is a few blocks around the player, so every site further away read
-    as "no tillable ground" and was blacklisted. A worker hundreds of blocks
-    from base rejected every site around it that way, then held progression
-    for weeks waiting on a farm it could never site.
-    """
-    separation = _horizontal_distance(client, candidate)
-    if separation != separation or separation <= CANDIDATE_VIEW_DISTANCE:
-        return
-    try:
-        from .navigation import goto_xz
-
-        goto_xz(
-            client,
-            int(candidate[0]),
-            int(candidate[2]),
-            timeout=CANDIDATE_TRAVEL_TIMEOUT,
-            tolerance=CANDIDATE_VIEW_DISTANCE - 2,
-        )
-    except Exception:
-        pass
-
-
 def _establish_candidate(client: Any, state: Any, candidate, size: int):
     """Resolve a planned X/Z coordinate to terrain and establish one plot."""
     surface = None
@@ -577,6 +536,36 @@ def _plot_distance(client: Any, plot: Sequence[int]) -> float:
         return float("nan")
 
 
+def _home_first(
+    client: Any,
+    state: Any,
+    worker: dict,
+    anchor: Optional[Tuple[int, int, int]],
+    known: Sequence[Tuple[int, int, int]],
+    seeds_gathered: int,
+) -> Optional[FoodCycleResult]:
+    """Walk a plotless worker home instead of siting from outside the base.
+
+    Every site is planned within MAX_ANCHOR_RADIUS of base. Siting from
+    further away cannot observe the ground and only blacklists good sites,
+    so come home first; the next cycle sites the plot.
+    """
+    if anchor is None or known:
+        return None
+    separation = _horizontal_distance(client, anchor)
+    if separation != separation or separation <= MAX_ANCHOR_RADIUS:
+        return None
+    went_home = _return_to_anchor(client, anchor)
+    _flush(state, client)
+    return _result(
+        worker,
+        bool(seeds_gathered),
+        f"farm siting needs the base, {separation:.0f} blocks away; "
+        + ("walked back to base" if went_home else "walked back toward base")
+        + (f", gathered {seeds_gathered} seeds" if seeds_gathered else ""),
+    )
+
+
 def run_food_cycle(
     client: Any,
     state: Any,
@@ -702,24 +691,9 @@ def run_food_cycle(
         # Stock up first; seeds keep, and a reserve makes every later attempt
         # cheaper.
         seeds_gathered = _stock_seeds(client, seed_reserve)
-        separation = (
-            _horizontal_distance(client, anchor)
-            if anchor is not None and not known
-            else float("nan")
-        )
-        if separation == separation and separation > MAX_ANCHOR_RADIUS:
-            # Every site is planned within MAX_ANCHOR_RADIUS of base. Siting
-            # from further away cannot observe the ground and only blacklists
-            # good sites, so come home first; the next cycle sites the plot.
-            went_home = _return_to_anchor(client, anchor)
-            _flush(state, client)
-            return _result(
-                worker,
-                bool(seeds_gathered),
-                f"farm siting needs the base, {separation:.0f} blocks away; "
-                + ("walked back to base" if went_home else "walked back toward base")
-                + (f", gathered {seeds_gathered} seeds" if seeds_gathered else ""),
-            )
+        home = _home_first(client, state, worker, anchor, known, seeds_gathered)
+        if home is not None:
+            return home
         if anchor is not None:
             candidate = _next_plot_candidate(
                 anchor,
