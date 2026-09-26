@@ -372,6 +372,11 @@ class StrategicState:
         self.data["survival_override"] = {
             "resume_phase": long_term_phase,
             "resume_objective": self.data.get("current_major_objective"),
+            # Resuming used to clear the blocker outright. Work gated on it
+            # (the prepared-food cycle) then never ran again, and the hold
+            # that work would lift kept the refresh that rewrites it from
+            # ever happening; the agent idled until a controller restart.
+            "resume_blocking_condition": self.data.get("blocking_condition"),
             "since": time.time(),
             "reason": str(reason),
         }
@@ -407,7 +412,7 @@ class StrategicState:
         self.data["survival_override"] = None
         self.data["active_phase"] = resumed
         self.data["current_major_objective"] = override.get("resume_objective")
-        self.data["blocking_condition"] = None
+        self.data["blocking_condition"] = override.get("resume_blocking_condition")
         emit_event(
             "strategic_phase_transition",
             previous=StrategicPhase.SURVIVE.name,

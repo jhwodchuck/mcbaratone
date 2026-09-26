@@ -70,6 +70,29 @@ def test_survival_override_preserves_long_term_progress_and_resumes():
     assert strategy.data["survival_override"] is None
 
 
+
+def test_survival_resume_restores_the_long_term_blocker():
+    state = _state({}, phase=Phase.NETHER_AND_BLAZE)
+    strategy = StrategicState(state)
+    strategy.data["blocking_condition"] = "6 blaze rods, prepared_food_32"
+
+    assert strategy.suspend_for_survival("player death requires recovery")
+    assert strategy.data["blocking_condition"] == "player death requires recovery"
+    assert not strategy.suspend_for_survival("health=5.0, food=6")
+
+    assert strategy.resume_from_survival()
+    assert strategy.data["blocking_condition"] == "6 blaze rods, prepared_food_32"
+
+
+def test_survival_resume_of_a_legacy_override_clears_the_blocker():
+    state = _state({}, phase=Phase.NETHER_AND_BLAZE)
+    strategy = StrategicState(state)
+    strategy.data["survival_override"] = {"resume_phase": "PROGRESS_TECHNOLOGY"}
+    strategy.data["blocking_condition"] = "player death requires recovery"
+
+    assert strategy.resume_from_survival()
+    assert strategy.data["blocking_condition"] is None
+
 def test_refresh_rebinds_after_checkpoint_load_replaces_custom_data():
     state = _state({})
     strategy = StrategicState(state)
