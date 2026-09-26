@@ -14,7 +14,7 @@ from typing import Optional, Tuple
 
 from .base import robust_place
 from .inventory import count_item, craft, select_item
-from .navigation import find_nearby_block, goto
+from .navigation import find_nearby_block, find_water_source, goto
 
 # powder_snow is not a floor: a player sinks in and freezes, and it holds
 # neither farmland nor a water center.
@@ -395,7 +395,7 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
             return False
 
     if count_item(client, "minecraft:water_bucket") < 1:
-        source = find_nearby_block(client, ["minecraft:water"], radius=48)
+        source = find_water_source(client, radius=48)
         if source is None:
             print("  No water source nearby to fill a bucket for the farm.")
             return False

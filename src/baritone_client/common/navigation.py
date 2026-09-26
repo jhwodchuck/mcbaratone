@@ -457,6 +457,40 @@ def find_nearby_block(
         return None
 
 
+def find_water_source(
+    client,
+    radius: int = 48,
+    max_checks: int = 64,
+) -> Optional[Tuple[int, int, int]]:
+    """Find the nearest water *source* block; buckets cannot fill from flow.
+
+    The nearest water is often flowing water spilled from a source, and a
+    bucket used on it fills nothing. Picking it every time left a farm worker
+    reporting "could not fill a water bucket" on every cycle while a real
+    source sat one block away.
+    """
+    try:
+        data = client.transport.dispatch("find_blocks", {
+            "blocks": ["minecraft:water"],
+            "radius": max(1, min(int(radius), 128)),
+            "limit": 4096,
+        })
+        found = sorted(
+            data.get("found", []),
+            key=lambda value: float(value.get("distance", float("inf"))),
+        )
+        for block in found[:max(1, int(max_checks))]:
+            position = (int(block["x"]), int(block["y"]), int(block["z"]))
+            state = client.transport.dispatch(
+                "get_block", {"x": position[0], "y": position[1], "z": position[2]}
+            ).get("state")
+            # Bridges that omit block state cannot tell flow from source.
+            if not isinstance(state, dict) or str(state.get("level", "0")) == "0":
+                return position
+        return None
+    except Exception:
+        return None
+
 def goto_block(
     client,
     block_types: list,

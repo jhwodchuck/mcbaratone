@@ -183,7 +183,7 @@ def test_ensure_farm_water_fills_bucket_first_when_needed(monkeypatch):
         return None
     client, calls, blocks = _client(blocks=blocks, dispatch_extra=extra)
 
-    monkeypatch.setattr(farming, "find_nearby_block", lambda *_a, **_k: (20, 60, 20))
+    monkeypatch.setattr(farming, "find_water_source", lambda *_a, **_k: (20, 60, 20))
     filled = {"n": 0}
     def count_item(_c, item):
         if item == "minecraft:bucket":
@@ -375,7 +375,7 @@ def test_relocate_wheat_farm_reuses_interrupted_build_water_source(monkeypatch):
 def test_ensure_farm_water_fails_with_no_source_and_no_bucket(monkeypatch):
     client, _calls, _ = _client()
     monkeypatch.setattr(farming, "count_item", lambda *_a: 0)
-    monkeypatch.setattr(farming, "find_nearby_block", lambda *_a, **_k: None)
+    monkeypatch.setattr(farming, "find_water_source", lambda *_a, **_k: None)
     assert farming.ensure_farm_water(client, 0, 64, 0) is False
 
 
@@ -857,3 +857,53 @@ def test_run_crop_opportunity_recenters_before_final_crop_check(monkeypatch):
     # Verify block_finder was called at least once at farm location
     farm_searches = [c for c in block_finder_calls if abs(c[0]) <= 12 and abs(c[2]) <= 12]
     assert len(farm_searches) >= 1, f"block_finder never searched near farm: {block_finder_calls}"
+
+
+def _water_client(blocks):
+    def dispatch(route, payload):
+        if route == "find_blocks":
+            return {
+                "found": [
+                    {"x": x, "y": y, "z": z, "distance": distance}
+                    for (x, y, z), (distance, _state) in blocks.items()
+                ]
+            }
+        if route == "get_block":
+            _distance, state = blocks[(payload["x"], payload["y"], payload["z"])]
+            data = {"id": "minecraft:water"}
+            if state is not None:
+                data["state"] = state
+            return data
+        raise AssertionError(route)
+
+    return SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+
+
+def test_water_source_search_skips_nearer_flowing_water():
+    from baritone_client.common.navigation import find_water_source
+
+    client = _water_client(
+        {
+            (1, 64, 0): (1.0, {"level": "1"}),
+            (5, 64, 0): (5.0, {"level": "0"}),
+            (3, 64, 0): (3.0, {"level": "3"}),
+        }
+    )
+
+    assert find_water_source(client) == (5, 64, 0)
+
+
+def test_water_source_search_rejects_flow_only_water():
+    from baritone_client.common.navigation import find_water_source
+
+    client = _water_client({(1, 64, 0): (1.0, {"level": "2"})})
+
+    assert find_water_source(client) is None
+
+
+def test_water_source_search_trusts_stateless_bridges():
+    from baritone_client.common.navigation import find_water_source
+
+    client = _water_client({(2, 64, 0): (2.0, None)})
+
+    assert find_water_source(client) == (2, 64, 0)
