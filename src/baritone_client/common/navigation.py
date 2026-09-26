@@ -195,13 +195,17 @@ def goto(
     on_tick: Optional[Callable[[], None]] = None,
     on_defense: Optional[DefenseCallback] = None,
     defense_check_interval: float = 0.5,
+    radius: int = 0,
 ) -> bool:
-    """Navigate to exact coordinates under fresh-state safety supervision."""
+    """Navigate to exact coordinates under fresh-state safety supervision.
+
+    ``radius`` > 0 accepts any stand within that many blocks (``GoalNear``).
+    """
     from .navigation_supervision import goto as supervised_goto
     return supervised_goto(
         client, x, y, z, timeout=timeout, check_interval=check_interval,
         tolerance=tolerance, on_tick=on_tick, on_defense=on_defense,
-        defense_check_interval=defense_check_interval,
+        defense_check_interval=defense_check_interval, radius=radius,
     )
 
 

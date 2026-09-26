@@ -352,3 +352,26 @@ def test_malformed_initial_state_does_not_start_a_goal(monkeypatch):
     )
     assert "goto" not in transport.calls
     assert "cancel" not in transport.calls
+
+
+@pytest.mark.parametrize(("radius", "expected"), [(0, None), (3, 3)])
+def test_goto_requests_a_near_goal_only_when_a_radius_is_given(
+    monkeypatch, radius, expected
+):
+    _prepare(monkeypatch)
+    outcomes = iter([_state(), {"accepted": True}, _state(9.0)])
+    goals = []
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "cancel":
+                return {}
+            if route == "goto":
+                goals.append(dict(payload))
+            return next(outcomes)
+
+    client = SimpleNamespace(transport=Transport())
+    assert navigation.goto(
+        client, 10, 64, 0, tolerance=1.5, radius=radius, on_defense=lambda: False
+    )
+    assert goals == [{"x": 10, "y": 64, "z": 0, **({"radius": expected} if expected else {})}]
