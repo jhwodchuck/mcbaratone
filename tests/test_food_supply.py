@@ -486,3 +486,116 @@ def test_missing_live_state_fails_closed():
     )
 
     assert not food_supply._survival_ready(client)
+
+
+def _positioned_client(position):
+    def dispatch(route, _params):
+        assert route == "get_state"
+        return {"block_position": dict(position)}
+
+    return SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+
+
+def test_far_worker_walks_home_instead_of_blacklisting_unseen_sites(monkeypatch):
+    # Every site was judged from hundreds of blocks away, read as empty
+    # ground, and was blacklisted.
+    _inventory(monkeypatch, {"minecraft:wheat_seeds": 9})
+    monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(food_supply, "_stock_seeds", lambda *_a, **_k: 0)
+    monkeypatch.setattr(
+        food_supply,
+        "_establish_candidate",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("must not site a plot from far outside the base")
+        ),
+    )
+    returned = []
+    monkeypatch.setattr(
+        food_supply,
+        "_return_to_anchor",
+        lambda _client, anchor: returned.append(anchor) or False,
+    )
+    state = _state({"base_location": [200, 78, -40], "food_worker": {}})
+
+    result = food_supply.run_food_cycle(
+        _positioned_client({"x": 600, "y": 120, "z": 30}), state
+    )
+
+    assert not result.success
+    assert "needs the base" in result.detail
+    assert returned == [(200, 78, -40)]
+    worker = state.custom_data["food_worker"]
+    assert worker["failed_plot_sites"] == []
+    assert int(worker.get("expansion_cursor", 0) or 0) == 0
+
+
+def test_worker_near_base_still_sites_a_plot(monkeypatch):
+    _inventory(monkeypatch, {"minecraft:wheat_seeds": 9})
+    monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(food_supply, "_stock_seeds", lambda *_a, **_k: 0)
+    monkeypatch.setattr(food_supply, "_approach_candidate", lambda *_a: None)
+    monkeypatch.setattr(
+        food_supply,
+        "_return_to_anchor",
+        lambda *_a: (_ for _ in ()).throw(AssertionError("already home")),
+    )
+    monkeypatch.setattr(
+        food_supply,
+        "establish_wheat_farm",
+        lambda _client, x, y, z, **_kwargs: (x, y, z),
+    )
+    monkeypatch.setattr(food_supply, "resolve_storage_location", lambda *_a, **_k: None)
+    state = _state({"base_location": [200, 78, -40], "food_worker": {}})
+
+    result = food_supply.run_food_cycle(
+        _positioned_client({"x": 193, "y": 78, "z": -35}), state
+    )
+
+    assert result.success and result.plots == 1
+
+
+def test_candidate_is_approached_before_its_terrain_is_resolved(monkeypatch):
+    events = []
+    client = _positioned_client({"x": 200, "y": 78, "z": -40})
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.goto_xz",
+        lambda _client, x, z, **_kwargs: events.append(("goto", x, z)) or True,
+    )
+
+    def surface(_client, x, y, z):
+        events.append(("surface", x, z))
+        return (x, y, z)
+
+    monkeypatch.setattr(food_supply, "find_farm_surface_near", surface)
+    monkeypatch.setattr(
+        food_supply,
+        "establish_wheat_farm",
+        lambda _client, *position, **_kwargs: position,
+    )
+
+    placed = food_supply._establish_candidate(
+        client, _state({"food_worker": {"farm_plots": []}}), (232, 78, -40), 5
+    )
+
+    assert placed == (232, 78, -40)
+    assert events == [("goto", 232, -40), ("surface", 232, -40)]
+
+
+def test_candidate_in_view_is_resolved_without_travel(monkeypatch):
+    client = _positioned_client({"x": 230, "y": 78, "z": -39})
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.goto_xz",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no travel")),
+    )
+    monkeypatch.setattr(
+        food_supply, "find_farm_surface_near", lambda _c, x, y, z: (x, y, z)
+    )
+    monkeypatch.setattr(
+        food_supply,
+        "establish_wheat_farm",
+        lambda _client, *position, **_kwargs: position,
+    )
+
+    assert food_supply._establish_candidate(
+        client, _state({"food_worker": {"farm_plots": []}}), (232, 78, -40), 5
+    ) == (232, 78, -40)
