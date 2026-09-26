@@ -929,3 +929,6 @@ def test_bucket_fill_trip_stops_within_reach_of_the_source(monkeypatch):
     assert farming.ensure_farm_water(client, 0, 64, 0) is False
     assert trips[0][0] == (8, 65, 0)
     assert 3.0 <= trips[0][1]["tolerance"] <= 4.5
+    # The player cannot occupy the source itself; Baritone cancels an exact
+    # goal there at once, so ask for any stand near it.
+    assert trips[0][1]["radius"] >= 1
