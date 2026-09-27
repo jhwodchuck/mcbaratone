@@ -361,3 +361,81 @@ def test_bed_step_movement_is_marked_as_recovery_navigation(home, monkeypatch):
 
     assert home_respawn.secure_home_respawn(client, _state(), now=0.0)
     assert depths and all(depth == 1 for depth in depths)
+
+
+def _hunt_setup(home, monkeypatch, *, health=20.0, food=20, world_time=6000, sheep=True):
+    client = _Client()
+    home.world["client"] = client
+    home.stock["minecraft:string"] = 0
+    base = client.dispatch
+
+    def dispatch(route, payload):
+        data = base(route, payload)
+        if route == "get_state":
+            data.update(health=health, food_level=food, world_time=world_time)
+        return data
+
+    client.transport.dispatch = dispatch
+    hunts = []
+
+    def hunt(_client, **kwargs):
+        hunts.append(kwargs)
+        if sheep:
+            home.items["minecraft:white_wool"] = home.items.get("minecraft:white_wool", 0) + 1
+        return SimpleNamespace(success=sheep)
+
+    monkeypatch.setattr("baritone_client.common.combat.hunt_mobs", hunt)
+    return client, hunts
+
+
+def test_sheep_hunt_supplies_the_last_wool_and_returns_home(home, monkeypatch):
+    client, hunts = _hunt_setup(home, monkeypatch)
+    state = _state()
+
+    assert home_respawn.secure_home_respawn(client, state, now=0.0)
+    assert len(hunts) == 1
+    hunt = hunts[0]
+    assert hunt["mob_types"] == ["sheep"]
+    assert hunt["required_loot"] == {"minecraft:white_wool": 1}
+    assert hunt["abort_on_other_hostiles"] is True
+    assert hunt["max_distance_from_origin"] == home_respawn.SHEEP_HUNT_RINGS[0]
+    assert hunt["max_kills"] == 1 + home_respawn.SHEEP_HUNT_SPARE_KILLS
+    assert tuple(BASE) in home.trips  # walked home afterwards
+    record = state.custom_data[home_respawn.SHEEP_HUNT_KEY]
+    assert record["failures"] == 0 and record["last_attempt"] > 0
+    assert state.custom_data["home_respawn"]["bed"] == [204, 71, -37]
+
+
+@pytest.mark.parametrize(
+    ("health", "food", "world_time"),
+    [(15.0, 20, 6000), (20.0, 16, 6000), (20.0, 20, 12500)],
+)
+def test_sheep_hunt_needs_strength_food_and_daylight(home, monkeypatch, health, food, world_time):
+    client, hunts = _hunt_setup(
+        home, monkeypatch, health=health, food=food, world_time=world_time
+    )
+
+    assert not home_respawn.secure_home_respawn(client, _state(), now=0.0)
+    assert hunts == []
+
+
+def test_failed_hunts_cool_down_then_widen(home, monkeypatch):
+    client, hunts = _hunt_setup(home, monkeypatch, sheep=False)
+    state = _state()
+    clock = {"t": 10_000.0}
+    monkeypatch.setattr(home_respawn.time, "time", lambda: clock["t"])
+
+    for step in range(4):
+        client._home_respawn_last = None
+        home_respawn.secure_home_respawn(client, state, now=float(step))
+        client._home_respawn_last = None
+        home_respawn.secure_home_respawn(client, state, now=float(step) + 0.5)  # cooldown
+        clock["t"] += home_respawn.SHEEP_HUNT_INTERVAL
+
+    assert len(hunts) == 4
+    radii = [hunt["max_distance_from_origin"] for hunt in hunts]
+    assert radii[:3] == [home_respawn.SHEEP_HUNT_RINGS[0]] * 3
+    assert radii[3] == home_respawn.SHEEP_HUNT_RINGS[1]
+    centers = {hunt["exploration_center"] for hunt in hunts}
+    assert len(centers) == 4
+    assert state.custom_data[home_respawn.SHEEP_HUNT_KEY]["failures"] == 4
