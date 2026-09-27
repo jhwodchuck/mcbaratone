@@ -22,6 +22,8 @@ HOME_RESPAWN_KEY = "home_respawn"
 HOME_RADIUS = 32.0
 #: Storage trips for bed materials stay inside the base.
 HOME_STORAGE_RADIUS = 48.0
+#: When home storage cannot finish a bed, ordinary storage trips reach this far.
+FAR_STORAGE_RADIUS = 160.0
 #: Containers this close to the starter-house origin count as inside it.
 HOUSE_RADIUS = 8.0
 #: The survival loop calls this every few seconds.
@@ -162,6 +164,28 @@ def _withdraw_from_home(client: Any, state: Any, anchor, item: str, wanted: int)
             print(f"HOME RESPAWN: container at {chest} failed ({exc}); trying the next")
 
 
+def _missing_wool(client: Any) -> int:
+    from .inventory import count_item
+
+    return max(0, 3 - count_item(client, _WHITE_WOOL))
+
+
+def _craft_wool_from_string(client: Any) -> None:
+    from . import harness_ops
+    from .inventory import count_item
+
+    crafts = min(_missing_wool(client), count_item(client, _STRING) // 4)
+    if crafts <= 0 or not harness_ops.ensure_crafting_table_open(client):
+        return
+    harness_ops.craft_recipe_manual(
+        client,
+        _WHITE_WOOL,
+        [(_STRING, 1), (_STRING, 2), (_STRING, 4), (_STRING, 5)],
+        crafts=crafts,
+    )
+    client.transport.dispatch("close_screen", {})
+
+
 def _obtain_bed(client: Any, state: Any, anchor) -> Optional[str]:
     """Carry a bed, crafting it from home wool or string when needed."""
     from . import harness_ops
@@ -176,22 +200,24 @@ def _obtain_bed(client: Any, state: Any, anchor) -> Optional[str]:
         return bed
     # String first: it has no other use here, and it usually sits in the
     # house's own supply chest beside the crafting table.
-    missing_wool = max(0, 3 - count_item(client, _WHITE_WOOL))
-    if missing_wool:
-        _withdraw_from_home(client, state, anchor, _STRING, 4 * missing_wool)
-        crafts = min(missing_wool, count_item(client, _STRING) // 4)
-        if crafts > 0 and harness_ops.ensure_crafting_table_open(client):
-            harness_ops.craft_recipe_manual(
-                client,
-                _WHITE_WOOL,
-                [(_STRING, 1), (_STRING, 2), (_STRING, 4), (_STRING, 5)],
-                crafts=crafts,
-            )
-            client.transport.dispatch("close_screen", {})
-    if count_item(client, _WHITE_WOOL) < 3:
-        _withdraw_from_home(client, state, anchor, _WHITE_WOOL, 3)
-    if count_item(client, _WHITE_WOOL) < 3:
-        print("HOME RESPAWN: home storage cannot supply 3 white wool (or string for it)")
+    _withdraw_from_home(client, state, anchor, _STRING, 4 * _missing_wool(client))
+    _craft_wool_from_string(client)
+    _withdraw_from_home(client, state, anchor, _WHITE_WOOL, 3)
+    if _missing_wool(client):
+        # Home cannot finish the bed. Ordinary storage trips reach further;
+        # the storage layer itself refuses them while survival is unsafe.
+        from .inventory import withdraw_required_from_catalog
+
+        far = {"state": state, "max_travel_distance": FAR_STORAGE_RADIUS}
+        withdraw_required_from_catalog(client, {_STRING: 4 * _missing_wool(client)}, **far)
+        _craft_wool_from_string(client)
+        if _missing_wool(client):
+            withdraw_required_from_catalog(client, {_WHITE_WOOL: 3}, **far)
+    if _missing_wool(client):
+        print(
+            f"HOME RESPAWN: storage cannot supply {_missing_wool(client)} more "
+            "white wool (or string for it)"
+        )
         return None
     if harness_ops.count_any_planks(client) < 3:
         print("HOME RESPAWN: need 3 planks for a bed")
