@@ -264,3 +264,24 @@ def test_farm_tending_failure_falls_through_to_the_food_search(monkeypatch):
 
     assert objective_survival.recover_survival_before_objective(client, _state())
     assert order == ["search"]
+
+
+def test_farm_movement_is_marked_as_recovery_navigation(world, monkeypatch):
+    # At critical health the defense loop cancels ordinary navigation every
+    # tick; only movement marked as recovery may proceed with no threat near.
+    world.items = {"minecraft:wheat": 2}
+    world.crops = {(98, 100): {"id": "minecraft:wheat", "state": {"age": "7"}}}
+    depths = []
+
+    def harvest(client, *_a, **_k):
+        depths.append(getattr(client, "_safe_recovery_navigation_depth", 0))
+        return False
+
+    monkeypatch.setattr("baritone_client.common.farming.harvest_wheat_farm", harvest)
+    monkeypatch.setattr(
+        "baritone_client.common.farming._till_and_plant_tile", lambda *_a: False
+    )
+
+    survival_farm.tend_local_farm_for_food(world, _state(), now=0.0)
+    assert depths == [1]
+    assert getattr(world, "_safe_recovery_navigation_depth", 0) == 0

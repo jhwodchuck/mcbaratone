@@ -345,3 +345,19 @@ def test_wider_storage_waits_until_travel_is_safe(home):
     assert not home_respawn.secure_home_respawn(client, _state(), now=0.0)
     assert not home.trips
     assert home.far["minecraft:string"] == 6
+
+
+def test_bed_step_movement_is_marked_as_recovery_navigation(home, monkeypatch):
+    client = _Client()
+    home.world["client"] = client
+    from baritone_client.common import harness_ops
+
+    depths = []
+    monkeypatch.setattr(
+        harness_ops,
+        "move_near",
+        lambda c, *_a, **_k: depths.append(getattr(c, "_safe_recovery_navigation_depth", 0)) or True,
+    )
+
+    assert home_respawn.secure_home_respawn(client, _state(), now=0.0)
+    assert depths and all(depth == 1 for depth in depths)

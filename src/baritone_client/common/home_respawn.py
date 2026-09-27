@@ -17,6 +17,8 @@ import time
 from math import hypot
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
+from .navigation import allow_recovery_navigation
+
 HOME_RESPAWN_KEY = "home_respawn"
 #: Only work on the respawn point while actually at home.
 HOME_RADIUS = 32.0
@@ -341,6 +343,7 @@ def _use_bed(client: Any, bed) -> bool:
     return confirmed
 
 
+@allow_recovery_navigation
 def secure_home_respawn(client: Any, state: Any, *, now: Optional[float] = None) -> bool:
     """Ensure a verified home bed is the respawn point; True once it is."""
     from .food_supply import _base_anchor
