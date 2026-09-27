@@ -164,20 +164,32 @@ def run_balanced_food_production(
     client: Any,
     state: Any,
 ) -> tuple[bool, str, int, int]:
-    """Run one food cycle while retaining A1's required expedition reserve."""
+    """Run one food cycle while retaining A1's required expedition reserve.
+
+    A nearby herd refills the reserve far faster than wheat, so a bounded
+    hunt-and-cook batch runs first; the wheat cycle still follows.
+    """
     from ..common.food_supply import run_food_cycle
+    from ..common.livestock_food import run_livestock_food_cycle
 
     def prepared_total() -> int:
         return sum(count_item(client, item) for item in PREPARED_FOOD_ITEMS)
 
     before = prepared_total()
+    livestock = run_livestock_food_cycle(
+        client,
+        state,
+        prepared_now=before,
+        target=BALANCED_PREPARED_FOOD_TARGET,
+    )
     cycle = run_food_cycle(
         client,
         state,
         personal_food_reserve=BALANCED_PREPARED_FOOD_TARGET,
     )
     after = prepared_total()
-    return bool(cycle.success), str(cycle.detail), before, after
+    detail = f"{livestock.detail}; {cycle.detail}"
+    return bool(livestock.success or cycle.success), detail, before, after
 
 
 def run_food_production(
