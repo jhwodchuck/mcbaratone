@@ -2,6 +2,7 @@
 
 from typing import Any, Mapping
 
+from ..common.survival_farm import tend_local_farm_for_food
 from ..common.tasks import PlayerDeathDetected
 from .phase_executor import (
     _acquire_checkpointed_emergency_food,
@@ -61,6 +62,12 @@ def recover_survival_before_objective(client, state, strategy=None) -> bool:
         if _has_carried_emergency_bread_materials(client):
             print("RECOVERY: using carried wheat before any storage navigation")
             _acquire_checkpointed_emergency_food(client, state)
+            snapshot = client.transport.dispatch("get_state", {})
+            if _survival_admitted(snapshot, strategy):
+                return True
+        # A farm beside the player is the one food source that needs neither
+        # health nor exploration; try it before the blind search refuses.
+        if tend_local_farm_for_food(client, state):
             snapshot = client.transport.dispatch("get_state", {})
             if _survival_admitted(snapshot, strategy):
                 return True
