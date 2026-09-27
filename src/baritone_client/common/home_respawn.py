@@ -283,8 +283,9 @@ def _hunt_sheep_for_wool(client: Any, state: Any, anchor) -> None:
         f"HOME RESPAWN: hunting sheep for {wanted} white wool within {ring:.0f} "
         f"blocks, searching toward {center}"
     )
+    result = None
     try:
-        hunt_mobs(
+        result = hunt_mobs(
             client,
             mob_types=["sheep"],
             required_loot={_WHITE_WOOL: wanted},
@@ -303,10 +304,17 @@ def _hunt_sheep_for_wool(client: Any, state: Any, anchor) -> None:
         except Exception:
             pass
         gained = _missing_wool(client) < before
-        record["failures"] = 0 if gained else failures + 1
+        reason = str(getattr(result, "reason", "") or "no result")
+        # A hostile or the daylight boundary cut the search short; that says
+        # nothing about whether sheep live here, so it must not widen the ring.
+        interrupted = reason.startswith("Hostile") or "Daylight" in reason or "Night" in reason
+        if gained:
+            record["failures"] = 0
+        elif not interrupted:
+            record["failures"] = failures + 1
         print(
             "HOME RESPAWN: sheep hunt "
-            + ("gained wool" if gained else "found no white wool")
+            + ("gained wool" if gained else f"found no white wool ({reason})")
             + "; returning home"
         )
         goto(client, int(anchor[0]), int(anchor[1]), int(anchor[2]),
