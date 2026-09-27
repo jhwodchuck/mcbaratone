@@ -67,7 +67,14 @@ def recover_survival_before_objective(client, state, strategy=None) -> bool:
                 return True
         # A farm beside the player is the one food source that needs neither
         # health nor exploration; try it before the blind search refuses.
-        if tend_local_farm_for_food(client, state):
+        try:
+            tended = tend_local_farm_for_food(client, state)
+        except PlayerDeathDetected:
+            raise
+        except Exception as exc:
+            print(f"RECOVERY: local farm tending failed ({exc}); searching instead")
+            tended = False
+        if tended:
             snapshot = client.transport.dispatch("get_state", {})
             if _survival_admitted(snapshot, strategy):
                 return True

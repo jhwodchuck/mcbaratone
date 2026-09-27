@@ -196,3 +196,71 @@ def test_survival_gate_tends_the_farm_before_the_blind_food_search(monkeypatch):
 
     assert objective_survival.recover_survival_before_objective(client, _state())
     assert order == ["farm"]
+
+
+def test_each_tile_is_planted_from_beside_it_and_refusals_do_not_abort(world, monkeypatch):
+    world.items = {"minecraft:wheat_seeds": 3}
+    monkeypatch.setattr(
+        "baritone_client.common.farming.harvest_wheat_farm",
+        lambda *_a, **_k: pytest.fail("nothing is mature"),
+    )
+    stands = []
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.goto",
+        lambda _client, x, y, z, **kwargs: stands.append(((x, y, z), kwargs.get("radius"))) or True,
+    )
+    attempts = []
+
+    def plant(_client, x, y, z):
+        attempts.append((x, y, z))
+        if len(attempts) == 1:
+            raise RuntimeError("Target is not visible on a real block ray")
+        world.items["minecraft:wheat_seeds"] -= 1
+        return True
+
+    monkeypatch.setattr("baritone_client.common.farming._till_and_plant_tile", plant)
+
+    assert not survival_farm.tend_local_farm_for_food(world, _state(), now=0.0)
+    assert len(attempts) == 4
+    assert [stand for stand, _radius in stands] == [(x, y + 1, z) for x, y, z in attempts]
+    assert all(radius == 1 for _stand, radius in stands)
+
+
+def test_a_death_while_tending_is_not_swallowed(world, monkeypatch):
+    from baritone_client.common.tasks import PlayerDeathDetected
+
+    world.items = {"minecraft:wheat_seeds": 3}
+
+    def die(*_a, **_k):
+        raise PlayerDeathDetected("died")
+
+    monkeypatch.setattr("baritone_client.common.farming._till_and_plant_tile", die)
+
+    with pytest.raises(PlayerDeathDetected):
+        survival_farm.tend_local_farm_for_food(world, _state(), now=0.0)
+
+
+def test_farm_tending_failure_falls_through_to_the_food_search(monkeypatch):
+    live = {"health": 6.8, "food_level": 15, "is_dead": False}
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda _route, _payload: dict(live))
+    )
+    order = []
+    monkeypatch.setattr(
+        objective_survival, "_has_carried_emergency_bread_materials", lambda _c: False
+    )
+    monkeypatch.setattr(
+        objective_survival,
+        "tend_local_farm_for_food",
+        lambda *_a: (_ for _ in ()).throw(RuntimeError("interaction refused")),
+    )
+
+    def search(*_args):
+        order.append("search")
+        live.update(health=12.0, food_level=20)
+        return True
+
+    monkeypatch.setattr(objective_survival, "_attempt_survival_recovery_food", search)
+
+    assert objective_survival.recover_survival_before_objective(client, _state())
+    assert order == ["search"]

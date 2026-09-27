@@ -84,6 +84,7 @@ def tend_local_farm_for_food(
     from .farming import _block_data, _till_and_plant_tile, harvest_wheat_farm
     from .inventory import count_item
     from .navigation import goto
+    from .tasks import PlayerDeathDetected
 
     current = time.monotonic() if now is None else float(now)
     last = getattr(client, "_survival_farm_last", None)
@@ -124,17 +125,28 @@ def tend_local_farm_for_food(
         harvest_wheat_farm(client, cx, cy, cz, range_=_HALF + 1)
     harvested = max(0, count_item(client, "minecraft:wheat") - wheat_before)
 
-    planted = 0
+    planted, refused = 0, 0
     for tile, data in crops.items():
         if count_item(client, "minecraft:wheat_seeds") < 1:
             break
         if "wheat" in str(data.get("id", "")):
             continue
-        if _till_and_plant_tile(client, *tile):
-            planted += 1
+        # The bridge only acts on a block the eye-to-center ray actually hits.
+        # From the plot's water hole the eye sits a block low and that ray
+        # clips the nearer tile, so plant each tile from a stand beside it.
+        # One refused tile must not abort the rest of survival recovery.
+        try:
+            goto(client, tile[0], cy + 1, tile[2], timeout=15, tolerance=1.5, radius=1)
+            if _till_and_plant_tile(client, *tile):
+                planted += 1
+        except PlayerDeathDetected:
+            raise
+        except Exception:
+            refused += 1
     print(
         f"RECOVERY: tended local farm at {(cx, cy, cz)}: "
         f"harvested {harvested} wheat, planted {planted} tile(s)"
+        + (f", {refused} refused" if refused else "")
     )
     if _bake_and_eat(client):
         print("RECOVERY: ate bread baked from farm wheat")
