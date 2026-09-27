@@ -1326,3 +1326,65 @@ def test_bed_craft_returns_leftover_wool_to_its_slot(monkeypatch):
         (11, "PICKUP", 0), (1, "PICKUP", 1), (2, "PICKUP", 1), (3, "PICKUP", 1),
         (11, "PICKUP", 0),
     ]
+
+
+def _furnace_clicks(monkeypatch, furnace_contents):
+    base = [dict(item) if item else {} for item in furnace_contents]
+    player = [
+        {"id": "minecraft:beef", "count": 4},
+        {"id": "minecraft:oak_planks", "count": 3},
+    ]
+
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_screen":
+                return {"slots": base + player}
+            return {}
+
+    class Context:
+        def __init__(self):
+            self.client = type("Client", (), {"transport": Transport()})()
+            self.cooked = 0
+
+        def count_item(self, item_id):
+            return self.cooked if item_id == "minecraft:cooked_beef" else 0
+
+        def log_event(self, _event):
+            return None
+
+    ctx = Context()
+    clicks = []
+    monkeypatch.setattr(inventory_ops, "block_id_at", lambda *_a: "minecraft:furnace")
+    monkeypatch.setattr(inventory_ops, "do_open_container", lambda *_a, **_k: True)
+    monkeypatch.setattr(inventory_ops, "do_close_container", lambda *_a: None)
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _s: None)
+
+    def click(_ctx, slot, action, _button=0):
+        clicks.append((slot, action))
+        if len([c for c in clicks if c[0] >= 3]) == 2:
+            ctx.cooked = 4  # loading done; cooking finishes
+
+    monkeypatch.setattr(inventory_ops, "safe_inventory_click", click)
+    assert inventory_ops.smelt_in_furnace(
+        ctx, (1, 2, 3), "minecraft:beef", "minecraft:oak_planks", "minecraft:cooked_beef", 4
+    )
+    return clicks
+
+
+def test_smelt_clears_stale_furnace_input_and_output_before_loading(monkeypatch):
+    clicks = _furnace_clicks(
+        monkeypatch,
+        [
+            {"id": "minecraft:chicken", "count": 2},
+            {"id": "minecraft:oak_planks", "count": 1},
+            {"id": "minecraft:cooked_chicken", "count": 3},
+        ],
+    )
+    # Foreign input and finished output leave first; matching fuel stays.
+    assert clicks[:2] == [(0, "QUICK_MOVE"), (2, "QUICK_MOVE")]
+    assert clicks[2:4] == [(4, "QUICK_MOVE"), (3, "QUICK_MOVE")]
+
+
+def test_smelt_with_a_clean_furnace_makes_no_clearing_clicks(monkeypatch):
+    clicks = _furnace_clicks(monkeypatch, [None, None, None])
+    assert clicks[:2] == [(4, "QUICK_MOVE"), (3, "QUICK_MOVE")]

@@ -819,6 +819,26 @@ def smelt_in_furnace(ctx, furnace_pos: Tuple[int, int, int], input_id: str, fuel
     screen = ctx.client.transport.dispatch("get_screen", {})
     slots = get_inv_slots(screen.get("data", screen))
 
+    # An interrupted earlier smelt can leave a different item in the input or
+    # fuel slot, or finished output. Shift-clicking the new input then moves
+    # nothing, which verified effects reject. Clear what does not belong.
+    cleared = False
+    for furnace_slot, belongs in ((0, input_id), (1, fuel_id), (2, None)):
+        item = slots[furnace_slot] if len(slots) > furnace_slot else None
+        item_id = (item or {}).get("id")
+        if (
+            item
+            and item_id not in (None, "minecraft:air")
+            and int(item.get("count", 0) or 0) > 0
+            and item_id != belongs
+        ):
+            safe_inventory_click(ctx, furnace_slot, "QUICK_MOVE")
+            time.sleep(0.2)
+            cleared = True
+    if cleared:
+        screen = ctx.client.transport.dispatch("get_screen", {})
+        slots = get_inv_slots(screen.get("data", screen))
+
     input_slot_idx = None
     fuel_slot_idx = None
 
