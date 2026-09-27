@@ -157,15 +157,14 @@ def test_bed_is_crafted_from_home_wool_and_string_placed_used_and_recorded(home)
     # A wounded player may only open storage within reach: walk beside each
     # home chest first, then withdraw from there. Distant chests are ignored.
     assert all(call[2] == 6.0 and call[3] is True for call in withdrawals)
-    assert [call[1] for call in withdrawals] == [
-        {"minecraft:white_wool": 3},
-        {"minecraft:string": 4},
-    ]
+    # String from the house supply chest covers all three wool, so the chest
+    # by the farm is never opened; the distant chest is never considered.
+    assert [call[1] for call in withdrawals] == [{"minecraft:string": 12}]
     moves = [call[1] for call in home.calls if call[0] == "move_near"]
-    assert moves[:2] == [(200, 71, -30), (202, 71, -39)]
-    assert (600, 70, 30) not in moves
+    assert moves[0] == (202, 71, -39)
+    assert (200, 71, -30) not in moves and (600, 70, 30) not in moves
     craft = next(call for call in home.calls if call[0] == "craft")
-    assert craft[1] == "minecraft:white_wool" and craft[3] == 1
+    assert craft[1] == "minecraft:white_wool" and craft[3] == 3
     assert [slot for _item, slot in craft[2]] == [1, 2, 4, 5]
     assert ("craft_bed", "minecraft:white_bed") in home.calls
     bed = [204, 71, -37]
@@ -260,3 +259,26 @@ def test_survival_gate_secures_respawn_even_while_critical(monkeypatch):
 
     assert not objective_survival.recover_survival_before_objective(client, _state())
     assert calls == ["respawn"]
+
+
+def test_wool_tops_up_string_and_a_failing_container_is_skipped(home, monkeypatch):
+    client = _Client()
+    home.world["client"] = client
+    home.stock["minecraft:string"] = 4
+    from baritone_client.common import harness_ops
+
+    moves = []
+
+    def move(_client, x, y, z, **_k):
+        moves.append((x, y, z))
+        if (x, y, z) == (202, 71, -39) and len(moves) > 1:
+            raise RuntimeError("Observed effect deadline exceeded")
+        return True
+
+    monkeypatch.setattr(harness_ops, "move_near", move)
+    state = _state()
+
+    assert home_respawn.secure_home_respawn(client, state, now=0.0)
+    withdrawals = [call[1] for call in home.calls if call[0] == "withdraw"]
+    assert withdrawals == [{"minecraft:string": 12}, {"minecraft:white_wool": 3}]
+    assert state.custom_data["home_respawn"]["bed"] == [204, 71, -37]
