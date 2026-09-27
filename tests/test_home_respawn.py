@@ -439,3 +439,20 @@ def test_failed_hunts_cool_down_then_widen(home, monkeypatch):
     centers = {hunt["exploration_center"] for hunt in hunts}
     assert len(centers) == 4
     assert state.custom_data[home_respawn.SHEEP_HUNT_KEY]["failures"] == 4
+
+
+def test_hostile_interrupted_hunt_does_not_widen_the_ring(home, monkeypatch, capsys):
+    client, hunts = _hunt_setup(home, monkeypatch, sheep=False)
+    monkeypatch.setattr(
+        "baritone_client.common.combat.hunt_mobs",
+        lambda _client, **kwargs: hunts.append(kwargs)
+        or SimpleNamespace(success=False, reason="Hostile minecraft:zombie entered passive-hunt radius"),
+    )
+    state = _state()
+
+    assert not home_respawn.secure_home_respawn(client, state, now=0.0)
+    assert len(hunts) == 1
+    record = state.custom_data[home_respawn.SHEEP_HUNT_KEY]
+    assert record.get("failures", 0) == 0
+    assert record["last_attempt"] > 0
+    assert "Hostile minecraft:zombie" in capsys.readouterr().out
