@@ -361,3 +361,51 @@ def test_bed_step_movement_is_marked_as_recovery_navigation(home, monkeypatch):
 
     assert home_respawn.secure_home_respawn(client, _state(), now=0.0)
     assert depths and all(depth == 1 for depth in depths)
+
+
+def _deep_setup(home, monkeypatch, *, health, food, armor):
+    client = _Client()
+    home.world["client"] = client
+    home.stock["minecraft:string"] = 0
+    home.far["minecraft:string"] = 8
+    home.chests["minecraft:string"] = [(250, 20, -40)]
+    base = client.dispatch
+
+    def dispatch(route, payload):
+        data = base(route, payload)
+        if route == "get_state":
+            data.update(health=health, food_level=food)
+        return data
+
+    client.transport.dispatch = dispatch
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.get_equipped_armor",
+        lambda _c: {piece: f"minecraft:iron_{piece}" for piece in armor},
+    )
+    return client
+
+
+def test_deep_storage_is_used_only_at_full_strength(home, monkeypatch):
+    client = _deep_setup(
+        home, monkeypatch, health=20.0, food=20, armor=("boots", "leggings", "chestplate")
+    )
+    state = _state()
+
+    assert home_respawn.secure_home_respawn(client, state, now=0.0)
+    assert (250, 20, -40) in home.trips
+    assert state.custom_data["home_respawn"]["bed"] == [204, 71, -37]
+
+
+@pytest.mark.parametrize(
+    ("health", "food", "armor"),
+    [
+        (17.0, 20, ("boots", "leggings", "chestplate")),
+        (20.0, 17, ("boots", "leggings", "chestplate")),
+        (20.0, 20, ("boots",)),
+    ],
+)
+def test_deep_storage_is_refused_below_full_strength(home, monkeypatch, health, food, armor):
+    client = _deep_setup(home, monkeypatch, health=health, food=food, armor=armor)
+
+    assert not home_respawn.secure_home_respawn(client, _state(), now=0.0)
+    assert (250, 20, -40) not in home.trips

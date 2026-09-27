@@ -29,6 +29,9 @@ FAR_STORAGE_RADIUS = 160.0
 #: ...but only to storage near the player's own level. A live trip to cave
 #: chests forty blocks down for three wool's worth of string ended in a death.
 FAR_STORAGE_MAX_VERTICAL = 16.0
+#: Deeper storage (any level) only at full health with this much armour worn.
+DEEP_STORAGE_MIN_HEALTH = 19.5
+DEEP_STORAGE_MIN_ARMOR = 3
 #: Containers this close to the starter-house origin count as inside it.
 HOUSE_RADIUS = 8.0
 #: The survival loop calls this every few seconds.
@@ -217,6 +220,38 @@ def _withdraw_from_wider_storage(client: Any, state: Any, item: str, wanted: int
     )
 
 
+def _full_strength(client: Any, live: Mapping[str, Any]) -> bool:
+    """Full health, regenerating food and most armour worn."""
+    from .inventory import get_equipped_armor
+
+    try:
+        health = float(live.get("health", 0) or 0)
+        food = int(live.get("food_level", live.get("food", 0)) or 0)
+    except (TypeError, ValueError):
+        return False
+    if bool(live.get("is_dead")) or health < DEEP_STORAGE_MIN_HEALTH or food < 18:
+        return False
+    return len(get_equipped_armor(client)) >= DEEP_STORAGE_MIN_ARMOR
+
+
+def _withdraw_from_deep_storage(client: Any, state: Any, item: str, wanted: int) -> None:
+    """Storage at any depth, only at full strength.
+
+    A trip to cave chests at 17 health ended in a death, so the vertical
+    limit stays for ordinary trips; this last resort needs full health,
+    food that regenerates, and armour.
+    """
+    live = client.transport.dispatch("get_state", {})
+    here = _position(live) if isinstance(live, Mapping) else None
+    if here is None or not _full_strength(client, live):
+        return
+    print(f"HOME RESPAWN: at full strength; fetching {item} from deeper storage")
+    _withdraw_from_containers(
+        client, state, item, wanted,
+        origin=here, radius=FAR_STORAGE_RADIUS, max_vertical=None, recovery=False,
+    )
+
+
 def _missing_wool(client: Any) -> int:
     from .inventory import count_item
 
@@ -263,6 +298,9 @@ def _obtain_bed(client: Any, state: Any, anchor) -> Optional[str]:
         _craft_wool_from_string(client)
         if _missing_wool(client):
             _withdraw_from_wider_storage(client, state, _WHITE_WOOL, 3)
+        if _missing_wool(client):
+            _withdraw_from_deep_storage(client, state, _STRING, 4 * _missing_wool(client))
+            _craft_wool_from_string(client)
     if _missing_wool(client):
         print(
             f"HOME RESPAWN: storage cannot supply {_missing_wool(client)} more "
