@@ -2,6 +2,7 @@
 
 from typing import Any, Mapping
 
+from ..common.home_respawn import secure_home_respawn
 from ..common.survival_farm import tend_local_farm_for_food
 from ..common.tasks import PlayerDeathDetected
 from .phase_executor import (
@@ -33,6 +34,18 @@ def _has_carried_emergency_bread_materials(client) -> bool:
         return False
 
 
+def _secure_home_respawn(client, state) -> None:
+    """Keep the home bed as the respawn point; never block the gate on it.
+
+    It runs even while survival is critical: that is when the next death is
+    likeliest, and without it the player respawns at distant world spawn.
+    """
+    try:
+        secure_home_respawn(client, state)
+    except Exception as exc:
+        print(f"HOME RESPAWN: attempt failed non-fatally ({exc})")
+
+
 def _survival_admitted(snapshot: Mapping[str, Any], strategy=None) -> bool:
     safe = objective_survival_safe(snapshot)
     if safe and strategy is not None:
@@ -49,6 +62,7 @@ def recover_survival_before_objective(client, state, strategy=None) -> bool:
         if strategy is not None:
             strategy.suspend_for_survival("live survival state is unavailable")
         return False
+    _secure_home_respawn(client, state)
     if _survival_admitted(snapshot, strategy):
         return True
 
