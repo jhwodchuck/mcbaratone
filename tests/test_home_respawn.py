@@ -69,6 +69,7 @@ def home(monkeypatch):
         lambda _client, item: items.get(item, 0),
     )
     stock = {"minecraft:white_wool": 2, "minecraft:string": 14}
+    far = {}
 
     def withdraw(_client, requirements, **kwargs):
         calls.append(
@@ -79,9 +80,10 @@ def home(monkeypatch):
                 kwargs.get("allow_recovery_access"),
             )
         )
+        source = far if kwargs.get("max_travel_distance") == home_respawn.FAR_STORAGE_RADIUS else stock
         for item, wanted in requirements.items():
-            take = min(stock.get(item, 0), max(0, wanted - items.get(item, 0)))
-            stock[item] = stock.get(item, 0) - take
+            take = min(source.get(item, 0), max(0, wanted - items.get(item, 0)))
+            source[item] = source.get(item, 0) - take
             items[item] = items.get(item, 0) + take
         return 1
 
@@ -143,7 +145,7 @@ def home(monkeypatch):
         "baritone_client.common.navigation.find_nearby_block",
         lambda _client, _blocks, radius=50: placed[-1] if placed else None,
     )
-    return SimpleNamespace(items=items, calls=calls, stock=stock, world=world)
+    return SimpleNamespace(items=items, calls=calls, stock=stock, far=far, world=world)
 
 
 def test_bed_is_crafted_from_home_wool_and_string_placed_used_and_recorded(home):
@@ -282,3 +284,32 @@ def test_wool_tops_up_string_and_a_failing_container_is_skipped(home, monkeypatc
     withdrawals = [call[1] for call in home.calls if call[0] == "withdraw"]
     assert withdrawals == [{"minecraft:string": 12}, {"minecraft:white_wool": 3}]
     assert state.custom_data["home_respawn"]["bed"] == [204, 71, -37]
+
+
+def test_string_beyond_home_finishes_a_bed_home_cannot(home):
+    client = _Client()
+    home.world["client"] = client
+    home.stock["minecraft:string"] = 0
+    home.far["minecraft:string"] = 6
+    state = _state()
+
+    assert home_respawn.secure_home_respawn(client, state, now=0.0)
+    withdrawals = [(call[1], call[2], call[3]) for call in home.calls if call[0] == "withdraw"]
+    # Home first (within reach, recovery access), then an ordinary storage
+    # trip that the storage layer itself may refuse while survival is unsafe.
+    assert ({"minecraft:string": 4}, home_respawn.FAR_STORAGE_RADIUS, None) in withdrawals
+    assert all(radius == 6.0 for _req, radius, _access in withdrawals[:2])
+    crafts = [call for call in home.calls if call[0] == "craft"]
+    assert crafts and crafts[-1][3] == 1
+    assert state.custom_data["home_respawn"]["bed"] == [204, 71, -37]
+
+
+def test_bed_is_not_attempted_without_enough_wool_anywhere(home):
+    client = _Client()
+    home.world["client"] = client
+    home.stock["minecraft:string"] = 0
+    state = _state()
+
+    assert not home_respawn.secure_home_respawn(client, state, now=0.0)
+    assert not [call for call in home.calls if call[0] in {"craft_bed", "place"}]
+    assert "home_respawn" not in state.custom_data
