@@ -29,6 +29,19 @@ FAR_STORAGE_RADIUS = 160.0
 #: ...but only to storage near the player's own level. A live trip to cave
 #: chests forty blocks down for three wool's worth of string ended in a death.
 FAR_STORAGE_MAX_VERTICAL = 16.0
+#: When storage cannot finish the bed, hunt sheep under these bounds.
+SHEEP_HUNT_KEY = "home_respawn_sheep_hunt"
+SHEEP_HUNT_INTERVAL = 900.0
+SHEEP_HUNT_MIN_HEALTH = 18.0
+SHEEP_HUNT_TIMEOUT = 420
+SHEEP_HUNT_LATEST_START = 9000
+SHEEP_HUNT_LATEST_WORLD_TIME = 11000
+SHEEP_HUNT_SPARE_KILLS = 3
+SHEEP_HUNT_RINGS = (128.0, 256.0, 512.0)
+SHEEP_HUNT_FAILURES_PER_RING = 3
+SHEEP_HUNT_SECTORS = (
+    (1, -1), (-1, -1), (1, 1), (-1, 1), (0, -1), (1, 0), (0, 1), (-1, 0),
+)
 #: Containers this close to the starter-house origin count as inside it.
 HOUSE_RADIUS = 8.0
 #: The survival loop calls this every few seconds.
@@ -217,6 +230,89 @@ def _withdraw_from_wider_storage(client: Any, state: Any, item: str, wanted: int
     )
 
 
+def _hunt_ready(state: Any, live: Mapping[str, Any], now: float) -> bool:
+    record = _custom(state).get(SHEEP_HUNT_KEY, {})
+    record = record if isinstance(record, dict) else {}
+    try:
+        last = float(record.get("last_attempt", 0) or 0)
+        health = float(live.get("health", 0) or 0)
+        food = int(live.get("food_level", live.get("food", 0)) or 0)
+        world_time = int(live.get("world_time", 0) or 0) % 24000
+    except (TypeError, ValueError):
+        return False
+    return (
+        now - last >= SHEEP_HUNT_INTERVAL
+        and not bool(live.get("is_dead"))
+        and health >= SHEEP_HUNT_MIN_HEALTH
+        and food >= 18
+        and world_time < SHEEP_HUNT_LATEST_START
+    )
+
+
+def _hunt_sheep_for_wool(client: Any, state: Any, anchor) -> None:
+    """Hunt sheep for the wool home storage cannot supply, then come home.
+
+    Bounded on every axis: full health and regenerating food to start,
+    daylight only, passive hunting abandoned when a hostile closes in, a
+    kill cap and a timeout, and a persisted cooldown between attempts so a
+    death on the way cannot turn into a loop. The radius widens after
+    fruitless attempts, and the search sector rotates around home.
+    """
+    from .combat import hunt_mobs
+    from .navigation import goto
+
+    wanted = _missing_wool(client)
+    live = client.transport.dispatch("get_state", {})
+    now = time.time()
+    if not wanted or not isinstance(live, Mapping) or not _hunt_ready(state, live, now):
+        return
+    custom = _custom(state)
+    record = custom.get(SHEEP_HUNT_KEY)
+    record = record if isinstance(record, dict) else {}
+    failures = int(record.get("failures", 0) or 0)
+    sector = int(record.get("sector", 0) or 0)
+    ring = SHEEP_HUNT_RINGS[min(failures // SHEEP_HUNT_FAILURES_PER_RING, len(SHEEP_HUNT_RINGS) - 1)]
+    dx, dz = SHEEP_HUNT_SECTORS[sector % len(SHEEP_HUNT_SECTORS)]
+    center = (int(anchor[0] + dx * ring / 2), int(anchor[2] + dz * ring / 2))
+    # Recorded before leaving: a death during the hunt still waits out the
+    # cooldown instead of sending the respawned player straight back out.
+    record.update(last_attempt=now, sector=sector + 1)
+    custom[SHEEP_HUNT_KEY] = record
+    before = _missing_wool(client)
+    print(
+        f"HOME RESPAWN: hunting sheep for {wanted} white wool within {ring:.0f} "
+        f"blocks, searching toward {center}"
+    )
+    try:
+        hunt_mobs(
+            client,
+            mob_types=["sheep"],
+            required_loot={_WHITE_WOOL: wanted},
+            search_radius=64,
+            timeout=SHEEP_HUNT_TIMEOUT,
+            heal_threshold=12.0,
+            abort_on_other_hostiles=True,
+            latest_world_time=SHEEP_HUNT_LATEST_WORLD_TIME,
+            max_distance_from_origin=ring,
+            exploration_center=center,
+            max_kills=wanted + SHEEP_HUNT_SPARE_KILLS,
+        )
+    finally:
+        try:
+            client.transport.dispatch("cancel", {})
+        except Exception:
+            pass
+        gained = _missing_wool(client) < before
+        record["failures"] = 0 if gained else failures + 1
+        print(
+            "HOME RESPAWN: sheep hunt "
+            + ("gained wool" if gained else "found no white wool")
+            + "; returning home"
+        )
+        goto(client, int(anchor[0]), int(anchor[1]), int(anchor[2]),
+             timeout=300, tolerance=6.0, radius=4)
+
+
 def _missing_wool(client: Any) -> int:
     from .inventory import count_item
 
@@ -263,6 +359,8 @@ def _obtain_bed(client: Any, state: Any, anchor) -> Optional[str]:
         _craft_wool_from_string(client)
         if _missing_wool(client):
             _withdraw_from_wider_storage(client, state, _WHITE_WOOL, 3)
+        if _missing_wool(client):
+            _hunt_sheep_for_wool(client, state, anchor)
     if _missing_wool(client):
         print(
             f"HOME RESPAWN: storage cannot supply {_missing_wool(client)} more "
