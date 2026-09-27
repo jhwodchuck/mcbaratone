@@ -70,6 +70,7 @@ def home(monkeypatch):
     )
     stock = {"minecraft:white_wool": 2, "minecraft:string": 14}
     far = {}
+    vertical = []
 
     def withdraw(_client, requirements, **kwargs):
         calls.append(
@@ -80,6 +81,8 @@ def home(monkeypatch):
                 kwargs.get("allow_recovery_access"),
             )
         )
+        if kwargs.get("max_travel_distance") == home_respawn.FAR_STORAGE_RADIUS:
+            vertical.append(kwargs.get("max_vertical_distance"))
         source = far if kwargs.get("max_travel_distance") == home_respawn.FAR_STORAGE_RADIUS else stock
         for item, wanted in requirements.items():
             take = min(source.get(item, 0), max(0, wanted - items.get(item, 0)))
@@ -145,7 +148,9 @@ def home(monkeypatch):
         "baritone_client.common.navigation.find_nearby_block",
         lambda _client, _blocks, radius=50: placed[-1] if placed else None,
     )
-    return SimpleNamespace(items=items, calls=calls, stock=stock, far=far, world=world)
+    return SimpleNamespace(
+        items=items, calls=calls, stock=stock, far=far, world=world, vertical=vertical
+    )
 
 
 def test_bed_is_crafted_from_home_wool_and_string_placed_used_and_recorded(home):
@@ -301,6 +306,10 @@ def test_string_beyond_home_finishes_a_bed_home_cannot(home):
     assert all(radius == 6.0 for _req, radius, _access in withdrawals[:2])
     crafts = [call for call in home.calls if call[0] == "craft"]
     assert crafts and crafts[-1][3] == 1
+    # Wider trips stay near the player's level: no cave-chest expeditions.
+    assert home.vertical and all(
+        value == home_respawn.FAR_STORAGE_MAX_VERTICAL for value in home.vertical
+    )
     assert state.custom_data["home_respawn"]["bed"] == [204, 71, -37]
 
 
