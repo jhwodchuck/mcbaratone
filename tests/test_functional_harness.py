@@ -1273,3 +1273,56 @@ def test_crafting_space_never_sheds_tools_or_food():
     finally:
         inventory_ops.safe_inventory_click = original
     assert thrown == [], thrown
+
+
+def _bed_craft_clicks(monkeypatch, wool_count):
+    class Transport:
+        def dispatch(self, route, _payload):
+            if route == "get_screen":
+                return {
+                    "type": "CraftingScreenHandler",
+                    "slots": [
+                        {"slot": 11, "id": "minecraft:white_wool", "count": wool_count},
+                        {"slot": 12, "id": "minecraft:oak_planks", "count": 3},
+                    ],
+                }
+            return {}
+
+    class Context:
+        def __init__(self):
+            self.client = type("Client", (), {"transport": Transport()})()
+
+        def log_event(self, _event):
+            return None
+
+        def has_item(self, _item_id):
+            return True
+
+    clicks = []
+    monkeypatch.setattr(inventory_ops.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        inventory_ops,
+        "safe_inventory_click",
+        lambda _ctx, slot, action, button=0: clicks.append((slot, action, button)),
+    )
+    assert inventory_ops.craft_bed_manual(Context(), "minecraft:white_bed")
+    return clicks
+
+
+def test_bed_craft_with_exact_stacks_makes_no_empty_return_click(monkeypatch):
+    # Exactly three wool and three planks leave nothing on the cursor; a
+    # "return" click there is a no-op the bridge's verified effects reject.
+    clicks = _bed_craft_clicks(monkeypatch, wool_count=3)
+    assert clicks == [
+        (11, "PICKUP", 0), (1, "PICKUP", 1), (2, "PICKUP", 1), (3, "PICKUP", 1),
+        (12, "PICKUP", 0), (4, "PICKUP", 1), (5, "PICKUP", 1), (6, "PICKUP", 1),
+        (0, "QUICK_MOVE", 0),
+    ]
+
+
+def test_bed_craft_returns_leftover_wool_to_its_slot(monkeypatch):
+    clicks = _bed_craft_clicks(monkeypatch, wool_count=5)
+    assert clicks[:5] == [
+        (11, "PICKUP", 0), (1, "PICKUP", 1), (2, "PICKUP", 1), (3, "PICKUP", 1),
+        (11, "PICKUP", 0),
+    ]

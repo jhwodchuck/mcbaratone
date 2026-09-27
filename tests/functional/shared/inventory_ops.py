@@ -934,14 +934,23 @@ def craft_bed_manual(ctx, bed_id: str = "minecraft:white_bed") -> bool:
             safe_inventory_click(ctx, grid_slot, "QUICK_MOVE")
             time.sleep(0.05)
 
+    def slot_count(slot_id: int) -> int:
+        slot = next((s for s in slots if s.get("slot") == slot_id), {})
+        return int(slot.get("count", 0) or 0)
+
     def place_one_each(source_slot: int, target_slots: List[int]) -> None:
+        # With exactly one item per target the cursor is empty afterwards;
+        # "returning" it clicks an empty slot with an empty cursor, a no-op
+        # that the bridge's verified effects reject, aborting the craft.
+        leftovers = slot_count(source_slot) > len(target_slots)
         safe_inventory_click(ctx, source_slot, "PICKUP", button=0)
         time.sleep(0.05)
         for target in target_slots:
             safe_inventory_click(ctx, target, "PICKUP", button=1)
             time.sleep(0.05)
-        safe_inventory_click(ctx, source_slot, "PICKUP", button=0)
-        time.sleep(0.05)
+        if leftovers:
+            safe_inventory_click(ctx, source_slot, "PICKUP", button=0)
+            time.sleep(0.05)
 
     place_one_each(wool_slot, [1, 2, 3])
     place_one_each(plank_slot, [4, 5, 6])
