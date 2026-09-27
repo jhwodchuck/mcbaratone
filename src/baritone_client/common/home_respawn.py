@@ -24,6 +24,9 @@ HOME_RADIUS = 32.0
 HOME_STORAGE_RADIUS = 48.0
 #: When home storage cannot finish a bed, ordinary storage trips reach this far.
 FAR_STORAGE_RADIUS = 160.0
+#: ...but only to storage near the player's own level. A live trip to cave
+#: chests forty blocks down for three wool's worth of string ended in a death.
+FAR_STORAGE_MAX_VERTICAL = 16.0
 #: Containers this close to the starter-house origin count as inside it.
 HOUSE_RADIUS = 8.0
 #: The survival loop calls this every few seconds.
@@ -208,7 +211,11 @@ def _obtain_bed(client: Any, state: Any, anchor) -> Optional[str]:
         # the storage layer itself refuses them while survival is unsafe.
         from .inventory import withdraw_required_from_catalog
 
-        far = {"state": state, "max_travel_distance": FAR_STORAGE_RADIUS}
+        far = {
+            "state": state,
+            "max_travel_distance": FAR_STORAGE_RADIUS,
+            "max_vertical_distance": FAR_STORAGE_MAX_VERTICAL,
+        }
         withdraw_required_from_catalog(client, {_STRING: 4 * _missing_wool(client)}, **far)
         _craft_wool_from_string(client)
         if _missing_wool(client):
