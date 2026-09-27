@@ -13,9 +13,10 @@ Recovery, cheapest first:
    chainmail), within reach of the player's level, then wear them.
 2. Iron ingots or raw iron from the same storage for pieces still missing.
 3. Carried raw iron smelted at the home furnace.
-4. A short, bounded iron-mining run, only once some armour is worn and
-   health and food are high, on a persisted cooldown so a death cannot
-   turn it into a loop. The ingots are kept for armour, not banked.
+4. Digging exposed iron ore near the player's own level (never a shaft
+   into caves), only once some armour is worn and health and food are
+   high, on a persisted cooldown so a death cannot turn it into a loop.
+   The ingots are kept for armour, not banked.
 
 Each stage is on a persisted cooldown, and the whole step counts as
 recovery movement so defense mode does not cancel its short walks.
@@ -50,6 +51,10 @@ MINING_MIN_WORN = 2
 MINING_MIN_HEALTH = 16.0
 MINING_MIN_FOOD = 14
 MINING_TIMEOUT = 300
+#: Only exposed ore near the player's level: never a shaft into caves.
+MINING_RADIUS = 32
+MINING_MAX_VERTICAL = 10
+MINING_MAX_CHECKS = 24
 
 
 def _record(state: Any) -> dict:
@@ -232,20 +237,83 @@ def _smelt_raw_iron(client: Any, state: Any) -> int:
     return max(0, _count(client, IRON_INGOT) - before)
 
 
+_IRON_ORES = ("minecraft:iron_ore", "minecraft:deepslate_iron_ore")
+_OPEN = ("minecraft:air", "minecraft:cave_air")
+
+
+def _block(client: Any, x: int, y: int, z: int) -> str:
+    try:
+        return str(client.transport.dispatch("get_block", {"x": x, "y": y, "z": z}).get("id", ""))
+    except Exception:
+        return ""
+
+
+def exposed_iron_near_level(client: Any) -> list:
+    """Iron ore open to the air, near the player's own level, nearest first.
+
+    Baritone's `mine` goes to the nearest ore anywhere, which under A1's base
+    meant a shaft to y=31 and a zombie within two minutes. Only ore that is
+    exposed (a free neighbour) within MINING_MAX_VERTICAL of the player is
+    worth a trip; if there is none, recovery does not mine at all.
+    """
+    live = _live(client)
+    position = live.get("block_position", live.get("position", {})) or {}
+    try:
+        px, py, pz = (int(float(position[axis])) for axis in ("x", "y", "z"))
+    except (KeyError, TypeError, ValueError):
+        return []
+    try:
+        found = client.transport.dispatch(
+            "find_blocks", {"blocks": list(_IRON_ORES), "radius": MINING_RADIUS, "limit": 256}
+        ).get("found", [])
+    except Exception:
+        return []
+    candidates = sorted(
+        (
+            (int(b["x"]), int(b["y"]), int(b["z"]))
+            for b in found
+            if abs(int(b["y"]) - py) <= MINING_MAX_VERTICAL
+        ),
+        key=lambda ore: (ore[0] - px) ** 2 + (ore[1] - py) ** 2 + (ore[2] - pz) ** 2,
+    )
+    exposed = []
+    for x, y, z in candidates[:MINING_MAX_CHECKS]:
+        neighbours = ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+        if any(_block(client, x + dx, y + dy, z + dz) in _OPEN for dx, dy, dz in neighbours):
+            exposed.append((x, y, z))
+    return exposed
+
+
 def _mine_iron(client: Any, state: Any, now: float) -> int:
-    from ..common.resources import gather_ores
+    from ..common.navigation import goto
+    from ..common.resources import equip_best_pickaxe
 
     need = iron_still_needed(client)
     _record(state)["mining"] = now  # before leaving: a death still waits
+    ores = exposed_iron_near_level(client)
+    if not ores:
+        print("ARMOUR RECOVERY: no exposed iron near the player's level; not mining")
+        return 0
     before = _count(client, RAW_IRON)
-    print(f"ARMOUR RECOVERY: mining up to {need} iron for armour")
+    print(f"ARMOUR RECOVERY: digging up to {need} exposed iron ore near its level")
+    deadline = time.monotonic() + MINING_TIMEOUT
+    for ore in ores:
+        if _count(client, RAW_IRON) - before >= need or time.monotonic() > deadline:
+            break
+        goto(client, *ore, timeout=60, tolerance=3.5, radius=2)
+        if not equip_best_pickaxe(client):
+            print("ARMOUR RECOVERY: no pickaxe that can mine iron")
+            break
+        client.transport.dispatch("dig_block", {"x": ore[0], "y": ore[1], "z": ore[2], "max_ticks": 200})
+        stop = time.monotonic() + 10.0
+        while time.monotonic() < stop and _block(client, *ore) in _IRON_ORES:
+            time.sleep(0.3)
+        # The drop lands on the ore's cell; step onto it to pick it up.
+        goto(client, *ore, timeout=10, tolerance=1.0)
     try:
-        gather_ores(client, "iron", count=before + need, timeout=MINING_TIMEOUT)
-    finally:
-        try:
-            client.transport.dispatch("cancel", {})
-        except Exception:
-            pass
+        client.transport.dispatch("cancel", {})
+    except Exception:
+        pass
     return max(0, _count(client, RAW_IRON) - before)
 
 
@@ -269,7 +337,8 @@ def recover_armor_materials(client: Any, state: Any, *, now: Optional[float] = N
             notes.append(f"smelted {smelted} iron")
         if _mining_allowed(client, state, current):
             mined = _mine_iron(client, state, current)
-            notes.append(f"mined {mined} raw iron")
+            if mined:
+                notes.append(f"mined {mined} raw iron")
             smelted = _smelt_raw_iron(client, state)
             if smelted:
                 notes.append(f"smelted {smelted} iron")

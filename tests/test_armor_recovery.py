@@ -16,16 +16,34 @@ class _Bot:
         self.food = food
         self.items = {}
         self.worn = {}
+        self.ores = []
+        self.solid = set()
+        self.dug = []
         self.transport = SimpleNamespace(dispatch=self.dispatch)
 
-    def dispatch(self, route, _payload):
+    def dispatch(self, route, payload):
         if route == "get_state":
             return {
                 "health": self.health,
                 "food_level": self.food,
                 "is_dead": False,
                 "dimension": "minecraft:overworld",
+                "block_position": {"x": 100, "y": 70, "z": 100},
             }
+        if route == "find_blocks":
+            return {"found": [{"x": x, "y": y, "z": z} for (x, y, z) in self.ores]}
+        if route == "get_block":
+            key = (payload["x"], payload["y"], payload["z"])
+            if key in self.ores:
+                return {"id": "minecraft:iron_ore"}
+            return {"id": "minecraft:stone" if key in self.solid else "minecraft:air"}
+        if route == "dig_block":
+            key = (payload["x"], payload["y"], payload["z"])
+            if key in self.ores:
+                self.ores.remove(key)
+                self.items["minecraft:raw_iron"] = self.items.get("minecraft:raw_iron", 0) + 1
+                self.dug.append(key)
+            return {}
         return {}
 
 
@@ -91,12 +109,16 @@ def bot(monkeypatch):
 
     monkeypatch.setattr("baritone_client.common.resources._smelt_with_furnace", smelt)
 
-    def gather(_client, ore, count, timeout):
-        mined.append((ore, count, timeout))
-        live.items["minecraft:raw_iron"] = count
-        return True
-
-    monkeypatch.setattr("baritone_client.common.resources.gather_ores", gather)
+    monkeypatch.setattr(
+        "baritone_client.common.resources.gather_ores",
+        lambda *_a, **_k: pytest.fail("Baritone mine must not be used for armour iron"),
+    )
+    monkeypatch.setattr("baritone_client.common.resources.equip_best_pickaxe", lambda _c: True)
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.goto",
+        lambda _c, x, y, z, **_k: mined.append((x, y, z)) or True,
+    )
+    monkeypatch.setattr(armor_recovery.time, "sleep", lambda _s: None)
     return SimpleNamespace(live=live, storage=storage, withdrawals=withdrawals, mined=mined)
 
 
@@ -122,10 +144,12 @@ def test_mining_needs_some_armour_health_and_food_and_keeps_ingots(bot):
     bot.live.items["minecraft:iron_ingot"] = 3
     state = _state()
 
+    bot.live.ores = [(100 + i, 70, 110) for i in range(14)]  # exposed, at its level
+
     note = armor_recovery.recover_armor_materials(bot.live, state, now=5000.0)
 
-    # Leggings (7) + chestplate (8) = 15, minus 3 carried ingots.
-    assert bot.mined == [("iron", 12, armor_recovery.MINING_TIMEOUT)]
+    # Leggings (7) + chestplate (8) = 15, minus 3 carried ingots: 12 ore.
+    assert len(bot.live.dug) == 12
     assert bot.live.items["minecraft:iron_ingot"] == 15
     assert "mined 12 raw iron" in note
     assert state.custom_data[armor_recovery.RECOVERY_KEY]["mining"] == 5000.0
@@ -133,7 +157,25 @@ def test_mining_needs_some_armour_health_and_food_and_keeps_ingots(bot):
     # The persisted cooldown blocks an immediate second trip.
     bot.live.items["minecraft:iron_ingot"] = 0
     armor_recovery.recover_armor_materials(bot.live, state, now=5100.0)
-    assert len(bot.mined) == 1
+    assert len(bot.live.dug) == 12
+
+
+def test_deep_or_enclosed_ore_is_never_mined(bot):
+    bot.storage.clear()
+    bot.live.worn = {"boots": "minecraft:iron_boots", "helmet": "minecraft:iron_helmet"}
+    deep = (100, 31, 100)
+    enclosed = (104, 70, 104)
+    bot.live.ores = [deep, enclosed]
+    x, y, z = enclosed
+    bot.live.solid = {
+        (x + dx, y + dy, z + dz)
+        for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+    }
+
+    note = armor_recovery.recover_armor_materials(bot.live, _state(), now=5000.0)
+
+    assert bot.live.dug == [] and bot.mined == []
+    assert "mined" not in note
 
 
 @pytest.mark.parametrize(
