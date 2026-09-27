@@ -109,22 +109,64 @@ def _carried_bed(client: Any) -> Optional[str]:
     return next((item for item in BED_ITEMS if count_item(client, item) > 0), None)
 
 
-def _obtain_bed(client: Any, state: Any) -> Optional[str]:
-    """Carry a bed, crafting it from home wool or string when needed."""
+def _withdraw_from_home(client: Any, state: Any, anchor, item: str, wanted: int) -> None:
+    """Withdraw from cataloged home containers, walking beside each first.
+
+    Storage refuses to travel to a container outside the survival margin, and
+    a wounded player is exactly who needs the respawn point. It may still
+    open a container within reach, so step beside each home container that
+    holds the item and withdraw from there.
+    """
     from . import harness_ops
     from .inventory import count_item, withdraw_required_from_catalog
+    from .storage_catalog import catalog_for
+
+    if count_item(client, item) >= wanted:
+        return
+    try:
+        rows = catalog_for(client, state).find_item(item)
+    except Exception as exc:
+        print(f"HOME RESPAWN: storage catalog unavailable ({exc})")
+        return
+    here = _position(client.transport.dispatch("get_state", {})) or tuple(anchor)
+    homes = sorted(
+        (
+            (int(row["x"]), int(row["y"]), int(row["z"]))
+            for row in rows
+            if "overworld" in str(row.get("dimension", "overworld"))
+            and _flat((row["x"], row["y"], row["z"]), anchor) <= HOME_STORAGE_RADIUS
+        ),
+        key=lambda chest: _flat(chest, here),
+    )
+    for chest in homes:
+        if count_item(client, item) >= wanted:
+            return
+        harness_ops.move_near(client, *chest, timeout=30.0)
+        withdraw_required_from_catalog(
+            client,
+            {item: wanted},
+            state=state,
+            max_travel_distance=6.0,
+            allow_recovery_access=True,
+        )
+
+
+def _obtain_bed(client: Any, state: Any, anchor) -> Optional[str]:
+    """Carry a bed, crafting it from home wool or string when needed."""
+    from . import harness_ops
+    from .inventory import count_item
 
     bed = _carried_bed(client)
     if bed:
         return bed
-    home = {"state": state, "max_travel_distance": HOME_STORAGE_RADIUS}
-    withdraw_required_from_catalog(client, {_WHITE_BED: 1, _WHITE_WOOL: 3}, **home)
+    _withdraw_from_home(client, state, anchor, _WHITE_BED, 1)
     bed = _carried_bed(client)
     if bed:
         return bed
+    _withdraw_from_home(client, state, anchor, _WHITE_WOOL, 3)
     missing_wool = max(0, 3 - count_item(client, _WHITE_WOOL))
     if missing_wool:
-        withdraw_required_from_catalog(client, {_STRING: 4 * missing_wool}, **home)
+        _withdraw_from_home(client, state, anchor, _STRING, 4 * missing_wool)
         crafts = min(missing_wool, count_item(client, _STRING) // 4)
         if crafts <= 0 or not harness_ops.ensure_crafting_table_open(client):
             print(f"HOME RESPAWN: need {missing_wool} more white wool or {4 * missing_wool} string")
@@ -153,7 +195,7 @@ def _place_home_bed(client: Any, state: Any, anchor) -> Optional[Tuple[int, int,
     from . import harness_ops
     from .navigation import find_nearby_block
 
-    bed = _obtain_bed(client, state)
+    bed = _obtain_bed(client, state, anchor)
     if bed is None:
         return None
     for slot in _bed_slots(state, anchor):
