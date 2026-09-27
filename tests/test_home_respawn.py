@@ -71,7 +71,14 @@ def home(monkeypatch):
     stock = {"minecraft:white_wool": 2, "minecraft:string": 14}
 
     def withdraw(_client, requirements, **kwargs):
-        calls.append(("withdraw", dict(requirements), kwargs.get("max_travel_distance")))
+        calls.append(
+            (
+                "withdraw",
+                dict(requirements),
+                kwargs.get("max_travel_distance"),
+                kwargs.get("allow_recovery_access"),
+            )
+        )
         for item, wanted in requirements.items():
             take = min(stock.get(item, 0), max(0, wanted - items.get(item, 0)))
             stock[item] = stock.get(item, 0) - take
@@ -85,7 +92,26 @@ def home(monkeypatch):
 
     monkeypatch.setattr(harness_ops, "ensure_crafting_table_open", lambda _c: True)
     monkeypatch.setattr(harness_ops, "count_any_planks", lambda _c: items.get("minecraft:oak_planks", 0))
-    monkeypatch.setattr(harness_ops, "move_near", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        harness_ops,
+        "move_near",
+        lambda _client, x, y, z, **_k: calls.append(("move_near", (x, y, z))) or True,
+    )
+    chests = {
+        "minecraft:white_wool": [(200, 71, -30)],
+        "minecraft:string": [(600, 70, 30), (202, 71, -39)],
+    }
+
+    class _Catalog:
+        def find_item(self, item):
+            return [
+                {"dimension": "minecraft:overworld", "x": x, "y": y, "z": z, "count": 9}
+                for x, y, z in chests.get(item, [])
+            ]
+
+    monkeypatch.setattr(
+        "baritone_client.common.storage_catalog.catalog_for", lambda *_a, **_k: _Catalog()
+    )
 
     def craft_recipe(_client, result, placements, crafts=1, output_per_recipe=1):
         calls.append(("craft", result, list(placements), crafts))
@@ -128,8 +154,16 @@ def test_bed_is_crafted_from_home_wool_and_string_placed_used_and_recorded(home)
     assert home_respawn.secure_home_respawn(client, state, now=0.0)
 
     withdrawals = [call for call in home.calls if call[0] == "withdraw"]
-    assert all(call[2] == home_respawn.HOME_STORAGE_RADIUS for call in withdrawals)
-    assert ("withdraw", {"minecraft:string": 4}, home_respawn.HOME_STORAGE_RADIUS) in withdrawals
+    # A wounded player may only open storage within reach: walk beside each
+    # home chest first, then withdraw from there. Distant chests are ignored.
+    assert all(call[2] == 6.0 and call[3] is True for call in withdrawals)
+    assert [call[1] for call in withdrawals] == [
+        {"minecraft:white_wool": 3},
+        {"minecraft:string": 4},
+    ]
+    moves = [call[1] for call in home.calls if call[0] == "move_near"]
+    assert moves[:2] == [(200, 71, -30), (202, 71, -39)]
+    assert (600, 70, 30) not in moves
     craft = next(call for call in home.calls if call[0] == "craft")
     assert craft[1] == "minecraft:white_wool" and craft[3] == 1
     assert [slot for _item, slot in craft[2]] == [1, 2, 4, 5]
