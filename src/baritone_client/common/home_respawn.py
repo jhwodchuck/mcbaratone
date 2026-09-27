@@ -116,16 +116,27 @@ def _carried_bed(client: Any) -> Optional[str]:
     return next((item for item in BED_ITEMS if count_item(client, item) > 0), None)
 
 
-def _withdraw_from_home(client: Any, state: Any, anchor, item: str, wanted: int) -> None:
-    """Withdraw from cataloged home containers, walking beside each first.
+def _withdraw_from_containers(
+    client: Any,
+    state: Any,
+    item: str,
+    wanted: int,
+    *,
+    origin,
+    radius: float,
+    max_vertical: Optional[float],
+    recovery: bool,
+    house=None,
+) -> None:
+    """Withdraw from cataloged containers chosen here, walking beside each.
 
-    Storage refuses to travel to a container outside the survival margin, and
-    a wounded player is exactly who needs the respawn point. It may still
-    open a container within reach, so step beside each home container that
-    holds the item and withdraw from there.
+    The catalog withdrawal keeps only its eight nearest candidates before it
+    applies a vertical limit, so deep cave chests could crowd out a usable
+    surface chest entirely. Eligible containers are chosen first, then each
+    is approached and withdrawn from within reach.
     """
-    from . import harness_ops
     from .inventory import count_item, withdraw_required_from_catalog
+    from .navigation import goto
     from .storage_catalog import catalog_for
     from .tasks import PlayerDeathDetected
 
@@ -136,35 +147,72 @@ def _withdraw_from_home(client: Any, state: Any, anchor, item: str, wanted: int)
     except Exception as exc:
         print(f"HOME RESPAWN: storage catalog unavailable ({exc})")
         return
-    here = _position(client.transport.dispatch("get_state", {})) or tuple(anchor)
-    house = _xyz(_house(state).get("origin")) or tuple(anchor)
+    here = _position(client.transport.dispatch("get_state", {})) or tuple(origin)
+    chests = [
+        (int(row["x"]), int(row["y"]), int(row["z"]))
+        for row in rows
+        if "overworld" in str(row.get("dimension", "overworld"))
+    ]
+    chests = [
+        chest
+        for chest in chests
+        if _flat(chest, origin) <= radius
+        and (max_vertical is None or abs(chest[1] - here[1]) <= max_vertical)
+    ]
+    center = tuple(house) if house is not None else tuple(origin)
     # Containers inside the starter house come first: a built interior gives
     # clean access, while a chest by the farm can sit behind crops.
-    homes = sorted(
-        (
-            (int(row["x"]), int(row["y"]), int(row["z"]))
-            for row in rows
-            if "overworld" in str(row.get("dimension", "overworld"))
-            and _flat((row["x"], row["y"], row["z"]), anchor) <= HOME_STORAGE_RADIUS
-        ),
-        key=lambda chest: (_flat(chest, house) > HOUSE_RADIUS, _flat(chest, here)),
-    )
-    for chest in homes:
+    chests.sort(key=lambda chest: (_flat(chest, center) > HOUSE_RADIUS, _flat(chest, here)))
+    for chest in chests:
         if count_item(client, item) >= wanted:
             return
         try:
-            harness_ops.move_near(client, *chest, timeout=30.0)
+            if recovery:
+                from . import harness_ops
+
+                harness_ops.move_near(client, *chest, timeout=30.0)
+            else:
+                goto(client, *chest, timeout=180, tolerance=3.5, radius=3)
             withdraw_required_from_catalog(
                 client,
                 {item: wanted},
                 state=state,
                 max_travel_distance=6.0,
-                allow_recovery_access=True,
+                allow_recovery_access=recovery,
             )
         except PlayerDeathDetected:
             raise
         except Exception as exc:
             print(f"HOME RESPAWN: container at {chest} failed ({exc}); trying the next")
+
+
+def _withdraw_from_home(client: Any, state: Any, anchor, item: str, wanted: int) -> None:
+    """Home containers, reachable even while survival is critical.
+
+    Storage refuses to travel to a container outside the survival margin, and
+    a wounded player is exactly who needs the respawn point. It may still
+    open a container within reach, so step beside each home container first.
+    """
+    _withdraw_from_containers(
+        client, state, item, wanted,
+        origin=anchor, radius=HOME_STORAGE_RADIUS, max_vertical=None, recovery=True,
+        house=_xyz(_house(state).get("origin")) or tuple(anchor),
+    )
+
+
+def _withdraw_from_wider_storage(client: Any, state: Any, item: str, wanted: int) -> None:
+    """Storage near the player's own level, only while travel is safe."""
+    from .storage_safety import storage_travel_safe
+
+    live = client.transport.dispatch("get_state", {})
+    here = _position(live) if isinstance(live, Mapping) else None
+    if here is None or not storage_travel_safe(live):
+        return
+    _withdraw_from_containers(
+        client, state, item, wanted,
+        origin=here, radius=FAR_STORAGE_RADIUS,
+        max_vertical=FAR_STORAGE_MAX_VERTICAL, recovery=False,
+    )
 
 
 def _missing_wool(client: Any) -> int:
@@ -207,19 +255,12 @@ def _obtain_bed(client: Any, state: Any, anchor) -> Optional[str]:
     _craft_wool_from_string(client)
     _withdraw_from_home(client, state, anchor, _WHITE_WOOL, 3)
     if _missing_wool(client):
-        # Home cannot finish the bed. Ordinary storage trips reach further;
-        # the storage layer itself refuses them while survival is unsafe.
-        from .inventory import withdraw_required_from_catalog
-
-        far = {
-            "state": state,
-            "max_travel_distance": FAR_STORAGE_RADIUS,
-            "max_vertical_distance": FAR_STORAGE_MAX_VERTICAL,
-        }
-        withdraw_required_from_catalog(client, {_STRING: 4 * _missing_wool(client)}, **far)
+        # Home cannot finish the bed. Reach wider storage near the player's
+        # own level, but only while survival allows travel.
+        _withdraw_from_wider_storage(client, state, _STRING, 4 * _missing_wool(client))
         _craft_wool_from_string(client)
         if _missing_wool(client):
-            withdraw_required_from_catalog(client, {_WHITE_WOOL: 3}, **far)
+            _withdraw_from_wider_storage(client, state, _WHITE_WOOL, 3)
     if _missing_wool(client):
         print(
             f"HOME RESPAWN: storage cannot supply {_missing_wool(client)} more "

@@ -70,7 +70,7 @@ def home(monkeypatch):
     )
     stock = {"minecraft:white_wool": 2, "minecraft:string": 14}
     far = {}
-    vertical = []
+    trips = []
 
     def withdraw(_client, requirements, **kwargs):
         calls.append(
@@ -81,9 +81,7 @@ def home(monkeypatch):
                 kwargs.get("allow_recovery_access"),
             )
         )
-        if kwargs.get("max_travel_distance") == home_respawn.FAR_STORAGE_RADIUS:
-            vertical.append(kwargs.get("max_vertical_distance"))
-        source = far if kwargs.get("max_travel_distance") == home_respawn.FAR_STORAGE_RADIUS else stock
+        source = stock if kwargs.get("allow_recovery_access") else far
         for item, wanted in requirements.items():
             take = min(source.get(item, 0), max(0, wanted - items.get(item, 0)))
             source[item] = source.get(item, 0) - take
@@ -104,7 +102,7 @@ def home(monkeypatch):
     )
     chests = {
         "minecraft:white_wool": [(200, 71, -30)],
-        "minecraft:string": [(600, 70, 30), (202, 71, -39)],
+        "minecraft:string": [(600, 70, 30), (250, 20, -40), (202, 71, -39), (300, 72, 60)],
     }
 
     class _Catalog:
@@ -148,8 +146,13 @@ def home(monkeypatch):
         "baritone_client.common.navigation.find_nearby_block",
         lambda _client, _blocks, radius=50: placed[-1] if placed else None,
     )
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.goto",
+        lambda _client, x, y, z, **_k: trips.append((x, y, z)) or True,
+    )
     return SimpleNamespace(
-        items=items, calls=calls, stock=stock, far=far, world=world, vertical=vertical
+        items=items, calls=calls, stock=stock, far=far, world=world, trips=trips,
+        chests=chests,
     )
 
 
@@ -296,20 +299,20 @@ def test_string_beyond_home_finishes_a_bed_home_cannot(home):
     home.world["client"] = client
     home.stock["minecraft:string"] = 0
     home.far["minecraft:string"] = 6
+    home.chests["minecraft:string"] = [(600, 70, 30), (250, 20, -40), (300, 72, 60)]
     state = _state()
 
     assert home_respawn.secure_home_respawn(client, state, now=0.0)
     withdrawals = [(call[1], call[2], call[3]) for call in home.calls if call[0] == "withdraw"]
-    # Home first (within reach, recovery access), then an ordinary storage
-    # trip that the storage layer itself may refuse while survival is unsafe.
-    assert ({"minecraft:string": 4}, home_respawn.FAR_STORAGE_RADIUS, None) in withdrawals
-    assert all(radius == 6.0 for _req, radius, _access in withdrawals[:2])
+    # Home first with recovery access, then a wider trip without it, so the
+    # storage layer still refuses while survival is unsafe.
+    assert ({"minecraft:string": 4}, 6.0, False) in withdrawals
     crafts = [call for call in home.calls if call[0] == "craft"]
     assert crafts and crafts[-1][3] == 1
-    # Wider trips stay near the player's level: no cave-chest expeditions.
-    assert home.vertical and all(
-        value == home_respawn.FAR_STORAGE_MAX_VERTICAL for value in home.vertical
-    )
+    # The wider trip goes to the surface chest in range; the cave chest
+    # (51 blocks down) and the out-of-range chest are never travelled to.
+    assert (300, 72, 60) in home.trips
+    assert (250, 20, -40) not in home.trips and (600, 70, 30) not in home.trips
     assert state.custom_data["home_respawn"]["bed"] == [204, 71, -37]
 
 
@@ -322,3 +325,23 @@ def test_bed_is_not_attempted_without_enough_wool_anywhere(home):
     assert not home_respawn.secure_home_respawn(client, state, now=0.0)
     assert not [call for call in home.calls if call[0] in {"craft_bed", "place"}]
     assert "home_respawn" not in state.custom_data
+
+
+def test_wider_storage_waits_until_travel_is_safe(home):
+    client = _Client()
+    home.world["client"] = client
+    home.stock["minecraft:string"] = 0
+    home.far["minecraft:string"] = 6
+    wounded = client.dispatch
+
+    def dispatch(route, payload):
+        data = wounded(route, payload)
+        if route == "get_state":
+            data.update(health=6.8, food_level=15)
+        return data
+
+    client.transport.dispatch = dispatch
+
+    assert not home_respawn.secure_home_respawn(client, _state(), now=0.0)
+    assert not home.trips
+    assert home.far["minecraft:string"] == 6
