@@ -588,7 +588,7 @@ class AdaptiveScheduler:
                         replace(candidate, assigned_role=borrowed.value)
                     )
         # Armour is survival work, offered in every role and phase.
-        if (armor := armor_upkeep.select_armor_opportunity(self.client, signals, self._cooldown_ready(OpportunityKind.ARMOR_UPKEEP, current_time))) is not None:
+        if (armor := armor_upkeep.select_armor_opportunity(self.client, signals, self._cooldown_ready(OpportunityKind.ARMOR_UPKEEP, current_time), self.state)) is not None:
             specialty_candidates.append(armor)
         # Same reasoning as armour: the starter house is a one-time build
         # with no other owner, so it is offered in every role and phase too.

@@ -297,7 +297,9 @@ def armor_work_allowed(signals: Any) -> bool:
     return float(getattr(signals, "health", 0.0) or 0.0) >= ARMOR_MIN_HEALTH
 
 
-def select_armor_opportunity(client: Any, signals: Any, cooldown_ready: bool):
+def select_armor_opportunity(
+    client: Any, signals: Any, cooldown_ready: bool, state: Any = None
+):
     """Offer one bounded armour upkeep action, if it is worth taking."""
 
     if not cooldown_ready or not armor_work_allowed(signals):
@@ -335,7 +337,12 @@ def select_armor_opportunity(client: Any, signals: Any, cooldown_ready: bool):
     # ordinary inventory slots. Anything else needs iron we can actually spend,
     # otherwise this offers work it has no way to complete.
     if not unworn_carried_pieces(client) and not needs_armor(client):
-        return None
+        # Nothing carried to wear or craft: offer recovery (storage, smelting,
+        # bounded mining) when one of its stages has something to try.
+        from .armor_recovery import recovery_ready
+
+        if state is None or not recovery_ready(client, state):
+            return None
     # An unarmoured bot with iron is the single cheapest survival win
     # available, so it outscores routine farming without displacing recovery.
     return LocalOpportunity(
@@ -401,6 +408,19 @@ def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
         after = equipped_pieces(client)
         return True, f"equipped carried armour ({before}->{after})", before, after
 
+    # Nothing carried to finish the set: fetch armour or iron from home
+    # storage, smelt raw iron, and as a bounded last step mine some.
+    from .armor_recovery import recover_armor_materials
+
+    recovered = recover_armor_materials(client, state)
+    if recovered:
+        try:
+            equip_best_armor(client)
+        except (PlayerDeathDetected, SurvivalRecoveryRequired):
+            raise
+        except Exception:
+            pass
+
     # Armour recipes consume ingots, not raw ore.  Leave raw-iron conversion
     # to FOOD_AND_IRON instead of burning a timeout on unaffordable recipes.
     # A worn-out piece is a craft target even at 4/4 equipped -- the count
@@ -438,12 +458,13 @@ def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
     # helmet out, one fresh iron helmet in -- so the count alone would report
     # this as a no-op and reset a caller's no-progress streak on real work.
     replaced_worn_out = len(worn_out_pieces(client)) < len(worn_out_before)
+    note = f"; {recovered}" if recovered else ""
     if after > before or replaced_worn_out:
         made = ", ".join(crafted) if crafted else "carried pieces"
-        return True, f"armour {before}->{after} ({made})", before, after
+        return True, f"armour {before}->{after} ({made}){note}", before, after
     return (
         False,
-        f"armour unchanged at {before}/4 with {carried_iron(client)} iron carried",
+        f"armour unchanged at {before}/4 with {carried_iron(client)} iron carried{note}",
         before,
         after,
     )

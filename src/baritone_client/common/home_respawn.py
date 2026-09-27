@@ -184,7 +184,7 @@ def _withdraw_from_containers(
         if count_item(client, item) >= wanted:
             return
         try:
-            if recovery:
+            if recovery and _flat(chest, here) <= 16:
                 from . import harness_ops
 
                 harness_ops.move_near(client, *chest, timeout=30.0)
@@ -201,6 +201,10 @@ def _withdraw_from_containers(
             raise
         except Exception as exc:
             print(f"HOME RESPAWN: container at {chest} failed ({exc}); trying the next")
+
+
+#: Public name for other recovery steps (armour) that fetch from home storage.
+withdraw_from_home_containers = _withdraw_from_containers
 
 
 def _withdraw_from_home(client: Any, state: Any, anchor, item: str, wanted: int) -> None:
@@ -589,4 +593,4 @@ def secure_home_respawn(client: Any, state: Any, *, now: Optional[float] = None)
     return True
 
 
-__all__ = ["HOME_RESPAWN_KEY", "secure_home_respawn"]
+__all__ = ["HOME_RESPAWN_KEY", "secure_home_respawn", "withdraw_from_home_containers"]
