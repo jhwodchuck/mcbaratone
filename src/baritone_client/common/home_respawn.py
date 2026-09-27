@@ -42,6 +42,8 @@ SHEEP_HUNT_FAILURES_PER_RING = 3
 SHEEP_HUNT_SECTORS = (
     (1, -1), (-1, -1), (1, 1), (-1, 1), (0, -1), (1, 0), (0, 1), (-1, 0),
 )
+#: How many foot positions near home to consider when placing the bed.
+BED_SITE_CANDIDATES = 40
 #: Containers this close to the starter-house origin count as inside it.
 HOUSE_RADIUS = 8.0
 #: The survival loop calls this every few seconds.
@@ -385,19 +387,105 @@ def _obtain_bed(client: Any, state: Any, anchor) -> Optional[str]:
     return _WHITE_BED if crafted and count_item(client, _WHITE_BED) > 0 else None
 
 
-def _place_home_bed(client: Any, state: Any, anchor) -> Optional[Tuple[int, int, int]]:
-    from . import harness_ops
-    from .navigation import find_nearby_block
+_AIRLIKE = {"minecraft:air", "minecraft:cave_air", "minecraft:short_grass",
+            "minecraft:tall_grass", "minecraft:fern", "minecraft:snow",
+            "minecraft:leaf_litter", "minecraft:dandelion", "minecraft:poppy"}
+_NOT_FLOOR = _AIRLIKE | {"minecraft:water", "minecraft:lava", "minecraft:void_air",
+                         "minecraft:powder_snow", "minecraft:farmland", ""}
+_DIRECTIONS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
+
+def _block(client: Any, x: int, y: int, z: int) -> str:
+    try:
+        return str(client.transport.dispatch("get_block", {"x": x, "y": y, "z": z}).get("id", ""))
+    except Exception:
+        return ""
+
+
+def _open_cell(client: Any, cell) -> bool:
+    """Air (or plant) at the cell and above it, standing on solid ground."""
+    x, y, z = cell
+    return (
+        _block(client, x, y, z) in _AIRLIKE
+        and _block(client, x, y + 1, z) in _AIRLIKE
+        and _block(client, x, y - 1, z) not in _NOT_FLOOR
+    )
+
+
+def _bed_candidates(state: Any, anchor) -> list:
+    """House slots first, then open ground in rings around the base anchor."""
+    seen, ordered = set(), []
+    for slot in _bed_slots(state, anchor):
+        if slot not in seen:
+            seen.add(slot)
+            ordered.append(slot)
+    ax, ay, az = (int(v) for v in anchor)
+    ring = sorted(
+        ((ax + dx, ay + 1, az + dz) for dx in range(-6, 7) for dz in range(-6, 7)),
+        key=lambda cell: (abs(cell[0] - ax) + abs(cell[2] - az)),
+    )
+    for cell in ring:
+        if cell not in seen:
+            seen.add(cell)
+            ordered.append(cell)
+    return ordered[:BED_SITE_CANDIDATES]
+
+
+def _bed_layout(client: Any, foot):
+    """Return (direction, stand) giving a free head cell and a stand behind the foot."""
+    if not _open_cell(client, foot):
+        return None
+    for dx, dz in _DIRECTIONS:
+        head = (foot[0] + dx, foot[1], foot[2] + dz)
+        stand = (foot[0] - dx, foot[1], foot[2] - dz)
+        if _open_cell(client, head) and _open_cell(client, stand):
+            return (dx, dz), stand
+    return None
+
+
+def _place_bed_at(client: Any, bed_item: str, foot, direction, stand) -> bool:
+    """Stand behind the foot facing the head's direction, place, verify both halves.
+
+    The bridge places without rotating the player, and a bed's head goes one
+    block in the player's facing direction. A blocked head cell makes the
+    server reject the bed while the client briefly shows it, so both halves
+    are read back after a short delay rather than trusting the placement.
+    """
+    from .inventory import select_item
+    from .navigation import goto
+
+    dx, dz = direction
+    goto(client, *stand, timeout=30, tolerance=0.8)
+    if not select_item(client, bed_item, allow_swap=True):
+        return False
+    client.transport.dispatch(
+        "look_at",
+        {"x": foot[0] + 0.5 + dx * 6, "y": foot[1] + 1.0, "z": foot[2] + 0.5 + dz * 6},
+    )
+    time.sleep(0.2)
+    try:
+        client.transport.dispatch("place_block", {"x": foot[0], "y": foot[1], "z": foot[2]})
+    except Exception as exc:
+        print(f"HOME RESPAWN: bed placement at {foot} refused ({exc})")
+        return False
+    time.sleep(1.0)
+    head = (foot[0] + dx, foot[1], foot[2] + dz)
+    return _is_bed(client, foot) and _is_bed(client, head)
+
+
+def _place_home_bed(client: Any, state: Any, anchor) -> Optional[Tuple[int, int, int]]:
     bed = _obtain_bed(client, state, anchor)
     if bed is None:
         return None
-    for slot in _bed_slots(state, anchor):
-        if harness_ops.place_block_exact(client, *slot, bed, allow_break=False):
-            placed = find_nearby_block(client, list(BED_ITEMS), radius=6)
-            if placed is not None and _flat(placed, anchor) <= HOME_RADIUS:
-                return tuple(placed)
-    print("HOME RESPAWN: no starter-house slot accepted the bed")
+    for foot in _bed_candidates(state, anchor):
+        layout = _bed_layout(client, foot)
+        if layout is None:
+            continue
+        direction, stand = layout
+        if _place_bed_at(client, bed, foot, direction, stand):
+            return tuple(foot)
+        print(f"HOME RESPAWN: bed did not stay at {foot}; trying another site")
+    print("HOME RESPAWN: no site near home accepted the bed")
     return None
 
 
@@ -483,7 +571,8 @@ def secure_home_respawn(client: Any, state: Any, *, now: Optional[float] = None)
         return False
 
     bed = find_nearby_block(client, list(BED_ITEMS), radius=16)
-    if bed is not None and _flat(bed, anchor) > HOME_RADIUS:
+    # A search hit is not proof: re-read the block before relying on it.
+    if bed is not None and (_flat(bed, anchor) > HOME_RADIUS or not _is_bed(client, bed)):
         bed = None
     if bed is None:
         bed = _place_home_bed(client, state, anchor)
