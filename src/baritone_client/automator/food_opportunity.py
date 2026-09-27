@@ -14,6 +14,10 @@ from .phases.iron_age_food import FOOD_ANIMALS
 
 
 MIN_ROLE_FOOD = 14
+#: Minecraft regenerates health only at this food level or above.
+REGEN_FOOD = 18
+#: The scheduler's local-work comfort gate on health.
+LOCAL_WORK_HEALTH = 16.0
 BALANCED_PREPARED_FOOD_TARGET = 32
 
 
@@ -37,10 +41,27 @@ def balanced_prepared_food_hold_reason(signals: Any) -> str:
     )
 
 
+def needs_regeneration_food(food: int, health: float) -> bool:
+    """Wounded below the work threshold with food below the regen floor.
+
+    Health only regenerates at food 18, local work needs health 16, and the
+    survival gate only intervenes below 12. In between a bot with no food
+    can neither heal nor work: live A1 sat 25 minutes in a cave at health
+    15.4 and food 17 doing nothing at all.
+    """
+    return int(food) < REGEN_FOOD and float(health) < LOCAL_WORK_HEALTH
+
+
 def select_food_recovery_opportunity(
-    food: int, cooldown_ready: bool
+    food: int, cooldown_ready: bool, health: float = 20.0
 ) -> LocalOpportunity | None:
-    """Return recovery work when hunger blocks a resource role."""
+    """Return recovery work when hunger blocks a resource role or healing."""
+    if cooldown_ready and not int(food) < MIN_ROLE_FOOD and needs_regeneration_food(food, health):
+        return LocalOpportunity(
+            OpportunityKind.FOOD_RECOVERY,
+            220,
+            "health cannot regenerate below food 18 and local work needs health 16",
+        )
     if int(food) < MIN_ROLE_FOOD and cooldown_ready:
         return LocalOpportunity(
             OpportunityKind.FOOD_RECOVERY,
@@ -217,6 +238,19 @@ def _food_level(client: Any) -> int:
         return 0
 
 
+def _health(client: Any) -> float:
+    try:
+        state = client.transport.dispatch("get_state", {})
+    except Exception:
+        return 20.0
+    if not isinstance(state, Mapping):
+        return 20.0
+    try:
+        return float(state.get("health", 20.0) or 0.0)
+    except (TypeError, ValueError):
+        return 20.0
+
+
 def _current_center(client: Any) -> tuple[float, float, float] | None:
     try:
         state = client.transport.dispatch("get_state", {})
@@ -252,6 +286,8 @@ def run_scheduled_food_recovery(
     unchanged; this only supplies the missing recovery work.
     """
     before = _food_level(client)
+    if needs_regeneration_food(before, _health(client)):
+        minimum_food = max(minimum_food, REGEN_FOOD)
     if before >= minimum_food:
         return True, "food already meets the mining threshold", before, before
 

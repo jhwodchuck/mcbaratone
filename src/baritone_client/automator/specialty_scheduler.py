@@ -38,6 +38,7 @@ def select_specialty_opportunity(
         recovery = food_opportunity.select_food_recovery_opportunity(
             signals.food,
             cooldown_ready(OpportunityKind.FOOD_RECOVERY, current_time),
+            getattr(signals, "health", 20.0),
         )
         if recovery is not None:
             return recovery
