@@ -78,6 +78,7 @@ def _cook_carried(client: Any, state: Any) -> int:
     from . import harness_ops
     from .inventory import count_item
     from .resources import _prepare_safe_furnace_fuel
+    from .tasks import PlayerDeathDetected
 
     gained = 0
     for raw, cooked in RAW_TO_COOKED.items():
@@ -93,7 +94,14 @@ def _cook_carried(client: Any, state: Any) -> int:
             print("LIVESTOCK: no safe furnace fuel; raw meat stays raw for now")
             return gained
         before = count_item(client, cooked)
-        harness_ops.smelt_in_furnace(client, furnace, raw, fuel, cooked, count)
+        try:
+            harness_ops.smelt_in_furnace(client, furnace, raw, fuel, cooked, count)
+        except PlayerDeathDetected:
+            raise
+        except Exception as exc:
+            # A refused furnace click must not abort the whole food cycle;
+            # whatever did cook is still counted below.
+            print(f"LIVESTOCK: cooking {raw} failed ({exc})")
         gained += max(0, count_item(client, cooked) - before)
     return gained
 

@@ -156,3 +156,17 @@ def test_balanced_food_production_runs_livestock_before_wheat(monkeypatch):
 
     assert order == [("livestock", 32), ("wheat", None)]
     assert success and "cooked 6" in detail and "harvested 0 wheat" in detail
+
+
+def test_a_refused_furnace_click_does_not_abort_the_cycle(world, monkeypatch):
+    def refuse(*_a, **_k):
+        raise RuntimeError("Observed effect deadline exceeded; reconcile before retry")
+
+    monkeypatch.setattr("baritone_client.common.harness_ops.smelt_in_furnace", refuse)
+
+    result = livestock_food.run_livestock_food_cycle(
+        world, _state(), prepared_now=2, target=32
+    )
+
+    assert world.hunts and result.hunted > 0
+    assert result.cooked == 0
