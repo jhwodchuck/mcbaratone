@@ -14,6 +14,8 @@ import time
 from math import hypot
 from typing import Any, Mapping, Optional, Tuple
 
+from .navigation import allow_recovery_navigation
+
 #: Only tend a farm the player can reach without a real journey.
 SURVIVAL_FARM_REACH = 16.0
 #: The survival loop calls this every few seconds; the farm needs minutes.
@@ -74,6 +76,7 @@ def _bake_and_eat(client: Any) -> bool:
     return bool(eat_until_hunger(client, minimum_food=20))
 
 
+@allow_recovery_navigation
 def tend_local_farm_for_food(
     client: Any,
     state: Any,
