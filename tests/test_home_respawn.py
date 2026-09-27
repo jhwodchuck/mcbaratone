@@ -28,6 +28,8 @@ class _Client:
         self.dead = dead
         self.blocks = {}
         self.routes = []
+        self.look = (0, 0)
+        self.placements = []
         self.transport = SimpleNamespace(dispatch=self.dispatch)
 
     def dispatch(self, route, payload):
@@ -40,7 +42,22 @@ class _Client:
                 "block_position": {"x": x, "y": y, "z": z},
             }
         if route == "get_block":
-            return {"id": self.blocks.get((payload["x"], payload["y"], payload["z"]), "minecraft:air")}
+            key = (payload["x"], payload["y"], payload["z"])
+            ground = "minecraft:stone" if payload["y"] <= 70 else "minecraft:air"
+            return {"id": self.blocks.get(key, ground)}
+        if route == "look_at":
+            self.look = (payload["x"], payload["z"])
+            return {}
+        if route == "place_block":
+            # Like the game: the head goes one block in the facing direction.
+            x, y, z = payload["x"], payload["y"], payload["z"]
+            lx, lz = self.look
+            dx = (lx > x + 1) - (lx < x)
+            dz = (lz > z + 1) - (lz < z)
+            self.blocks[(x, y, z)] = "minecraft:white_bed"
+            self.blocks[(x + dx, y, z + dz)] = "minecraft:white_bed"
+            self.placements.append(((x, y, z), (dx, dz)))
+            return {"accepted": True}
         if route == "get_events":
             if payload.get("after_seq") == 0:
                 return {"events": [], "latest_seq": 10}
@@ -144,7 +161,14 @@ def home(monkeypatch):
     monkeypatch.setattr(harness_ops, "place_block_exact", place)
     monkeypatch.setattr(
         "baritone_client.common.navigation.find_nearby_block",
-        lambda _client, _blocks, radius=50: placed[-1] if placed else None,
+        lambda _client, _blocks, radius=50: next(
+            (key for key, block in world["client"].blocks.items() if block.endswith("_bed")),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.select_item",
+        lambda _client, item, **_k: items.get(item, 0) > 0,
     )
     monkeypatch.setattr(
         "baritone_client.common.navigation.goto",
@@ -178,7 +202,8 @@ def test_bed_is_crafted_from_home_wool_and_string_placed_used_and_recorded(home)
     assert [slot for _item, slot in craft[2]] == [1, 2, 4, 5]
     assert ("craft_bed", "minecraft:white_bed") in home.calls
     bed = [204, 71, -37]
-    assert ("place", tuple(bed), "minecraft:white_bed") in home.calls
+    assert client.placements == [((204, 71, -37), (1, 0))]
+    assert client.blocks[(205, 71, -37)] == "minecraft:white_bed"
     assert "interact_block" in client.routes
     assert state.custom_data["home_respawn"]["bed"] == bed
     assert state.custom_data["home_respawn"]["evidence"] == "chat"
@@ -238,13 +263,58 @@ def test_away_from_home_hostiles_and_cooldown_do_nothing(home, monkeypatch):
 def test_a_bed_far_from_home_is_not_accepted(home, monkeypatch):
     client = _Client()
     home.world["client"] = client
+    client.blocks[(-1629, 63, -89)] = "minecraft:white_bed"
     monkeypatch.setattr(
         "baritone_client.common.navigation.find_nearby_block",
         lambda *_a, **_k: (-1629, 63, -89),
     )
+    state = _state()
 
-    assert not home_respawn.secure_home_respawn(client, _state(), now=0.0)
-    assert "interact_block" not in client.routes
+    assert home_respawn.secure_home_respawn(client, state, now=0.0)
+    assert state.custom_data["home_respawn"]["bed"] == [204, 71, -37]
+
+
+def test_a_phantom_bed_search_hit_is_not_used(home, monkeypatch):
+    # The live search reported a bed the server had already rejected.
+    client = _Client()
+    home.world["client"] = client
+    calls = {"n": 0}
+
+    def phantom_then_real(_client, _blocks, radius=50):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return (203, 71, -39)  # air in this world
+        return None
+
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.find_nearby_block", phantom_then_real
+    )
+    state = _state()
+
+    assert home_respawn.secure_home_respawn(client, state, now=0.0)
+    assert state.custom_data["home_respawn"]["bed"] == [204, 71, -37]
+
+
+def test_bed_whose_head_is_rejected_moves_to_another_site(home):
+    client = _Client()
+    home.world["client"] = client
+    original = client.dispatch
+
+    def reject_first(route, payload):
+        data = original(route, payload)
+        if route == "place_block" and len(client.placements) == 1:
+            # Server refused the bed: both halves revert to air.
+            (x, y, z), (dx, dz) = client.placements[0]
+            client.blocks.pop((x, y, z), None)
+            client.blocks.pop((x + dx, y, z + dz), None)
+        return data
+
+    client.transport.dispatch = reject_first
+    state = _state()
+
+    assert home_respawn.secure_home_respawn(client, state, now=0.0)
+    assert len(client.placements) == 2
+    assert state.custom_data["home_respawn"]["bed"] != [204, 71, -37]
 
 
 def test_survival_gate_secures_respawn_even_while_critical(monkeypatch):
