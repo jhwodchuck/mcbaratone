@@ -149,6 +149,11 @@ def unworn_carried_pieces(client: Any) -> list[str]:
     while holding 2 iron and having nothing it could do -- seven identical
     "armour unchanged at 1/4 with 2 iron carried" runs. A piece only counts as
     unworn when there is one more of it than the bot is wearing.
+
+    A spare of a piece already worn only counts when it is fresher than the
+    worn one: live A1 2026-09-28 wore iron boots with 43 uses left and carried
+    a second pair with 26, and was offered this work every cooldown with
+    nothing it could improve.
     """
     from ..common.inventory import get_equipped_armor
 
@@ -160,7 +165,29 @@ def unworn_carried_pieces(client: Any) -> list[str]:
         piece
         for piece, _cost in ARMOR_PLAN
         if _count(client, piece) > (1 if piece in worn else 0)
+        and (piece not in worn or _spare_is_fresher(client, piece))
     ]
+
+
+def _spare_is_fresher(client: Any, piece: str) -> bool:
+    """Whether a carried copy of ``piece`` outlasts the one being worn."""
+    from ..common.combat_loadout import remaining_durability
+    from ..common.inventory import get_equipped_armor_details
+
+    def left(item: Any) -> float:
+        value = remaining_durability(item) if isinstance(item, dict) else None
+        return float("inf") if value is None else float(value)
+
+    try:
+        response = client.transport.dispatch("get_inventory", {})
+        data = response.get("data", response)
+        carried = [i for i in data.get("inventory", []) if i.get("id") == piece]
+        worn = [i for i in get_equipped_armor_details(client).values() if i.get("id") == piece]
+    except Exception:
+        return False
+    if not carried or not worn:
+        return bool(carried)
+    return max(map(left, carried)) > min(map(left, worn))
 
 
 def in_freezing_biome(client: Any) -> bool:
