@@ -18,6 +18,9 @@ LIVESTOCK: Tuple[Tuple[str, str, str], ...] = (
     ("cow", "minecraft:beef", "minecraft:cooked_beef"),
     ("chicken", "minecraft:chicken", "minecraft:cooked_chicken"),
     ("pig", "minecraft:porkchop", "minecraft:cooked_porkchop"),
+    # Last: the wool source, but a kept pair still shears and breeds. Live A1
+    # 2026-09-28 had 5 sheep in range and one of each other family.
+    ("sheep", "minecraft:mutton", "minecraft:cooked_mutton"),
 )
 #: Any carried raw meat is cooked, whatever produced it.
 RAW_TO_COOKED = {
