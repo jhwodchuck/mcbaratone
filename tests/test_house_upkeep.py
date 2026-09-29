@@ -34,10 +34,15 @@ def test_select_returns_none_below_health_floor():
     ) is None
 
 
-def test_select_returns_none_with_nearby_hostiles():
-    signals = _signals(nearby_hostiles=1)
+def test_repair_waits_for_calm_but_lighting_does_not():
+    # House repair keeps its calm-moment gate; lighting is the fix for
+    # hostiles, so one or two nearby must not block it.
+    offered = house_upkeep.select_house_upkeep_opportunity(
+        _house_state(), _signals(nearby_hostiles=1), cooldown_ready=True
+    )
+    assert offered is not None and "dark spots" in offered.reason
     assert house_upkeep.select_house_upkeep_opportunity(
-        _house_state(), signals, cooldown_ready=True
+        _house_state(), _signals(nearby_hostiles=3), cooldown_ready=True
     ) is None
 
 
@@ -47,8 +52,14 @@ def test_select_returns_none_without_a_persisted_origin():
     ) is None
 
 
-def test_select_returns_none_once_marked_repaired():
+def test_repaired_house_offers_lighting_only_when_due():
     state = _house_state(repaired=True)
+    offered = house_upkeep.select_house_upkeep_opportunity(
+        state, _signals(), cooldown_ready=True
+    )
+    assert offered is not None and "dark spots" in offered.reason
+
+    state.custom_data["base_lighting"] = {"next_check": 4102444800.0}  # far future
     assert house_upkeep.select_house_upkeep_opportunity(
         state, _signals(), cooldown_ready=True
     ) is None
