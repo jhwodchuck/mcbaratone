@@ -2223,3 +2223,31 @@ def test_clear_occluded_chest_face_never_digs_another_container(monkeypatch):
     client = SimpleNamespace(transport=Transport())
     inv._clear_occluded_chest_face(client, (-432, 78, 2), "minecraft:chest")
     assert broken == [], "must not break an adjacent container"
+
+
+def test_clear_occluded_chest_face_never_breaks_machinery_or_lighting():
+    """Live 2026-09-29: a forester tried to break the sorter's intake hoppers."""
+    from baritone_client.common import inventory as inv
+
+    state = {"block_position": {"x": 580.0, "y": 80.0, "z": -308.0}}
+    blocks = {
+        (580, 81, -309): "minecraft:hopper",
+        (579, 81, -309): "minecraft:hopper",
+        (579, 80, -308): "minecraft:wall_torch",
+        (579, 81, -308): "minecraft:redstone_wire",
+    }
+    broken = []
+
+    class Transport:
+        def dispatch(self, route, payload):
+            if route == "get_state":
+                return {"data": state}
+            if route == "get_block":
+                return {"id": blocks.get((payload["x"], payload["y"], payload["z"]), "minecraft:air")}
+            if route == "break_block":
+                broken.append((payload["x"], payload["y"], payload["z"]))
+            return {}
+
+    client = SimpleNamespace(transport=Transport())
+    inv._clear_occluded_chest_face(client, (579, 80, -309), "minecraft:chest")
+    assert broken == []
