@@ -95,9 +95,39 @@ def test_torch_spot_is_on_ground_under_canopy_and_never_on_water(world):
     assert base_lighting.torch_spot(world.live, 101, 101, 70) is None
 
 
+def test_covered_hollow_under_a_floor_is_a_spot_too(world):
+    # A house floor at y=74 over an air pocket at y=71..73: both the room
+    # above and the dark hollow below get a torch (mobs spawned in the hollow).
+    floor = world.live.block
+
+    def block(x, y, z):
+        if (x, z) == (100, 100) and y == 74:
+            return "minecraft:cobblestone"
+        return floor(x, y, z)
+
+    world.live.block = block
+    assert base_lighting.torch_spots(world.live, 100, 100, 72) == [
+        (100, 75, 100),
+        (100, 71, 100),
+    ]
+    # Open ground keeps a single spot: no stacking torches in open air.
+    assert base_lighting.torch_spots(world.live, 101, 100, 72) == [(101, 71, 100)]
+
+
+def test_a_torch_on_the_floor_above_does_not_light_the_hollow_below():
+    assert base_lighting._lit((0, 71, 0), [(0, 73, 0)])
+    assert not base_lighting._lit((0, 71, 0), [(0, 79, 0)])
+
+
+def test_house_centre_and_home_chests_are_always_checked():
+    state = _state({"storage": {"supply": [90, 70, 90], "mine": [80, -50, 80]}})
+    assert base_lighting.interior_columns(state) == [(103, 103), (90, 90)]
+
+
 def test_light_base_places_a_bounded_batch_on_dark_cells_and_schedules_next(world):
     state = _state()
-    cells = base_lighting.grid_points(base_lighting.lighting_zone(state))
+    grid = base_lighting.grid_points(base_lighting.lighting_zone(state))
+    cells = list(dict.fromkeys(grid + base_lighting.interior_columns(state)))
     world.live.torches = [(cells[0][0], 71, cells[0][1])]  # one cell already lit
 
     placed, remaining, detail = base_lighting.light_base(world.live, state, now=1000.0)
@@ -117,7 +147,8 @@ def test_light_base_places_a_bounded_batch_on_dark_cells_and_schedules_next(worl
 
 def test_fully_lit_base_places_nothing_and_rechecks_later(world):
     state = _state()
-    cells = base_lighting.grid_points(base_lighting.lighting_zone(state))
+    grid = base_lighting.grid_points(base_lighting.lighting_zone(state))
+    cells = grid + base_lighting.interior_columns(state)
     world.live.torches = [(x, 71, z) for x, z in cells]
 
     placed, remaining, _detail = base_lighting.light_base(world.live, state, now=1000.0)
