@@ -366,7 +366,7 @@ def test_worn_armour_is_not_mistaken_for_a_spare(monkeypatch):
 
 
 def test_a_genuine_spare_is_still_detected(monkeypatch):
-    """Wearing one helmet while carrying a second is real, equippable work."""
+    """A second helmet is equippable work once the worn one is failing."""
     import baritone_client.common.inventory as inv
 
     client = _Client(iron=0, worn=1)
@@ -374,9 +374,29 @@ def test_a_genuine_spare_is_still_detected(monkeypatch):
     monkeypatch.setattr(
         inv, "get_equipped_armor", lambda _c: {"head": "minecraft:iron_helmet"}
     )
+    monkeypatch.setattr(armor_upkeep, "_spare_is_fresher", lambda _c, _piece: True)
 
     assert armor_upkeep.unworn_carried_pieces(client) == ["minecraft:iron_helmet"]
     assert armor_upkeep.select_armor_opportunity(client, _signals(), True) is not None
+
+
+def test_a_spare_of_a_healthy_worn_piece_is_not_work(monkeypatch):
+    """Live A1 2026-09-28: spare iron boots re-offered armour upkeep forever."""
+    import baritone_client.common.inventory as inv
+
+    client = _Client(iron=3, worn=1)
+    monkeypatch.setattr(inv, "count_item", lambda _c, item: 2 if "boots" in item else 0)
+    monkeypatch.setattr(inv, "get_equipped_armor", lambda _c: {"feet": "minecraft:iron_boots"})
+    boots = {"id": "minecraft:iron_boots", "max_damage": 195}
+    monkeypatch.setattr(
+        inv, "get_equipped_armor_details", lambda _c: {"feet": dict(boots, damage=152)}
+    )
+    spare = [dict(boots, slot=0, damage=169, count=1)]
+    client.transport = SimpleNamespace(dispatch=lambda route, _p: {"inventory": spare})
+
+    assert armor_upkeep.unworn_carried_pieces(client) == []  # 26 uses < 43 worn
+    spare[0]["damage"] = 10
+    assert armor_upkeep.unworn_carried_pieces(client) == ["minecraft:iron_boots"]
 
 
 def test_no_iron_and_no_spare_is_never_offered(monkeypatch):
