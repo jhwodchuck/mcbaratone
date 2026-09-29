@@ -89,3 +89,18 @@ def wait_with_bridge_keepalive(
         remaining_duration = max(0.0, deadline - monotonic())
 
     return all_probes_succeeded
+
+
+def hold_between_turns(client, *, duration: float) -> bool:
+    """Pause the controller loop; a death in the pause goes to its recovery.
+
+    ``wait_with_bridge_keepalive`` re-raises a death that happens *during* the
+    pause, by design. The controller loop's own pauses had no handler for it:
+    live A1 2026-09-28 was shot mid-hold, the exception reached main(), and the
+    controller crashed into a supervisor restart. The loop checks for death
+    before every turn, so returning is enough to recover in place.
+    """
+    try:
+        return wait_with_bridge_keepalive(client, duration=duration)
+    except PlayerDeathDetected:
+        return False

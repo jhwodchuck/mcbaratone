@@ -12,7 +12,7 @@ from .objective import ObjectivePlanner, default_objectives
 from .adaptive_scheduler import AdaptiveScheduler
 from .postgame_lifecycle import PersistentPostgameLifecycle
 from .objective_survival import recover_survival_before_objective
-from .pacing import wait_with_bridge_keepalive
+from .pacing import hold_between_turns
 from .progress_control import progression_fingerprint
 from .coordination_hub import CoordinationHub, SystemEvent, EventType
 from .systems import SafetySystem, HungerSystem, MappingSystem
@@ -404,7 +404,7 @@ class EndGameAutomator:
                 # unrelated objective work.
                 if not recover_survival_before_objective(self.client, self.state, self.strategy):
                     self._save_checkpoint()
-                    wait_with_bridge_keepalive(self.client, duration=5.0)
+                    hold_between_turns(self.client, duration=5.0)
                     continue
 
                 # The adaptive scheduler may run one cooldown-protected local
@@ -420,7 +420,7 @@ class EndGameAutomator:
                 if obj is None:
                     if decision.role_hold:
                         print(decision.summary)
-                        wait_with_bridge_keepalive(self.client, duration=30.0)
+                        hold_between_turns(self.client, duration=30.0)
                         continue
                     self._maintain_stalled_objective_graph()
                     continue
@@ -479,7 +479,7 @@ class EndGameAutomator:
                             "budget and was abandoned for this checkpoint."
                         )
                     if interruption in {"incremental_progress", "pacing_hold"}:
-                        wait_with_bridge_keepalive(self.client, duration=30.0)
+                        hold_between_turns(self.client, duration=30.0)
                     elif interruption == "survival_recovery":
                         time.sleep(max(1.0, min(5.0, self.executor.retry_delay)))
                     continue
