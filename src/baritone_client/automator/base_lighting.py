@@ -38,9 +38,12 @@ RECHECK_PENDING = 300.0
 RECHECK_DONE = 1800.0
 MIN_HEALTH = 14.0
 MAX_HOSTILES = 2
-#: Covered floors this far below the base are lit (the hollow under a house,
-#: a basement); anything deeper is cave, which is not ours to walk into.
-COVERED_DEPTH = 6
+#: Covered floors are lit only down to this far below the base's level: the
+#: house interior, never the hollow under it. Live A1 2026-09-28 (#32 allowed
+#: 6) walked into the cavity below its house to place a torch; the cavity
+#: opened into a cave and a skeleton shot it dead at y=70.6. A torch does not
+#: make a cave safe, and descending into one at 14 HP is the danger itself.
+COVERED_DEPTH = 1
 
 TORCHES = ("minecraft:torch", "minecraft:wall_torch", "minecraft:lantern", "minecraft:soul_torch")
 _AIRLIKE = {
