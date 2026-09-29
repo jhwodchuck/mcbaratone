@@ -304,6 +304,8 @@ def recover_food_from_known_sources(
             state, food_animals,
             anchor=(position.get("x", 0), position.get("y", 0), position.get("z", 0)),
         )
+    if not source:
+        source = _visible_herd_source(client, food_animals)
     location = source.get("location") if isinstance(source, dict) else None
     if not (
         isinstance(location, (list, tuple))
@@ -337,6 +339,51 @@ def recover_food_from_known_sources(
             f"the source after {failures} failed visits."
         )
     return False
+
+
+#: Animal families recovery may take from a herd it can see, cheapest first.
+VISIBLE_HERD_FAMILIES = ("cow", "pig", "chicken", "sheep")
+VISIBLE_HERD_RADIUS = 48
+
+
+def _visible_herd_source(client, food_animals) -> dict:
+    """A herd in view, used when none was ever persisted.
+
+    Live A1 2026-09-28 had 9 cows, 5 pigs and 5 chickens within 60 blocks,
+    yet recovery only consulted persisted herd records -- there were none,
+    since its food source is a crop farm -- and walked a blind 90-block food
+    search into skeletons at food 6. The herd must be big enough to leave a
+    breeding pair unless the bot is starving.
+    """
+    from ..common.husbandry import _animals_of_type
+
+    minimum = 1 if _starving(client) else 3
+    for family in VISIBLE_HERD_FAMILIES:
+        if family not in food_animals:
+            continue
+        try:
+            herd = _animals_of_type(client, family, VISIBLE_HERD_RADIUS, adults_only=False)
+        except Exception:
+            continue
+        if len(herd) < minimum:
+            continue
+        nearest = min(herd, key=lambda entity: float(entity.get("distance", 1e9) or 1e9))
+        position = nearest.get("position") or {}
+        try:
+            location = [int(float(position[axis])) for axis in ("x", "y", "z")]
+        except (KeyError, TypeError, ValueError):
+            continue
+        raw_item, cooked_item = food_animals[family]
+        print(f"  RECOVERY: using a visible {family} herd ({len(herd)} in view) for food")
+        return {
+            "type": "visible_animal_herd",
+            "animal_type": family,
+            "location": location,
+            "raw_item": raw_item,
+            "cooked_item": cooked_item,
+            "verified": True,
+        }
+    return {}
 
 
 def _nearest_verified_food_location(state, food_animals, *, anchor=None) -> dict:

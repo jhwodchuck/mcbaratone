@@ -622,3 +622,58 @@ def test_submerged_food_selection_rejects_distant_fish(monkeypatch):
 
     assert target is None
     assert radii == [5]
+
+
+def test_recovery_hunts_a_visible_herd_when_none_was_persisted():
+    """Live A1 2026-09-28: 9 cows in view, no persisted herd, blind search death."""
+    cows = [
+        {"type": "minecraft:cow", "distance": d, "position": {"x": -449.3, "y": 93.0, "z": -13.2}}
+        for d in (31, 39, 40, 45)
+    ]
+
+    def dispatch(route, *_args, **_kwargs):
+        if route == "get_entities":
+            return {"entities": cows}
+        return {"block_position": {"x": -423, "y": 80, "z": -3}, "food_level": 8}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    state = SimpleNamespace(checkpoint_dir=None, custom_data={})
+    calls = []
+
+    def visit(_client, requirements, animal, **kwargs):
+        calls.append((animal, kwargs["location"], kwargs["preserve_breeding_pair"], requirements))
+        return True
+
+    assert recover_food_from_known_sources(
+        client,
+        state,
+        {"cow": ("minecraft:beef", "minecraft:cooked_beef")},
+        withdraw_fn=lambda *_a, **_k: -1,
+        eat_fn=lambda *_a, **_k: True,
+        visit_herd_fn=visit,
+    )
+    assert calls == [("cow", [-449, 93, -13], True, {"minecraft:beef": 3})]
+
+
+def test_a_visible_pair_alone_is_left_unless_starving():
+    pair = [
+        {"type": "minecraft:cow", "distance": 20, "position": {"x": 1, "y": 70, "z": 1}}
+    ] * 2
+    food = {"level": 8}
+
+    def dispatch(route, *_args, **_kwargs):
+        if route == "get_entities":
+            return {"entities": pair}
+        return {"block_position": {"x": 0, "y": 70, "z": 0}, "food_level": food["level"]}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    state = SimpleNamespace(checkpoint_dir=None, custom_data={})
+    kwargs = dict(
+        withdraw_fn=lambda *_a, **_k: -1,
+        eat_fn=lambda *_a, **_k: True,
+        visit_herd_fn=lambda *_a, **_k: True,
+    )
+    animals = {"cow": ("minecraft:beef", "minecraft:cooked_beef")}
+    assert not recover_food_from_known_sources(client, state, animals, **kwargs)
+    food["level"] = 4
+    assert recover_food_from_known_sources(client, state, animals, **kwargs)
