@@ -95,23 +95,25 @@ def test_torch_spot_is_on_ground_under_canopy_and_never_on_water(world):
     assert base_lighting.torch_spot(world.live, 101, 101, 70) is None
 
 
-def test_covered_hollow_under_a_floor_is_a_spot_too(world):
-    # A house floor at y=74 over an air pocket at y=71..73: both the room
-    # above and the dark hollow below get a torch (mobs spawned in the hollow).
-    floor = world.live.block
+def test_covered_room_is_lit_but_the_hollow_under_the_floor_is_not(world):
+    # Roof at y=74 over a room floored at y=70: the covered room cell is a
+    # spot. A floor at y=67 over a hollow at y=64..66: the bot must never
+    # descend there (live A1 was shot dead by a skeleton in such a cavity).
+    under = world.live.block
 
     def block(x, y, z):
-        if (x, z) == (100, 100) and y == 74:
+        if (x, z) == (100, 100) and y in (74, 67):
             return "minecraft:cobblestone"
-        return floor(x, y, z)
+        if (x, z) == (100, 100) and y < 67:
+            return "minecraft:air" if y > 63 else "minecraft:stone"
+        if (x, z) == (100, 100) and 67 < y <= 70:
+            return "minecraft:air" if y > 67 else under(x, y, z)
+        return under(x, y, z)
 
     world.live.block = block
-    assert base_lighting.torch_spots(world.live, 100, 100, 72) == [
-        (100, 75, 100),
-        (100, 71, 100),
-    ]
+    assert base_lighting.torch_spots(world.live, 100, 100, 69) == [(100, 75, 100), (100, 68, 100)]
     # Open ground keeps a single spot: no stacking torches in open air.
-    assert base_lighting.torch_spots(world.live, 101, 100, 72) == [(101, 71, 100)]
+    assert base_lighting.torch_spots(world.live, 101, 100, 70) == [(101, 71, 100)]
 
 
 def test_a_torch_on_the_floor_above_does_not_light_the_hollow_below():
