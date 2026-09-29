@@ -602,8 +602,8 @@ class AdaptiveScheduler:
             return max(specialty_candidates, key=lambda candidate: candidate.score)
         if role is not FleetRole.BALANCED:
             return None
-        if not signals.safe_for_local_work:
-            return None
+        if not signals.safe_for_local_work:  # self-gated safety work still runs
+            return max(specialty_candidates, key=lambda c: c.score) if specialty_candidates else None
         candidates = specialty_candidates
         pairs = signals.animal_pairs()
         for family, pair_count in pairs.items():

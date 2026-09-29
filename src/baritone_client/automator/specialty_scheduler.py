@@ -43,7 +43,9 @@ def select_specialty_opportunity(
         if recovery is not None:
             return recovery
     if role is FleetRole.BALANCED:
-        if signals.safe_for_local_work:
+        from .local_opportunity import survival_work_allowed
+
+        if signals.safe_for_local_work or survival_work_allowed(signals):
             return food_opportunity.select_balanced_food_production_opportunity(
                 signals, state, completed,
                 cooldown_ready(OpportunityKind.FOOD_PRODUCTION, current_time),

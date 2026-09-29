@@ -1146,3 +1146,54 @@ def test_profile_secondary_work_does_not_consume_borrowed_duty_cooldown(
 
     assert result.success
     assert "last_borrowed_specialty_at" not in state.custom_data["adaptive_scheduler"]
+
+
+def test_balanced_role_still_runs_self_gated_safety_work_with_a_hostile_near(monkeypatch):
+    # Live A1: one distant mob was almost always within 24 blocks, so the
+    # zero-hostile comfort gate returned before armour or base lighting could
+    # be considered, and the bot only ever defended and waited.
+    planner = _post_food_planner()
+    state = _state(
+        {"structures": {"starter_house": {"origin": [0, 64, 0], "repaired": True}}}
+    )
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    armour = LocalOpportunity(OpportunityKind.ARMOR_UPKEEP, 180, "0/4 armour worn")
+    monkeypatch.setattr(
+        adaptive.armor_upkeep, "select_armor_opportunity", lambda *_a, **_k: armour
+    )
+    monkeypatch.setattr(specialty, "select_self_defense", lambda _signals: None)
+    signals = _signals(nearby_hostiles=1)
+    assert not signals.safe_for_local_work
+
+    opportunity = scheduler.select_local_opportunity(
+        signals, planner.completed_phases(), now=1000.0, role=FleetRole.BALANCED
+    )
+
+    assert opportunity is armour
+
+
+def test_balanced_food_production_tolerates_a_distant_hostile(monkeypatch):
+    planner = _post_food_planner()
+    state = _state({"strategic_state": {"blocking_condition": "prepared_food_32"}})
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    monkeypatch.setattr(specialty, "select_self_defense", lambda _signals: None)
+    signals = _signals(nearby_hostiles=1, inventory={"minecraft:bread": 3})
+
+    opportunity = scheduler.select_local_opportunity(
+        signals, planner.completed_phases(), now=1000.0, role=FleetRole.BALANCED
+    )
+
+    assert opportunity is not None
+    assert opportunity.kind is OpportunityKind.FOOD_PRODUCTION
+
+
+def test_balanced_role_holds_when_hostiles_crowd_in(monkeypatch):
+    planner = _post_food_planner()
+    state = _state({"strategic_state": {"blocking_condition": "prepared_food_32"}})
+    scheduler = AdaptiveScheduler(SimpleNamespace(), SimpleNamespace(), state)
+    monkeypatch.setattr(specialty, "select_self_defense", lambda _signals: None)
+    signals = _signals(nearby_hostiles=3, inventory={"minecraft:bread": 3})
+
+    assert scheduler.select_local_opportunity(
+        signals, planner.completed_phases(), now=1000.0, role=FleetRole.BALANCED
+    ) is None

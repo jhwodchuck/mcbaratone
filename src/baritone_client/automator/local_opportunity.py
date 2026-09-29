@@ -101,6 +101,24 @@ def local_work_blockers(signals: object) -> Tuple[str, ...]:
     return tuple(blockers)
 
 
+def survival_work_allowed(signals: object) -> bool:
+    """Gate for work that improves safety itself (food, armour, lighting).
+
+    The comfort gate demands zero hostiles within 24 blocks. At a base
+    where one mob is almost always in range, that blocked every such step
+    for the balanced role: live A1 did nothing but self-defense and holds
+    while the work that would make it safe never ran. This gate still
+    needs a real margin, but tolerates a couple of distant mobs.
+    """
+    return (
+        bool(getattr(signals, "observed", False))
+        and "overworld" in str(getattr(signals, "dimension", "") or "")
+        and float(getattr(signals, "health", 0.0) or 0.0) >= 14.0
+        and int(getattr(signals, "food", 0) or 0) >= 10
+        and int(getattr(signals, "nearby_hostiles", 0) or 0) <= 2
+    )
+
+
 def local_work_hold_reason(signals: object) -> str:
     """Return one log-ready phrase explaining a hold, blocked or not.
 
@@ -119,5 +137,6 @@ __all__ = [
     "OpportunityKind",
     "local_work_blockers",
     "local_work_hold_reason",
+    "survival_work_allowed",
     "record_opportunity_result",
 ]
