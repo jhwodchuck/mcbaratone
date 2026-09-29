@@ -32,6 +32,18 @@ _STORED_FOOD_TARGETS = {
 MAX_FOOD_SEARCH_ANCHOR_DRIFT = 96.0
 
 
+
+#: Food level at or below which the last breeding pair may be eaten.
+STARVING_FOOD = 6
+
+
+def _starving(client) -> bool:
+    try:
+        live = client.transport.dispatch("get_state", {})
+        return int(live.get("food_level", live.get("food", 20))) <= STARVING_FOOD
+    except Exception:
+        return False  # unknown: keep the herd renewable
+
 def checkpointed_wheat_farm_origin(state: Any) -> Optional[tuple[int, int, int]]:
     """Return a crop-farm candidate across current and legacy checkpoint keys.
 
@@ -307,9 +319,11 @@ def recover_food_from_known_sources(
         {raw_item: 3},
         animal_type,
         # Survival recovery is a last-resort meal, not a farm-maintenance
-        # pass. Requiring two survivors can turn a usable observed herd into
-        # a false failure when only one loaded animal remains.
-        preserve_breeding_pair=False,
+        # pass: only a starving bot may eat the breeding pair. This path
+        # also serves the regen gap (food 16-17 with health below 16), and
+        # there it ate the last pair of every family live A1 had within a
+        # day, leaving no herd to recover from the next time.
+        preserve_breeding_pair=not _starving(client),
         location=location,
     ) and eat_fn(client, minimum_food=12)
     if recovered:

@@ -418,8 +418,25 @@ def test_known_food_recovery_uses_nearest_persisted_food_landmark():
     )
 
     assert recovered
-    assert calls == [("pig", [148, 65, -143], False), ("eat",)]
+    # Not starving: the last pair stays (live A1 lost every herd to this path).
+    assert calls == [("pig", [148, 65, -143], True), ("eat",)]
     assert client._safe_recovery_navigation_depth == 0
+
+    calls.clear()
+    client.transport.dispatch = lambda *_args: {
+        "block_position": {"x": 200, "y": 64, "z": -100},
+        "food_level": 4,
+    }
+    assert recover_food_from_known_sources(
+        client,
+        state,
+        {"pig": ("minecraft:porkchop", "minecraft:cooked_porkchop"),
+         "cow": ("minecraft:beef", "minecraft:cooked_beef")},
+        withdraw_fn=lambda *_args, **_kwargs: -1,
+        eat_fn=lambda *_args, **_kwargs: calls.append(("eat",)) or len(calls) > 1,
+        visit_herd_fn=visit,
+    )
+    assert calls[0] == ("pig", [148, 65, -143], False)  # starving: eat the pair
 
 
 def test_known_food_recovery_marks_storage_open_as_survival_recovery():
