@@ -29,6 +29,16 @@ from .local_opportunity import LocalOpportunity, OpportunityKind
 # caller's behavior.
 _MAX_TICKS = 6
 _TICK_BUDGET_SECONDS = 20.0
+#: After a pass in which the defense state machine found nothing to act on,
+#: trust that verdict this long unless more hostiles show up. Without it a
+#: distant, non-aggressive mob inside the 24-block count re-selected
+#: SELF_DEFENSE every cycle and preempted all other work: live A1 logged
+#: "resolved (clear); nearby hostiles 1->1" 74 times in ten minutes for a
+#: skeleton 22 blocks away, while food, armour and lighting never ran.
+#: Real threats are still met by the defense that runs on every movement
+#: tick and in the safety system.
+QUIET_SECONDS = 45.0
+_quiet = {"until": 0.0, "hostiles": 0}
 
 
 def select_self_defense(signals: object) -> LocalOpportunity | None:
@@ -39,6 +49,8 @@ def select_self_defense(signals: object) -> LocalOpportunity | None:
         return None
     hostiles = int(getattr(signals, "nearby_hostiles", 0) or 0)
     if hostiles <= 0:
+        return None
+    if time.monotonic() < _quiet["until"] and hostiles <= _quiet["hostiles"]:
         return None
     return LocalOpportunity(
         OpportunityKind.SELF_DEFENSE, 320,
@@ -81,6 +93,12 @@ def run_self_defense(
     mode = _resolved_mode(client)
     resolved = mode in (DefenseMode.CLEAR, DefenseMode.RECOVER)
     success = bool(intervened and (resolved or after < before))
+    if not intervened and mode is DefenseMode.CLEAR:
+        # Nothing here warranted action: stop preempting other work for a
+        # while, unless the number of hostiles grows.
+        _quiet.update(until=time.monotonic() + QUIET_SECONDS, hostiles=after)
+    else:
+        _quiet.update(until=0.0, hostiles=0)
     if after < before:
         detail = f"nearby hostiles reduced {before}->{after}"
     elif resolved and mode is not None:
