@@ -404,3 +404,45 @@ class TestHungerSystem(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def _hunger_with(items):
+    client = MagicMock()
+    client.transport.dispatch = MagicMock(
+        side_effect=lambda command, params, timeout=None: (
+            {"inventory": items, "offhand": []} if command == "get_inventory" else {}
+        )
+    )
+    return HungerSystem(client, MagicMock(spec=CoordinationHub))
+
+
+def test_raw_beef_is_kept_for_cooking_until_genuinely_hungry():
+    """Live A1 2026-09-28 ate every hunted beef raw at food 14-17."""
+    hunger = _hunger_with([{"id": "minecraft:beef", "count": 3, "slot": 1}])
+    eaten = []
+    with patch(
+        "baritone_client.automator.actions.EatAction",
+        lambda food: SimpleNamespace(
+            execute=lambda _c: eaten.append(food) or SimpleNamespace(success=True, message="")
+        ),
+    ):
+        HungerSystem.try_eat.__wrapped__(hunger, 15)
+        assert eaten == []
+        HungerSystem.try_eat.__wrapped__(hunger, 12)
+        assert eaten == ["minecraft:beef"]
+
+
+def test_cooked_food_is_still_eaten_whenever_below_threshold():
+    hunger = _hunger_with([
+        {"id": "minecraft:beef", "count": 3, "slot": 1},
+        {"id": "minecraft:bread", "count": 1, "slot": 2},
+    ])
+    eaten = []
+    with patch(
+        "baritone_client.automator.actions.EatAction",
+        lambda food: SimpleNamespace(
+            execute=lambda _c: eaten.append(food) or SimpleNamespace(success=True, message="")
+        ),
+    ):
+        HungerSystem.try_eat.__wrapped__(hunger, 16)
+    assert eaten == ["minecraft:bread"]

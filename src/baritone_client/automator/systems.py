@@ -237,6 +237,12 @@ class HungerSystem(BackgroundSystem):
             "minecraft:pufferfish",
             "minecraft:chicken",  # Raw chicken has hunger chance
         }
+        # Raw meat the livestock cycle is about to cook: eaten raw only when
+        # genuinely hungry. Live A1 2026-09-28 ate each hunted beef raw at
+        # food 14-17 (3 food instead of 8), so the cycle banked nothing and
+        # the prepared reserve sat at 0/32 beside a visible herd.
+        self.cook_first_foods = {"minecraft:beef", "minecraft:porkchop", "minecraft:mutton", "minecraft:rabbit"}
+        self.raw_meat_food_floor = 12
 
     def tick(self):
         try:
@@ -293,6 +299,8 @@ class HungerSystem(BackgroundSystem):
                 if food_id in available_items:
                     # Skip desperate-only foods unless we're starving
                     if food_id in self.desperate_only_foods and not is_desperate:
+                        continue
+                    if food_id in self.cook_first_foods and current_food > self.raw_meat_food_floor:
                         continue
                     best_food = food_id
                     break
