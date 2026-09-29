@@ -214,3 +214,15 @@ def test_phase_retry_refreshes_the_checkpoint_between_attempts(monkeypatch):
 
     assert not executor.execute_phase(Phase.BOOT_SEQUENCE)
     assert checkpoints == [{"minecraft:dirt": 1}, {"minecraft:dirt": 1}]
+
+
+def test_controller_hold_absorbs_a_death_during_the_pause(monkeypatch):
+    """Live A1 2026-09-28: a death mid-hold crashed the controller."""
+    from baritone_client.automator import pacing
+    from baritone_client.common.tasks import PlayerDeathDetected
+
+    def dies(*_a, **_k):
+        raise PlayerDeathDetected("player died during navigation")
+
+    monkeypatch.setattr(pacing, "wait_with_bridge_keepalive", dies)
+    assert pacing.hold_between_turns(object(), duration=30.0) is False
