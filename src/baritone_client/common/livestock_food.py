@@ -17,6 +17,7 @@ from typing import Any, Mapping, Optional, Tuple
 LIVESTOCK: Tuple[Tuple[str, str, str], ...] = (
     ("cow", "minecraft:beef", "minecraft:cooked_beef"),
     ("chicken", "minecraft:chicken", "minecraft:cooked_chicken"),
+    ("pig", "minecraft:porkchop", "minecraft:cooked_porkchop"),
 )
 #: Any carried raw meat is cooked, whatever produced it.
 RAW_TO_COOKED = {
