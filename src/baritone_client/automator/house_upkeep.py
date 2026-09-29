@@ -78,12 +78,21 @@ def select_house_upkeep_opportunity(
     """Offer one bounded house-repair pass, if the starter house needs one."""
     from .local_opportunity import LocalOpportunity, OpportunityKind
 
-    if not cooldown_ready or not house_upkeep_allowed(signals):
-        return None
-    if _house_repaired(state):
+    from .base_lighting import lighting_allowed, lighting_due
+
+    if not cooldown_ready:
         return None
     origin = _house_origin(state)
-    if origin is None:
+    if (_house_repaired(state) or origin is None) or not house_upkeep_allowed(signals):
+        # The house stands (or cannot be repaired now): keep the base lit.
+        # Lighting is the fix for hostiles, so it has its own gentler gate.
+        if lighting_allowed(signals) and lighting_due(state):
+            return LocalOpportunity(
+                OpportunityKind.HOUSE_UPKEEP,
+                150,
+                "the base has dark spots where monsters can spawn",
+                location=origin,
+            )
         return None
     return LocalOpportunity(
         OpportunityKind.HOUSE_UPKEEP,
@@ -104,8 +113,16 @@ def run_house_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
     from ..common.navigation import goto
 
     origin = _house_origin(state)
-    if origin is None:
-        return False, "no persisted house origin", 0, 0
+    if origin is None or _house_repaired(state):
+        from .base_lighting import LIGHTING_KEY, light_base, lighting_zone
+
+        if lighting_zone(state) is None:
+            return False, "no persisted house origin", 0, 0
+
+        record = state.custom_data.get(LIGHTING_KEY, {}) if isinstance(state.custom_data, dict) else {}
+        before = int(record.get("placed_total", 0) or 0) if isinstance(record, dict) else 0
+        placed, _remaining, detail = light_base(client, state)
+        return placed > 0, detail, before, before + placed
     x, y, z = origin
 
     def _survey() -> Tuple[int, dict]:
