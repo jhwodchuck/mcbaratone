@@ -305,6 +305,13 @@ def select_armor_opportunity(
     if not cooldown_ready or not armor_work_allowed(signals):
         return None
     worn = equipped_pieces(client)
+    # An unarmed bot cannot win even the fight armour lets it survive, and a
+    # stone sword is one craft from cobblestone it almost always carries.
+    from .weapon_upkeep import kit_gaps
+
+    if gaps := kit_gaps(client):
+        names = ", ".join(g.split(":")[1] for g in gaps)
+        return LocalOpportunity(OpportunityKind.ARMOR_UPKEEP, 195, f"no usable weapon/pickaxe; can craft {names}")
     # Freezing outranks the iron plan and ignores the "already dressed" exit:
     # a 4/4 iron set is no protection at all against powder snow, so a fully
     # armoured bot in a grove still needs this.
@@ -353,6 +360,17 @@ def select_armor_opportunity(
 
 
 def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
+    """Restore a usable weapon and pickaxe, then do the armour work below."""
+    from .weapon_upkeep import restore_kit
+
+    made = restore_kit(client)
+    success, detail, before, after = _run_armor(client, state)
+    if made:
+        return True, f"crafted {', '.join(made)}; {detail}", before, after
+    return success, detail, before, after
+
+
+def _run_armor(client: Any, state: Any) -> Tuple[bool, str, int, int]:
     """Equip what is carried, then craft what one set still needs.
 
     Returns the scheduler's (success, detail, before, after) contract. Success

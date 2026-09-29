@@ -38,6 +38,9 @@ RECHECK_PENDING = 300.0
 RECHECK_DONE = 1800.0
 MIN_HEALTH = 14.0
 MAX_HOSTILES = 2
+#: Covered floors this far below the base are lit (the hollow under a house,
+#: a basement); anything deeper is cave, which is not ours to walk into.
+COVERED_DEPTH = 6
 
 TORCHES = ("minecraft:torch", "minecraft:wall_torch", "minecraft:lantern", "minecraft:soul_torch")
 _AIRLIKE = {
@@ -125,6 +128,28 @@ def grid_points(zone) -> list:
     ]
 
 
+def interior_columns(state: Any) -> list:
+    """Columns that a spaced grid can miss: inside the house and home chests."""
+    columns = []
+    structures = _custom(state).get("structures", {})
+    house = structures.get("starter_house", {}) if isinstance(structures, Mapping) else {}
+    if isinstance(house, Mapping):
+        origin = _xyz(house.get("origin"))
+        if origin is not None:
+            columns.append((origin[0] + 3, origin[2] + 3))  # 7x7 house centre
+        chest = _xyz(house.get("supply_chest"))
+        if chest is not None:
+            columns.append((chest[0], chest[2]))
+    base = _xyz(_custom(state).get("base_location"))
+    storage = _custom(state).get("storage", {})
+    if isinstance(storage, Mapping):
+        for value in storage.values():
+            p = _xyz(value)
+            if p is not None and (base is None or abs(p[1] - base[1]) <= COVERED_DEPTH):
+                columns.append((p[0], p[2]))
+    return columns
+
+
 def lighting_due(state: Any, *, now: Optional[float] = None) -> bool:
     """Whether a lighting pass should be offered now."""
     if lighting_zone(state) is None:
@@ -153,17 +178,44 @@ def _block(client: Any, x: int, y: int, z: int) -> str:
 
 
 def torch_spot(client: Any, x: int, z: int, y_hint: int) -> Optional[Tuple[int, int, int]]:
-    """Air above solid ground in this column, near the base's level."""
-    for y in range(y_hint + 10, y_hint - 11, -1):
-        ground = _block(client, x, y, z)
-        if not ground or ground == "minecraft:void_air":
-            return None  # unloaded or unknown: do not guess
-        if ground in _AIRLIKE or any(token in ground for token in _NOT_GROUND_TOKENS):
+    """The first floor cell in this column (kept for callers and tests)."""
+    spots = torch_spots(client, x, z, y_hint)
+    return spots[0] if spots else None
+
+
+def torch_spots(client: Any, x: int, z: int, y_hint: int) -> list:
+    """Every floor cell in this column near the base's level, top first.
+
+    A floor cell is air with air above and solid ground below. The first one
+    under open sky is kept (lighting open ground); every *covered* one below
+    a roof, floor or canopy is kept too. The house interior and the hollow
+    under its floor are exactly those covered cells, and a surface-only grid
+    never reached them: live A1 died in the dark hollow under its own house.
+    """
+    column = {}
+    for y in range(y_hint + 12, y_hint - 11, -1):
+        block = _block(client, x, y, z)
+        if not block or block == "minecraft:void_air":
+            return []  # unloaded or unknown: do not guess
+        column[y] = block
+    spots = []
+    covered = False
+    for y in range(y_hint + 11, y_hint - 10, -1):
+        block = column[y]
+        if block not in _AIRLIKE:
+            covered = True  # anything overhead shades the cells below
             continue
-        if _block(client, x, y + 1, z) in _AIRLIKE and _block(client, x, y + 2, z) in _AIRLIKE:
-            return (x, y + 1, z)
-        return None  # solid ground with something on top: not a torch spot
-    return None
+        below = column.get(y - 1, "")
+        above = column.get(y + 1, "")
+        if (
+            above in _AIRLIKE
+            and below not in _AIRLIKE
+            and not any(token in below for token in _NOT_GROUND_TOKENS)
+            and (covered or not spots)
+            and y >= y_hint - COVERED_DEPTH  # hollows, not the caves below them
+        ):
+            spots.append((x, y, z))
+    return spots
 
 
 def _existing_torches(client: Any) -> list:
@@ -176,8 +228,9 @@ def _existing_torches(client: Any) -> list:
     return [(int(b["x"]), int(b["y"]), int(b["z"])) for b in found]
 
 
-def _lit(cell: Sequence[int], torches: Sequence[Sequence[int]]) -> bool:
-    return any(math.hypot(t[0] - cell[0], t[2] - cell[1]) <= LIT_RADIUS for t in torches)
+def _lit(spot: Sequence[int], torches: Sequence[Sequence[int]]) -> bool:
+    """A torch within LIT_RADIUS in 3D lights the spot (not one a floor away)."""
+    return any(math.dist(t, spot) <= LIT_RADIUS for t in torches)
 
 
 def _count(client: Any, item: str) -> int:
@@ -287,8 +340,13 @@ def light_base(client: Any, state: Any, *, now: Optional[float] = None) -> Tuple
     goto(client, *center, timeout=120, tolerance=6.0, radius=4)
 
     torches = _existing_torches(client)
-    cells = [cell for cell in grid_points(zone) if not _lit(cell, torches)]
-    spots = [spot for x, z in cells if (spot := torch_spot(client, x, z, y_hint))]
+    columns = list(dict.fromkeys(grid_points(zone) + interior_columns(state)))
+    spots = [
+        spot
+        for x, z in columns
+        for spot in torch_spots(client, x, z, y_hint)
+        if not _lit(spot, torches)
+    ]
     remaining_before = len(spots)
     placed = 0
     if spots:
@@ -327,5 +385,7 @@ __all__ = [
     "lighting_allowed",
     "lighting_due",
     "lighting_zone",
+    "interior_columns",
     "torch_spot",
+    "torch_spots",
 ]
