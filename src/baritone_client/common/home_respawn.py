@@ -33,6 +33,7 @@ FAR_STORAGE_MAX_VERTICAL = 16.0
 SHEEP_HUNT_KEY = "home_respawn_sheep_hunt"
 SHEEP_HUNT_INTERVAL = 900.0
 SHEEP_HUNT_MIN_HEALTH = 18.0
+SHEEP_HUNT_PREPARED_RESERVE = 8
 SHEEP_HUNT_TIMEOUT = 420
 SHEEP_HUNT_LATEST_START = 9000
 SHEEP_HUNT_LATEST_WORLD_TIME = 11000
@@ -255,6 +256,23 @@ def _hunt_ready(state: Any, live: Mapping[str, Any], now: float) -> bool:
     )
 
 
+def _hunt_food_ready(client: Any) -> bool:
+    """A full hunger bar is not food packed for a bounded expedition."""
+    from ..automator.end_readiness import PREPARED_FOOD_ITEMS
+    from .inventory import get_inventory
+
+    try:
+        inventory = get_inventory(client)
+        if not isinstance(inventory, Mapping):
+            return False
+        counts = [inventory.get(item, 0) for item in PREPARED_FOOD_ITEMS]
+        if any(not isinstance(n, int) or isinstance(n, bool) or n < 0 for n in counts):
+            return False
+        return sum(counts) >= SHEEP_HUNT_PREPARED_RESERVE
+    except Exception:
+        return False
+
+
 def _hunt_sheep_for_wool(client: Any, state: Any, anchor) -> None:
     """Hunt sheep for the wool home storage cannot supply, then come home.
 
@@ -271,6 +289,9 @@ def _hunt_sheep_for_wool(client: Any, state: Any, anchor) -> None:
     live = client.transport.dispatch("get_state", {})
     now = time.time()
     if not wanted or not isinstance(live, Mapping) or not _hunt_ready(state, live, now):
+        return
+    if not _hunt_food_ready(client):
+        print(f"HOME RESPAWN: deferring sheep hunt until {SHEEP_HUNT_PREPARED_RESERVE} prepared food are carried")
         return
     custom = _custom(state)
     record = custom.get(SHEEP_HUNT_KEY)

@@ -437,6 +437,9 @@ def _hunt_setup(home, monkeypatch, *, health=20.0, food=20, world_time=6000, she
     client = _Client()
     home.world["client"] = client
     home.stock["minecraft:string"] = 0
+    home.items["minecraft:bread"] = home_respawn.SHEEP_HUNT_PREPARED_RESERVE
+    monkeypatch.setattr("baritone_client.common.inventory.get_inventory",
+                        lambda _c: dict(home.items))
     base = client.dispatch
 
     def dispatch(route, payload):
