@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from baritone_client.common import emergency_food, enclosed_workstation, resources, survival_farm
+from baritone_client.common import emergency_food, enclosed_workstation, inventory, resources, survival_farm
 from baritone_client.common.tasks import PlayerDeathDetected
 
 
@@ -107,4 +107,25 @@ def test_scoped_table_open_failure_has_no_placement_fallback(monkeypatch):
     monkeypatch.setattr("baritone_client.common.base.place_crafting_table", lambda *_a:
                         pytest.fail("cannot replace a scoped failed workstation"))
     assert not resources._craft_with_table(client, "minecraft:bread", 2, table_pos=(103, 65, 103))
+    assert opened == [(103, 65, 103)]
+
+
+def test_food_worker_bread_stops_before_dispatch_if_sheltered_table_refused(room, monkeypatch):
+    client, _live, blocks, calls = room
+    blocks[103, 65, 103] = {"id": "minecraft:crafting_table"}
+    opened = []
+    monkeypatch.setattr("baritone_client.common.harness_ops.ensure_crafting_table_open",
+                        lambda _c, table_pos=None: opened.append(table_pos) or False)
+    assert not inventory.craft(client, "minecraft:bread", 2)
+    assert opened == [(103, 65, 103)]
+    assert not any(route in {"craft", "auto_craft", "goto", "attack_block"} for route, _ in calls)
+
+
+def test_food_worker_can_open_the_scoped_table(room):
+    client, _live, blocks, _calls = room
+    blocks[103, 65, 103] = {"id": "minecraft:crafting_table"}
+    opened = []
+    assert enclosed_workstation.prepare_sheltered_bread_craft(
+        client, lambda _c, table_pos=None: opened.append(table_pos) or True
+    )
     assert opened == [(103, 65, 103)]

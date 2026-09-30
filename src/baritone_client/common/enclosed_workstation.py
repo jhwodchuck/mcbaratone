@@ -38,3 +38,9 @@ def sheltered_bread_table(client):
         raise
     except Exception:
         return True, None
+
+
+def prepare_sheltered_bread_craft(client, open_table) -> bool:
+    """Guard the food worker's direct bread craft as well as recovery."""
+    restricted, table = sheltered_bread_table(client)
+    return not restricted or (table is not None and bool(open_table(client, table_pos=table)))

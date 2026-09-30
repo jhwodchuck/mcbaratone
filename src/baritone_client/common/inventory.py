@@ -1023,11 +1023,11 @@ def craft(client, item_id: str, count: int = 1) -> bool:
     """
     from . import harness_ops
 
-    # Crafting tables are a player-grid bootstrap recipe.  Guarantee their
-    # four-plank input here, at the shared craft boundary, so every caller
-    # (including a resumed deep-mining phase) can recover from carrying only a
-    # partial plank stack.  Keep this outside ``_MANUAL_GRID_RECIPES``: routing
-    # the table through the 3x3 recipe path would require a table to make one.
+    if item_id == "minecraft:bread":
+        from .enclosed_workstation import prepare_sheltered_bread_craft
+        if not prepare_sheltered_bread_craft(client, harness_ops.ensure_crafting_table_open):
+            return False
+    # A table is a four-plank player-grid bootstrap, not a 3x3-grid recipe.
     if item_id == "minecraft:crafting_table" and not _ensure_raw_planks(
         client, 4 * max(1, count)
     ):
