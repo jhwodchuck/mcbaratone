@@ -293,12 +293,18 @@ def run_scheduled_food_recovery(
 
     # A local recovery pass can bake/harvest without an expedition. Its bool
     # targets full hunger, so a partial meal still needs a fresh floor check.
-    from ..common.survival_farm import tend_local_farm_for_food
+    from ..common.survival_farm import local_farm_wait_reason, tend_local_farm_for_food
 
     tend_local_farm_for_food(client, state)
     after = _food_level(client)
     if after >= minimum_food:
         return True, "recovered food at the nearby farm", before, after
+
+    live = client.transport.dispatch("get_state", {})
+    wait_reason = local_farm_wait_reason(client, state, live)
+    if wait_reason:
+        client.transport.dispatch("cancel", {})
+        return False, wait_reason, before, after
 
     if recover_food_from_known_sources(client, state, FOOD_ANIMALS):
         after = _food_level(client)
