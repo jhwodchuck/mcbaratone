@@ -164,7 +164,7 @@ def tend_local_farm_for_food(
     return False
 
 
-def _wait_enclosure(client, live):
+def _enclosure_bounds(client, live, *, strict=False):
     """Require a roof and four body-height walls; open doors are not walls."""
     from .farming import _block_data
 
@@ -184,6 +184,8 @@ def _wait_enclosure(client, live):
         key = (tx, ty, tz)
         if key not in cache:
             cache[key] = _block_data(client, *key)
+            if strict and not cache[key].get("id"):
+                raise ValueError("unknown enclosure block")
         return cache[key]
 
     def solid(tx, ty, tz):
@@ -200,7 +202,7 @@ def _wait_enclosure(client, live):
 
     edges = []
     for dx, dz in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-        edge = next((d for d in range(1, 5) if
+        edge = next((d for d in range(1, 6) if
                      solid(x + dx * d, y, z + dz * d) and
                      solid(x + dx * d, y + 1, z + dz * d)), None)
         if edge is None:
@@ -220,7 +222,12 @@ def _wait_enclosure(client, live):
                                  "slab" in data_at(tx, y, tz).get("id", ""))
                 if not (solid(tx, y - 1, tz) or floor_data == "minecraft:farmland" or covered_water):
                     return False
-    return True
+    return x - west, x + east, y, z - north, z + south
+
+
+def _wait_enclosure(client, live):
+    """Observe the entire room even from the edge of a five-wide plot."""
+    return bool(_enclosure_bounds(client, live))
 
 
 def local_farm_wait_reason(client, state, live):
