@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from .defense import AttackStyle, ThreatAssessment, is_projectile_threat
+from .stationary_defense import fight_without_pursuit
 
 
 def engageable(threat: ThreatAssessment) -> bool:
@@ -23,13 +24,7 @@ def fight_if_no_escape(
     equip_weapon: Callable[[Any], bool],
     fight: Callable[..., bool],
 ) -> bool:
-    """Fight a non-explosive attacker after escape planning proves impossible.
-
-    A crowded underground storage route produced no terrain-safe endpoint and
-    spent long enough planning for four mobs to reduce a fully armored Bot16
-    from 20 health to 10.6. Repeating that route cannot help. The explosive
-    policy remains absolute: this helper never selects a creeper or boss.
-    """
+    """Defend in place when escape planning proves impossible; never chase."""
     if (
         getattr(client, "_last_escape_failure_reason", None)
         != "no_safe_endpoint"
@@ -39,11 +34,12 @@ def fight_if_no_escape(
         return False
 
     print(
-        "DEFENSE: no escape endpoint; fighting the immediate "
-        f"{primary.entity.get('type')} before more health is lost"
+        "DEFENSE: no escape endpoint; defending in place against "
+        f"{primary.entity.get('type')} (no pursuit)"
     )
-    defeated = fight(
+    defeated = fight_without_pursuit(
         client,
+        fight,
         primary.entity,
         no_retreat=True,
         abort_on_other_hostiles=False,
@@ -88,8 +84,9 @@ def handle_non_engageable_escape_failure(
         ),
         None,
     )
-    if alternative is not None and fight(
+    if alternative is not None and fight_without_pursuit(
         client,
+        fight,
         alternative.entity,
         no_retreat=True,
         abort_on_other_hostiles=False,

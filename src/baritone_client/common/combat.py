@@ -14,6 +14,7 @@ from .food_recovery import (
 from .combat_targeting import matches_requested_mob
 from .combat_intent import exclude_authorized_threats
 from .combat_action import dispatch_held_item_use, exclusive_client_function
+from .stationary_defense import fight_without_pursuit
 from .emergency_food import (
     EMERGENCY_FOOD_ITEMS,
     EmergencyExploration,
@@ -1537,24 +1538,15 @@ def defend_or_flee(
             fight=_fight_defensive_target,
         ):
             return True
-        # Repeated evasion against this exact threat has failed every time
-        # (see DefenseRuntime.record_evade_result) -- continuing to hold that
-        # 0% strategy is worse than fighting, even unarmored. This is the
-        # one case that bypasses the armor_count<3 EVADE gate: it is reached
-        # only after evasion has already been tried and demonstrably failed,
-        # not instead of it.
+        # Failed evasion permits in-place last-resort defense, not pursuit.
         print(
             f"DEFENSE: evasion failed {runtime.evade_failures}x against "
-            f"{primary.entity.get('type')}; fighting back as a last resort"
+            f"{primary.entity.get('type')}; defending in place as a last resort"
         )
-        # A fixed retreat_health floor does not work here: failed flee
-        # attempts cost unpredictable HP, so health is often already below
-        # any floor by the time escalation fires -- live proof fired at both
-        # 4.8hp/floor=6.0 and 1.999hp/floor=2.0, retreating before landing a
-        # hit either time. Evasion is already a proven 0% strategy here, so
-        # committing to the fight is strictly better regardless of health.
-        defeated = _fight_defensive_target(
+        # Allow adjacent strikes even below the ordinary retreat floor.
+        defeated = fight_without_pursuit(
             client,
+            _fight_defensive_target,
             primary.entity,
             no_retreat=True,
             # Reaching this branch proves that escape has already failed.
