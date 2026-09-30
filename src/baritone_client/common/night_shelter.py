@@ -23,6 +23,7 @@ from .base import (
     _house_block_id,
     robust_place,
 )
+from .tasks import PlayerDeathDetected
 
 
 # Ground that a bot with an empty inventory can mine AND that pays for the lid.
@@ -121,6 +122,8 @@ def _read_position(client):
     """Return (x, feet_y, z, precise_x, precise_z), or None if unreadable."""
     try:
         state = client.transport.dispatch("get_state", {})
+        from .combat import ensure_alive
+        ensure_alive(client, state)
         block = state.get("block_position", state.get("position", {}))
         precise = state.get("position", block)
         return (
@@ -130,6 +133,8 @@ def _read_position(client):
             float(precise.get("x", block["x"])),
             float(precise.get("z", block["z"])),
         )
+    except PlayerDeathDetected:
+        raise
     except Exception:
         return None
 

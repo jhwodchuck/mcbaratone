@@ -743,12 +743,23 @@ def hunt_target(
                 return False
             time.sleep(1)
             return None
+    from .inventory import free_inventory_slots
+    from .resources import manage_inventory
+
+    if free_inventory_slots(client) < 2:
+        manage_inventory(client, minimum_free_slots=2)
+        if free_inventory_slots(client) < 2:
+            print("RECOVERY: no verified inventory space for food drops")
+            return False
     if not api.safe_combat(
         client,
         target_id,
         retreat_health=1.0,
         max_duration=35,
         abort_on_other_hostiles=True,
+        tracking_radius=64,
+        purpose="emergency_food",
+        target_metadata=target,
     ):
         return False
     if aquatic:

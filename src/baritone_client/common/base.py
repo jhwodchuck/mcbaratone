@@ -19,6 +19,7 @@ from .site_selection import (
     surface_y_at as _surface_y_at,
 )
 from .runtime_artifacts import append_world_map_entry
+from .tasks import PlayerDeathDetected
 
 
 def is_position_safe(client, x: int, y: int, z: int) -> bool:
@@ -51,13 +52,18 @@ def robust_place(client, x: int, y: int, z: int, item_id: str) -> bool:
     unavailable.
     """
     from . import harness_ops
+    from .combat import ensure_alive
+    ensure_alive(client)
     if harness_ops.available():
         try:
             if harness_ops.place_block_exact(client, x, y, z, item_id):
                 return True
             print(f"  harness place returned False at {(x, y, z)}")
+        except PlayerDeathDetected:
+            raise
         except Exception as e:
             print(f"  harness place failed at {(x, y, z)}: {e}")
+    ensure_alive(client)
     if not select_item(client, item_id, allow_swap=True):
         return False
     return safe_place_block(client, x, y, z, block_id=item_id)
@@ -107,6 +113,7 @@ def safe_place_block(client, x, y, z, max_depth=2, block_id: str | None = None) 
     """
     Attempt to place a block, adding support if needed.
     """
+    from .combat import ensure_alive
     try:
         payload = {"x": x, "y": y, "z": z}
         if block_id is not None:
@@ -117,6 +124,7 @@ def safe_place_block(client, x, y, z, max_depth=2, block_id: str | None = None) 
         # the world postcondition and retry transient acknowledgements rather
         # than reporting a placement that never happened.
         for attempt in range(3):
+            ensure_alive(client)
             client.transport.dispatch("place_block", payload)
             if block_id is None:
                 return True
@@ -127,6 +135,8 @@ def safe_place_block(client, x, y, z, max_depth=2, block_id: str | None = None) 
             if attempt < 2:
                 select_item(client, block_id, allow_swap=True)
         return False
+    except PlayerDeathDetected:
+        raise
     except Exception as e:
         msg = str(e)
         if "No solid block found to place against" in msg and max_depth > 0:
@@ -152,8 +162,11 @@ def safe_place_block(client, x, y, z, max_depth=2, block_id: str | None = None) 
                     payload = {"x": x, "y": y, "z": z}
                     if block_id is not None:
                         payload["block"] = block_id
+                    ensure_alive(client)
                     client.transport.dispatch("place_block", payload)
                     return True
+                except PlayerDeathDetected:
+                    raise
                 except Exception:
                     # That neighbour did not unblock it; try the next face
                     # rather than giving up on the whole placement.
