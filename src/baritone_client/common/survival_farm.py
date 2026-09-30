@@ -242,7 +242,15 @@ def local_farm_wait_reason(client, state, live):
         if found is None or found[1] > 4:
             return None
         (cx, cy, cz), _ = found
-        if _block_data(client, cx, cy, cz).get("id") != "minecraft:water":
+        # A repaired or inherited plot may have off-centre irrigation. Verify
+        # a real source in its footprint, not an assumed checkpoint geometry.
+        irrigated = any(
+            (data := _block_data(client, cx + dx, cy, cz + dz)).get("id") == "minecraft:water"
+            and str((data.get("state") or {}).get("level")) == "0"
+            for dx in range(-_HALF, _HALF + 1)
+            for dz in range(-_HALF, _HALF + 1)
+        )
+        if not irrigated:
             return None
         for dx in range(-_HALF, _HALF + 1):
             for dz in range(-_HALF, _HALF + 1):
