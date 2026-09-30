@@ -339,7 +339,7 @@ def test_growing_sheltered_farm_holds_without_claiming_food_success(monkeypatch)
 
 def test_wait_requires_live_crops_water_same_height_and_shelter(world, monkeypatch):
     monkeypatch.setattr(survival_farm, "_wait_enclosure", lambda *_a: True)
-    crops = {(100, 64, 100): {"id": "minecraft:water"},
+    crops = {(100, 64, 100): {"id": "minecraft:water", "state": {"level": "0"}},
              (98, 65, 98): {"id": "minecraft:wheat", "state": {"age": "3"}},
              (98, 64, 98): {"id": "minecraft:farmland", "state": {"moisture": "7"}}}
     monkeypatch.setattr("baritone_client.common.farming._block_data",
@@ -349,6 +349,24 @@ def test_wait_requires_live_crops_water_same_height_and_shelter(world, monkeypat
     assert survival_farm.local_farm_wait_reason(world, _state(), world.dispatch("get_state", {})) is None
     world.position = (100, 64, 100)
     crops[(100, 64, 100)] = {"id": "minecraft:air"}
+    assert survival_farm.local_farm_wait_reason(world, _state(), world.dispatch("get_state", {})) is None
+
+
+def test_water_may_be_offset_from_the_recorded_plot_center(world, monkeypatch):
+    monkeypatch.setattr(survival_farm, "_wait_enclosure", lambda *_a: True)
+    crops = {(100, 64, 101): {"id": "minecraft:water", "state": {"level": "0"}},
+             (98, 65, 98): {"id": "minecraft:wheat", "state": {"age": "3"}},
+             (98, 64, 98): {"id": "minecraft:farmland", "state": {"moisture": "7"}}}
+    monkeypatch.setattr("baritone_client.common.farming._block_data",
+                        lambda _c, x, y, z: crops.get((x, y, z), {"id": "minecraft:air"}))
+    assert survival_farm.local_farm_wait_reason(world, _state(), world.dispatch("get_state", {}))
+    crops[(100, 64, 101)]["state"]["level"] = "2"
+    assert survival_farm.local_farm_wait_reason(world, _state(), world.dispatch("get_state", {})) is None
+    crops[(100, 64, 101)]["state"]["level"] = "0"
+    crops[(98, 64, 98)]["state"]["moisture"] = "0"
+    assert survival_farm.local_farm_wait_reason(world, _state(), world.dispatch("get_state", {})) is None
+    crops[(98, 64, 98)]["state"]["moisture"] = "7"
+    crops[(100, 64, 101)]["state"].pop("level")
     assert survival_farm.local_farm_wait_reason(world, _state(), world.dispatch("get_state", {})) is None
 
 
