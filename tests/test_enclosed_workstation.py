@@ -129,3 +129,30 @@ def test_food_worker_can_open_the_scoped_table(room):
         client, lambda _c, table_pos=None: opened.append(table_pos) or True
     )
     assert opened == [(103, 65, 103)]
+
+
+def test_native_farm_process_keeps_home_digging_protected(monkeypatch):
+    from baritone_client.common import farming
+
+    values = {"allowBreak": "true"}
+    calls = []
+
+    def dispatch(route, payload):
+        calls.append((route, payload))
+        if route == "settings":
+            if "set" in payload:
+                values[payload["set"]] = payload["value"]
+            return {"value": values["allowBreak"]}
+        if route == "farm":
+            assert values["allowBreak"] == "false"
+        return {"is_pathing": False}
+
+    client = SimpleNamespace(_protected_home_anchor=(100, 65, 100),
+                             transport=SimpleNamespace(dispatch=dispatch))
+    wheat = iter((0, 2))
+    monkeypatch.setattr(farming, "count_item", lambda *_a: next(wheat))
+    monkeypatch.setattr(farming, "goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(farming.time, "sleep", lambda *_a: None)
+    assert farming.harvest_wheat_farm(client, 100, 64, 100)
+    assert ("cancel", {}) in calls
+    assert values["allowBreak"] == "true"
