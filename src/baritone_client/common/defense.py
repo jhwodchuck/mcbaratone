@@ -295,6 +295,37 @@ def _closing_speed(entity: Dict, player_state: Dict) -> float:
         return 0.0
 
 
+def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
+    """Keep shelter only on explicit, fresh evidence of a non-actionable mob.
+
+    A nearby cave mob must not drive the player out of a safe work area.
+    Unknown telemetry, contact, pursuit, explosives, bosses, and wall-crossing
+    vexes retain the conservative policy; every snapshot reassesses visibility.
+    """
+    if not (
+        profile.style in (AttackStyle.MELEE, AttackStyle.RANGED)
+        and entity_type not in _PROJECTILE_TYPES | {"vex"}
+        and entity.get("can_see_player") is False
+        and entity.get("is_aggressive") is False
+        and _explicit_aggression(entity, state) is False
+        and math.isfinite(distance) and 5.0 < distance < 999.0
+        and closing <= 0.05
+    ):
+        return False
+    target = entity.get("target_id")
+    if target is not None and target == state.get("entity_id", state.get("player_id")):
+        return False
+    vectors = [entity.get("position"), entity.get("velocity"),
+               state.get("block_position", state.get("position"))]
+    if "velocity" in state:
+        vectors.append(state["velocity"])
+    try:
+        return all(math.isfinite(float(vector[axis]))
+                   for vector in vectors for axis in ("x", "y", "z"))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
 def assess_threats(
     entities: Iterable[Dict],
     player_state: Optional[Dict] = None,
@@ -322,6 +353,8 @@ def assess_threats(
         ):
             continue
         closing = _closing_speed(entity, state)
+        if _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
+            continue
         if entity_type in _PROJECTILE_TYPES:
             owner_id = entity.get("owner_id")
             player_id = state.get("entity_id", state.get("player_id"))
