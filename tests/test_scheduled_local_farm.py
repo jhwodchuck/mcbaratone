@@ -66,3 +66,17 @@ def test_healthy_player_does_not_trigger_farm_work(monkeypatch):
                         lambda *_a: pytest.fail("healthy player needs no farm recovery"))
     assert food_opportunity.run_scheduled_food_recovery(client, state)[0]
     assert calls == []
+
+
+@pytest.mark.parametrize("food,health", [(13, 20), (17, 13), (11, 7)])
+def test_growing_safe_farm_holds_scheduled_recovery_before_any_expedition(monkeypatch, food, health):
+    client, state, live, calls = setup_recovery(monkeypatch, food=food)
+    live["health"] = health
+    monkeypatch.setattr(survival_farm, "tend_local_farm_for_food",
+                        lambda *_a: calls.append("farm") or False)
+    monkeypatch.setattr(survival_farm, "local_farm_wait_reason",
+                        lambda *_a: "waiting for growing wheat in a verified farm enclosure")
+    result = food_opportunity.run_scheduled_food_recovery(client, state)
+    assert not result[0] and "waiting for growing wheat" in result[1]
+    assert result[2:] == (food, food)
+    assert calls == ["farm"]
