@@ -11,7 +11,7 @@ replanted from where the player stands.
 from __future__ import annotations
 
 import time
-from math import hypot
+from math import floor, hypot, isfinite
 from typing import Any, Mapping, Optional, Tuple
 
 from .navigation import allow_recovery_navigation
@@ -28,7 +28,8 @@ _MATURE_WHEAT_AGE = "7"
 def _position(live: Mapping[str, Any]) -> Optional[Tuple[float, float, float]]:
     position = live.get("block_position", live.get("position", {}))
     try:
-        return (float(position["x"]), float(position["y"]), float(position["z"]))
+        result = tuple(float(position[key]) for key in ("x", "y", "z"))
+        return result if all(isfinite(value) for value in result) else None
     except (KeyError, TypeError, ValueError):
         return None
 
@@ -40,6 +41,9 @@ def _nearest_plot(live: Mapping[str, Any], state: Any):
     here = _position(live)
     plots = _plots(state)
     if here is None or not plots:
+        return None
+    plots = [p for p in plots if abs(p[1] - here[1]) <= 3]
+    if not plots:
         return None
     plot = min(plots, key=lambda p: hypot(p[0] - here[0], p[2] - here[2]))
     return plot, hypot(plot[0] - here[0], plot[2] - here[2])
@@ -111,7 +115,8 @@ def tend_local_farm_for_food(
 
     (cx, cy, cz), distance = found
     if distance > 3.0:
-        goto(client, cx, cy, cz, timeout=45, tolerance=3.5, radius=2)
+        if not goto(client, cx, cy, cz, timeout=45, tolerance=3.5, radius=2):
+            return False
     tiles = [
         (cx + dx, cy, cz + dz)
         for dx in range(-_HALF, _HALF + 1)
@@ -139,7 +144,9 @@ def tend_local_farm_for_food(
         # clips the nearer tile, so plant each tile from a stand beside it.
         # One refused tile must not abort the rest of survival recovery.
         try:
-            goto(client, tile[0], cy + 1, tile[2], timeout=15, tolerance=1.5, radius=1)
+            if not goto(client, tile[0], cy + 1, tile[2], timeout=15, tolerance=1.5, radius=1):
+                refused += 1
+                continue
             if _till_and_plant_tile(client, *tile):
                 planted += 1
         except PlayerDeathDetected:
@@ -155,6 +162,104 @@ def tend_local_farm_for_food(
         print("RECOVERY: ate bread baked from farm wheat")
         return True
     return False
+
+
+def _wait_enclosure(client, live):
+    """Require a roof and four body-height walls; open doors are not walls."""
+    from .farming import _block_data
+
+    here = _position(live)
+    if here is None:
+        return False
+    x, y, z = map(floor, here)
+    # Farmland lowers the feet by 1/16 block; use body-height wall cells,
+    # not the soil layer, when precise position telemetry is available.
+    precise = live.get("position", {}).get("y")
+    if precise is not None:
+        y = floor(float(precise) + 0.2)
+
+    cache = {}
+
+    def data_at(tx, ty, tz):
+        key = (tx, ty, tz)
+        if key not in cache:
+            cache[key] = _block_data(client, *key)
+        return cache[key]
+
+    def solid(tx, ty, tz):
+        data = data_at(tx, ty, tz)
+        block = data.get("id", "")
+        if block == "minecraft:grass_block":
+            return True
+        if not block or any(token in block for token in (
+            "air", "water", "lava", "grass", "wheat", "torch", "flower", "leaves", "vine",
+            "slab", "stairs", "fence", "pane", "trapdoor",
+        )):
+            return False
+        return "door" not in block or str((data.get("state") or {}).get("open")) == "false"
+
+    edges = []
+    for dx, dz in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        edge = next((d for d in range(1, 5) if
+                     solid(x + dx * d, y, z + dz * d) and
+                     solid(x + dx * d, y + 1, z + dz * d)), None)
+        if edge is None:
+            return False
+        edges.append(edge)
+    west, east, north, south = edges
+    for tx in range(x - west, x + east + 1):
+        for tz in range(z - north, z + south + 1):
+            if tx in (x - west, x + east) or tz in (z - north, z + south):
+                if not (solid(tx, y, tz) and solid(tx, y + 1, tz)):
+                    return False
+            else:
+                if not any(solid(tx, y + dy, tz) for dy in range(2, 5)):
+                    return False
+                floor_data = data_at(tx, y - 1, tz).get("id")
+                covered_water = (floor_data == "minecraft:water" and
+                                 "slab" in data_at(tx, y, tz).get("id", ""))
+                if not (solid(tx, y - 1, tz) or floor_data == "minecraft:farmland" or covered_water):
+                    return False
+    return True
+
+
+def local_farm_wait_reason(client, state, live):
+    """Fresh shelter/crop evidence permits waiting, never credits food output.
+
+    A checkpoint or a cooldown alone is insufficient. Unknown blocks, threats,
+    missing irrigation, or a player below the farm all disqualify this hold.
+    """
+    from .farming import _block_data
+    from .tasks import PlayerDeathDetected
+
+    try:
+        if live.get("is_dead") or _hostile_close(client, live) or not _wait_enclosure(client, live):
+            return None
+        if (float(live.get("health", 0) or 0) < 12 and
+                int(live.get("food_level", live.get("food", 0)) or 0) >= 18):
+            return "recovering health in a verified enclosure"
+        found = _nearest_plot(live, state)
+        if found is None or found[1] > 4:
+            return None
+        (cx, cy, cz), _ = found
+        if _block_data(client, cx, cy, cz).get("id") != "minecraft:water":
+            return None
+        for dx in range(-_HALF, _HALF + 1):
+            for dz in range(-_HALF, _HALF + 1):
+                crop = _block_data(client, cx + dx, cy + 1, cz + dz)
+                if crop.get("id") != "minecraft:wheat":
+                    continue
+                age = str((crop.get("state") or {}).get("age"))
+                soil = _block_data(client, cx + dx, cy, cz + dz)
+                if (age in "0123456" and len(age) == 1 and
+                        soil.get("id") == "minecraft:farmland" and
+                        str((soil.get("state") or {}).get("moisture")) == "7"):
+                    return "waiting for growing wheat in a verified farm enclosure"
+    except PlayerDeathDetected:
+        raise
+    except Exception:
+        return None
+    return None
 
 
 __all__ = [

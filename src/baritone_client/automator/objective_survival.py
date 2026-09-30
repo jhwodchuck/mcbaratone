@@ -3,7 +3,8 @@
 from typing import Any, Mapping
 
 from ..common.home_respawn import secure_home_respawn
-from ..common.survival_farm import tend_local_farm_for_food
+from ..common.survival_farm import local_farm_wait_reason, tend_local_farm_for_food
+from ..common.home_surface import bind_home_surface
 from ..common.tasks import PlayerDeathDetected
 from .phase_executor import (
     _acquire_checkpointed_emergency_food,
@@ -55,6 +56,7 @@ def _survival_admitted(snapshot: Mapping[str, Any], strategy=None) -> bool:
 
 def recover_survival_before_objective(client, state, strategy=None) -> bool:
     """Recover a critical player and fail closed until its margin is safe."""
+    bind_home_surface(client, state)
     try:
         snapshot = client.transport.dispatch("get_state", {})
     except Exception as exc:
@@ -82,16 +84,23 @@ def recover_survival_before_objective(client, state, strategy=None) -> bool:
         # A farm beside the player is the one food source that needs neither
         # health nor exploration; try it before the blind search refuses.
         try:
-            tended = tend_local_farm_for_food(client, state)
+            tend_local_farm_for_food(client, state)
         except PlayerDeathDetected:
             raise
         except Exception as exc:
             print(f"RECOVERY: local farm tending failed ({exc}); searching instead")
-            tended = False
-        if tended:
-            snapshot = client.transport.dispatch("get_state", {})
-            if _survival_admitted(snapshot, strategy):
-                return True
+        # False may mean a partial meal, cooldown, or growing crops. Refresh
+        # regardless; never turn an unmet hunger target into a blind trip.
+        snapshot = client.transport.dispatch("get_state", {})
+        if _survival_admitted(snapshot, strategy):
+            return True
+        wait_reason = local_farm_wait_reason(client, state, snapshot)
+        if wait_reason:
+            client.transport.dispatch("cancel", {})
+            if strategy is not None:
+                strategy.suspend_for_survival(wait_reason)
+            print(f"RECOVERY: {wait_reason}; objective selection remains blocked")
+            return False
         _attempt_survival_recovery_food(client, state)
         snapshot = client.transport.dispatch("get_state", {})
         if _survival_admitted(snapshot, strategy):

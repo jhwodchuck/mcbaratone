@@ -146,6 +146,15 @@ def staged_goto(
     # loaded chunks, which is far likelier to succeed than this exact goal.
     remaining = _horizontal_gap_to(client, target_x, target_z)
     if remaining is not None and remaining <= ARRIVAL_RADIUS:
+        from .home_surface import below_home_surface, home_route_floor
+        guard = home_route_floor(client, target_x, target_y, target_z)
+        if guard is not None:
+            try:
+                live = client.transport.dispatch("get_state", {})
+                if below_home_surface(guard, live.get("block_position", live.get("position", {}))):
+                    return False
+            except Exception:
+                return False
         print(
             f"  Exact goal refused, but arrived within {remaining:.0f} blocks; "
             "treating the approach as complete."

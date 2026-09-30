@@ -285,3 +285,109 @@ def test_farm_movement_is_marked_as_recovery_navigation(world, monkeypatch):
     survival_farm.tend_local_farm_for_food(world, _state(), now=0.0)
     assert depths == [1]
     assert getattr(world, "_safe_recovery_navigation_depth", 0) == 0
+
+
+def test_farm_below_or_above_player_is_not_a_local_recovery_route(world):
+    world.items = {"minecraft:wheat": 3}
+    world.position = (100, 54, 100)
+    assert not survival_farm.tend_local_farm_for_food(world, _state(), now=0)
+    assert world.food == 15
+
+
+def test_failed_farm_movement_never_plants_from_the_wrong_position(world, monkeypatch):
+    world.items = {"minecraft:wheat_seeds": 3}
+    monkeypatch.setattr("baritone_client.common.navigation.goto", lambda *_a, **_k: False)
+    monkeypatch.setattr("baritone_client.common.farming._till_and_plant_tile",
+                        lambda *_a: pytest.fail("failed movement cannot authorize planting"))
+    assert not survival_farm.tend_local_farm_for_food(world, _state(), now=0)
+
+
+def test_partial_meal_refreshes_state_and_waits_for_regeneration(monkeypatch):
+    live = {"health": 7, "food_level": 15, "is_dead": False}
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a: dict(live)))
+    monkeypatch.setattr(objective_survival, "_secure_home_respawn", lambda *_a: None)
+    monkeypatch.setattr(objective_survival, "_has_carried_emergency_bread_materials", lambda *_a: False)
+
+    def partial_meal(*_a):
+        live["food_level"] = 18
+        return False  # not enough food to reach the helper's target of 20
+
+    monkeypatch.setattr(objective_survival, "tend_local_farm_for_food", partial_meal)
+    monkeypatch.setattr(objective_survival, "local_farm_wait_reason",
+                        lambda *_a: "recovering health in a verified enclosure")
+    monkeypatch.setattr(objective_survival, "_attempt_survival_recovery_food",
+                        lambda *_a: pytest.fail("do not leave to search after a partial meal"))
+    assert not objective_survival.recover_survival_before_objective(client, _state())
+
+
+def test_growing_sheltered_farm_holds_without_claiming_food_success(monkeypatch):
+    live = {"health": 7, "food_level": 16, "is_dead": False}
+    calls = []
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda route, _p: calls.append(route) or dict(live)))
+    reasons = []
+    strategy = SimpleNamespace(suspend_for_survival=reasons.append)
+    monkeypatch.setattr(objective_survival, "_secure_home_respawn", lambda *_a: None)
+    monkeypatch.setattr(objective_survival, "_has_carried_emergency_bread_materials", lambda *_a: False)
+    monkeypatch.setattr(objective_survival, "tend_local_farm_for_food", lambda *_a: False)
+    monkeypatch.setattr(objective_survival, "local_farm_wait_reason", lambda *_a: "waiting for growing wheat")
+    monkeypatch.setattr(objective_survival, "_attempt_survival_recovery_food",
+                        lambda *_a: pytest.fail("must hold before storage or blind search"))
+    assert not objective_survival.recover_survival_before_objective(client, _state(), strategy)
+    assert reasons == ["waiting for growing wheat"]
+    assert "cancel" in calls
+
+
+def test_wait_requires_live_crops_water_same_height_and_shelter(world, monkeypatch):
+    monkeypatch.setattr(survival_farm, "_wait_enclosure", lambda *_a: True)
+    crops = {(100, 64, 100): {"id": "minecraft:water"},
+             (98, 65, 98): {"id": "minecraft:wheat", "state": {"age": "3"}},
+             (98, 64, 98): {"id": "minecraft:farmland", "state": {"moisture": "7"}}}
+    monkeypatch.setattr("baritone_client.common.farming._block_data",
+                        lambda _c, x, y, z: crops.get((x, y, z), {"id": "minecraft:air"}))
+    assert survival_farm.local_farm_wait_reason(world, _state(), world.dispatch("get_state", {}))
+    world.position = (100, 54, 100)
+    assert survival_farm.local_farm_wait_reason(world, _state(), world.dispatch("get_state", {})) is None
+    world.position = (100, 64, 100)
+    crops[(100, 64, 100)] = {"id": "minecraft:air"}
+    assert survival_farm.local_farm_wait_reason(world, _state(), world.dispatch("get_state", {})) is None
+
+
+def test_wait_enclosure_rejects_open_door_and_requires_all_four_walls(world, monkeypatch):
+    blocks = {}
+    for x in range(99, 104):
+        for z in range(98, 103):
+            for y in (63, 67):
+                blocks[(x, y, z)] = {"id": "minecraft:cobblestone"}
+            if x in (99, 103) or z in (98, 102):
+                for y in (64, 65):
+                    blocks[(x, y, z)] = {"id": "minecraft:cobblestone"}
+    monkeypatch.setattr("baritone_client.common.farming._block_data",
+                        lambda _c, x, y, z: blocks.get((x, y, z), {"id": "minecraft:air"}))
+    live = world.dispatch("get_state", {})
+    assert survival_farm._wait_enclosure(world, live)
+    blocks[(103, 64, 100)] = {"id": "minecraft:oak_door", "state": {"open": "true"}}
+    assert not survival_farm._wait_enclosure(world, live)
+    blocks[(103, 64, 100)]["state"]["open"] = "false"
+    assert survival_farm._wait_enclosure(world, live)
+    blocks[(101, 67, 100)] = {"id": "minecraft:air"}
+    assert not survival_farm._wait_enclosure(world, live)
+
+
+def test_four_posts_are_not_a_safe_room(world, monkeypatch):
+    def block(_c, x, y, z):
+        if (x, z) == (101, 100) and y == 67:
+            return {"id": "minecraft:cobblestone"}
+        if (x, z) in ((103, 100), (99, 100), (101, 102), (101, 98)) and y in (64, 65):
+            return {"id": "minecraft:cobblestone"}
+        return {"id": "minecraft:air"}
+    monkeypatch.setattr("baritone_client.common.farming._block_data", block)
+    assert not survival_farm._wait_enclosure(world, world.dispatch("get_state", {}))
+
+
+def test_reachable_hostile_or_unknown_blocks_never_claim_safe_wait(world, monkeypatch):
+    monkeypatch.setattr(survival_farm, "_hostile_close", lambda *_a: True)
+    monkeypatch.setattr(survival_farm, "_wait_enclosure", lambda *_a: pytest.fail("threat must win"))
+    assert survival_farm.local_farm_wait_reason(world, _state(), world.dispatch("get_state", {})) is None
+    monkeypatch.setattr(survival_farm, "_hostile_close", lambda *_a: False)
+    monkeypatch.setattr(survival_farm, "_wait_enclosure", lambda *_a: (_ for _ in ()).throw(RuntimeError("unknown")))
+    assert survival_farm.local_farm_wait_reason(world, _state(), world.dispatch("get_state", {})) is None
