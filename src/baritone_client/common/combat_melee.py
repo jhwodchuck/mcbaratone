@@ -146,7 +146,23 @@ def _equip_target_weapon(client, target) -> bool:
         return bool(api.equip_best_weapon(client))
 
 
-def _combat_intervention(client, snapshot, state, *, no_retreat):
+def _food_hunt_authorized(client, target) -> bool:
+    """Only an intended, observed food animal may bypass the hunger hold."""
+    from .combat_intent import current_combat_intent
+    from .combat_targeting import normalize_mob_type
+
+    intent = current_combat_intent(client)
+    return bool(
+        target
+        and intent is not None
+        and intent.purpose == "emergency_food"
+        and intent.authorizes(target)
+        and normalize_mob_type(target.get("type"))
+        in {"cow", "mooshroom", "pig", "sheep", "chicken", "rabbit", "cod", "salmon"}
+    )
+
+
+def _combat_intervention(client, snapshot, state, *, no_retreat, target=None):
     """Return a fail-closed reason before an approach or attack."""
     skipped = api._snapshot_skipped_count(snapshot)
     if skipped:
@@ -158,7 +174,7 @@ def _combat_intervention(client, snapshot, state, *, no_retreat):
             hungry = food is not None and int(food) < 7
         except (TypeError, ValueError):
             hungry = False
-        if no_retreat or not hungry:
+        if no_retreat or not hungry or _food_hunt_authorized(client, target):
             return None
         reason = "retreat_hunger"
         fields = {"food": food}
@@ -224,11 +240,7 @@ def _supervise_approach(
         hungry = food is not None and int(food) < 7
     except (TypeError, ValueError):
         hungry = False
-    if not no_retreat and hungry:
-        intervention["reason"] = "retreat_hunger"
-        api._stop_for_defense(client)
-        return True
-    if abort_on_other_hostiles:
+    if abort_on_other_hostiles or hungry:
         try:
             entities = api.get_nearby_entities(
                 client,
@@ -237,6 +249,11 @@ def _supervise_approach(
             )
         except api.EntityQueryError:
             intervention["reason"] = "entity_query_unavailable"
+            return True
+        target = next((entity for entity in entities if entity.get("id") == target_id), None)
+        if not no_retreat and hungry and not _food_hunt_authorized(client, target):
+            intervention["reason"] = "retreat_hunger"
+            api._stop_for_defense(client)
             return True
         other = next(
             (
@@ -247,7 +264,7 @@ def _supervise_approach(
             ),
             None,
         )
-        if other is not None:
+        if abort_on_other_hostiles and other is not None:
             intervention["reason"] = "secondary_hostile"
             api.combat_telemetry.record_combat_action(
                 client,
@@ -349,8 +366,11 @@ def execute_safe_combat(
             client, {"player": state, "entities": entities}
         )
         api.ensure_alive(client, state)
+        target = next(
+            (entity for entity in entities if entity.get("id") == target_id), None
+        )
         intervention_reason = _combat_intervention(
-            client, snapshot, state, no_retreat=no_retreat
+            client, snapshot, state, no_retreat=no_retreat, target=target
         )
         if intervention_reason is not None:
             return finish(intervention_reason)
@@ -371,10 +391,6 @@ def execute_safe_combat(
             client.transport.dispatch("cancel", {})
             return finish("retreat_health")
 
-        target = next(
-            (entity for entity in entities if entity.get("id") == target_id),
-            None,
-        )
         if abort_on_other_hostiles:
             other_threat = next(
                 (
