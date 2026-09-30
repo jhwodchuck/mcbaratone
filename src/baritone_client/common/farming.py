@@ -16,6 +16,7 @@ from .base import robust_place
 from .inventory import count_item, craft, select_item
 from .navigation import find_nearby_block, find_water_source, goto
 from .water_bucket_actions import use_water_bucket
+from .home_surface import protect_home_route
 
 # powder_snow is not a floor: a player sinks in and freezes, and it holds
 # neither farmland nor a water center.
@@ -758,6 +759,7 @@ def relocate_wheat_farm(
     return relocated
 
 
+@protect_home_route()
 def harvest_wheat_farm(client, x: int, y: int, z: int, range_: int = 8) -> bool:
     """Run Baritone's own farm process over the established patch.
 

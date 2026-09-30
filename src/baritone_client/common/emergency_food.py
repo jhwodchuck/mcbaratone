@@ -14,6 +14,7 @@ from .movement_recovery import (
 )
 from .site_selection import surface_y_at
 from .surface_egress import try_lower_surface_egress
+from .tasks import PlayerDeathDetected
 
 
 PRIMARY_LAND_FOOD = ("cow", "pig")
@@ -80,9 +81,16 @@ def craft_emergency_bread_from_carried_wheat(
     try:
         # Lazy import avoids emergency_food <-> resources initialization cycles.
         from .resources import _craft_with_table
+        from .enclosed_workstation import sheltered_bread_table
 
-        if not _craft_with_table(client, "minecraft:bread", bread_target):
+        restricted, table = sheltered_bread_table(client)
+        if restricted and table is None:
             return False
+        options = {"table_pos": table} if restricted else {}
+        if not _craft_with_table(client, "minecraft:bread", bread_target, **options):
+            return False
+    except PlayerDeathDetected:
+        raise
     except Exception as exc:
         print(f"RECOVERY: carried-wheat bread craft failed ({exc})")
         return False

@@ -2052,7 +2052,7 @@ def ensure_stone_material(client, item_id: str, qty: int = 1) -> bool:
     return count_item(client, "minecraft:cobblestone") >= needed
 
 
-def _craft_with_table(client, item_id: str, qty: int) -> bool:
+def _craft_with_table(client, item_id: str, qty: int, *, table_pos=None) -> bool:
     """Craft until the absolute carried target ``qty`` is satisfied."""
     from .base import open_crafting_table, place_crafting_table
     from .automation_utils import get_player_pos
@@ -2076,7 +2076,9 @@ def _craft_with_table(client, item_id: str, qty: int) -> bool:
         return False
     
     # Try to open existing crafting table nearby
-    if not open_crafting_table(client):
+    if not open_crafting_table(client, *(table_pos or ())):
+        if table_pos is not None:
+            return False  # A scoped workstation refusal cannot authorize another one.
         # Named crafting-table waypoints are mutable and can outlive the block
         # they described.  A live run followed one outside at night and died.
         # Stay local and repair/place a verified workstation instead.
