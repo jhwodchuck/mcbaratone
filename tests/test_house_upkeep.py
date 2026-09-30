@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import time
 
 from baritone_client.automator import house_upkeep
 from baritone_client.common import base
@@ -18,6 +19,7 @@ def _house_state(origin=(10, 64, 20), repaired=False):
     house = {"origin": list(origin)}
     if repaired:
         house["repaired"] = True
+        house["structure_checked_at"] = time.time()
     return _state({"structures": {"starter_house": house}})
 
 
@@ -72,6 +74,25 @@ def test_select_offers_upkeep_when_eligible():
     )
     assert opportunity is not None
     assert opportunity.location == (10, 64, 20)
+
+
+def test_legacy_repaired_flag_cannot_skip_physical_recheck_forever():
+    state = _house_state(repaired=True)
+    del state.custom_data["structures"]["starter_house"]["structure_checked_at"]
+    offered = house_upkeep.select_house_upkeep_opportunity(state, _signals(), True)
+    assert offered is not None and "repair" in offered.reason
+
+
+def test_repaired_house_is_resurveyed_after_bounded_interval(monkeypatch):
+    monkeypatch.setattr(house_upkeep.time, "time", lambda: 10000.0)
+    state = _house_state(repaired=True)
+    state.custom_data["structures"]["starter_house"]["structure_checked_at"] = (
+        10000.0 - house_upkeep.HOUSE_STRUCTURE_RECHECK_INTERVAL
+    )
+    offered = house_upkeep.select_house_upkeep_opportunity(state, _signals(), True)
+    assert offered is not None and "repair" in offered.reason
+    house_upkeep._mark_house_repaired(state)
+    assert house_upkeep._house_repaired(state)
 
 
 def test_run_house_upkeep_reports_no_origin():

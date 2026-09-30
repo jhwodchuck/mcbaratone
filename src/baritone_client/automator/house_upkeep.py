@@ -12,12 +12,14 @@ periodically, the same way `armor_upkeep` re-checks armour in every phase.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Mapping, Optional, Tuple
 
 #: Health floor for structural work. Below the comfort gate's 16 (this is not
 #: combat-adjacent survival work like armour), but well above the emergency
 #: threshold: a bot should not detour to place cobblestone while critical.
 HOUSE_UPKEEP_MIN_HEALTH = 12.0
+HOUSE_STRUCTURE_RECHECK_INTERVAL = 1800.0
 
 
 def _house_origin(state: Any) -> Optional[Tuple[int, int, int]]:
@@ -39,23 +41,26 @@ def _house_origin(state: Any) -> Optional[Tuple[int, int, int]]:
 
 
 def _house_repaired(state: Any) -> bool:
-    """True once a prior upkeep pass confirmed full completion.
-
-    Without this, a finished house would still cost a 168-block survey every
-    cooldown window for the rest of the run.
-    """
+    """Trust completion briefly; later damage must receive a fresh survey."""
     custom = getattr(state, "custom_data", {}) or {}
     structures = custom.get("structures", {})
     if not isinstance(structures, Mapping):
         return False
     house = structures.get("starter_house", {})
-    return bool(isinstance(house, Mapping) and house.get("repaired"))
+    if not isinstance(house, Mapping) or not house.get("repaired"):
+        return False
+    try:
+        age = time.time() - float(house["structure_checked_at"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return 0 <= age < HOUSE_STRUCTURE_RECHECK_INTERVAL
 
 
 def _mark_house_repaired(state: Any) -> None:
     structures = state.custom_data.setdefault("structures", {})
     house = structures.setdefault("starter_house", {})
     house["repaired"] = True
+    house["structure_checked_at"] = time.time()
 
 
 def house_upkeep_allowed(signals: Any) -> bool:
