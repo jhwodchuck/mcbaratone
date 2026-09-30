@@ -291,6 +291,15 @@ def run_scheduled_food_recovery(
     if before >= minimum_food:
         return True, "food already meets the mining threshold", before, before
 
+    # A local recovery pass can bake/harvest without an expedition. Its bool
+    # targets full hunger, so a partial meal still needs a fresh floor check.
+    from ..common.survival_farm import tend_local_farm_for_food
+
+    tend_local_farm_for_food(client, state)
+    after = _food_level(client)
+    if after >= minimum_food:
+        return True, "recovered food at the nearby farm", before, after
+
     if recover_food_from_known_sources(client, state, FOOD_ANIMALS):
         after = _food_level(client)
         if after >= minimum_food:
