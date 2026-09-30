@@ -22,6 +22,7 @@ from .inventory import (
     resolve_storage_location,
 )
 from .navigation import find_nearby_block, find_water_source
+from .survival_farm import local_farm_wait_reason
 from .farm_site_travel import (
     approach_candidate as _approach_candidate,
     horizontal_distance as _horizontal_distance,
@@ -680,7 +681,12 @@ def run_food_cycle(
     crop_tiles = 0
     replanted = 0
     seeds_gathered = 0
-    if harvested == 0:
+    waiting_for_crops = (
+        harvested == 0 and _count(get_inventory(client), BREAD) < 8
+        and hasattr(client, "transport")
+        and local_farm_wait_reason(client, state, client.transport.dispatch("get_state", {}))
+    )
+    if harvested == 0 and not waiting_for_crops:
         anchor = _anchor(state, known)
         # Seeds are the bootstrap for the whole food economy and every bot in
         # the fleet carried zero. Grass breaking already existed, but only

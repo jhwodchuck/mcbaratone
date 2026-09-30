@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import pytest
 
 from baritone_client.common import food_supply
 
@@ -82,6 +83,22 @@ def test_after_existing_plots_are_immature_expand_another_plot(monkeypatch):
     result = food_supply.run_food_cycle(object(), _state({"wheat_farm": {"origin": [0, 64, 0]}}))
     assert result.success and result.plots == 1 and result.crops_replanted == 1
     assert created == [(32, 64, 0)]
+
+
+def test_verified_growing_sheltered_farm_waits_without_stock_or_expansion(monkeypatch):
+    counts = {"minecraft:wheat": 2, "minecraft:wheat_seeds": 12}
+    _inventory(monkeypatch, counts)
+    monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(food_supply, "harvest_wheat_farm", lambda *_a, **_k: False)
+    monkeypatch.setattr(food_supply, "local_farm_wait_reason", lambda *_a: "growing wheat")
+    monkeypatch.setattr(food_supply, "_stock_seeds", lambda *_a: pytest.fail("stay at crop source"))
+    monkeypatch.setattr(food_supply, "establish_wheat_farm", lambda *_a, **_k: pytest.fail("no expansion"))
+    monkeypatch.setattr(food_supply, "resolve_storage_location", lambda *_a, **_k: None)
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a: {}))
+    state = _state({"wheat_farm": {"origin": [0, 64, 0]}})
+    result = food_supply.run_food_cycle(client, state)
+    assert not result.success and result.plots == 0 and result.wheat_harvested == 0
+    assert state.custom_data["food_worker"]["cycles"] == 0
 
 
 def test_no_permanent_terminal_plot_cap(monkeypatch):
