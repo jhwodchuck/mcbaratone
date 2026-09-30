@@ -5,6 +5,7 @@ from functools import partial, wraps
 
 from . import combat as api
 from .combat_action import dispatch_held_item_use, exclusive_combat_action
+from .stationary_defense import stationary_pursuit_refused
 
 # Cover one blaze fireball volley without delaying every sword swing by nearly
 # two seconds. Live Bot16 reduced a blaze to 2 HP, then died because the old
@@ -432,6 +433,9 @@ def execute_safe_combat(
                 time.sleep(0.05)
                 continue
 
+        if stationary_pursuit_refused(client, distance):
+            client.transport.dispatch("cancel", {})
+            return finish("cornered_pursuit_refused")
         if distance >= 4.5 and not _equip_target_weapon(client, target):
             client.transport.dispatch("cancel", {})
             return finish("weapon_unavailable")
