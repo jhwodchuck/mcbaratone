@@ -15,6 +15,7 @@ from typing import Optional, Tuple
 from .base import robust_place
 from .inventory import count_item, craft, select_item
 from .navigation import find_nearby_block, find_water_source, goto
+from .water_bucket_actions import use_water_bucket
 
 # powder_snow is not a floor: a player sinks in and freezes, and it holds
 # neither farmland nor a water center.
@@ -377,12 +378,9 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
         before = count_item(client, "minecraft:water_bucket")
         if not select_item(client, "minecraft:bucket", allow_swap=True):
             return False
-        client.transport.dispatch(
-            "look_at", {"x": x + 0.5, "y": y + 1.5, "z": z + 0.5}
-        )
-        time.sleep(0.2)
-        client.transport.dispatch("use_item", {"duration_ms": 0})
-        time.sleep(0.5)
+        if not use_water_bucket(client, x, y + 1, z, "pickup",
+                                legacy_aim=(x + 0.5, y + 1.5, z + 0.5)):
+            return False
         if count_item(client, "minecraft:water_bucket") <= before:
             print("  Could not reclaim elevated farm water.")
             return False
@@ -409,13 +407,9 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
             return False
         if not select_item(client, "minecraft:bucket", allow_swap=True):
             return False
-        client.transport.dispatch(
-            "look_at",
-            {"x": source[0] + 0.5, "y": source[1] + 0.5, "z": source[2] + 0.5},
-        )
-        time.sleep(0.3)
-        client.transport.dispatch("use_item", {"duration_ms": 0})
-        time.sleep(0.5)
+        if not use_water_bucket(client, *source, "pickup",
+                                legacy_aim=tuple(value + 0.5 for value in source)):
+            return False
         if count_item(client, "minecraft:water_bucket") < 1:
             print("  Could not fill a water bucket for the farm.")
             return False
@@ -474,16 +468,8 @@ def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
 
     if not select_item(client, "minecraft:water_bucket", allow_swap=True):
         return False
-    try:
-        client.transport.dispatch(
-            "look_at",
-            {"x": x + 0.5, "y": y - 0.5, "z": z + 0.5},
-        )
-        time.sleep(0.2)
-        client.transport.dispatch("use_item", {"duration_ms": 0})
-        time.sleep(0.5)
-    except Exception as exc:
-        print(f"  Placing farm water failed: {exc}")
+    if not use_water_bucket(client, x, y, z, "place",
+                            legacy_aim=(x + 0.5, y - 0.5, z + 0.5)):
         return False
     return _is_water_source(_block_data(client, x, y, z))
 
