@@ -567,6 +567,15 @@ def _home_first(
     )
 
 
+def _waiting_for_crops(client, state, harvested):
+    """Keep the live wait predicate outside the bounded cycle orchestrator."""
+    return (
+        harvested == 0 and _count(get_inventory(client), BREAD) < 8
+        and hasattr(client, "transport")
+        and local_farm_wait_reason(client, state, client.transport.dispatch("get_state", {}))
+    )
+
+
 def run_food_cycle(
     client: Any,
     state: Any,
@@ -681,11 +690,7 @@ def run_food_cycle(
     crop_tiles = 0
     replanted = 0
     seeds_gathered = 0
-    waiting_for_crops = (
-        harvested == 0 and _count(get_inventory(client), BREAD) < 8
-        and hasattr(client, "transport")
-        and local_farm_wait_reason(client, state, client.transport.dispatch("get_state", {}))
-    )
+    waiting_for_crops = _waiting_for_crops(client, state, harvested)
     if harvested == 0 and not waiting_for_crops:
         anchor = _anchor(state, known)
         # Seeds are the bootstrap for the whole food economy and every bot in
