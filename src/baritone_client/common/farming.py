@@ -350,14 +350,10 @@ def _ensure_farm_bucket(client, state=None) -> bool:
 def ensure_farm_water(client, x: int, y: int, z: int, state=None, *, size=5) -> bool:
     """Reuse irrigation covering the plot, placing central water if needed.
 
-    Farmland only stays hydrated (and crops grow at a reasonable speed)
-    within 4 blocks of water. Skipping this leaves a farm that "plants"
-    successfully but barely produces anything -- not a real food source.
-
-    ``y`` is the ground level used by :func:`establish_wheat_farm`. The water
-    therefore belongs at ``(x, y, z)``, beside the farmland, while crops occupy
-    ``y + 1``. Older controllers placed the source at crop height; reclaim that
-    source before repairing the center so repeated calls heal those farms.
+    ``y`` is soil height, with crops at ``y + 1``. A freshly observed source
+    need not occupy the saved center, but must hydrate the whole plot within
+    four blocks on both horizontal axes. Preserve that existing irrigation.
+    Reclaim elevated center water before repair so it cannot flood crops.
     """
     air = {"minecraft:air", "minecraft:cave_air"}
     center_data = _block_data(client, x, y, z)
