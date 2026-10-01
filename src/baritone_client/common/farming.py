@@ -17,6 +17,7 @@ from .inventory import count_item, craft, select_item
 from .navigation import find_nearby_block, find_water_source, goto
 from .water_bucket_actions import use_water_bucket
 from .home_surface import protect_home_route
+from .farm_irrigation import existing_plot_source
 
 # powder_snow is not a floor: a player sinks in and freezes, and it holds
 # neither farmland nor a water center.
@@ -346,24 +347,31 @@ def _ensure_farm_bucket(client, state=None) -> bool:
     return bool(craft(client, "minecraft:bucket", 1))
 
 
-def ensure_farm_water(client, x: int, y: int, z: int, state=None) -> bool:
-    """Ensure a water source sits at the farm center, placing one if needed.
+def ensure_farm_water(client, x: int, y: int, z: int, state=None, *, size=5) -> bool:
+    """Reuse irrigation covering the plot, placing central water if needed.
 
-    Farmland only stays hydrated (and crops grow at a reasonable speed)
-    within 4 blocks of water. Skipping this leaves a farm that "plants"
-    successfully but barely produces anything -- not a real food source.
-
-    ``y`` is the ground level used by :func:`establish_wheat_farm`. The water
-    therefore belongs at ``(x, y, z)``, beside the farmland, while crops occupy
-    ``y + 1``. Older controllers placed the source at crop height; reclaim that
-    source before repairing the center so repeated calls heal those farms.
+    ``y`` is soil height, with crops at ``y + 1``. A freshly observed source
+    need not occupy the saved center, but must hydrate the whole plot within
+    four blocks on both horizontal axes. Preserve that existing irrigation.
+    Reclaim elevated center water before repair so it cannot flood crops.
     """
     air = {"minecraft:air", "minecraft:cave_air"}
-    if _is_water_source(_block_data(client, x, y, z)):
+    center_data = _block_data(client, x, y, z)
+    if not center_data.get("id"):
+        return False
+    if _is_water_source(center_data):
         return True
 
     elevated = _block_data(client, x, y + 1, z)
+    if not elevated.get("id"):
+        return False
     elevated_water = "water" in str(elevated.get("id", ""))
+    if not elevated_water:
+        try:
+            if existing_plot_source(client, x, y, z, size=size) is not None:
+                return True
+        except ValueError:
+            return False  # Unknown irrigation is not permission to dig.
     if elevated_water:
         if not _is_water_source(elevated):
             print("  Farm center is flooded by elevated flowing water.")
@@ -569,7 +577,7 @@ def establish_wheat_farm(
         print(f"  Wheat farm at {(x, y, z)} has no usable planting tiles.")
         return None
 
-    if not ensure_farm_water(client, x, y, z, state=state):
+    if not ensure_farm_water(client, x, y, z, state=state, size=size):
         return None
 
     carried_seeds = count_item(client, "minecraft:wheat_seeds")
@@ -648,7 +656,7 @@ def reestablish_wheat_farm(
             client.transport.dispatch("attack_block", {"x": tx, "y": ty + 1, "z": tz})
             time.sleep(0.1)
 
-    if not ensure_farm_water(client, x, y, z, state=state):
+    if not ensure_farm_water(client, x, y, z, state=state, size=size):
         return None
 
     carried_seeds = count_item(client, "minecraft:wheat_seeds")
