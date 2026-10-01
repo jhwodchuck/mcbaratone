@@ -25,6 +25,11 @@ def room(monkeypatch):
                                 calls.append((r, p)) or dict(live)))
     monkeypatch.setattr("baritone_client.common.farming._block_data", lambda _c, x, y, z:
                         blocks.get((x, y, z), {"id": "minecraft:air"}))
+    def travel(_client, x, y, z, **_kwargs):
+        live["position"] = {"x": x + 0.5, "y": y, "z": z + 0.5}
+        live["block_position"] = {"x": x, "y": y, "z": z}
+        return True
+    monkeypatch.setattr(enclosed_workstation, "goto", travel)
     return client, live, blocks, calls
 
 
@@ -156,3 +161,58 @@ def test_native_farm_process_keeps_home_digging_protected(monkeypatch):
     assert farming.harvest_wheat_farm(client, 100, 64, 100)
     assert ("cancel", {}) in calls
     assert values["allowBreak"] == "true"
+
+
+def test_bread_approaches_inside_table_at_body_height(room, monkeypatch):
+    client, live, blocks, _ = room
+    blocks[99, 65, 101] = {"id": "minecraft:crafting_table"}
+    moves = []
+    def travel(_client, x, y, z, **kwargs):
+        moves.append(((x, y, z), kwargs))
+        live["position"] = {"x": x + .5, "y": y, "z": z + .5}
+        live["block_position"] = {"x": x, "y": y, "z": z}
+        return True
+    monkeypatch.setattr(enclosed_workstation, "goto", travel)
+    assert enclosed_workstation.prepare_sheltered_bread_craft(client, lambda *_a, **_k: True)
+    assert moves == [((100, 65, 101), {"timeout": 15, "tolerance": 1.5, "radius": 1})]
+
+
+@pytest.mark.parametrize("bad_position", [(97, 65, 101), (100, 68, 101)])
+def test_bread_rejects_outside_or_roof_arrival(room, monkeypatch, bad_position):
+    client, live, blocks, _ = room
+    blocks[99, 65, 101] = {"id": "minecraft:crafting_table"}
+    def travel(*_a, **_k):
+        x, y, z = bad_position
+        live["position"] = live["block_position"] = {"x": x, "y": y, "z": z}
+        return True
+    monkeypatch.setattr(enclosed_workstation, "goto", travel)
+    assert not enclosed_workstation.prepare_sheltered_bread_craft(
+        client, lambda *_a, **_k: pytest.fail("cannot open from an unverified arrival"))
+
+
+def test_bread_refuses_failed_approaches_without_generic_open(room, monkeypatch):
+    client, _, blocks, _ = room
+    blocks[103, 65, 103] = {"id": "minecraft:crafting_table"}
+    monkeypatch.setattr(enclosed_workstation, "goto", lambda *_a, **_k: False)
+    assert not enclosed_workstation.prepare_sheltered_bread_craft(
+        client, lambda *_a, **_k: pytest.fail("must not search outside shelter"))
+
+
+def test_bread_approach_propagates_death(room, monkeypatch):
+    client, _, blocks, _ = room
+    blocks[103, 65, 103] = {"id": "minecraft:crafting_table"}
+    monkeypatch.setattr(enclosed_workstation, "goto", lambda *_a, **_k:
+                        (_ for _ in ()).throw(PlayerDeathDetected("dead")))
+    with pytest.raises(PlayerDeathDetected):
+        enclosed_workstation.prepare_sheltered_bread_craft(client, lambda *_a, **_k: True)
+
+
+def test_bread_accepts_precise_farmland_height(room, monkeypatch):
+    client, live, blocks, _ = room
+    blocks[99, 65, 101] = {"id": "minecraft:crafting_table"}
+    def travel(_client, x, y, z, **_kwargs):
+        live["position"] = {"x": x + .5, "y": y - .0625, "z": z + .5}
+        live["block_position"] = {"x": x, "y": y - 1, "z": z}
+        return True
+    monkeypatch.setattr(enclosed_workstation, "goto", travel)
+    assert enclosed_workstation.prepare_sheltered_bread_craft(client, lambda *_a, **_k: True)
