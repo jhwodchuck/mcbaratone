@@ -47,7 +47,10 @@ STORAGE_MAX_VERTICAL = 16.0
 STORAGE_INTERVAL = 600.0
 #: Mining is the risky stage: only partly armoured, healthy, fed and rarely.
 MINING_INTERVAL = 1200.0
-MINING_MIN_WORN = 2
+#: Was 2 (mine only once partly armoured). With 0 pieces and 3 of the 4 ingots
+#: boots need, that rule made mining unreachable: no armour, no iron, no armour.
+#: The exposed-ore-only limits below already keep this stage out of caves.
+MINING_MIN_WORN = 0
 MINING_MIN_HEALTH = 16.0
 MINING_MIN_FOOD = 14
 MINING_TIMEOUT = 300

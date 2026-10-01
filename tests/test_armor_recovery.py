@@ -119,6 +119,8 @@ def bot(monkeypatch):
         lambda _c, x, y, z, **_k: mined.append((x, y, z)) or True,
     )
     monkeypatch.setattr(armor_recovery.time, "sleep", lambda _s: None)
+    # These tests are about armour recovery; the standing iron job has its own.
+    monkeypatch.setattr("baritone_client.automator.iron_supply.supply_due", lambda *_a, **_k: False)
     return SimpleNamespace(live=live, storage=storage, withdrawals=withdrawals, mined=mined)
 
 
@@ -181,12 +183,12 @@ def test_deep_or_enclosed_ore_is_never_mined(bot):
 @pytest.mark.parametrize(
     ("worn", "health", "food"),
     [
-        ({}, 20.0, 20),
         ({"boots": "minecraft:iron_boots", "helmet": "minecraft:iron_helmet"}, 12.0, 20),
         ({"boots": "minecraft:iron_boots", "helmet": "minecraft:iron_helmet"}, 20.0, 10),
+        ({}, 12.0, 20),
     ],
 )
-def test_mining_is_refused_without_armour_health_or_food(bot, worn, health, food):
+def test_mining_is_refused_without_health_or_food(bot, worn, health, food):
     bot.storage.clear()
     bot.live.worn = dict(worn)
     bot.live.health, bot.live.food = health, food
@@ -232,3 +234,14 @@ def test_armour_upkeep_recovers_from_zero_through_storage(bot, monkeypatch):
 
     assert success and (before, after) == (0, 2)
     assert "fetched" in detail
+
+
+def test_a_bot_wearing_nothing_may_still_mine_exposed_ore(bot):
+    """The old 2-piece rule left a 0/4 bot with 3 ingots unable to ever get a 4th."""
+    bot.storage.clear()
+    bot.live.items["minecraft:iron_ingot"] = 3
+    bot.live.ores = [(100 + i, 70, 110) for i in range(6)]
+
+    armor_recovery.recover_armor_materials(bot.live, _state(), now=5000.0)
+
+    assert bot.live.dug  # it mined

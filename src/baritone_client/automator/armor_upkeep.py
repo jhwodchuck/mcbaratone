@@ -339,6 +339,16 @@ def select_armor_opportunity(
     if gaps := kit_gaps(client):
         names = ", ".join(g.split(":")[1] for g in gaps)
         return LocalOpportunity(OpportunityKind.ARMOR_UPKEEP, 195, f"no usable weapon/pickaxe; can craft {names}")
+    # Iron itself: armour, tools and the Nether all need it, and a bot that has
+    # lost its kit has no other way to get it back.
+    from .iron_supply import LOW_STOCK, iron_stock, supply_due
+
+    if supply_due(client, state, signals):
+        return LocalOpportunity(
+            OpportunityKind.ARMOR_UPKEEP,
+            185,
+            f"iron stock {iron_stock(client, state)} is below {LOW_STOCK}; a bounded mining trip can refill it",
+        )
     # Freezing outranks the iron plan and ignores the "already dressed" exit:
     # a 4/4 iron set is no protection at all against powder snow, so a fully
     # armoured bot in a grove still needs this.
@@ -391,6 +401,11 @@ def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
     from .weapon_upkeep import restore_kit
 
     made = restore_kit(client)
+    from .iron_supply import run_supply_trip, supply_due
+
+    if supply_due(client, state):
+        success, detail, before, after = run_supply_trip(client, state)
+        return success, (f"crafted {', '.join(made)}; {detail}" if made else detail), before, after
     success, detail, before, after = _run_armor(client, state)
     if made:
         return True, f"crafted {', '.join(made)}; {detail}", before, after
