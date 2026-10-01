@@ -51,6 +51,10 @@ def bot(monkeypatch):
     monkeypatch.setattr("baritone_client.automator.armor_recovery._smelt_raw_iron", smelt)
 
     def deposit(_client, chest, deposit_items=None, retain_counts=None, **_k):
+        if "minecraft:iron_ingot" not in (deposit_items or set()):  # a clutter run
+            w.deposits.append((chest, "clutter", len(deposit_items or ())))
+            w.used_slots = max(1, w.used_slots - 8)
+            return 8
         keep = (retain_counts or {}).get("minecraft:iron_ingot", 0)
         moved = max(0, w.ingots - keep)
         w.ingots -= moved
@@ -188,13 +192,40 @@ def test_a_trip_that_finds_no_iron_backs_off_and_eventually_picks_a_new_entrance
     assert "entrance" not in rec and rec["bad_entrances"]  # rotated to a new mine
 
 
-def test_a_trip_needs_torches_before_going_underground(bot, monkeypatch):
+def test_a_trip_without_torches_runs_a_shorter_dark_trip_and_asks_for_torches_only_hourly(bot, monkeypatch):
     bot.torches = 1
+    with_ore(bot, 64)
+    asked = []
     monkeypatch.setattr(
-        "baritone_client.automator.base_lighting.ensure_torches", lambda *_a, **_k: bot.torches
+        "baritone_client.automator.base_lighting.ensure_torches",
+        lambda *_a, **_k: asked.append(1) or bot.torches,
     )
-    ok, detail, *_ = iron_stockpile.run_supply_trip(bot, state(), now=1.0)
-    assert not ok and "torches" in detail and bot.dug == []
+    st = state()
+
+    ok, detail, *_ = iron_stockpile.run_supply_trip(bot, st, now=1000.0)
+
+    assert ok and asked == [1]
+    assert len(bot.placed) <= 1  # it uses the one torch it has, and nothing more
+    # A second trip within the hour does not try to craft torches again.
+    bot.pos = ENTRANCE
+    iron_stockpile.run_supply_trip(bot, st, now=2000.0)
+    assert asked == [1]
+    bot.pos = ENTRANCE
+    iron_stockpile.run_supply_trip(bot, st, now=1000.0 + iron_stockpile.TORCH_RETRY_SECONDS + 1)
+    assert asked == [1, 1]
+
+
+def test_clutter_is_banked_before_a_trip_when_the_pack_is_nearly_full(bot):
+    with_ore(bot, 64)
+    bot.used_slots = 33
+    st = state()
+
+    ok, *_ = iron_stockpile.run_supply_trip(bot, st, now=1000.0)
+
+    clutter_runs = [d for d in bot.deposits if d[1] == "clutter"]
+    assert ok and len(clutter_runs) == 1 and bot.used_slots < 33
+    assert "minecraft:iron_pickaxe" not in iron_stockpile.CLUTTER
+    assert not any(n.endswith(("_sword", "_pickaxe", "torch", "ingot", "bread")) for n in iron_stockpile.CLUTTER)
 
 
 def test_a_mob_during_the_trip_still_brings_the_bot_home_and_keeps_what_it_mined(bot):
