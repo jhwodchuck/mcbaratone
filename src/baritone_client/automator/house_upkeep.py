@@ -151,7 +151,11 @@ def run_house_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
     # the map every block reads void_air, so the remote survey scored 0 of 169
     # and the closing `after > before` test then reported a successful repair
     # for a house that was already standing and had not been touched.
-    before, _ = _survey()
+    before, progress = _survey()
+    if (before == 169 and progress["floor"] == 49 and progress["shell"] == 70
+            and progress["roof"] == 49 and progress["door_present"] is True):
+        _mark_house_repaired(state)
+        return False, "starter house structure freshly verified complete", before, before
     complete = house_utils.build_good_house(client, x, y, z)
     after, progress = _survey()
     if complete:

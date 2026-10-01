@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 import time
 
+import pytest
+
 from baritone_client.automator import house_upkeep
 from baritone_client.common import base
 
@@ -145,7 +147,9 @@ def test_run_house_upkeep_marks_repaired_once_fully_complete(monkeypatch):
         "shell_total": 70, "roof_total": 49, "door_present": True,
     }
     monkeypatch.setattr(base, "summarize_house_progress", lambda *_a: complete_progress)
-    monkeypatch.setattr(base, "build_good_house", lambda *_a: True)
+    monkeypatch.setattr(base, "build_good_house", lambda *_a: pytest.fail(
+        "complete structure must not launch material gathering",
+    ))
     monkeypatch.setattr(
         "baritone_client.common.navigation.goto", lambda *_a, **_k: True
     )
