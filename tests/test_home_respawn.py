@@ -655,3 +655,33 @@ def test_no_tree_trip_when_hurt_hungry_or_after_dark(home, monkeypatch, live):
     home.world["client"] = client
     assert not home_respawn.secure_home_respawn(client, _state(), now=0.0)
     assert not [call for call in home.calls if call[0] in {"craft_bed", "place"}]
+
+
+def test_a_cluttered_house_with_floor_holes_still_gets_its_bed_on_the_free_interior_row(home):
+    """Live A1 2026-10-01: all four fixed slots failed while a whole row was free."""
+    client = _Client()
+    home.world["client"] = client
+    for x in range(201, 206):  # interior x, below
+        for z in range(-39, -35):  # four rows full of workstations, chests and furnaces
+            client.blocks[(x, 71, z)] = "minecraft:crafting_table"
+    for cell in [(204, 70, -37), (205, 70, -37), (205, 70, -35)]:
+        client.blocks[cell] = "minecraft:air"  # holes in the floor, one in the free row
+
+    assert home_respawn.secure_home_respawn(client, _state(), now=0.0)
+
+    (foot, direction), = client.placements
+    head = (foot[0] + direction[0], foot[1], foot[2] + direction[1])
+    assert foot[2] == -35 and head[2] == -35 and 201 <= foot[0] <= 205  # inside, on the free row
+    assert (foot[0], foot[1] - 1, foot[2]) not in {(205, 70, -35)}  # never over the hole
+    assert client.blocks.get((head[0], head[1] - 1, head[2]), "minecraft:stone") != "minecraft:air"
+
+
+def test_every_interior_cell_is_offered_and_the_ring_is_centred_on_the_house():
+    state = _state(base_location=[200, 70, -70])  # the anchor has wandered off to the north
+    slots = home_respawn._bed_slots(state, tuple(BASE))
+    interior = {(x, 71, z) for x in range(201, 206) for z in range(-39, -34)}
+    assert interior <= set(slots) and len(slots) == len(set(slots))
+    candidates = home_respawn._bed_candidates(state, (200, 70, -70))
+    assert candidates[: len(slots)] == slots
+    outside = [c for c in candidates if c not in interior]
+    assert min(abs(c[0] - 203) + abs(c[2] + 37) for c in outside) <= 4  # around the HOUSE, not the anchor
