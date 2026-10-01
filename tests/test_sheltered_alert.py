@@ -3,7 +3,10 @@ from dataclasses import replace
 import pytest
 
 from baritone_client.common import sheltered_alert, survival_farm
-from baritone_client.common.defense import AttackStyle, DefenseDecision, DefenseMode, ThreatAssessment
+from baritone_client.common.defense import (
+    AttackStyle, DefenseDecision, DefenseMode, DefenseRuntime, ThreatAssessment,
+    assess_threats, choose_defense_action,
+)
 from baritone_client.common.tasks import PlayerDeathDetected
 
 
@@ -29,8 +32,9 @@ def test_aggressive_occluded_distant_alert_keeps_verified_shelter(alert):
 
 
 @pytest.mark.parametrize("changes", [
-    {"distance": 9}, {"closing_speed": .2}, {"style": AttackStyle.EXPLOSIVE},
-    {"style": AttackStyle.BOSS}, {"entity_type": "vex"}, {"always_evade": True},
+    {"distance": 9}, {"closing_speed": float("nan")}, {"style": AttackStyle.EXPLOSIVE},
+    {"style": AttackStyle.BOSS}, {"entity_type": "vex"},
+    {"entity_type": "arrow", "always_evade": True},
     {"distance": float("nan")},
 ])
 def test_actionable_or_unknown_threat_keeps_evasion(alert, changes):
@@ -68,6 +72,45 @@ def test_multiple_threats_keep_evasion(alert):
     assert sheltered_alert.hold_sheltered_alert(
         object(), decision, state, [decision.primary, projectile],
     ) is decision
+
+
+@pytest.mark.parametrize("reason", [
+    "threat stalled in alert range too long; forcing evasion", "avoid ranged threat",
+])
+def test_real_skeleton_profile_moving_below_floor_holds(alert, reason):
+    decision, state = alert
+    threat = replace(decision.primary, always_evade=True, closing_speed=.4)
+    threat.entity["position"] = {"x": 5, "y": 50, "z": 0}
+    decision = replace(decision, primary=threat, reason=reason)
+    assert sheltered_alert.hold_sheltered_alert(object(), decision, state).mode is DefenseMode.ALERT
+
+
+def test_production_assessment_and_ranged_policy_below_floor_holds(alert):
+    _decision, state = alert
+    entity = {"type": "minecraft:skeleton", "distance": 15,
+              "can_see_player": False, "is_aggressive": True, "target_id": 7,
+              "position": {"x": 5, "y": 50, "z": 0},
+              "velocity": {"x": 0, "y": .4, "z": 0}}
+    threats = assess_threats([entity], state)
+    decision = choose_defense_action(
+        threats, health=20, armor_count=0, has_weapon=True, runtime=DefenseRuntime(),
+    )
+    assert decision.mode is DefenseMode.EVADE
+    assert decision.reason == "avoid ranged threat"
+    assert decision.primary.always_evade
+    assert sheltered_alert.hold_sheltered_alert(
+        object(), decision, state, threats,
+    ).mode is DefenseMode.ALERT
+
+
+@pytest.mark.parametrize("position", [
+    {"x": 5, "y": 65, "z": 0}, {"x": 8.5, "y": 65, "z": 0},
+    {"x": 5, "y": 64, "z": 0}, {"x": 5, "y": 68, "z": 0},
+])
+def test_inside_or_boundary_mob_keeps_evasion(alert, position):
+    decision, state = alert
+    decision.primary.entity["position"] = position
+    assert sheltered_alert.hold_sheltered_alert(object(), decision, state) is decision
 
 
 def test_open_or_unknown_enclosure_keeps_evasion(alert, monkeypatch):
