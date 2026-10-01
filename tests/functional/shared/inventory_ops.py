@@ -942,11 +942,19 @@ def craft_bed_manual(ctx, bed_id: str = "minecraft:white_bed") -> bool:
                 return slot.get("slot")
         return None
 
-    wool_slot = find_slot(lambda s: s.get("id", "").endswith("_wool"), min_count=3)
+    # A bed takes three wool of ONE colour. Prefer the colour the caller asked
+    # for, fall back to any stack of three, and judge success by the bed that
+    # wool makes (a black stack makes a black bed, whatever was requested).
+    wanted_wool = bed_id.replace("_bed", "_wool")
+    wool_slot = find_slot(lambda s: s.get("id", "") == wanted_wool, min_count=3)
+    if wool_slot is None:
+        wool_slot = find_slot(lambda s: s.get("id", "").endswith("_wool"), min_count=3)
     plank_slot = find_slot(lambda s: s.get("id", "").endswith("_planks"), min_count=3)
     if wool_slot is None or plank_slot is None:
         ctx.log_event(f"Bed craft missing ingredients")
         return False
+    used_wool = next((s.get("id", "") for s in slots if s.get("slot") == wool_slot), wanted_wool)
+    bed_id = used_wool.replace("_wool", "_bed")
 
     for grid_slot in range(1, 10):
         slot_info = next((s for s in slots if s.get("slot") == grid_slot), None)

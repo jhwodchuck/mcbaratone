@@ -141,7 +141,7 @@ def home(monkeypatch):
 
     def craft_bed(_client, bed_id):
         calls.append(("craft_bed", bed_id))
-        items["minecraft:white_wool"] -= 3
+        items[bed_id.replace("_bed", "_wool")] -= 3  # a bed eats three wool of its own colour
         items["minecraft:oak_planks"] -= 3
         items[bed_id] = 1
         return True
@@ -529,3 +529,129 @@ def test_hostile_interrupted_hunt_does_not_widen_the_ring(home, monkeypatch, cap
     assert record.get("failures", 0) == 0
     assert record["last_attempt"] > 0
     assert "Hostile minecraft:zombie" in capsys.readouterr().out
+
+
+# -- any colour of wool, and planks ----------------------------------------
+def test_a_bed_is_made_from_three_wool_of_any_one_colour(home):
+    """Live A1 held black and gray wool and kept failing on 'white wool'."""
+    client = _Client()
+    home.world["client"] = client
+    home.stock.clear()  # nothing useful in storage
+    home.items["minecraft:black_wool"] = 3
+
+    assert home_respawn.secure_home_respawn(client, _state(), now=0.0)
+
+    assert ("craft_bed", "minecraft:black_bed") in home.calls
+    assert not [call for call in home.calls if call[0] == "craft"]  # no string detour
+    assert client.blocks[(205, 71, -37)].endswith("_bed")
+
+
+@pytest.mark.parametrize(
+    ("carried", "expected"),
+    [
+        ({}, ("minecraft:white_wool", 0)),
+        ({"minecraft:white_wool": 1, "minecraft:black_wool": 1}, ("minecraft:white_wool", 1)),
+        ({"minecraft:black_wool": 1}, ("minecraft:white_wool", 0)),  # a stray one is not a plan
+        ({"minecraft:black_wool": 2}, ("minecraft:black_wool", 2)),
+        ({"minecraft:white_wool": 1, "minecraft:black_wool": 3}, ("minecraft:black_wool", 3)),
+        ({"minecraft:gray_wool": 2, "minecraft:black_wool": 1}, ("minecraft:gray_wool", 2)),
+        ({"minecraft:white_wool": 2, "minecraft:gray_wool": 2}, ("minecraft:white_wool", 2)),
+    ],
+)
+def test_best_wool_is_the_colour_closest_to_three_with_white_favoured(home, carried, expected):
+    home.items.update(carried)
+    assert home_respawn._best_wool(None) == expected
+    assert home_respawn._missing_wool(None) == 3 - expected[1]
+
+
+def test_storage_wool_of_another_colour_is_withdrawn_when_white_is_not_there(home):
+    client = _Client()
+    home.world["client"] = client
+    home.stock.clear()
+    home.chests["minecraft:green_wool"] = [(202, 71, -39)]
+    home.stock["minecraft:green_wool"] = 5
+    home.chests["minecraft:string"] = []
+
+    assert home_respawn.secure_home_respawn(client, _state(), now=0.0)
+
+    assert ("craft_bed", "minecraft:green_bed") in home.calls
+
+
+def test_the_sheep_hunt_asks_for_the_colour_already_carried(home, monkeypatch):
+    home.items["minecraft:black_wool"] = 2
+    asked = {}
+
+    def hunt(_client, **kwargs):
+        asked.update(kwargs)
+        return SimpleNamespace(reason="done")
+
+    monkeypatch.setattr("baritone_client.common.combat.hunt_mobs", hunt)
+    monkeypatch.setattr(home_respawn, "_hunt_ready", lambda *_a: True)
+    monkeypatch.setattr(home_respawn, "_hunt_food_ready", lambda _c: True)
+    client = _Client()
+    home.world["client"] = client
+
+    home_respawn._hunt_sheep_for_wool(client, _state(), tuple(BASE))
+
+    assert asked["required_loot"] == {"minecraft:black_wool": 1}
+
+
+class _Healthy(_Client):
+    def dispatch(self, route, payload):
+        live = super().dispatch(route, payload)
+        if route == "get_state":
+            live.update(health=20.0, food_level=20, world_time=2000)
+        return live
+
+
+def test_a_bed_with_wool_but_no_planks_fetches_one_log_and_makes_them(home, monkeypatch):
+    home.items["minecraft:oak_planks"] = 0
+    home.items["minecraft:white_wool"] = 3
+    trips = []
+
+    def gather(_client, count=16, timeout=180, **kwargs):
+        trips.append((count, timeout, kwargs))
+        home.items["minecraft:oak_log"] = 1
+        return True
+
+    def make_planks(_client, required):
+        home.items["minecraft:oak_log"] -= 1
+        home.items["minecraft:oak_planks"] += 4
+        return True
+
+    monkeypatch.setattr("baritone_client.common.resources.gather_wood", gather)
+    monkeypatch.setattr("baritone_client.common.inventory._ensure_raw_planks", make_planks)
+    client = _Healthy()
+    home.world["client"] = client
+
+    assert home_respawn.secure_home_respawn(client, _state(), now=0.0)
+
+    (count, timeout, kwargs), = trips
+    assert count == 1 and timeout == home_respawn.PLANK_TRIP_TIMEOUT
+    assert kwargs["abort_on_threats"] is True
+    assert kwargs["max_distance_from_origin"] == home_respawn.PLANK_TRIP_RADIUS
+    assert ("craft_bed", "minecraft:white_bed") in home.calls
+
+
+@pytest.mark.parametrize("live", [{"health": 9.0, "food_level": 20, "world_time": 2000},
+                                  {"health": 20.0, "food_level": 8, "world_time": 2000},
+                                  {"health": 20.0, "food_level": 20, "world_time": 13000}])
+def test_no_tree_trip_when_hurt_hungry_or_after_dark(home, monkeypatch, live):
+    home.items["minecraft:oak_planks"] = 0
+    home.items["minecraft:white_wool"] = 3
+    monkeypatch.setattr(
+        "baritone_client.common.resources.gather_wood",
+        lambda *_a, **_k: pytest.fail("must not wander for wood in this state"),
+    )
+
+    class Client(_Client):
+        def dispatch(self, route, payload):
+            data = super().dispatch(route, payload)
+            if route == "get_state":
+                data.update(live)
+            return data
+
+    client = Client()
+    home.world["client"] = client
+    assert not home_respawn.secure_home_respawn(client, _state(), now=0.0)
+    assert not [call for call in home.calls if call[0] in {"craft_bed", "place"}]
