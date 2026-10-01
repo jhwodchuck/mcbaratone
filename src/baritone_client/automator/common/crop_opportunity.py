@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from ...common.inventory import get_inventory
 from ...common.navigation import find_nearby_block, goto
+from ...common.home_surface import protect_home_route
 from ..local_opportunity import LocalOpportunity
 
 CROP_BLOCKS = ("minecraft:wheat", "minecraft:carrots", "minecraft:potatoes", "minecraft:beetroots")
@@ -16,6 +17,29 @@ PLANTABLE_ITEMS = ("minecraft:wheat_seeds", "minecraft:carrot", "minecraft:potat
 
 def run_crop_opportunity(
     client: Any, opportunity: LocalOpportunity, timeout: float,
+    *, inventory_reader: Callable[[Any], Any] = get_inventory,
+    traveler: Callable[..., bool] = goto,
+    block_finder: Callable[..., Any] = find_nearby_block,
+    sleeper: Callable[[float], None] = time.sleep,
+    state: Any = None,
+) -> tuple[bool, str, int, int]:
+    """Hold home digging protection across the entire native crop process."""
+    if opportunity.location is None:
+        return False, "crop patch was unreachable", 0, 0
+    result = _run_crop_opportunity(
+        client, *opportunity.location, opportunity, timeout,
+        inventory_reader=inventory_reader, traveler=traveler,
+        block_finder=block_finder, sleeper=sleeper, state=state,
+    )
+    return result if isinstance(result, tuple) else (
+        False, "home crop digging protection was unavailable", 0, 0
+    )
+
+
+@protect_home_route()
+def _run_crop_opportunity(
+    client: Any, x: int, y: int, z: int,
+    opportunity: LocalOpportunity, timeout: float,
     *, inventory_reader: Callable[[Any], Any] = get_inventory,
     traveler: Callable[..., bool] = goto,
     block_finder: Callable[..., Any] = find_nearby_block,

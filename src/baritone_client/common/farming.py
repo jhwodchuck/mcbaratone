@@ -18,6 +18,7 @@ from .navigation import find_nearby_block, find_water_source, goto
 from .water_bucket_actions import use_water_bucket
 from .home_surface import protect_home_route
 from .farm_irrigation import existing_plot_source
+from .farm_planting import plant_farm_tiles
 
 # powder_snow is not a floor: a player sinks in and freezes, and it holds
 # neither farmland nor a water center.
@@ -594,16 +595,7 @@ def establish_wheat_farm(
         # Continue anyway -- partial planting with whatever seeds exist is
         # still better than nothing, and count_item is rechecked per tile.
 
-    planted = 0
-    for tx, ty, tz in tiles:
-        # Every tile in this five-wide patch is within normal interaction
-        # reach from its center. Requiring the pathfinder to stand almost on
-        # each individual tile makes uneven ground consume the full timeout
-        # repeatedly even though tilling and planting are already reachable.
-        if not goto(client, tx, ty, tz, timeout=20, tolerance=3.5):
-            continue
-        if _till_and_plant_tile(client, tx, ty, tz):
-            planted += 1
+    planted = plant_farm_tiles(client, tiles)
 
     if planted == 0:
         print(f"  Wheat farm at {(x, y, z)} could not be planted (0/{len(tiles)} tiles).")
@@ -668,12 +660,7 @@ def reestablish_wheat_farm(
     if not _gather_seeds(client, seed_target):
         print("  Could not gather enough wheat seeds to replant the recovered farm.")
 
-    planted = 0
-    for tx, ty, tz in tiles:
-        if not goto(client, tx, ty, tz, timeout=20, tolerance=3.5):
-            continue
-        if _till_and_plant_tile(client, tx, ty, tz):
-            planted += 1
+    planted = plant_farm_tiles(client, tiles)
 
     if planted == 0:
         print(f"  Wheat farm at {(x, y, z)} could not be recovered (0/{len(tiles)} tiles).")

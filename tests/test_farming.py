@@ -523,7 +523,7 @@ def test_establish_wheat_farm_tills_and_plants_tiles(monkeypatch):
     result = farming.establish_wheat_farm(client, 0, 64, 0, size=5)
     assert result == (0, 64, 0)
     assert all(
-        options == {"timeout": 20, "tolerance": 3.5}
+        options == {"timeout": 15, "tolerance": 1.5, "radius": 1}
         for _position, options in arrivals
     )
     # At least one tile was actually tilled then planted.
