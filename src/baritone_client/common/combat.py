@@ -1485,6 +1485,8 @@ def defend_or_flee(
         armor_count=armor_count,
         runtime=runtime,
     )
+    from .sheltered_alert import hold_sheltered_alert
+    decision = hold_sheltered_alert(client, decision, state, assessments)
     runtime.transition(decision.mode, decision.reason)
     combat_telemetry.record_defense_decision(client, decision, state, threats)
 
