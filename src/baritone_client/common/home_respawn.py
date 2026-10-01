@@ -47,6 +47,10 @@ SHEEP_HUNT_SECTORS = (
 BED_SITE_CANDIDATES = 40
 #: Containers this close to the starter-house origin count as inside it.
 HOUSE_RADIUS = 8.0
+#: One nearby tree for a bed's three planks: short and close, never an expedition.
+PLANK_TRIP_TIMEOUT = 120
+PLANK_TRIP_RADIUS = 48.0
+PLANK_TRIP_MIN_HEALTH = 14.0
 #: The survival loop calls this every few seconds.
 RETRY_INTERVAL = 300.0
 BED_COLORS = (
@@ -55,6 +59,7 @@ BED_COLORS = (
     "black",
 )
 BED_ITEMS = tuple(f"minecraft:{color}_bed" for color in BED_COLORS)
+WOOL_ITEMS = tuple(f"minecraft:{color}_wool" for color in BED_COLORS)
 _WHITE_WOOL = "minecraft:white_wool"
 _WHITE_BED = "minecraft:white_bed"
 _STRING = "minecraft:string"
@@ -306,8 +311,9 @@ def _hunt_sheep_for_wool(client: Any, state: Any, anchor) -> None:
     record.update(last_attempt=now, sector=sector + 1)
     custom[SHEEP_HUNT_KEY] = record
     before = _missing_wool(client)
+    wool = _best_wool(client)[0]  # only after the safety gates: it reads the inventory
     print(
-        f"HOME RESPAWN: hunting sheep for {wanted} white wool within {ring:.0f} "
+        f"HOME RESPAWN: hunting sheep for {wanted} {_wool_name(wool)} within {ring:.0f} "
         f"blocks, searching toward {center}"
     )
     result = None
@@ -315,7 +321,7 @@ def _hunt_sheep_for_wool(client: Any, state: Any, anchor) -> None:
         result = hunt_mobs(
             client,
             mob_types=["sheep"],
-            required_loot={_WHITE_WOOL: wanted},
+            required_loot={wool: wanted},
             search_radius=64,
             timeout=SHEEP_HUNT_TIMEOUT,
             heal_threshold=12.0,
@@ -341,23 +347,57 @@ def _hunt_sheep_for_wool(client: Any, state: Any, anchor) -> None:
             record["failures"] = failures + 1
         print(
             "HOME RESPAWN: sheep hunt "
-            + ("gained wool" if gained else f"found no white wool ({reason})")
+            + ("gained wool" if gained else f"found no {_wool_name(wool)} ({reason})")
             + "; returning home"
         )
         goto(client, int(anchor[0]), int(anchor[1]), int(anchor[2]),
              timeout=300, tolerance=6.0, radius=4)
 
 
-def _missing_wool(client: Any) -> int:
+def _wool_name(wool: str) -> str:
+    return wool.split(":")[-1].replace("_", " ")
+
+
+def _best_wool(client: Any) -> Tuple[str, int]:
+    """The wool colour closest to the three a bed takes, and how many are carried.
+
+    A bed takes any three wool of ONE colour. This used to count white only, so
+    live A1 spent days from 2026-09-29 failing "storage cannot supply 3 more
+    white wool" while holding other colours. White keeps a one-wool head start
+    (most sheep are white and string crafts into it), so a stray black wool does
+    not redirect the search away from white.
+    """
     from .inventory import count_item
 
-    return max(0, 3 - count_item(client, _WHITE_WOOL))
+    best = (_WHITE_WOOL, 0)
+    best_key = (-1, False)
+    for wool in WOOL_ITEMS:
+        carried = count_item(client, wool)
+        key = (carried + (1 if wool == _WHITE_WOOL else 0), wool == _WHITE_WOOL)
+        if key > best_key:
+            best, best_key = (wool, carried), key
+    return best
+
+
+def _missing_wool(client: Any) -> int:
+    return max(0, 3 - _best_wool(client)[1])
+
+
+def _withdraw_any_wool(client: Any, withdraw, *, wanted: int = 3) -> None:
+    """Fetch wool of the best colour first, then any other colour storage holds."""
+    first = _best_wool(client)[0]
+    for wool in (first, *[w for w in WOOL_ITEMS if w != first]):
+        if not _missing_wool(client):
+            return
+        withdraw(wool, wanted)
 
 
 def _craft_wool_from_string(client: Any) -> None:
     from . import harness_ops
     from .inventory import count_item
 
+    if _best_wool(client)[0] != _WHITE_WOOL:
+        return  # string makes white wool, which would not add to another colour
     crafts = min(_missing_wool(client), count_item(client, _STRING) // 4)
     if crafts <= 0 or not harness_ops.ensure_crafting_table_open(client):
         return
@@ -386,30 +426,74 @@ def _obtain_bed(client: Any, state: Any, anchor) -> Optional[str]:
     # house's own supply chest beside the crafting table.
     _withdraw_from_home(client, state, anchor, _STRING, 4 * _missing_wool(client))
     _craft_wool_from_string(client)
-    _withdraw_from_home(client, state, anchor, _WHITE_WOOL, 3)
+    _withdraw_any_wool(client, lambda wool, n: _withdraw_from_home(client, state, anchor, wool, n))
     if _missing_wool(client):
         # Home cannot finish the bed. Reach wider storage near the player's
         # own level, but only while survival allows travel.
         _withdraw_from_wider_storage(client, state, _STRING, 4 * _missing_wool(client))
         _craft_wool_from_string(client)
         if _missing_wool(client):
-            _withdraw_from_wider_storage(client, state, _WHITE_WOOL, 3)
+            _withdraw_any_wool(
+                client, lambda wool, n: _withdraw_from_wider_storage(client, state, wool, n)
+            )
         if _missing_wool(client):
             _hunt_sheep_for_wool(client, state, anchor)
     if _missing_wool(client):
         print(
             f"HOME RESPAWN: storage cannot supply {_missing_wool(client)} more "
-            "white wool (or string for it)"
+            f"{_wool_name(_best_wool(client)[0])} (or string for it)"
         )
         return None
-    if harness_ops.count_any_planks(client) < 3:
+    if harness_ops.count_any_planks(client) < 3 and not _fetch_planks(client, state, anchor):
         print("HOME RESPAWN: need 3 planks for a bed")
         return None
     if not harness_ops.ensure_crafting_table_open(client):
         return None
-    crafted = harness_ops.craft_bed_manual(client, _WHITE_BED)
+    wool = _best_wool(client)[0]
+    crafted = harness_ops.craft_bed_manual(client, wool.replace("_wool", "_bed"))
     client.transport.dispatch("close_screen", {})
-    return _WHITE_BED if crafted and count_item(client, _WHITE_BED) > 0 else None
+    return _carried_bed(client) if crafted else None
+
+
+def _fetch_planks(client: Any, state: Any, anchor) -> bool:
+    """Three planks for the bed: home storage, carried logs, or one nearby tree.
+
+    Live A1 2026-10-01 held the wool and had no planks or logs at all, so the
+    step gave up at "need 3 planks". The tree trip is bounded tightly: healthy,
+    fed, daylight, a short timeout, a small radius and threat aborts.
+    """
+    from . import harness_ops
+    from . import inventory
+    from .resources import gather_wood
+
+    _withdraw_from_home(client, state, anchor, "minecraft:oak_planks", 3)
+    if harness_ops.count_any_planks(client) >= 3:
+        return True
+    live = client.transport.dispatch("get_state", {})
+    try:
+        ready = (
+            isinstance(live, Mapping)
+            and not live.get("is_dead")
+            and float(live.get("health", 0) or 0) >= PLANK_TRIP_MIN_HEALTH
+            and int(live.get("food_level", live.get("food", 0)) or 0) >= 14
+            and int(live.get("world_time", 0) or 0) % 24000 < SHEEP_HUNT_LATEST_START
+        )
+    except (TypeError, ValueError):
+        ready = False
+    if not ready:
+        return False
+    try:
+        gather_wood(
+            client, count=1, timeout=PLANK_TRIP_TIMEOUT, max_distance_from_origin=PLANK_TRIP_RADIUS,
+            abort_on_threats=True, minimum_health=PLANK_TRIP_MIN_HEALTH,
+        )
+        inventory._ensure_raw_planks(client, 3)
+    finally:
+        try:
+            client.transport.dispatch("cancel", {})
+        except Exception:
+            pass
+    return harness_ops.count_any_planks(client) >= 3
 
 
 _AIRLIKE = {"minecraft:air", "minecraft:cave_air", "minecraft:short_grass",
