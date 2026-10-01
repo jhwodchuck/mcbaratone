@@ -33,6 +33,16 @@ ABORT_HEALTH = 10.0
 HOSTILE_RADIUS = 7.0
 #: How long the defence reflex gets to deal with a mob before the trip ends.
 HOSTILE_PATIENCE = 12.0
+#: What digging fills the pack with. Safe to throw away mid-trip: it is rubble.
+DIGGING_JUNK = frozenset(
+    "minecraft:" + name
+    for name in (
+        "cobblestone", "dirt", "coarse_dirt", "rooted_dirt", "grass_block", "podzol",
+        "mud", "clay", "andesite", "diorite", "granite", "tuff", "calcite",
+        "cobbled_deepslate", "deepslate", "sand", "sandstone", "gravel",
+        "dripstone_block", "smooth_basalt", "moss_block",
+    )
+)
 TORCH_EVERY = 7
 #: Kept inside the planner's window: a cell more than 6 blocks from the bot is unplannable.
 PLAN_MOVES = 5
@@ -73,6 +83,19 @@ def own_cells_of(spine: Sequence[Cell]) -> Set[Cell]:
     return own
 
 
+def free_slots(client: Any) -> int:
+    """Empty main-inventory slots (the hotbar and the 27 above it)."""
+    items = _unwrap(client.transport.dispatch("get_inventory", {})).get("inventory", [])
+    used = sum(
+        1
+        for item in items
+        if 0 <= int(item.get("slot", -1)) <= 35
+        and item.get("id") not in (None, "", "minecraft:air")
+        and int(item.get("count", 1) or 0) > 0
+    )
+    return 36 - used
+
+
 class TunnelMiner:
     def __init__(
         self,
@@ -84,11 +107,13 @@ class TunnelMiner:
         entrance: Optional[Cell] = None,
         min_y: int = 12,
         count_fn: Optional[Callable[[str], int]] = None,
+        patience: float = HOSTILE_PATIENCE,
     ) -> None:
         self.client = client
         self.surface_y = int(surface_y)
         self.deadline = float(deadline)
         self.min_y = int(min_y)
+        self.patience = float(patience)
         self.trail: List[Cell] = list(spine) or ([entrance] if entrance else [])
         self.own: Set[Cell] = own_cells_of(self.trail)
         self.skip: Set[Cell] = set()
@@ -134,15 +159,18 @@ class TunnelMiner:
         return View(voxels, self.cell(), VIEW_RADIUS)
 
     def free_slots(self) -> int:
-        items = self._call("get_inventory").get("inventory", [])
-        used = sum(
-            1
-            for item in items
-            if 0 <= int(item.get("slot", -1)) <= 35
-            and item.get("id") not in (None, "", "minecraft:air")
-            and int(item.get("count", 1) or 0) > 0
-        )
-        return 36 - used
+        return free_slots(self.client)
+
+    def make_room(self) -> int:
+        """Throw away dug rubble to free pack space; returns slots freed."""
+        from .inventory import drop_items
+
+        before = self.free_slots()
+        try:
+            drop_items(self.client, sorted(DIGGING_JUNK), max_stacks=8)
+        except Exception as exc:
+            print(f"TUNNEL MINER: could not drop rubble ({exc})")
+        return max(0, self.free_slots() - before)
 
     # -- safety -------------------------------------------------------------
     def hostiles(self) -> int:
@@ -167,7 +195,7 @@ class TunnelMiner:
         if self.hostiles():
             # The safety system owns fighting; give it a moment, then leave.
             waited = 0.0
-            while waited < HOSTILE_PATIENCE and self.hostiles():
+            while waited < self.patience and self.hostiles():
                 time.sleep(1.0)
                 waited += 1.0
                 if float(self.state().get("health", 20) or 0) < ABORT_HEALTH:
@@ -332,7 +360,9 @@ class TunnelMiner:
             if raw_now() >= raw_goal:
                 return "quota"
             if self.free_slots() < MIN_FREE_SLOTS:
-                return "inventory full"
+                self.make_room()
+                if self.free_slots() < MIN_FREE_SLOTS:
+                    return "inventory full"
             view = self.view()
             here = view.center
             print(
@@ -376,5 +406,5 @@ class TunnelMiner:
 
 
 __all__ = [
-    "HOSTILES", "MineAbort", "TripStats", "TunnelMiner", "own_cells_of",
+    "DIGGING_JUNK", "HOSTILES", "MineAbort", "TripStats", "TunnelMiner", "free_slots", "own_cells_of",
 ]

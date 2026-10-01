@@ -39,6 +39,23 @@ CARRY_RESERVE = 24
 HEALTH_MIN = 18.0
 FOOD_MIN = 14
 TRIP_SECONDS = 1200
+#: Without enough torches the tunnel is dark: a sealed 1x2 tunnel is a poor spawn
+#: area, but the trip is shorter and leaves sooner when a mob shows.
+DARK_TRIP_SECONDS = 600
+DARK_PATIENCE = 5.0
+TORCH_RETRY_SECONDS = 3600.0
+ROOM_WANTED = 10
+#: Clutter worth banking before a trip. Never tools, food, torches or armour.
+CLUTTER = frozenset(
+    "minecraft:" + name
+    for name in (
+        "dirt", "coarse_dirt", "netherrack", "cobblestone_slab", "feather",
+        "rabbit_hide", "andesite", "diorite", "granite", "tuff", "gravel", "sand",
+        "bone", "rotten_flesh", "spider_eye", "string", "gunpowder", "flint",
+        "poisonous_potato", "cobbled_deepslate", "moss_block", "wildflowers",
+        "oak_sapling", "birch_sapling", "acacia_sapling", "spruce_sapling",
+    )
+)
 MIN_Y = 12
 MIN_TORCHES = 4
 WANT_TORCHES = 12
@@ -226,6 +243,28 @@ def _near(client: Any, anchor: Tuple[int, int, int], distance: float) -> bool:
         return False
 
 
+def _make_room(client: Any, state: Any) -> int:
+    """Bank clutter in the home chest so a trip never starts with a full pack."""
+    from ..common.inventory import deposit_excess_to_chest
+    from ..common.tunnel_miner import free_slots
+
+    chest = _supply_chest(state)
+    if chest is None:
+        return 0
+    try:
+        if free_slots(client) >= ROOM_WANTED:
+            return 0
+    except Exception:
+        return 0
+    try:
+        moved = deposit_excess_to_chest(client, chest, deposit_items=set(CLUTTER))
+    except Exception as exc:
+        print(f"IRON SUPPLY: could not bank clutter ({exc})")
+        return 0
+    print(f"IRON SUPPLY: banked {max(0, moved)} stack(s) of clutter to make room")
+    return max(0, int(moved or 0))
+
+
 def _schedule(rec: dict, now: float, ok: bool) -> None:
     if ok:
         rec["failures"] = 0
@@ -256,23 +295,25 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
         print(f"IRON SUPPLY: {detail} (stock {before}->{after})")
         return ok, detail, before, after
 
-    if _count(client, TORCH) < MIN_TORCHES and anchor is not None:
+    if anchor is not None and not _near(client, anchor, HOME_RANGE):
+        # The surface around the base is only loaded (and so only readable)
+        # when the bot is there, so a trip starts by walking home.
+        if not goto(client, *anchor, timeout=300, tolerance=8.0, radius=6):
+            return done(False, "could not get home to start a mining trip")
+    _make_room(client, state)
+    if _count(client, TORCH) < MIN_TORCHES and anchor is not None and current >= float(rec.get("torch_retry", 0) or 0):
         from .base_lighting import ensure_torches
 
+        rec["torch_retry"] = current + TORCH_RETRY_SECONDS  # never loop on this
         try:
             ensure_torches(client, state, WANT_TORCHES, anchor)
         except (PlayerDeathDetected, SurvivalRecoveryRequired):
             raise
         except Exception as exc:
             print(f"IRON SUPPLY: could not make torches ({exc})")
-    if _count(client, TORCH) < MIN_TORCHES:
-        return done(False, "needs torches before going underground")
-
-    if anchor is not None and not _near(client, anchor, HOME_RANGE):
-        # The surface around the base is only loaded (and so only readable)
-        # when the bot is there, so a trip starts by walking home.
-        if not goto(client, *anchor, timeout=300, tolerance=8.0, radius=6):
-            return done(False, "could not get home to start a mining trip")
+    lit = _count(client, TORCH) >= MIN_TORCHES
+    if not lit:
+        print("IRON SUPPLY: no torches; running a shorter dark trip")
     entrance = rec.get("entrance")
     entrance = tuple(entrance) if isinstance(entrance, (list, tuple)) and len(entrance) == 3 else choose_entrance(client, state)
     if entrance is None:
@@ -283,8 +324,10 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
 
     spine: List[Tuple[int, int, int]] = [tuple(c) for c in rec.get("spine", [])] or [entrance]
     miner = TunnelMiner(
-        client, surface_y=entrance[1], deadline=time.monotonic() + TRIP_SECONDS,
+        client, surface_y=entrance[1],
+        deadline=time.monotonic() + (TRIP_SECONDS if lit else DARK_TRIP_SECONDS),
         spine=spine, entrance=entrance, min_y=MIN_Y,
+        patience=12.0 if lit else DARK_PATIENCE,
     )
     raw_start = _count(client, RAW_IRON)
     goal = raw_start + max(1, min(MAX_RAW_PER_TRIP, TARGET_STOCK - before))

@@ -30,6 +30,7 @@ class FakeWorld:
         self.dug = []
         self.placed = []
         self.hostile_after_digs = None
+        self.used_slots = 1
         self.transport = SimpleNamespace(dispatch=self.dispatch)
 
     def open(self, cell):
@@ -53,7 +54,10 @@ class FakeWorld:
         if route == "get_entities":
             return {"entities": list(self.entities)}
         if route == "get_inventory":
-            return {"inventory": [{"slot": 0, "id": "minecraft:stone_pickaxe", "count": 1}]}
+            return {"inventory": [
+                {"slot": n, "id": "minecraft:stone_pickaxe" if n == 0 else "minecraft:dirt", "count": 1}
+                for n in range(self.used_slots)
+            ]}
         if route == "find_blocks":
             return {"found": [
                 {"x": x, "y": y, "z": z} for (x, y, z), b in self.blocks.items() if b in payload["blocks"]
@@ -209,3 +213,31 @@ def test_torch_placement_gives_up_after_three_misses_but_mining_goes_on(world, m
     miner.mine(1, lambda: world.raw_iron)
 
     assert world.raw_iron == 1 and len(attempts) == 3 and miner.stats.torches == 0
+
+
+def test_rubble_is_thrown_away_when_the_pack_runs_low_and_the_trip_goes_on(world, monkeypatch):
+    world.blocks[(6, 55, 3)] = IRON
+    world.used_slots = 35  # only one slot free
+    thrown = []
+
+    def drop(_client, items, max_stacks=None, retain_counts=None):
+        thrown.append(set(items))
+        world.used_slots = 20
+        return 8
+
+    monkeypatch.setattr("baritone_client.common.inventory.drop_items", drop)
+
+    miner = make_miner(world)
+    miner.mine(1, lambda: world.raw_iron)
+
+    assert world.raw_iron == 1 and thrown
+    assert "minecraft:cobblestone" in thrown[0] and "minecraft:iron_ore" not in thrown[0]
+    assert not any(item.endswith(("pickaxe", "sword", "torch", "ingot")) for item in thrown[0])
+
+
+def test_a_pack_that_cannot_be_cleared_ends_the_trip_cleanly(world, monkeypatch):
+    world.blocks[(6, 55, 3)] = IRON
+    world.used_slots = 35
+    monkeypatch.setattr("baritone_client.common.inventory.drop_items", lambda *_a, **_k: 0)
+    assert make_miner(world).mine(1, lambda: world.raw_iron) == "inventory full"
+    assert world.dug == []  # never starts digging with nowhere to put the drops
