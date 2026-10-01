@@ -120,7 +120,7 @@ def bot(monkeypatch):
     )
     monkeypatch.setattr(armor_recovery.time, "sleep", lambda _s: None)
     # These tests are about armour recovery; the standing iron job has its own.
-    monkeypatch.setattr("baritone_client.automator.iron_supply.supply_due", lambda *_a, **_k: False)
+    monkeypatch.setattr("baritone_client.automator.iron_stockpile.supply_due", lambda *_a, **_k: False)
     return SimpleNamespace(live=live, storage=storage, withdrawals=withdrawals, mined=mined)
 
 

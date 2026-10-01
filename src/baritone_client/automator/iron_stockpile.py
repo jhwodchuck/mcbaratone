@@ -1,10 +1,16 @@
-"""A standing iron supply: mine when stock runs low, smelt, and bank the rest.
+"""A standing iron stockpile: mine when stock runs low, smelt, and bank the rest.
 
 Iron used to come from one phase (`FOOD_AND_IRON`) that is marked done once and
 never reopens, so a bot that died and lost its kit could not get iron back, and
 the only repeatable path (armour recovery) mined only with armour already worn.
 Live A1 2026-10-01: 400+ iron ore within 96 blocks of the base, 3 ingots held,
 0 armour, no iron-getting step eligible at all.
+
+The repo's other iron job, `common.iron_supply.run_iron_cycle`, belongs to the
+dedicated fleet *iron supplier* role: it mines with Baritone's `mine` and needs
+a sibling roster to be assigned to a bot at all. A lone balanced bot such as A1
+never gets it, so this module is separate on purpose and mines with the
+bounded `tunnel_miner` instead of `mine`.
 
 This is that step. It is offered through the armour-upkeep opportunity whenever
 carried plus banked iron falls below ``LOW_STOCK``. A trip digs one staircase
@@ -22,7 +28,7 @@ from typing import Any, List, Optional, Tuple
 IRON_INGOT = "minecraft:iron_ingot"
 RAW_IRON = "minecraft:raw_iron"
 TORCH = "minecraft:torch"
-KEY = "iron_supply"
+KEY = "iron_stockpile"
 
 #: Refill below this many ingots (carried + raw + banked), up to ``TARGET_STOCK``.
 LOW_STOCK = 32

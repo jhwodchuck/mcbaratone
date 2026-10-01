@@ -341,7 +341,7 @@ def select_armor_opportunity(
         return LocalOpportunity(OpportunityKind.ARMOR_UPKEEP, 195, f"no usable weapon/pickaxe; can craft {names}")
     # Iron itself: armour, tools and the Nether all need it, and a bot that has
     # lost its kit has no other way to get it back.
-    from .iron_supply import LOW_STOCK, iron_stock, supply_due
+    from .iron_stockpile import LOW_STOCK, iron_stock, supply_due
 
     if supply_due(client, state, signals):
         return LocalOpportunity(
@@ -401,7 +401,7 @@ def run_armor_upkeep(client: Any, state: Any) -> Tuple[bool, str, int, int]:
     from .weapon_upkeep import restore_kit
 
     made = restore_kit(client)
-    from .iron_supply import run_supply_trip, supply_due
+    from .iron_stockpile import run_supply_trip, supply_due
 
     if supply_due(client, state):
         success, detail, before, after = run_supply_trip(client, state)
