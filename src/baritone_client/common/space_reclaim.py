@@ -252,6 +252,7 @@ def nearest_usable_container(client, snapshot, max_distance: float):
     already full.
     """
     from .storage_catalog import catalog_for
+    from .storage_safety import MAX_STORAGE_TOUR_VERTICAL
 
     position = (snapshot or {}).get("block_position")
     if not isinstance(position, dict):
@@ -315,6 +316,10 @@ def nearest_usable_container(client, snapshot, max_distance: float):
         except (KeyError, TypeError, ValueError):
             continue
         distance = ((px - cx) ** 2 + (py - cy) ** 2 + (pz - cz) ** 2) ** 0.5
+        # Same vertical bound as the cleanup tour: a chest straight below is
+        # in a basement or cave, however close it looks in 3D.
+        if abs(cy - py) > MAX_STORAGE_TOUR_VERTICAL:
+            continue
         if distance < best_distance:
             position = (int(cx), int(cy), int(cz))
             if current_storage_block(position) is None:
