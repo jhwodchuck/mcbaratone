@@ -3,7 +3,7 @@
 from functools import partial
 from math import dist
 import time
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 
 # Starting a bounded (<=96m) trip to bank what the bot is already carrying.
@@ -29,6 +29,12 @@ ABORT_STORAGE_TRAVEL_FOOD = 3
 COMFORTABLE_STORAGE_TRAVEL_FOOD = 18
 MAX_STORAGE_TRAVEL_DISTANCE = 96.0
 MAX_STORAGE_TOUR_STOPS = 4
+#: A cleanup tour never goes up or down more than this to reach a chest. Chests
+#: further above or below sit in caves or basements under the base. Live A1
+#: 2026-10-01: a full supply chest sent the tour to a chest 4 blocks down in the
+#: hollow under the house, then to one 23 blocks down in the caves, where a
+#: zombie killed it. Distance alone is 3D, so a chest straight below looks near.
+MAX_STORAGE_TOUR_VERTICAL = 3.0
 STORAGE_CHUNK_LOAD_RADIUS = 4.5
 UNREACHABLE_STORAGE_COOLDOWN = 300.0
 OVERFLOW_BULK_ITEMS = {
@@ -141,11 +147,17 @@ def nearby_storage_positions(
     *,
     maximum_distance: float = MAX_STORAGE_TRAVEL_DISTANCE,
     limit: int = MAX_STORAGE_TOUR_STOPS,
+    maximum_vertical: float = MAX_STORAGE_TOUR_VERTICAL,
 ) -> Iterable[Tuple[int, int, int]]:
-    """Return the nearest bounded set of catalog containers in this dimension."""
+    """Return the nearest bounded set of catalog containers in this dimension.
+
+    Only containers within ``maximum_vertical`` blocks of the player's own level
+    are offered: a chest far above or below is in a cave or basement.
+    """
     from .storage_catalog import catalog_for
 
     dimension = str(snapshot.get("dimension", "minecraft:overworld"))
+    here_y = _snapshot_y(snapshot)
     now = time.monotonic()
     cooldowns = getattr(client, "_unreachable_storage_until", {})
     candidates = []
@@ -158,10 +170,20 @@ def nearby_storage_positions(
             continue
         if float(cooldowns.get(position, 0)) > now:
             continue
+        if here_y is not None and abs(position[1] - here_y) > maximum_vertical:
+            continue
         distance = storage_distance(snapshot, position)
         if distance <= maximum_distance:
             candidates.append((distance, position))
     return [position for _distance, position in sorted(candidates)[:limit]]
+
+
+def _snapshot_y(snapshot: Dict[str, Any]) -> Optional[float]:
+    position = (snapshot or {}).get("block_position") or (snapshot or {}).get("position")
+    try:
+        return float(position["y"])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def load_storage_chunk(client, target: Tuple[int, int, int], goto) -> bool:
