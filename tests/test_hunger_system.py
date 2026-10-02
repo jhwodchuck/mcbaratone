@@ -446,3 +446,59 @@ def test_cooked_food_is_still_eaten_whenever_below_threshold():
     ):
         HungerSystem.try_eat.__wrapped__(hunger, 16)
     assert eaten == ["minecraft:bread"]
+
+
+def _hunger_tick(screen, food):
+    """One HungerSystem.tick() with the given open screen; returns what it did."""
+    client = MagicMock()
+    sent = []
+
+    def dispatch(command, params, timeout=None):
+        sent.append(command)
+        if command == "get_state":
+            return {"food_level": food}
+        if command == "get_screen":
+            return {"type": screen}
+        if command == "get_inventory":
+            return {"inventory": [{"id": "minecraft:bread", "count": 3, "slot": 8}], "offhand": [], "selected_slot": 8}
+        return {}
+
+    client.transport.dispatch = MagicMock(side_effect=dispatch)
+    hunger = HungerSystem(client, MagicMock(spec=CoordinationHub))
+    attempts = []
+    hunger.try_eat = lambda level: attempts.append(level)
+    hunger.tick()
+    return attempts, sent
+
+
+def test_hunger_waits_while_a_chest_screen_is_open():
+    """Live A1 2026-10-01: eating closed the chest a deposit was using."""
+    attempts, _sent = _hunger_tick("GenericContainerScreenHandler", food=15)
+    assert attempts == []
+
+
+def test_hunger_eats_normally_with_only_the_player_inventory_open():
+    for screen in ("InventoryMenu", "PlayerScreenHandler", ""):
+        attempts, _sent = _hunger_tick(screen, food=15)
+        assert attempts == [15], screen
+
+
+def test_a_starving_bot_eats_even_with_a_chest_open():
+    attempts, _sent = _hunger_tick("GenericContainerScreenHandler", food=4)
+    assert attempts == [4]
+
+
+def test_an_unreadable_screen_never_blocks_eating():
+    client = MagicMock()
+
+    def dispatch(command, params, timeout=None):
+        if command == "get_state":
+            return {"food_level": 12}
+        raise RuntimeError("bridge hiccup")
+
+    client.transport.dispatch = MagicMock(side_effect=dispatch)
+    hunger = HungerSystem(client, MagicMock(spec=CoordinationHub))
+    attempts = []
+    hunger.try_eat = lambda level: attempts.append(level)
+    hunger.tick()
+    assert attempts == [12]
