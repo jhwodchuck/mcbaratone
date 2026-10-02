@@ -44,7 +44,7 @@ SHEEP_HUNT_SECTORS = (
     (1, -1), (-1, -1), (1, 1), (-1, 1), (0, -1), (1, 0), (0, 1), (-1, 0),
 )
 #: How many foot positions near home to consider when placing the bed.
-BED_SITE_CANDIDATES = 40
+BED_SITE_CANDIDATES = 60
 #: Containers this close to the starter-house origin count as inside it.
 HOUSE_RADIUS = 8.0
 #: One nearby tree for a bed's three planks: short and close, never an expedition.
@@ -99,15 +99,27 @@ def _house(state: Any) -> dict:
 
 
 def _bed_slots(state: Any, anchor) -> list:
-    """Interior slots of the starter house, then the base anchor's surroundings."""
+    """Every interior cell of the starter house, favoured slots first.
+
+    Four fixed slots were all it tried. Live A1 2026-10-01: the house floor had
+    holes where the old bed stood, a crafting table sat in the middle and a
+    furnace and chest filled two more cells, so all four failed their layout
+    check while a whole row of the interior was free. The interior is 5x5 above
+    the 7x7 shell; offer all of it, nearest the original corner first.
+    """
     origin = _xyz(_house(state).get("origin")) or anchor
     x, y, z = origin
-    return [
+    favoured = [
         (x + 4, y + 1, z + 3),
         (x + 4, y + 1, z + 4),
         (x + 3, y + 1, z + 4),
         (x + 2, y + 1, z + 2),
     ]
+    interior = sorted(
+        ((x + dx, y + 1, z + dz) for dx in range(1, 6) for dz in range(1, 6)),
+        key=lambda cell: (abs(cell[0] - (x + 4)) + abs(cell[2] - (z + 4)), cell),
+    )
+    return favoured + [cell for cell in interior if cell not in favoured]
 
 
 def _is_bed(client: Any, position) -> bool:
@@ -528,7 +540,10 @@ def _bed_candidates(state: Any, anchor) -> list:
         if slot not in seen:
             seen.add(slot)
             ordered.append(slot)
-    ax, ay, az = (int(v) for v in anchor)
+    # Around the house when it is known: the base anchor can sit well outside it
+    # (A1's moved 6 blocks north), over a farm or shelter roof.
+    house = _xyz(_house(state).get("origin"))
+    ax, ay, az = (house[0] + 3, house[1], house[2] + 3) if house else (int(v) for v in anchor)
     ring = sorted(
         ((ax + dx, ay + 1, az + dz) for dx in range(-6, 7) for dz in range(-6, 7)),
         key=lambda cell: (abs(cell[0] - ax) + abs(cell[2] - az)),
