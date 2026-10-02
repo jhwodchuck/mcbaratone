@@ -8,6 +8,15 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.world.inventory.ContainerInput;
 
 public class InventoryClickCommandHandler extends AbstractBaseCommandHandler {
+    private final java.util.function.Consumer<Minecraft> inventoryLease;
+
+    public InventoryClickCommandHandler() {
+        this(InventoryMutationLease::hold);
+    }
+
+    InventoryClickCommandHandler(java.util.function.Consumer<Minecraft> inventoryLease) {
+        this.inventoryLease = inventoryLease;
+    }
 
     @Override
     public CompletableFuture<CommandResult> handle(JsonObject params, Minecraft client, IBaritone baritone, Socket clientSocket) {
@@ -44,6 +53,9 @@ public class InventoryClickCommandHandler extends AbstractBaseCommandHandler {
                     return CommandResult.error("Invalid type: " + typeStr);
                 }
                  
+                // Cancelling pathfinding does not stop Baritone's inventory tick.
+                // Keep it paused across observation and subsequent PICKUP clicks.
+                inventoryLease.accept(client);
                 client.gameMode.handleContainerInput(syncId, slot, button, type, client.player);
                  
                 JsonObject data = new JsonObject();

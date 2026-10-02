@@ -49,6 +49,9 @@ public class SettingsCommandHandler extends AbstractCommandHandler {
                     if (setting != null) {
                         try {
                             modifySettingSafely(setting, val);
+                            if (setting.getName().equalsIgnoreCase("allowInventory")) {
+                                InventoryMutationLease.operatorOverride();
+                            }
                             logger.info("Successfully set Baritone setting {} to {}", key, val);
                         } catch (Exception e) {
                             logger.error("Failed to set Baritone setting {}: {}", key, e.getMessage());
