@@ -417,6 +417,44 @@ def test_balanced_agent_does_not_overproduce_prepared_food():
     ) is None
 
 
+@pytest.mark.parametrize("strategic", [{}, {"blocking_condition": None}, {"blocking_condition": "pickaxe"}])
+def test_balanced_expedition_food_uses_live_reserve_without_saved_blocker(strategic):
+    scheduler = AdaptiveScheduler(
+        SimpleNamespace(), SimpleNamespace(), _state({"strategic_state": strategic})
+    )
+    opportunity = scheduler.select_local_opportunity(
+        _signals(inventory={"minecraft:bread": 7, "minecraft:wheat": 18}),
+        _post_food_planner().completed_phases(),
+        now=1000.0,
+        role=FleetRole.BALANCED,
+    )
+    assert opportunity is not None
+    assert opportunity.kind is OpportunityKind.FOOD_PRODUCTION
+    assert opportunity.assigned_role == "balanced"
+
+
+def test_balanced_food_production_requires_observed_inventory():
+    from baritone_client.automator.food_opportunity import select_balanced_food_production_opportunity
+
+    assert select_balanced_food_production_opportunity(
+        GameSignals(), _state({"strategic_state": {"blocking_condition": "prepared_food_32"}}),
+        _post_food_planner().completed_phases(), True,
+    ) is None
+
+
+@pytest.mark.parametrize("ready,completed", [
+    (False, [Phase.SPAWN_BOOTSTRAP, Phase.INITIAL_GATHERING, Phase.BOOT_SEQUENCE, Phase.FOOD_AND_IRON]),
+    (True, [Phase.SPAWN_BOOTSTRAP, Phase.INITIAL_GATHERING, Phase.FOOD_AND_IRON]),
+    (True, [Phase.SPAWN_BOOTSTRAP, Phase.INITIAL_GATHERING, Phase.BOOT_SEQUENCE]),
+])
+def test_live_reserve_recovery_preserves_cooldown_and_bootstrap(ready, completed):
+    from baritone_client.automator.food_opportunity import select_balanced_food_production_opportunity
+
+    assert select_balanced_food_production_opportunity(
+        _signals(inventory={"minecraft:bread": 7}), _state(), completed, ready,
+    ) is None
+
+
 def test_balanced_food_cooldown_holds_instead_of_selecting_nether(monkeypatch):
     planner = _post_food_planner()
     state = _state(
@@ -1162,7 +1200,7 @@ def test_balanced_role_still_runs_self_gated_safety_work_with_a_hostile_near(mon
         adaptive.armor_upkeep, "select_armor_opportunity", lambda *_a, **_k: armour
     )
     monkeypatch.setattr(specialty, "select_self_defense", lambda _signals: None)
-    signals = _signals(nearby_hostiles=1)
+    signals = _signals(nearby_hostiles=1, inventory={"minecraft:bread": 32})
     assert not signals.safe_for_local_work
 
     opportunity = scheduler.select_local_opportunity(
