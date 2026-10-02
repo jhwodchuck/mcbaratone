@@ -244,14 +244,35 @@ class HungerSystem(BackgroundSystem):
         self.cook_first_foods = {"minecraft:beef", "minecraft:porkchop", "minecraft:mutton", "minecraft:rabbit"}
         self.raw_meat_food_floor = 12
 
+    #: Below this the bot eats even if it must close a foreground screen.
+    HUNGER_URGENT = 6
+    _PLAYER_SCREENS = ("", "InventoryMenu", "PlayerScreenHandler")
+
+    def _container_open(self) -> bool:
+        """A chest, furnace or crafting screen is open: the foreground is mid-transaction."""
+        try:
+            screen = self.client.transport.dispatch("get_screen", {})
+        except Exception:
+            return False
+        data = screen.get("data", screen) if isinstance(screen, dict) else {}
+        kind = str(data.get("type") or "") if isinstance(data, dict) else ""
+        return kind not in self._PLAYER_SCREENS
+
     def tick(self):
         try:
             state = self.client.transport.dispatch("get_state", {}, timeout=1.0)
             
             food_level = state.get("food_level", state.get("food", 20))
             
-            # Check if we need to eat
-            if food_level < self.min_food_level:
+            # Check if we need to eat. Eating starts by closing any open screen
+            # to get a stable inventory layout, which slams shut the chest a
+            # foreground deposit or withdrawal is using (live A1 2026-10-01:
+            # "no verified transfer" on every stack, then a cave chest and a
+            # death). So wait a few seconds while a container is open, unless
+            # the bot is actually starving.
+            if food_level < self.min_food_level and not (
+                food_level > self.HUNGER_URGENT and self._container_open()
+            ):
                 self.try_eat(food_level)
 
             # Broadcast critical event if food is VERY low
