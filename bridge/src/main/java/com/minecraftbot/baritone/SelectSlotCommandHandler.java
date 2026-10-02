@@ -8,6 +8,15 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
 
 public class SelectSlotCommandHandler extends AsyncCommandHandler {
+    private final java.util.function.Consumer<Minecraft> inventoryLease;
+
+    public SelectSlotCommandHandler() {
+        this(InventoryMutationLease::hold);
+    }
+
+    SelectSlotCommandHandler(java.util.function.Consumer<Minecraft> inventoryLease) {
+        this.inventoryLease = inventoryLease;
+    }
 
     private static final int ACTION_SCHEDULE_TIMEOUT_SECONDS = 2;
 
@@ -29,6 +38,8 @@ public class SelectSlotCommandHandler extends AsyncCommandHandler {
             if (client.player == null || client.player.connection == null) {
                 return CommandResult.error("Player not available");
             }
+            // Protect the selected item until the following use/placement action.
+            inventoryLease.accept(client);
             client.player.getInventory().selected = slot;
             client.player.connection.send(new ServerboundSetCarriedItemPacket(slot));
             JsonObject data = new JsonObject();

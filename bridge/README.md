@@ -230,15 +230,22 @@ Open a terminal in the `bridge/` directory:
 ./gradlew --no-daemon --console=plain build
 ```
 
-The built JAR will be in `build/libs/baritone-api-bridge-1.0.38.jar`.
+The built JAR will be in `build/libs/baritone-api-bridge-1.0.39.jar`.
 
 ## Installation
 
-1. Copy `baritone-api-bridge-1.0.38.jar` to your Minecraft `mods` folder
+1. Copy `baritone-api-bridge-1.0.39.jar` to your Minecraft `mods` folder
 2. Start Minecraft with Fabric loader
 3. Bridge automatically starts TCP server on port 5555
 
 ## Testing
+
+Inventory clicks and hotbar selection temporarily pause Baritone's automatic
+inventory rearrangement. Each valid action renews a ten-second inactivity lease,
+covering observed click completion and follow-up item use. Expiry restores the
+previous `allowInventory` value; an explicit settings change supersedes the
+lease. Cancelling pathfinding alone does not stop native inventory rearrangement.
+Menu slot indices and click types retain Minecraft's normal meanings.
 
 Run the test suite:
 ```bash

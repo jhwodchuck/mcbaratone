@@ -236,11 +236,13 @@ class MutationHandlerBehaviorTest {
         params.addProperty("slot", 3);
         params.addProperty("sync_id", 41);
 
-        CommandResult result = new InventoryClickCommandHandler()
+        java.util.function.Consumer<Minecraft> lease = mock(java.util.function.Consumer.class);
+        CommandResult result = new InventoryClickCommandHandler(lease)
             .handle(params, client, mock(IBaritone.class), mock(Socket.class)).get();
 
         assertFalse(result.isSuccess());
         assertTrue(result.getErrorMessage().contains("Stale sync_id"));
+        verifyNoInteractions(lease);
         verifyNoInteractions(gameMode);
     }
 
@@ -262,7 +264,15 @@ class MutationHandlerBehaviorTest {
         JsonObject params = new JsonObject();
         params.addProperty("slot", 3);
 
-        CommandResult result = new InventoryClickCommandHandler()
+        java.util.concurrent.atomic.AtomicBoolean optimizerEnabled = new java.util.concurrent.atomic.AtomicBoolean(true);
+        InventoryMutationLease lease = new InventoryMutationLease(optimizerEnabled::get, optimizerEnabled::set);
+        java.util.List<Runnable> expiry = new java.util.ArrayList<>();
+        doAnswer(invocation -> {
+            assertFalse(optimizerEnabled.get(), "native optimizer must be paused before the click");
+            return null;
+        }).when(gameMode).handleContainerInput(eq(42), eq(3), eq(0), any(), eq(player));
+
+        CommandResult result = new InventoryClickCommandHandler(c -> lease.hold(expiry::add))
             .handle(params, client, mock(IBaritone.class), mock(Socket.class))
             .get(4, TimeUnit.SECONDS);
 
@@ -270,6 +280,86 @@ class MutationHandlerBehaviorTest {
         assertEquals("unknown", result.getData().get("action_status").getAsString());
         assertFalse(result.getData().get("postcondition_verified").getAsBoolean());
         verify(gameMode).handleContainerInput(eq(42), eq(3), eq(0), any(), eq(player));
+        assertFalse(optimizerEnabled.get(), "unknown effects must remain protected until expiry");
+        expiry.getFirst().run();
+        assertTrue(optimizerEnabled.get());
+    }
+
+    @Test
+    void inventoryClickProtectsPositiveEffectAcrossObservedTicks() throws Exception {
+        ClientLevel level = mock(ClientLevel.class);
+        LocalPlayer player = mock(LocalPlayer.class);
+        MultiPlayerGameMode gameMode = mock(MultiPlayerGameMode.class);
+        Minecraft client = client(level, player, gameMode);
+        java.util.concurrent.atomic.AtomicLong ticks = new java.util.concurrent.atomic.AtomicLong();
+        when(level.getGameTime()).thenAnswer(invocation -> ticks.incrementAndGet());
+        Level playerLevel = mock(Level.class);
+        RecipeAccess recipes = mock(RecipeAccess.class);
+        when(player.level()).thenReturn(playerLevel);
+        when(playerLevel.recipeAccess()).thenReturn(recipes);
+        when(recipes.propertySet(any())).thenReturn(RecipePropertySet.EMPTY);
+        Inventory inventory = new Inventory(player, new EntityEquipment());
+        FurnaceMenu menu = new FurnaceMenu(42, inventory, new SimpleContainer(3), new SimpleContainerData(4));
+        ItemStack ore = mock(ItemStack.class);
+        when(ore.getItem()).thenReturn(Items.IRON_ORE);
+        when(ore.getCount()).thenReturn(2);
+        when(ore.getMaxStackSize()).thenReturn(64);
+        when(ore.getHoverName()).thenReturn(Component.literal("iron ore"));
+        menu.getSlot(3).set(ore);
+        TestUtils.setField(player, "containerMenu", menu);
+        java.util.concurrent.atomic.AtomicBoolean enabled = new java.util.concurrent.atomic.AtomicBoolean(true);
+        InventoryMutationLease lease = new InventoryMutationLease(enabled::get, enabled::set);
+        java.util.List<Runnable> expiry = new java.util.ArrayList<>();
+        doAnswer(invocation -> {
+            assertFalse(enabled.get());
+            menu.getSlot(0).set(menu.getSlot(3).getItem());
+            menu.getSlot(3).set(ItemStack.EMPTY);
+            return null;
+        }).when(gameMode).handleContainerInput(eq(42), eq(3), eq(0), any(), eq(player));
+        JsonObject params = new JsonObject();
+        params.addProperty("slot", 3);
+        params.addProperty("sync_id", 42);
+        CommandResult result = new InventoryClickCommandHandler(c -> lease.hold(expiry::add))
+            .handle(params, client, mock(IBaritone.class), mock(Socket.class)).get(4, TimeUnit.SECONDS);
+        assertTrue(result.isSuccess(), result.getErrorMessage());
+        assertTrue(result.getData().get("postcondition_verified").getAsBoolean());
+        assertFalse(enabled.get(), "protect subsequent click/use after observed completion");
+        expiry.getFirst().run();
+        assertTrue(enabled.get());
+    }
+
+    @Test
+    void slotSelectionAcquiresLeaseBeforeSelectingOrSendingPacket() throws Exception {
+        LocalPlayer player = mock(LocalPlayer.class);
+        Minecraft client = client(mock(ClientLevel.class), player, mock(MultiPlayerGameMode.class));
+        Inventory inventory = new Inventory(player, new EntityEquipment());
+        inventory.selected = 0;
+        when(player.getInventory()).thenReturn(inventory);
+        ClientPacketListener connection = mock(ClientPacketListener.class);
+        TestUtils.setField(player, "connection", connection);
+        java.util.concurrent.atomic.AtomicBoolean held = new java.util.concurrent.atomic.AtomicBoolean(false);
+        JsonObject params = new JsonObject();
+        params.addProperty("slot", 8);
+        CommandResult result = new SelectSlotCommandHandler(c -> {
+            assertEquals(0, inventory.selected);
+            verifyNoInteractions(connection);
+            held.set(true);
+        }).execute(params, client, mock(IBaritone.class), mock(Socket.class)).get();
+        assertTrue(result.isSuccess());
+        assertTrue(held.get());
+        assertEquals(8, inventory.selected);
+        verify(connection).send(any(net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket.class));
+    }
+
+    @Test
+    void invalidSlotSelectionDoesNotAcquireLease() throws Exception {
+        java.util.function.Consumer<Minecraft> lease = mock(java.util.function.Consumer.class);
+        JsonObject params = new JsonObject();
+        params.addProperty("slot", 9);
+        CommandResult result = new SelectSlotCommandHandler(lease)
+            .execute(params, mock(Minecraft.class), mock(IBaritone.class), mock(Socket.class)).get();
+        assertFalse(result.isSuccess());
+        verifyNoInteractions(lease);
     }
 
     @Test
