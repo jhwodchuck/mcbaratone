@@ -88,13 +88,18 @@ def select_balanced_food_production_opportunity(
     completed: Iterable[Any],
     cooldown_ready: bool,
 ) -> LocalOpportunity | None:
-    """Prioritize a real expedition reserve when strategy says it is blocked."""
-    if not cooldown_ready or not village_food_production_ready(completed):
+    """Replenish the live expedition reserve even without a saved blocker."""
+    completed = tuple(completed)
+    if not getattr(signals, "observed", False) or not cooldown_ready or not village_food_production_ready(completed):
         return None
     custom = getattr(state, "custom_data", {}) or {}
     strategic = custom.get("strategic_state", {}) if isinstance(custom, Mapping) else {}
     blocker = str(strategic.get("blocking_condition", "")) if isinstance(strategic, Mapping) else ""
-    if "prepared_food_32" not in blocker:
+    # The expedition hold reads live inventory, while a strategic blocker is
+    # only last-known state and may be absent or cleared by unrelated work.
+    # Once the food/iron phase is complete, service that same live reserve.
+    expedition_ready = any(getattr(phase, "name", "") == "FOOD_AND_IRON" for phase in completed)
+    if not expedition_ready and "prepared_food_32" not in blocker:
         return None
     prepared = sum(signals.count(item) for item in PREPARED_FOOD_ITEMS)
     if prepared >= BALANCED_PREPARED_FOOD_TARGET:
