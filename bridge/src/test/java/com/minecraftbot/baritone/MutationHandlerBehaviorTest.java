@@ -389,6 +389,111 @@ class MutationHandlerBehaviorTest {
         verifyNoInteractions(gameMode);
     }
 
+    private static ItemStack furnaceStack(Item item) {
+        ItemStack stack = mock(ItemStack.class);
+        when(stack.getItem()).thenReturn(item);
+        when(stack.getCount()).thenReturn(1);
+        when(stack.getMaxStackSize()).thenReturn(64);
+        when(stack.getHoverName()).thenReturn(Component.literal("furnace fixture"));
+        when(stack.copy()).thenReturn(stack);
+        return stack;
+    }
+
+    private CommandResult consumedSmelt(String expected, Item product, boolean movedSource,
+                                        boolean foreignInput) throws Exception {
+        return consumedSmelt(expected, product, movedSource, foreignInput, false);
+    }
+
+    private CommandResult consumedSmelt(String expected, Item product, boolean movedSource,
+                                        boolean foreignInput, boolean existingOutput) throws Exception {
+        ClientLevel level = mock(ClientLevel.class);
+        java.util.concurrent.atomic.AtomicLong ticks = new java.util.concurrent.atomic.AtomicLong();
+        when(level.getGameTime()).thenAnswer(invocation -> ticks.incrementAndGet());
+        LocalPlayer player = mock(LocalPlayer.class);
+        MultiPlayerGameMode gameMode = mock(MultiPlayerGameMode.class);
+        Minecraft client = client(level, player, gameMode);
+        Level playerLevel = mock(Level.class);
+        RecipeAccess recipes = mock(RecipeAccess.class);
+        when(player.level()).thenReturn(playerLevel);
+        when(playerLevel.recipeAccess()).thenReturn(recipes);
+        when(recipes.propertySet(any())).thenReturn(RecipePropertySet.EMPTY);
+        TestUtils.setField(player, "level", playerLevel);
+        Inventory inventory = new Inventory(player, new EntityEquipment());
+        FurnaceMenu menu = new FurnaceMenu(42, inventory, new SimpleContainer(3), new SimpleContainerData(4));
+        TestUtils.setField(player, "containerMenu", menu);
+        menu.getSlot(3).set(furnaceStack(Items.BEEF));
+        if (existingOutput) menu.getSlot(2).set(furnaceStack(Items.COOKED_BEEF));
+        net.minecraft.world.inventory.Slot input = mock(net.minecraft.world.inventory.Slot.class);
+        java.util.concurrent.atomic.AtomicReference<ItemStack> target =
+            new java.util.concurrent.atomic.AtomicReference<>(ItemStack.EMPTY);
+        when(input.getItem()).thenAnswer(invocation -> target.get());
+        when(input.mayPlace(any())).thenReturn(true);
+        when(input.getMaxStackSize(any())).thenReturn(64);
+        menu.slots.set(0, input);
+        java.util.concurrent.atomic.AtomicBoolean held = new java.util.concurrent.atomic.AtomicBoolean();
+        doAnswer(invocation -> {
+            assertTrue(held.get(), "native inventory ownership precedes the first click");
+            int slot = invocation.getArgument(1);
+            if (slot == 3) {
+                menu.setCarried(menu.getSlot(3).getItem());
+                if (movedSource) menu.getSlot(3).set(ItemStack.EMPTY);
+            } else if (slot == 0) {
+                // The server has consumed it before the observation callback.
+                target.set(foreignInput ? furnaceStack(Items.CARROT) : ItemStack.EMPTY);
+                menu.setCarried(ItemStack.EMPTY);
+                if (product != null) menu.getSlot(2).set(furnaceStack(product));
+            }
+            return null;
+        }).when(gameMode).handleContainerInput(eq(42), anyInt(), eq(0), any(), eq(player));
+        JsonObject params = new JsonObject();
+        params.addProperty("input_slot", 3);
+        params.addProperty("sync_id", 42);
+        if (expected != null) params.addProperty("expected_output", expected);
+        CommandResult result = new SmeltItemsCommandHandler(c -> held.set(true))
+            .execute(params, client, mock(IBaritone.class), mock(Socket.class)).get(4, TimeUnit.SECONDS);
+        verify(gameMode, times(2)).handleContainerInput(eq(42), anyInt(), eq(0), any(), eq(player));
+        return result;
+    }
+
+    @Test
+    void smeltItemsAcceptsConsumedInputOnlyWithExpectedOutputDelta() throws Exception {
+        CommandResult result = consumedSmelt("minecraft:cooked_beef", Items.COOKED_BEEF, true, false);
+        assertTrue(result.isSuccess(), result.getErrorMessage());
+        assertTrue(result.getData().get("postcondition_verified").getAsBoolean());
+        assertTrue(result.getData().get("input_moved").getAsBoolean());
+        assertTrue(result.getData().get("input_consumed").getAsBoolean());
+    }
+
+    @Test
+    void smeltItemsRejectsVanishedInputWithoutOutput() throws Exception {
+        assertFalse(consumedSmelt("minecraft:cooked_beef", null, true, false).isSuccess());
+    }
+
+    @Test
+    void smeltItemsRejectsWrongOutputDespiteSourceDelta() throws Exception {
+        assertFalse(consumedSmelt("minecraft:cooked_beef", Items.IRON_INGOT, true, false).isSuccess());
+    }
+
+    @Test
+    void smeltItemsRejectsOutputWithoutSourceDelta() throws Exception {
+        assertFalse(consumedSmelt("minecraft:cooked_beef", Items.COOKED_BEEF, false, false).isSuccess());
+    }
+
+    @Test
+    void smeltItemsRejectsForeignInputDespiteExpectedOutput() throws Exception {
+        assertFalse(consumedSmelt("minecraft:cooked_beef", Items.COOKED_BEEF, true, true).isSuccess());
+    }
+
+    @Test
+    void legacySmeltItemsDoesNotGuessConsumedInputCompletion() throws Exception {
+        assertFalse(consumedSmelt(null, Items.COOKED_BEEF, true, false).isSuccess());
+    }
+
+    @Test
+    void smeltItemsRejectsUnchangedPreexistingOutput() throws Exception {
+        assertFalse(consumedSmelt("minecraft:cooked_beef", Items.COOKED_BEEF, true, false, true).isSuccess());
+    }
+
     @Test
     void containerEvidenceKeepsContainerIndexesAcrossSnapshots() {
         LocalPlayer player = mock(LocalPlayer.class);

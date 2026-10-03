@@ -199,7 +199,7 @@ def test_full_inventory_merges_existing_output_without_discard(furnace_run):
 def test_smeltable_logs_load_into_explicit_fuel_slot_and_output_is_observed(furnace_run):
     ctx = FurnaceContext(full=True)
     assert furnace_run(ctx)
-    assert ctx.calls[0] == ("smelt_items", {"sync_id": 7, "input_slot": 3, "fuel_slot": 4})
+    assert ctx.calls[0] == ("smelt_items", {"sync_id": 7, "expected_output": "minecraft:cooked_beef", "input_slot": 3, "fuel_slot": 4})
     assert ctx.count_item("minecraft:cooked_beef") == 4
     assert ctx.reads_after_load >= 3
     assert all(p.get("type") != "THROW" for _, p in ctx.calls)
@@ -209,7 +209,7 @@ def test_existing_different_usable_fuel_is_not_evicted(furnace_run):
     ctx = FurnaceContext()
     ctx.slots[1] = stack("minecraft:coal", 10)
     assert furnace_run(ctx)
-    assert ctx.calls[0] == ("smelt_items", {"sync_id": 7, "input_slot": 3})
+    assert ctx.calls[0] == ("smelt_items", {"sync_id": 7, "expected_output": "minecraft:cooked_beef", "input_slot": 3})
     assert ctx.slots[1]["count"] == 10
 
 
@@ -226,7 +226,7 @@ def test_retained_fuel_running_out_is_refilled_from_fresh_evidence(furnace_run, 
     monkeypatch.setattr(ctx, "dispatch", dispatch)
     assert furnace_run(ctx)
     loads = [p for r, p in ctx.calls if r == "smelt_items"]
-    assert loads == [{"sync_id": 7, "input_slot": 3}, {"sync_id": 7, "fuel_slot": 4}]
+    assert loads == [{"sync_id": 7, "expected_output": "minecraft:cooked_beef", "input_slot": 3}, {"sync_id": 7, "fuel_slot": 4}]
 
 
 def test_unknown_space_reservation_is_not_followed_by_output_click(furnace_run):

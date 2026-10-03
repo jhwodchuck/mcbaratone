@@ -1398,9 +1398,9 @@ def test_smelt_clears_stale_furnace_input_and_output_before_loading(monkeypatch)
     )
     # Collect completed output first; existing usable fuel stays untouched.
     assert clicks[:2] == [(2, "QUICK_MOVE"), (0, "QUICK_MOVE")]
-    assert clicks[2] == ("smelt_items", {"sync_id": 1, "input_slot": 3})
+    assert clicks[2] == ("smelt_items", {"sync_id": 1, "expected_output": "minecraft:cooked_beef", "input_slot": 3})
 
 
 def test_smelt_with_a_clean_furnace_makes_no_clearing_clicks(monkeypatch):
     clicks = _furnace_clicks(monkeypatch, [None, None, None])
-    assert clicks == [("smelt_items", {"sync_id": 1, "input_slot": 3, "fuel_slot": 4})]
+    assert clicks == [("smelt_items", {"sync_id": 1, "expected_output": "minecraft:cooked_beef", "input_slot": 3, "fuel_slot": 4})]
