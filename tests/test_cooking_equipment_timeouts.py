@@ -64,6 +64,15 @@ def test_armor_unknown_exchange_is_not_retried_or_speculatively_rolled_back(capl
     assert "deadline exceeded" in caplog.text
 
 
+def test_armor_uses_exact_durable_candidate_not_first_matching_id():
+    transport = ArmorTransport()
+    transport.main[0] = stack("minecraft:iron_helmet", 1, damage=140, max_damage=165)
+    inventory.equip_best_armor(SimpleNamespace(transport=transport))
+    assert transport.worn["damage"] == 0
+    assert transport.main[0]["damage"] == 140
+    assert transport.main[22]["damage"] == 120
+
+
 def test_same_item_id_does_not_prove_fresh_armor_equipped(monkeypatch, caplog):
     transport = ArmorTransport(source=0, noop=True)
     ticks = iter(range(100))
@@ -202,6 +211,33 @@ def test_existing_different_usable_fuel_is_not_evicted(furnace_run):
     assert furnace_run(ctx)
     assert ctx.calls[0] == ("smelt_items", {"sync_id": 7, "input_slot": 3})
     assert ctx.slots[1]["count"] == 10
+
+
+def test_retained_fuel_running_out_is_refilled_from_fresh_evidence(furnace_run, monkeypatch):
+    ctx = FurnaceContext()
+    ctx.slots[1] = stack("minecraft:coal", 1)
+    original = ctx.dispatch
+    def dispatch(route, payload):
+        result = original(route, payload)
+        if route == "get_screen" and ctx.loaded and ctx.reads_after_load == 1:
+            ctx.slots[1] = stack()
+            result["slots"][1] = dict(stack(), slot=1)
+        return result
+    monkeypatch.setattr(ctx, "dispatch", dispatch)
+    assert furnace_run(ctx)
+    loads = [p for r, p in ctx.calls if r == "smelt_items"]
+    assert loads == [{"sync_id": 7, "input_slot": 3}, {"sync_id": 7, "fuel_slot": 4}]
+
+
+def test_unknown_space_reservation_is_not_followed_by_output_click(furnace_run):
+    ctx = FurnaceContext(full=True)
+    ctx.slots[2] = stack("minecraft:cooked_beef", 4)
+    ctx.slots[5] = stack("minecraft:granite", 1)
+    ctx.fail_move = True
+    with pytest.raises(RuntimeError, match="unknown effect"):
+        furnace_run(ctx)
+    assert len(ctx.calls) == 1 and ctx.calls[0][1]["type"] == "THROW"
+    assert ctx.closed
 
 
 @pytest.mark.parametrize("result", [{"moved": True}, {"moved": False, "postcondition_verified": True}])
