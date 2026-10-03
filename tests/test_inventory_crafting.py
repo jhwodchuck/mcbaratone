@@ -460,7 +460,7 @@ def test_equip_best_armor_maps_hotbar_slot_and_verifies_bridge_armor():
                     "armor": list(self.armor_items),
                     "offhand": [],
                 }
-            if route == "inventory_click" and payload["slot"] == 36:
+            if route == "inventory_click" and payload["slot"] == 5:
                 self.inventory_items = []
                 self.armor_items[3] = {
                     "slot": 39,
@@ -475,7 +475,7 @@ def test_equip_best_armor_maps_hotbar_slot_and_verifies_bridge_armor():
     assert inventory.equip_best_armor(client) == 1
     assert (
         "inventory_click",
-        {"slot": 36, "type": "QUICK_MOVE", "button": 0},
+        {"slot": 5, "type": "SWAP", "button": 0, "sync_id": 0},
     ) in transport.calls
     assert inventory.get_equipped_armor(client) == {
         "helmet": "minecraft:iron_helmet"
@@ -561,8 +561,6 @@ def test_equip_best_armor_replaces_nearly_broken_same_tier_piece():
                     "offhand": [],
                 }
             if route == "inventory_click" and payload["slot"] == 6:
-                self.armor_items = []
-            if route == "inventory_click" and payload["slot"] == 36:
                 self.armor_items = [self.inventory_items.pop(0)]
             return {}
 
@@ -573,7 +571,7 @@ def test_equip_best_armor_replaces_nearly_broken_same_tier_piece():
     assert transport.armor_items[0]["damage"] == 0
     assert (
         "inventory_click",
-        {"slot": 6, "type": "QUICK_MOVE", "button": 0},
+        {"slot": 6, "type": "SWAP", "button": 0, "sync_id": 0},
     ) in transport.calls
 
 
@@ -607,8 +605,6 @@ def test_equip_best_armor_replaces_unsafe_diamond_with_durable_iron():
                     "offhand": [],
                 }
             if route == "inventory_click" and payload["slot"] == 6:
-                self.armor_items = []
-            if route == "inventory_click" and payload["slot"] == 36:
                 self.armor_items = [self.inventory_items.pop(0)]
             return {}
 

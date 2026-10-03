@@ -375,32 +375,44 @@ def equip_best_armor(client) -> int:
             continue
 
         try:
-            # QUICK_MOVE on a player-container slot is the same verified path
-            # used by functional test T302.  Hotbar indices 0-8 map to
-            # protocol slots 36-44; main inventory indices already match.
-            if current:
-                client.transport.dispatch(
-                    "inventory_click",
-                    {
-                        "slot": _PLAYER_ARMOR_CONTAINER_SLOTS[piece],
-                        "type": "QUICK_MOVE",
-                        "button": 0,
-                    },
-                )
-                time.sleep(0.2)
             inventory_slot = int(best_item["slot"])
+            if not 0 <= inventory_slot < 36:
+                raise ValueError("Armor candidate is not in player inventory")
             player_slot = 36 + inventory_slot if 0 <= inventory_slot <= 8 else inventory_slot
+            # SWAP exchanges directly with a hotbar slot, even when all 36
+            # carried slots are full. Stage the exact chosen stack in hotbar
+            # zero, exchange with armor, then restore the displaced hotbar
+            # stack. No cursor choreography or empty destination is needed.
+            staged = inventory_slot != 0
+            if staged:
+                client.transport.dispatch(
+                    "inventory_click", {"slot": player_slot, "type": "SWAP", "button": 0, "sync_id": 0},
+                )
             client.transport.dispatch(
                 "inventory_click",
-                {"slot": player_slot, "type": "QUICK_MOVE", "button": 0},
+                {"slot": _PLAYER_ARMOR_CONTAINER_SLOTS[piece], "type": "SWAP", "button": 0, "sync_id": 0},
             )
-            deadline = time.time() + 3.0
-            while time.time() < deadline:
-                if get_equipped_armor(client).get(piece) == best_item["id"]:
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                worn = get_equipped_armor_details(client).get(piece, {})
+                if (
+                    worn.get("id") == best_item["id"]
+                    and worn.get("damage", 0) == best_item.get("damage", 0)
+                    and worn.get("components", {}) == best_item.get("components", {})
+                ):
                     break
                 time.sleep(0.1)
+            else:
+                raise RuntimeError("Selected armor was not observed equipped")
+            if staged:
+                client.transport.dispatch(
+                    "inventory_click", {"slot": player_slot, "type": "SWAP", "button": 0, "sync_id": 0},
+                )
         except Exception as exc:
             logger.warning("Failed to equip %s: %s", best_item.get("id"), exc)
+            # A click with an unknown outcome must be reconciled next cycle,
+            # never followed by another mutation or a speculative rollback.
+            break
 
     return len(get_equipped_armor(client))
 

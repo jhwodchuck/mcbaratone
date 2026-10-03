@@ -778,6 +778,52 @@ def ensure_item_from_supply(ctx, item_id: str, count: int, suite_state: Dict) ->
     return ctx.has_item(item_id, count)
 
 
+def _reserve_furnace_transfer_space(ctx, data, item, protected_ids) -> bool:
+    """Reserve a destination before QUICK_MOVE; never discard valuables/fuel."""
+    player = [s for s in data.get("slots", []) if 3 <= int(s.get("slot", -1)) < 39]
+    if len(player) != 36:
+        return False
+    capacity = 0
+    for slot in player:
+        if slot.get("id") in (None, "minecraft:air") or int(slot.get("count", 0)) <= 0:
+            capacity += int(item.get("max_count", 64))
+        elif (
+            slot.get("id") == item.get("id")
+            and slot.get("components", {}) == item.get("components", {})
+            and slot.get("damage", 0) == item.get("damage", 0)
+        ):
+            capacity += max(0, int(slot.get("max_count", 64)) - int(slot.get("count", 0)))
+    if capacity >= int(item.get("count", 0)):
+        return True
+
+    # Banking's general keep-list is not a discard policy: spare equipment
+    # and retained working supplies must never be thrown away here. Restrict
+    # this fallback to ordinary surplus terrain and refuse all valuable-only
+    # inventories. Dropped items remain recoverable until they despawn.
+    shedable = {"minecraft:" + name for name in (
+        "smooth_basalt", "basalt", "calcite", "granite", "andesite", "diorite",
+        "gravel", "netherrack", "tuff", "rotten_flesh", "leaf_litter",
+    )}
+    candidates = [s for s in player if s.get("id") in shedable
+                  and s.get("id") not in protected_ids and int(s.get("count", 0)) > 0]
+    if not candidates:
+        ctx.log_event("Furnace transfer blocked: no safe inventory capacity")
+        return False
+    candidate = min(candidates, key=lambda s: int(s.get("count", 0)))
+    ctx.log_event(f"Inventory full; dropping surplus bulk {candidate['id']} x{candidate['count']} for furnace transfer")
+    ctx.client.transport.dispatch("inventory_click", {
+        "slot": int(candidate["slot"]), "type": "THROW", "button": 1,
+        "sync_id": data["sync_id"],
+    })
+    refreshed = ctx.client.transport.dispatch("get_screen", {})
+    refreshed = refreshed.get("data", refreshed)
+    if refreshed.get("sync_id") != data["sync_id"]:
+        return False
+    after = next((s for s in refreshed.get("slots", [])
+                  if s.get("slot") == candidate["slot"]), None)
+    return bool(after is not None and (after.get("id") == "minecraft:air" or after.get("count", 0) == 0))
+
+
 def smelt_in_furnace(ctx, furnace_pos: Tuple[int, int, int], input_id: str, fuel_id: str,
                       output_id: str, output_count: int, wait_per_item: float = 10.5) -> bool:
     """
@@ -804,6 +850,8 @@ def smelt_in_furnace(ctx, furnace_pos: Tuple[int, int, int], input_id: str, fuel
         ...                            "minecraft:coal", "minecraft:iron_ingot", 8)
         >>> assert success
     """
+    if output_count <= 0:
+        return True
     starting_output_count = ctx.count_item(output_id)
     target_output_count = starting_output_count + output_count
 
@@ -816,88 +864,115 @@ def smelt_in_furnace(ctx, furnace_pos: Tuple[int, int, int], input_id: str, fuel
         ctx.log_event("Failed to open furnace for smelting")
         return False
 
-    screen = ctx.client.transport.dispatch("get_screen", {})
-    slots = get_inv_slots(screen.get("data", screen))
+    menu_id = None
 
-    # An interrupted earlier smelt can leave a different item in the input or
-    # fuel slot, or finished output. Shift-clicking the new input then moves
-    # nothing, which verified effects reject. Clear what does not belong.
-    cleared = False
-    for furnace_slot, belongs in ((0, input_id), (1, fuel_id), (2, None)):
-        item = slots[furnace_slot] if len(slots) > furnace_slot else None
-        item_id = (item or {}).get("id")
-        if (
-            item
-            and item_id not in (None, "minecraft:air")
-            and int(item.get("count", 0) or 0) > 0
-            and item_id != belongs
-        ):
-            safe_inventory_click(ctx, furnace_slot, "QUICK_MOVE")
-            time.sleep(0.2)
-            cleared = True
-    if cleared:
+    def read():
+        nonlocal menu_id
         screen = ctx.client.transport.dispatch("get_screen", {})
-        slots = get_inv_slots(screen.get("data", screen))
+        data = screen.get("data", screen)
+        if data.get("type") not in {"FurnaceMenu", "FurnaceScreenHandler", "BlastFurnaceMenu", "SmokerMenu"}:
+            raise RuntimeError("Smelting requires a verified furnace menu")
+        if data.get("sync_id") is None or (menu_id is not None and data["sync_id"] != menu_id):
+            raise RuntimeError("Furnace menu changed; reconcile before retry")
+        menu_id = data["sync_id"]
+        slots = {int(s["slot"]): s for s in data.get("slots", [])}
+        if set(slots) != set(range(39)):
+            raise RuntimeError("Incomplete furnace slot evidence")
+        return data, slots
 
-    input_slot_idx = None
-    fuel_slot_idx = None
+    def occupied(item):
+        return item.get("id") not in (None, "minecraft:air") and int(item.get("count", 0)) > 0
 
-    for i, item in enumerate(slots):
-        if i < 3:
-            continue
-        if not item:
-            continue
-        if item.get("id") == input_id and input_slot_idx is None:
-            input_slot_idx = i
-        elif item.get("id") == fuel_id and fuel_slot_idx is None:
-            fuel_slot_idx = i
-
-    if input_slot_idx is None or fuel_slot_idx is None:
-        ctx.log_event(f"Missing smelt items in inventory")
-        do_close_container(ctx)
-        return False
-
-    safe_inventory_click(ctx, fuel_slot_idx, "QUICK_MOVE")
-    time.sleep(0.3)
-    safe_inventory_click(ctx, input_slot_idx, "QUICK_MOVE")
-    time.sleep(0.3)
-
-    # Keep the bridge connection active while the furnace runs.  A single long
-    # sleep can leave the TCP session idle long enough for the next inventory
-    # click to time out, even though the smelting itself completed in-game.
-    deadline = time.monotonic() + max(12.0, output_count * wait_per_item + 15.0)
-    while time.monotonic() < deadline:
-        # If an earlier click completed despite a client-side timeout, accept
-        # the verified player inventory instead of clicking the empty output.
-        if ctx.count_item(output_id) >= target_output_count:
-            do_close_container(ctx)
+    def collect(slot):
+        data, slots = read()
+        item = slots[slot]
+        if not occupied(item):
             return True
+        if not _reserve_furnace_transfer_space(ctx, data, item, {input_id, fuel_id, output_id}):
+            return False
+        # Re-read after reserving space. Do not click a stale/empty output.
+        _, fresh = read()
+        if not occupied(fresh[slot]):
+            return True
+        ctx.client.transport.dispatch("inventory_click", {
+            "slot": slot, "type": "QUICK_MOVE", "button": 0, "sync_id": menu_id,
+        })
+        _, after = read()
+        return not occupied(after[slot])
 
-        screen = ctx.client.transport.dispatch("get_screen", {})
-        screen_slots = get_inv_slots(screen.get("data", screen))
-        output_slot = next(
-            (item for item in screen_slots if item and item.get("slot") == 2),
-            screen_slots[2] if len(screen_slots) > 2 else None,
-        )
-        if (
-            output_slot
-            and output_slot.get("id") == output_id
-            and output_slot.get("count", 0) >= output_count
-        ):
-            break
-        time.sleep(1.0)
-    else:
-        ctx.log_event(
-            f"Timed out waiting for {output_count} {output_id} in furnace output"
-        )
-        do_close_container(ctx)
+    try:
+        _, slots = read()
+        # Finished food is useful now, even if unrelated input is still queued.
+        # Collect it before trying to empty the furnace's other compartments.
+        if occupied(slots[2]) and not collect(2):
+            return False
+        if ctx.count_item(output_id) >= target_output_count:
+            return True
+        _, slots = read()
+        if occupied(slots[0]) and slots[0].get("id") != input_id and not collect(0):
+            return False
+        _, slots = read()
+        from baritone_client.common.resources import FURNACE_FUEL_SMELTS
+        # Keep existing usable fuel instead of evicting it because its species
+        # differs from today's carried fuel. Non-fuel leftovers must be cleared.
+        if occupied(slots[1]) and slots[1].get("id") not in FURNACE_FUEL_SMELTS and not collect(1):
+            return False
+        _, slots = read()
+        payload = {"sync_id": menu_id}
+        for target, key, item_id in ((0, "input_slot", input_id), (1, "fuel_slot", fuel_id)):
+            loaded = slots[target]
+            if target == 1 and occupied(loaded):
+                continue
+            if int(loaded.get("count", 0)) >= int(loaded.get("max_count", 64)):
+                continue
+            source = next((s for i, s in slots.items() if i >= 3
+                           and s.get("id") == item_id and occupied(s)), None)
+            if source is not None:
+                payload[key] = int(source["slot"])
+            elif target == 0 and not occupied(loaded):
+                ctx.log_event("Missing smelt input in inventory and furnace")
+                return False
+        if len(payload) > 1:
+            if payload.get("input_slot") == payload.get("fuel_slot") and "input_slot" in payload:
+                ctx.log_event("Input and fuel need distinct carried stacks; furnace left unchanged")
+                return False
+            # The bridge targets input/fuel explicitly. QUICK_MOVE wrongly
+            # routes smeltable fuel (such as logs) to the input compartment.
+            response = ctx.client.transport.dispatch("smelt_items", payload)
+            result = response.get("data", response)
+            if result.get("moved") is not True or result.get("postcondition_verified") is not True:
+                ctx.log_event("Furnace loading unverified; reconcile before retry")
+                return False
+
+        deadline = time.monotonic() + max(12.0, output_count * wait_per_item + 15.0)
+        while time.monotonic() < deadline:
+            if ctx.count_item(output_id) >= target_output_count:
+                return True
+            _, slots = read()
+            if occupied(slots[2]):
+                if slots[2].get("id") != output_id or not collect(2):
+                    return False
+                if ctx.count_item(output_id) >= target_output_count:
+                    return True
+            # A retained fuel species can run out before this batch finishes.
+            # Top up only from fresh evidence of an empty compartment, never
+            # replay a previous transfer after an unknown outcome.
+            if occupied(slots[0]) and not occupied(slots[1]):
+                source = next((s for i, s in slots.items() if i >= 3
+                               and s.get("id") == fuel_id and occupied(s)), None)
+                if source is not None:
+                    response = ctx.client.transport.dispatch("smelt_items", {
+                        "sync_id": menu_id, "fuel_slot": int(source["slot"]),
+                    })
+                    result = response.get("data", response)
+                    if result.get("moved") is not True or result.get("postcondition_verified") is not True:
+                        ctx.log_event("Furnace refuel unverified; reconcile before retry")
+                        return False
+            time.sleep(1.0)
+        ctx.log_event(f"Timed out waiting for {output_count} {output_id} in furnace output")
         return False
-
-    safe_inventory_click(ctx, 2, "QUICK_MOVE")
-    time.sleep(0.3)
-
-    do_close_container(ctx)
-    return ctx.count_item(output_id) >= target_output_count
+    finally:
+        do_close_container(ctx)
 
 
 def craft_bed_manual(ctx, bed_id: str = "minecraft:white_bed") -> bool:
