@@ -918,7 +918,7 @@ def smelt_in_furnace(ctx, furnace_pos: Tuple[int, int, int], input_id: str, fuel
         if occupied(slots[1]) and slots[1].get("id") not in FURNACE_FUEL_SMELTS and not collect(1):
             return False
         _, slots = read()
-        payload = {"sync_id": menu_id}
+        payload = {"sync_id": menu_id, "expected_output": output_id}
         for target, key, item_id in ((0, "input_slot", input_id), (1, "fuel_slot", fuel_id)):
             loaded = slots[target]
             if target == 1 and occupied(loaded):
@@ -932,7 +932,7 @@ def smelt_in_furnace(ctx, furnace_pos: Tuple[int, int, int], input_id: str, fuel
             elif target == 0 and not occupied(loaded):
                 ctx.log_event("Missing smelt input in inventory and furnace")
                 return False
-        if len(payload) > 1:
+        if "input_slot" in payload or "fuel_slot" in payload:
             if payload.get("input_slot") == payload.get("fuel_slot") and "input_slot" in payload:
                 ctx.log_event("Input and fuel need distinct carried stacks; furnace left unchanged")
                 return False

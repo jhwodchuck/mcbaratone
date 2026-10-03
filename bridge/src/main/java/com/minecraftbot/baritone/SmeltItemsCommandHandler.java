@@ -10,6 +10,15 @@ import net.minecraft.world.inventory.AbstractFurnaceMenu;
 import net.minecraft.world.inventory.ContainerInput;
 
 public class SmeltItemsCommandHandler extends AsyncCommandHandler {
+    private final java.util.function.Consumer<Minecraft> inventoryLease;
+
+    public SmeltItemsCommandHandler() {
+        this(InventoryMutationLease::hold);
+    }
+
+    SmeltItemsCommandHandler(java.util.function.Consumer<Minecraft> inventoryLease) {
+        this.inventoryLease = inventoryLease;
+    }
 
     @Override
     public String getCommandName() {
@@ -22,6 +31,8 @@ public class SmeltItemsCommandHandler extends AsyncCommandHandler {
         final net.minecraft.world.item.ItemStack[] sources = new net.minecraft.world.item.ItemStack[2];
         final int[] slots = {-1, -1};
         final int[] destinationCounts = new int[2];
+        final String[] expectedOutput = {null};
+        final int[] outputCount = {0};
         return ObservedMutation.run(client::execute, () -> client.level.getGameTime(), () -> {
             if (client.player == null || client.gameMode == null) {
                 return CommandResult.error("Player not available");
@@ -42,6 +53,19 @@ public class SmeltItemsCommandHandler extends AsyncCommandHandler {
             if (params.has("sync_id") && params.get("sync_id").getAsInt() != handler.containerId)
                 return CommandResult.error("Stale furnace sync_id");
             menu[0] = handler;
+            if (params.has("expected_output")) {
+                try {
+                    expectedOutput[0] = net.minecraft.resources.Identifier.parse(
+                        params.get("expected_output").getAsString()).toString();
+                } catch (RuntimeException invalid) {
+                    return CommandResult.error("Invalid expected furnace output");
+                }
+                var output = handler.getSlot(2).getItem();
+                if (!output.isEmpty() && !net.minecraft.core.registries.BuiltInRegistries.ITEM
+                        .getKey(output.getItem()).toString().equals(expectedOutput[0]))
+                    return CommandResult.error("Furnace output contains another item");
+                outputCount[0] = output.getCount();
+            }
             slots[0] = inputSlot; slots[1] = fuelSlot;
             for (int i = 0; i < 2; i++) {
                 int source = slots[i];
@@ -57,6 +81,7 @@ public class SmeltItemsCommandHandler extends AsyncCommandHandler {
                 if (destinationCounts[i] >= handler.getSlot(i).getMaxStackSize(sources[i]))
                     return CommandResult.error("Furnace destination is full");
             }
+            inventoryLease.accept(client);
             JsonObject before = ContainerEvidence.snapshot(handler);
             for (int i = 0; i < 2; i++) if (slots[i] != -1) {
                 // QUICK_MOVE routes smeltable fuels (logs) to input before fuel.
@@ -83,8 +108,22 @@ public class SmeltItemsCommandHandler extends AsyncCommandHandler {
                 boolean landed = net.minecraft.world.item.ItemStack.isSameItemSameComponents(target, sources[i])
                     && target.getCount() > destinationCounts[i];
                 boolean burning = i == 1 && ((AbstractFurnaceMenu) menu[0]).isLit();
-                boolean moved = source.getCount() < sources[i].getCount() && (landed || burning)
+                var output = menu[0].getSlot(2).getItem();
+                boolean compatibleInput = target.isEmpty()
+                    || net.minecraft.world.item.ItemStack.isSameItemSameComponents(target, sources[i]);
+                boolean expectedProduct = expectedOutput[0] != null && !output.isEmpty()
+                    && net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(output.getItem())
+                        .toString().equals(expectedOutput[0]);
+                // A nearly-complete furnace can consume the transferred input
+                // before two stable ticks see it in slot zero. Count the exact
+                // expected output delta as completion, not a missing input as
+                // proof on its own. Legacy callers keep the conservative rule.
+                boolean consumed = i == 0 && compatibleInput && expectedProduct
+                    && output.getCount() > outputCount[0];
+                boolean moved = FurnaceTransferEvidence.moved(
+                    sources[i].getCount(), source.getCount(), landed || burning, consumed)
                     && menu[0].getCarried().isEmpty();
+                if (i == 0) data.addProperty("input_consumed", consumed && moved);
                 data.addProperty(i == 0 ? "input_moved" : "fuel_moved", moved);
                 complete &= moved;
             }

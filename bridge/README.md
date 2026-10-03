@@ -230,11 +230,11 @@ Open a terminal in the `bridge/` directory:
 ./gradlew --no-daemon --console=plain build
 ```
 
-The built JAR will be in `build/libs/baritone-api-bridge-1.0.39.jar`.
+The built JAR will be in `build/libs/baritone-api-bridge-1.0.40.jar`.
 
 ## Installation
 
-1. Copy `baritone-api-bridge-1.0.39.jar` to your Minecraft `mods` folder
+1. Copy `baritone-api-bridge-1.0.40.jar` to your Minecraft `mods` folder
 2. Start Minecraft with Fabric loader
 3. Bridge automatically starts TCP server on port 5555
 
