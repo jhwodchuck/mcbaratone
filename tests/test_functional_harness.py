@@ -98,18 +98,24 @@ def test_smelt_polls_furnace_instead_of_sleeping_through_bridge_idle(monkeypatch
     class Transport:
         def __init__(self):
             self.screen_reads = 0
+            self.collected = False
 
         def dispatch(self, route, _payload):
+            if route == "inventory_click":
+                self.collected = True
+                ctx.ingots = 2
+                return {"postcondition_verified": True}
             if route == "get_screen":
                 self.screen_reads += 1
                 return {
+                    "type": "FurnaceMenu", "sync_id": 1,
                     "slots": [
                         {"slot": 0, "id": "minecraft:air", "count": 0},
                         {"slot": 1, "id": "minecraft:coal", "count": 1},
-                        {"slot": 2, "id": "minecraft:iron_ingot", "count": 2},
+                        {"slot": 2, "id": "minecraft:iron_ingot", "count": 0 if self.collected else 2},
                         {"slot": 3, "id": "minecraft:raw_iron", "count": 2},
                         {"slot": 4, "id": "minecraft:coal", "count": 1},
-                    ]
+                    ] + [{"slot": i, "id": "minecraft:air", "count": 0} for i in range(5, 39)]
                 }
             return {}
 
@@ -147,7 +153,7 @@ def test_smelt_polls_furnace_instead_of_sleeping_through_bridge_idle(monkeypatch
         2,
     )
     assert ctx.client.transport.screen_reads >= 2
-    assert max(sleeps) <= 0.3
+    assert max(sleeps, default=0) <= 0.3
 
 
 def test_manual_iron_chestplate_uses_verified_eight_ingot_pattern(monkeypatch):
@@ -1334,11 +1340,21 @@ def _furnace_clicks(monkeypatch, furnace_contents):
         {"id": "minecraft:beef", "count": 4},
         {"id": "minecraft:oak_planks", "count": 3},
     ]
+    all_slots = base + player + [{"id": "minecraft:air", "count": 0} for _ in range(34)]
+    for i, item in enumerate(all_slots):
+        item["slot"] = i
 
     class Transport:
-        def dispatch(self, route, _payload):
+        def dispatch(self, route, payload):
             if route == "get_screen":
-                return {"slots": base + player}
+                return {"type": "FurnaceMenu", "sync_id": 1, "slots": all_slots}
+            if route == "inventory_click":
+                clicks.append((payload["slot"], payload["type"]))
+                all_slots[payload["slot"]] = {"slot": payload["slot"], "id": "minecraft:air", "count": 0}
+            if route == "smelt_items":
+                clicks.append(("smelt_items", payload))
+                ctx.cooked = 4
+                return {"moved": True, "postcondition_verified": True}
             return {}
 
     class Context:
@@ -1380,11 +1396,11 @@ def test_smelt_clears_stale_furnace_input_and_output_before_loading(monkeypatch)
             {"id": "minecraft:cooked_chicken", "count": 3},
         ],
     )
-    # Foreign input and finished output leave first; matching fuel stays.
-    assert clicks[:2] == [(0, "QUICK_MOVE"), (2, "QUICK_MOVE")]
-    assert clicks[2:4] == [(4, "QUICK_MOVE"), (3, "QUICK_MOVE")]
+    # Collect completed output first; existing usable fuel stays untouched.
+    assert clicks[:2] == [(2, "QUICK_MOVE"), (0, "QUICK_MOVE")]
+    assert clicks[2] == ("smelt_items", {"sync_id": 1, "input_slot": 3})
 
 
 def test_smelt_with_a_clean_furnace_makes_no_clearing_clicks(monkeypatch):
     clicks = _furnace_clicks(monkeypatch, [None, None, None])
-    assert clicks[:2] == [(4, "QUICK_MOVE"), (3, "QUICK_MOVE")]
+    assert clicks == [("smelt_items", {"sync_id": 1, "input_slot": 3, "fuel_slot": 4})]
