@@ -328,12 +328,7 @@ def has_durable_full_armor(
 
 
 def equip_best_armor(client) -> int:
-    """
-    Equip best available armor from inventory.
-    
-    Returns:
-        Number of armor pieces equipped
-    """
+    """Equip the best carried armor; return the number of worn pieces."""
     try:
         client.transport.dispatch("close_screen", {})
     except Exception:
@@ -348,7 +343,6 @@ def equip_best_armor(client) -> int:
         current_identity = _armor_identity(current or "")
         current_rank = current_identity[2] if current_identity else 0
         current_remaining = _remaining_durability(current_item)
-
         candidates = []
         for item in data.get("inventory", []):
             identity = _armor_identity(item.get("id", ""))
@@ -358,7 +352,6 @@ def equip_best_armor(client) -> int:
             candidates.append((identity[2], remaining or 0, item))
         if not candidates:
             continue
-
         from .combat_loadout import choose_armor_replacement
         selected = choose_armor_replacement(
             candidates,
@@ -373,21 +366,17 @@ def equip_best_armor(client) -> int:
 
         if _best_rank <= current_rank and (current_remaining or 0) >= _best_remaining:
             continue
-
         try:
             inventory_slot = int(best_item["slot"])
             if not 0 <= inventory_slot < 36:
                 raise ValueError("Armor candidate is not in player inventory")
             player_slot = 36 + inventory_slot if 0 <= inventory_slot <= 8 else inventory_slot
-            # SWAP exchanges directly with a hotbar slot, even when all 36
-            # carried slots are full. Stage the exact chosen stack in hotbar
-            # zero, exchange with armor, then restore the displaced hotbar
-            # stack. No cursor choreography or empty destination is needed.
+            # Stage the exact stack in hotbar zero, exchange with armor,
+            # restore the hotbar. SWAP needs neither cursor nor empty space.
             staged = inventory_slot != 0
             if staged:
-                client.transport.dispatch(
-                    "inventory_click", {"slot": player_slot, "type": "SWAP", "button": 0, "sync_id": 0},
-                )
+                client.transport.dispatch("inventory_click", {
+                    "slot": player_slot, "type": "SWAP", "button": 0, "sync_id": 0})
             client.transport.dispatch(
                 "inventory_click",
                 {"slot": _PLAYER_ARMOR_CONTAINER_SLOTS[piece], "type": "SWAP", "button": 0, "sync_id": 0},
@@ -405,13 +394,11 @@ def equip_best_armor(client) -> int:
             else:
                 raise RuntimeError("Selected armor was not observed equipped")
             if staged:
-                client.transport.dispatch(
-                    "inventory_click", {"slot": player_slot, "type": "SWAP", "button": 0, "sync_id": 0},
-                )
+                client.transport.dispatch("inventory_click", {
+                    "slot": player_slot, "type": "SWAP", "button": 0, "sync_id": 0})
         except Exception as exc:
             logger.warning("Failed to equip %s: %s", best_item.get("id"), exc)
-            # A click with an unknown outcome must be reconciled next cycle,
-            # never followed by another mutation or a speculative rollback.
+            # Unknown clicks require reconciliation, not mutation/rollback.
             break
 
     return len(get_equipped_armor(client))
