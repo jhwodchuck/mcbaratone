@@ -36,6 +36,18 @@ def test_durable_kit_needs_nothing():
     assert weapon_upkeep.kit_gaps(_client([sword, FRESH_PICK, COBBLE])) == []
 
 
+@pytest.mark.parametrize("tier", ["wooden", "golden"])
+def test_iron_mining_requires_an_upgrade_from_wood_or_gold(tier):
+    client = _client([dict(SWORD_247, damage=0), dict(FRESH_PICK, id=f"minecraft:{tier}_pickaxe"), COBBLE])
+    assert not weapon_upkeep.has_mining_pickaxe(client)
+    assert weapon_upkeep.kit_gaps(client) == ["minecraft:stone_pickaxe"]
+
+
+def test_mining_tool_read_failure_is_not_a_usable_pickaxe():
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a: {}))
+    assert not weapon_upkeep.has_mining_pickaxe(client)
+
+
 def test_wood_is_the_fallback_and_nothing_is_offered_without_materials():
     assert weapon_upkeep.kit_gaps(_client([FRESH_PICK, PLANKS])) == ["minecraft:wooden_sword"]
     assert weapon_upkeep.kit_gaps(_client([FRESH_PICK])) == []

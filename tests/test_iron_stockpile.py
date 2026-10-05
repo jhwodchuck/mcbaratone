@@ -43,6 +43,7 @@ def bot(monkeypatch):
         lambda _c, item: counts.get(item, lambda: 0)(),
     )
     monkeypatch.setattr(iron_stockpile, "banked_iron", lambda _c, _s: w.banked)
+    monkeypatch.setattr("baritone_client.automator.iron_preparation.prepare_iron_inventory", lambda *_a: "")
 
     def smelt(_client, _state):
         made, w.raw_iron, w.ingots = w.raw_iron, 0, w.ingots + w.raw_iron
@@ -159,6 +160,14 @@ def test_a_trip_mines_smelts_banks_the_surplus_and_remembers_the_tunnel(bot):
     # The tunnel is remembered, and the bot is back at the surface.
     assert rec["entrance"] and len(rec["spine"]) > 10 and bot.pos[1] >= 68
     assert rec["next_trip"] == 1000.0 + iron_stockpile.SUCCESS_REST and rec["failures"] == 0
+
+
+def test_failed_inventory_preparation_never_enters_the_mine(bot, monkeypatch):
+    monkeypatch.setattr("baritone_client.automator.iron_preparation.prepare_iron_inventory", lambda *_a: "not enough verified inventory space for iron")
+    with_ore(bot, 64)
+    ok, detail, *_ = iron_stockpile.run_supply_trip(bot, state(), now=1000)
+    assert not ok and "inventory space" in detail
+    assert bot.dug == [] and bot.pos == ENTRANCE
 
 
 def test_the_next_trip_walks_the_recorded_tunnel_instead_of_digging_it_again(bot):

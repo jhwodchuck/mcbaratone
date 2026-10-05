@@ -54,6 +54,14 @@ def has_usable(entries: list, role: str) -> bool:
     return any(str(i.get("id", "")).endswith(suffixes) and _durable(i) for i in entries)
 
 
+def has_mining_pickaxe(client: Any) -> bool:
+    """Iron requires a durable stone-or-better pickaxe, not wood or gold."""
+    return any(
+        item.get("id") in {f"minecraft:{tier}_pickaxe" for tier in ("stone", "iron", "diamond", "netherite")}
+        and _durable(item) for item in _entries(client)
+    )
+
+
 def _count(entries: list, predicate) -> int:
     return sum(int(i.get("count", 0) or 0) for i in entries if predicate(str(i.get("id", ""))))
 
@@ -76,7 +84,10 @@ def kit_gaps(client: Any) -> List[str]:
     return [
         recipe
         for role, stone, cobble, wood, planks in KIT
-        if not has_usable(entries, role)
+        if (not has_usable(entries, role) or (
+            role == "pickaxe" and not has_mining_pickaxe(client)
+            and _count(entries, lambda i: i == "minecraft:cobblestone") >= cobble
+        ))
         and (recipe := _recipe(entries, stone, cobble, wood, planks))
     ]
 
