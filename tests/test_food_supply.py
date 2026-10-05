@@ -352,6 +352,16 @@ def test_last_three_wheat_are_food_not_a_permanent_uncraftable_reserve(monkeypat
     assert result.success and result.bread_crafted == 1
 
 
+def test_farm_expansion_rejects_cave_soil_and_returns_home(monkeypatch):
+    monkeypatch.setattr(food_supply, "_approach_candidate", lambda *_a: None)
+    monkeypatch.setattr(food_supply, "find_farm_surface_near", lambda *_a: (32, 50, 0))
+    returned = []
+    monkeypatch.setattr(food_supply, "_return_to_anchor", lambda _c, anchor: returned.append(anchor) or True)
+    monkeypatch.setattr(food_supply, "establish_wheat_farm", lambda *_a, **_k: pytest.fail("no cave farm"))
+    assert food_supply._establish_candidate(object(), _state({"base_location": [0, 70, 0]}), (32, 70, 0), 5) is None
+    assert returned == [(0, 70, 0)]
+
+
 def test_exhausted_frontier_reopens_again_after_the_one_shot_reset_is_spent():
     """A second exhaustion at the same anchor must not deadlock forever.
 

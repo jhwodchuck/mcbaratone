@@ -463,6 +463,10 @@ def _establish_candidate(client: Any, state: Any, candidate, size: int):
         surface = find_farm_surface_near(client, *candidate)
     if surface is None:
         return None
+    anchor = _base_anchor(state)
+    if anchor is not None and abs(surface[1] - anchor[1]) > 8:
+        _return_to_anchor(client, anchor)
+        return None
     return establish_wheat_farm(client, *surface, size=size, state=state)
 
 
