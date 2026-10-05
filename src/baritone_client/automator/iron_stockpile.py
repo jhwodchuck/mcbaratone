@@ -45,6 +45,7 @@ DARK_TRIP_SECONDS = 600
 DARK_PATIENCE = 5.0
 TORCH_RETRY_SECONDS = 3600.0
 ROOM_WANTED = 10
+STORAGE_FOOD_RESERVE = 64
 #: Clutter worth banking before a trip. Never tools, food, torches or armour.
 CLUTTER = frozenset(
     "minecraft:" + name
@@ -301,6 +302,10 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
         if not goto(client, *anchor, timeout=300, tolerance=8.0, radius=6):
             return done(False, "could not get home to start a mining trip")
     _make_room(client, state)
+    from .iron_preparation import prepare_iron_inventory
+
+    if reason := prepare_iron_inventory(client, state):
+        return done(False, reason)
     if _count(client, TORCH) < MIN_TORCHES and anchor is not None and current >= float(rec.get("torch_retry", 0) or 0):
         from .base_lighting import ensure_torches
 

@@ -359,10 +359,9 @@ def _next_plot_candidate(
     )
     worker["expansion_cursor"] = cursor + 1
     anchor_key = list(anchor)
-    if candidate is None and not known and rejected:
-        # Setup failures (notably a missing bucket) used to blacklist every
-        # nearby coordinate. With no farm left, that made the bounded search
-        # permanently return None even after the prerequisite was repaired.
+    if candidate is None and rejected:
+        # Setup failures can blacklist every nearby site. A recorded plot
+        # may be flooded or destroyed, so its presence cannot disable retries.
         streak = int(worker.get("exhausted_frontier_streak", 0) or 0) + 1
         if (
             worker.get("failed_site_reset_anchor") != anchor_key
@@ -463,6 +462,10 @@ def _establish_candidate(client: Any, state: Any, candidate, size: int):
         _approach_candidate(client, candidate)
         surface = find_farm_surface_near(client, *candidate)
     if surface is None:
+        return None
+    anchor = _base_anchor(state)
+    if anchor is not None and abs(surface[1] - anchor[1]) > 8:
+        _return_to_anchor(client, anchor)
         return None
     return establish_wheat_farm(client, *surface, size=size, state=state)
 
@@ -732,7 +735,7 @@ def run_food_cycle(
     after_harvest = get_inventory(client)
     bread_before = _count(after_harvest, BREAD)
     wheat_available = _count(after_harvest, WHEAT)
-    breads_requested = max(0, (wheat_available - 3) // 3)
+    breads_requested = max(0, wheat_available // 3)
     if breads_requested:
         craft(client, BREAD, breads_requested)
     after_craft = get_inventory(client)

@@ -322,6 +322,46 @@ def test_exhausted_empty_frontier_is_reopened_once_after_setup_repair():
     assert worker["failed_site_reset_anchor"] == list(anchor)
 
 
+def test_exhausted_frontier_reopens_with_an_existing_unproductive_plot():
+    anchor = (100, 70, 100)
+    rejected = [[132, 70, 100], [100, 70, 132], [68, 70, 100], [100, 70, 68]]
+    worker = {
+        "failed_plot_sites": rejected, "expansion_cursor": 10000,
+        "failed_site_reset_anchor": list(anchor),
+        "exhausted_frontier_streak": food_supply.EXHAUSTED_FRONTIER_RETRY_STREAK - 1,
+    }
+    assert food_supply._next_plot_candidate(anchor, [anchor], worker, 32, 3) == (132, 70, 100)
+    assert worker["failed_plot_sites"] == []
+
+
+def test_last_three_wheat_are_food_not_a_permanent_uncraftable_reserve(monkeypatch):
+    counts = {food_supply.WHEAT: 3, food_supply.SEEDS: 8}
+    _inventory(monkeypatch, counts)
+    monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(food_supply, "_stock_seeds", lambda *_a: 0)
+    monkeypatch.setattr(food_supply, "resolve_storage_location", lambda *_a, **_k: None)
+
+    def craft(_client, item, amount):
+        assert item == food_supply.BREAD and amount == 1
+        counts[food_supply.WHEAT] = 0
+        counts[food_supply.BREAD] = 1
+        return True
+
+    monkeypatch.setattr(food_supply, "craft", craft)
+    result = food_supply.run_food_cycle(object(), _state({}))
+    assert result.success and result.bread_crafted == 1
+
+
+def test_farm_expansion_rejects_cave_soil_and_returns_home(monkeypatch):
+    monkeypatch.setattr(food_supply, "_approach_candidate", lambda *_a: None)
+    monkeypatch.setattr(food_supply, "find_farm_surface_near", lambda *_a: (32, 50, 0))
+    returned = []
+    monkeypatch.setattr(food_supply, "_return_to_anchor", lambda _c, anchor: returned.append(anchor) or True)
+    monkeypatch.setattr(food_supply, "establish_wheat_farm", lambda *_a, **_k: pytest.fail("no cave farm"))
+    assert food_supply._establish_candidate(object(), _state({"base_location": [0, 70, 0]}), (32, 70, 0), 5) is None
+    assert returned == [(0, 70, 0)]
+
+
 def test_exhausted_frontier_reopens_again_after_the_one_shot_reset_is_spent():
     """A second exhaustion at the same anchor must not deadlock forever.
 
