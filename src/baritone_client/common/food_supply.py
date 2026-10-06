@@ -7,6 +7,7 @@ from math import ceil, hypot, sqrt
 import math
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
+from .farm_maintenance import plot_on_cooldown
 from .combat import eat_until_hunger
 from .farming import (
     _block_id,
@@ -644,7 +645,7 @@ def run_food_cycle(
         else []
     )
     unreachable = []
-    for plot in inspected:
+    for plot in (p for p in inspected if not plot_on_cooldown(state, p)):
         plot_before = _count(get_inventory(client), WHEAT)
         harvest_wheat_farm(client, *plot, range_=max(1, int(farm_range)))
         harvested += max(0, _count(get_inventory(client), WHEAT) - plot_before)

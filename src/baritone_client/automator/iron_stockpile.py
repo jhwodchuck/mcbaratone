@@ -325,7 +325,13 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
         return done(False, "no safe surface entrance near the base")
     rec["entrance"] = list(entrance)
     if not goto(client, *entrance, timeout=150, tolerance=1.5, radius=1):
+        rec["approach_failures"] = int(rec.get("approach_failures", 0) or 0) + 1
+        if rec["approach_failures"] >= 3:
+            rec.setdefault("bad_entrances", []).append(list(entrance))
+            for stale in ("entrance", "spine", "approach_failures"):
+                rec.pop(stale, None)
         return done(False, "could not reach the mine entrance")
+    rec["approach_failures"] = 0
 
     spine: List[Tuple[int, int, int]] = [tuple(c) for c in rec.get("spine", [])] or [entrance]
     miner = TunnelMiner(

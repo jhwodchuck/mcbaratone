@@ -137,6 +137,19 @@ def test_a_bad_entrance_is_never_chosen_again(bot):
     assert iron_stockpile.choose_entrance(bot, st) not in (None, first)
 
 
+def test_three_failed_approaches_retire_an_unreachable_entrance(bot, monkeypatch):
+    entrance = [16, 70, 0]
+    st = state({iron_stockpile.KEY: {"entrance": entrance, "spine": [entrance]}})
+    monkeypatch.setattr("baritone_client.common.navigation.goto", lambda *_a, **_k: False)
+    for attempt in range(3):
+        ok, detail, *_ = iron_stockpile.run_supply_trip(bot, st, now=1000 + attempt)
+        assert not ok and "could not reach" in detail
+    rec = st.custom_data[iron_stockpile.KEY]
+    assert entrance in rec["bad_entrances"]
+    assert "entrance" not in rec and "spine" not in rec
+    assert not bot.dug
+
+
 def test_no_entrance_when_the_ground_is_water_or_trees(bot):
     for (x, y, z), block in list(bot.blocks.items()):
         if y == 69:

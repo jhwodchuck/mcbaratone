@@ -150,7 +150,8 @@ def test_native_farm_process_keeps_home_digging_protected(monkeypatch):
             return {"value": values["allowBreak"]}
         if route == "farm":
             assert values["allowBreak"] == "false"
-        return {"is_pathing": False}
+        return {"is_pathing": False, "health": 20, "air_supply": 300,
+                "block_position": {"x": 100, "y": 65, "z": 100}}
 
     client = SimpleNamespace(_protected_home_anchor=(100, 65, 100),
                              transport=SimpleNamespace(dispatch=dispatch))
