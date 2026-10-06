@@ -16,7 +16,8 @@ from .base import robust_place
 from .inventory import count_item, craft, select_item
 from .navigation import find_nearby_block, find_water_source, goto
 from .water_bucket_actions import use_water_bucket
-from .home_surface import below_home_surface, protect_home_route
+from .home_surface import protect_home_route
+from .farm_maintenance import farm_surface_safe, replant_empty_wheat_tiles
 from .farm_irrigation import existing_plot_source
 from .farm_planting import plant_farm_tiles
 
@@ -791,33 +792,3 @@ def harvest_wheat_farm(client, x: int, y: int, z: int, range_: int = 8) -> bool:
     # disturbing immature crops or claiming carried wheat as a new harvest.
     replant_empty_wheat_tiles(client, x, y, z)
     return harvested
-
-
-def farm_surface_safe(client) -> bool:
-    """Stop native crop work on an observed drop or unverifiable safety."""
-    guard = getattr(client, "_protected_surface_work", None)
-    if guard is None:
-        return True
-    try:
-        live = client.transport.dispatch("get_state", {})
-        return (not live.get("is_dead") and float(live["health"]) >= 14
-                and int(live["air_supply"]) > 0
-                and not below_home_surface(guard, live["block_position"]))
-    except (KeyError, TypeError, ValueError, RuntimeError):
-        return False
-
-
-def replant_empty_wheat_tiles(client, x: int, y: int, z: int, size: int = 5) -> int:
-    """Repair only freshly observed bare soil in the existing plot."""
-    half = size // 2
-    tiles = [
-        (x + dx, y, z + dz)
-        for dx in range(-half, half + 1)
-        for dz in range(-half, half + 1)
-        if (dx or dz)
-        and _block_id(client, x + dx, y, z + dz)
-        in {"minecraft:farmland", "minecraft:dirt", "minecraft:grass_block"}
-        and _block_id(client, x + dx, y + 1, z + dz)
-        in {"minecraft:air", "minecraft:cave_air"}
-    ]
-    return plant_farm_tiles(client, tiles) if tiles else 0
