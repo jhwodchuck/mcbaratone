@@ -97,3 +97,18 @@ def test_native_farm_safety_fails_closed_on_unknown_drop_or_injury(live):
     client = SimpleNamespace(_protected_surface_work=(0,63,0),
         transport=SimpleNamespace(dispatch=lambda *_a: live))
     assert not farming.farm_surface_safe(client)
+
+
+def test_candidate_approach_keeps_home_surface_floor_outside_home_radius(monkeypatch):
+    from baritone_client.common import farm_site_travel
+
+    client = SimpleNamespace(_protected_home_anchor=(0,65,0),
+        transport=SimpleNamespace(dispatch=lambda *_a: {"is_pathing": False}))
+    monkeypatch.setattr(farm_site_travel, "horizontal_distance", lambda *_a: 32)
+    monkeypatch.setattr(home_surface, "_read_break_setting", lambda _c: "false")
+    observed = []
+    monkeypatch.setattr("baritone_client.common.navigation.goto_xz", lambda c, *_a, **_k:
+        observed.append(c._protected_surface_work) or True)
+    farm_site_travel.approach_candidate(client, (32,64,0))
+    assert observed == [(32,63,0)]
+    assert client._protected_surface_work is None
