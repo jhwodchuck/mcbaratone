@@ -76,9 +76,14 @@ def _run_crop_opportunity(
     client.transport.dispatch("farm", {"range": 8, "x": location[0], "y": location[1], "z": location[2], "replant": True})
     deadline = time.monotonic() + max(1.0, float(timeout))
     after = before
+    safe = True
     try:
         while time.monotonic() < deadline:
             sleeper(min(2.0, max(0.05, float(timeout))))
+            from ...common.farming import farm_surface_safe
+            safe = farm_surface_safe(client)
+            if not safe:
+                return False, "crop process left the safe surface", before, after
             current = inventory_reader(client)
             after = sum(int(current.get(item, 0) or 0) for item in CROP_ITEMS)
             plantable = sum(int(current.get(item, 0) or 0) for item in PLANTABLE_ITEMS)
@@ -93,7 +98,7 @@ def _run_crop_opportunity(
             stopped = True
         except Exception:
             pass
-        if stopped and state is not None:
+        if stopped and safe and state is not None:
             from ..food_recovery_state import checkpointed_wheat_farm_origin
             if checkpointed_wheat_farm_origin(state) == tuple(location):
                 from ...common.farming import replant_empty_wheat_tiles

@@ -90,3 +90,10 @@ def test_surface_farm_outside_home_radius_is_still_no_dig(monkeypatch):
     assert farm(client, 32,64,0)
     assert settings == ["false", "true"]
     assert client._protected_surface_work is None
+
+
+@pytest.mark.parametrize("live", [{}, {"health":20,"air_supply":300,"block_position":{"x":0,"y":60,"z":0}}, {"health":10,"air_supply":300,"block_position":{"x":0,"y":65,"z":0}}])
+def test_native_farm_safety_fails_closed_on_unknown_drop_or_injury(live):
+    client = SimpleNamespace(_protected_surface_work=(0,63,0),
+        transport=SimpleNamespace(dispatch=lambda *_a: live))
+    assert not farming.farm_surface_safe(client)
