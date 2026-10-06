@@ -4,6 +4,29 @@ import pytest
 
 from baritone_client.common import farming
 from baritone_client.common.farm_planting import plant_farm_tiles
+
+
+def test_reachable_tile_plants_without_walking_on_farmland(monkeypatch):
+    from types import SimpleNamespace
+    live = {"position": {"x": .5, "y": 66, "z": .5}, "health": 20, "is_dead": False}
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a: live))
+    monkeypatch.setattr(farming, "count_item", lambda *_a: 1)
+    monkeypatch.setattr(farming, "_till_and_plant_tile", lambda *_a: True)
+    monkeypatch.setattr(farming, "goto", lambda *_a, **_k: pytest.fail("must not trample soil"))
+    assert plant_farm_tiles(client, [(1,64,0)]) == 1
+
+
+def test_occluded_near_tile_retains_verified_approach_fallback(monkeypatch):
+    from types import SimpleNamespace
+    live = {"position": {"x": .5, "y": 65, "z": .5}, "health": 20, "is_dead": False}
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a: live))
+    monkeypatch.setattr(farming, "count_item", lambda *_a: 1)
+    attempts = iter([False, True])
+    monkeypatch.setattr(farming, "_till_and_plant_tile", lambda *_a: next(attempts))
+    moved = []
+    monkeypatch.setattr(farming, "goto", lambda *_a, **_k: moved.append(True) or True)
+    assert plant_farm_tiles(client, [(1,64,0)]) == 1
+    assert moved == [True]
 from baritone_client.common.tasks import PlayerDeathDetected, SurvivalRecoveryRequired
 
 
