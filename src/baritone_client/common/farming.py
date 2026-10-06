@@ -548,6 +548,7 @@ def _gather_seeds(client, needed: int, timeout: int = 180) -> bool:
     return count_item(client, "minecraft:wheat_seeds") >= needed
 
 
+@protect_home_route(surface_work=True)
 def establish_wheat_farm(
     client, x: int, y: int, z: int, size: int = 5, state=None
 ) -> Optional[Tuple[int, int, int]]:
@@ -604,6 +605,7 @@ def establish_wheat_farm(
     return (x, y, z)
 
 
+@protect_home_route(surface_work=True)
 def reestablish_wheat_farm(
     client, x: int, y: int, z: int, size: int = 5, state=None
 ) -> Optional[Tuple[int, int, int]]:
@@ -754,7 +756,7 @@ def relocate_wheat_farm(
     return relocated
 
 
-@protect_home_route()
+@protect_home_route(surface_work=True)
 def harvest_wheat_farm(client, x: int, y: int, z: int, range_: int = 8) -> bool:
     """Run Baritone's own farm process over the established patch.
 
@@ -762,7 +764,7 @@ def harvest_wheat_farm(client, x: int, y: int, z: int, range_: int = 8) -> bool:
     seeds within range -- verified here by wheat count actually increasing,
     since the bridge command reports "started", not "produced results".
     """
-    if not goto(client, x, y, z, timeout=120, tolerance=4):
+    if not goto(client, x, y + 1, z, timeout=120, tolerance=4, radius=2):
         return False
 
     before = count_item(client, "minecraft:wheat")
@@ -772,16 +774,34 @@ def harvest_wheat_farm(client, x: int, y: int, z: int, range_: int = 8) -> bool:
         print(f"  Farm harvest dispatch failed: {exc}")
         return False
 
-    deadline = time.monotonic() + 60.0
-    while time.monotonic() < deadline:
-        time.sleep(2)
-        current = count_item(client, "minecraft:wheat")
-        if current > before:
-            client.transport.dispatch("cancel", {})
-            return True
-        # If we're already at a good wheat count, consider it successful
-        if current >= 8:
-            client.transport.dispatch("cancel", {})
-            return True
-    client.transport.dispatch("cancel", {})
-    return count_item(client, "minecraft:wheat") >= 8
+    harvested = False
+    try:
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            time.sleep(2)
+            if count_item(client, "minecraft:wheat") > before:
+                harvested = True
+                break
+    finally:
+        client.transport.dispatch("cancel", {})
+    # The native process may deliver the first drop before it replants.
+    # Finish explicitly, including soil reverted by footsteps, without
+    # disturbing immature crops or claiming carried wheat as a new harvest.
+    replant_empty_wheat_tiles(client, x, y, z)
+    return harvested
+
+
+def replant_empty_wheat_tiles(client, x: int, y: int, z: int, size: int = 5) -> int:
+    """Repair only freshly observed bare soil in the existing plot."""
+    half = size // 2
+    tiles = [
+        (x + dx, y, z + dz)
+        for dx in range(-half, half + 1)
+        for dz in range(-half, half + 1)
+        if (dx or dz)
+        and _block_id(client, x + dx, y, z + dz)
+        in {"minecraft:farmland", "minecraft:dirt", "minecraft:grass_block"}
+        and _block_id(client, x + dx, y + 1, z + dz)
+        in {"minecraft:air", "minecraft:cave_air"}
+    ]
+    return plant_farm_tiles(client, tiles) if tiles else 0

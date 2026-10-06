@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import ceil, hypot, sqrt
 import math
+import time
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
 from .combat import eat_until_hunger
@@ -645,6 +646,10 @@ def run_food_cycle(
     )
     unreachable = []
     for plot in inspected:
+        holds = getattr(state, "custom_data", {}).get("crop_site_cooldowns", {})
+        key = ",".join(str(v) for v in plot)
+        if isinstance(holds, Mapping) and float(holds.get(key, 0) or 0) > time.time():
+            continue
         plot_before = _count(get_inventory(client), WHEAT)
         harvest_wheat_farm(client, *plot, range_=max(1, int(farm_range)))
         harvested += max(0, _count(get_inventory(client), WHEAT) - plot_before)

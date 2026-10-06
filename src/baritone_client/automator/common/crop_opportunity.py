@@ -31,12 +31,21 @@ def run_crop_opportunity(
         inventory_reader=inventory_reader, traveler=traveler,
         block_finder=block_finder, sleeper=sleeper, state=state,
     )
+    if state is not None and isinstance(result, tuple):
+        custom = getattr(state, "custom_data", None)
+        if isinstance(custom, dict):
+            holds = custom.setdefault("crop_site_cooldowns", {})
+            key = ",".join(str(int(v)) for v in opportunity.location)
+            if result[0]:
+                holds.pop(key, None)
+            else:
+                holds[key] = time.time() + 900.0
     return result if isinstance(result, tuple) else (
         False, "home crop digging protection was unavailable", 0, 0
     )
 
 
-@protect_home_route()
+@protect_home_route(surface_work=True)
 def _run_crop_opportunity(
     client: Any, x: int, y: int, z: int,
     opportunity: LocalOpportunity, timeout: float,
@@ -78,10 +87,17 @@ def _run_crop_opportunity(
             if plantable < before_plantable and block_finder(client, list(CROP_BLOCKS), radius=12):
                 return True, "planting was verified in the world", before, plantable
     finally:
+        stopped = False
         try:
             client.transport.dispatch("cancel", {})
+            stopped = True
         except Exception:
             pass
+        if stopped and state is not None:
+            from ..food_recovery_state import checkpointed_wheat_farm_origin
+            if checkpointed_wheat_farm_origin(state) == tuple(location):
+                from ...common.farming import replant_empty_wheat_tiles
+                replant_empty_wheat_tiles(client, *location)
 
     # If the farm command didn't change inventories but crop blocks are present
     # in the world, the patch is already planted and waiting to mature. Accept
