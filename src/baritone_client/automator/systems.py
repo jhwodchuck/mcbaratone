@@ -70,8 +70,15 @@ class SafetySystem(BackgroundSystem):
     - Emits critical events
     """
     
-    def __init__(self, client, coordination_hub: CoordinationHub, resources=None):
+    def __init__(
+        self,
+        client,
+        coordination_hub: CoordinationHub,
+        resources=None,
+        state_manager=None,
+    ):
         super().__init__(client, coordination_hub, "SafetySystem", interval=1.0, resources=resources)
+        self.state_manager = state_manager
         self.low_health_threshold = 8.0  # 4 hearts
         self._last_health = 20.0
 
@@ -79,6 +86,13 @@ class SafetySystem(BackgroundSystem):
         try:
             # Poll player state - transport is thread-safe via RLock
             state = self.client.transport.dispatch("get_state", {}, timeout=1.0)
+
+            if self.state_manager is not None:
+                # Refresh the protected surface anchor from checkpointed
+                # state before ambient defense can select a flee destination.
+                from ..common.home_surface import bind_home_surface
+
+                bind_home_surface(self.client, self.state_manager)
             
             health = state.get("health", 20.0)
             

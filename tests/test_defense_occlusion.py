@@ -13,6 +13,11 @@ PLAYER = {
     "food_level": 20,
     "armor_count": 4,
 }
+GROUNDED_PLAYER = {
+    **PLAYER,
+    "is_on_ground": True,
+    "velocity": {"x": 0, "y": -0.0784000015258789, "z": 0},
+}
 
 
 def sheltered_mob(kind="skeleton", distance=18):
@@ -67,21 +72,82 @@ def test_occlusion_exception_does_not_hide_actionable_or_uncertain_threats(chang
 def test_distant_stationary_occluded_calm_creeper_does_not_force_evasion():
     creeper = sheltered_mob("creeper", 9.2)
 
-    assert assess_threats([creeper], PLAYER) == []
+    assert assess_threats([creeper], GROUNDED_PLAYER) == []
+
+
+def test_grounded_gravity_does_not_make_distant_creeper_look_closing():
+    player = {
+        "entity_id": 99,
+        "block_position": {"x": 7, "y": 12, "z": 7},
+        "velocity": {"x": 0, "y": -0.0784000015258789, "z": 0},
+        "is_on_ground": True,
+        "health": 20,
+    }
+    creeper = {
+        "id": 42,
+        "type": "minecraft:creeper",
+        "distance": 15.556,
+        "position": {"x": 0, "y": 0, "z": 0},
+        "velocity": {"x": 0, "y": 0, "z": 0},
+        "is_aggressive": False,
+        "can_see_player": False,
+    }
+
+    assert assess_threats([creeper], player) == []
 
 
 def test_occluded_creeper_still_threatens_when_moving_toward_player():
     creeper = sheltered_mob("creeper", 9.2)
     creeper["velocity"]["x"] = -0.2
 
-    assert assess_threats([creeper], PLAYER)
+    assert assess_threats([creeper], GROUNDED_PLAYER)
 
 
 def test_occluded_creeper_still_threatens_when_moving_sideways():
     creeper = sheltered_mob("creeper", 9.2)
     creeper["velocity"]["z"] = 0.1
 
-    assert assess_threats([creeper], PLAYER)
+    assert assess_threats([creeper], GROUNDED_PLAYER)
+
+
+def test_airborne_player_descent_keeps_creeper_actionable():
+    player = {
+        **GROUNDED_PLAYER,
+        "is_on_ground": False,
+    }
+    creeper = {
+        **sheltered_mob("creeper", 15.448),
+        "position": {"x": 0, "y": 64.552, "z": 0},
+    }
+
+    assert assess_threats([creeper], player)
+
+
+def test_grounded_player_horizontal_approach_keeps_creeper_actionable():
+    player = {
+        **GROUNDED_PLAYER,
+        "velocity": {"x": 0.2, "y": -0.0784000015258789, "z": 0},
+    }
+    creeper = sheltered_mob("creeper", 9.2)
+
+    assert assess_threats([creeper], player)
+
+
+@pytest.mark.parametrize(
+    "velocity",
+    [
+        None,
+        {},
+        {"x": 0, "y": float("nan"), "z": 0},
+        {"x": 0, "y": -0.2, "z": 0},
+        {"x": 0, "y": 5, "z": 0},
+    ],
+)
+def test_unknown_or_nonfinite_grounded_player_velocity_keeps_creeper_actionable(velocity):
+    player = {**GROUNDED_PLAYER, "velocity": velocity}
+    creeper = sheltered_mob("creeper", 9.2)
+
+    assert assess_threats([creeper], player)
 
 
 @pytest.mark.parametrize("field", ["can_see_player", "is_aggressive", "velocity", "position"])

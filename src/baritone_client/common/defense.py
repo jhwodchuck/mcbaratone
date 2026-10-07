@@ -86,6 +86,9 @@ class DefenseRuntime:
     # aggregate streak as well so switching between two attackers does not
     # reset a demonstrably failed escape strategy forever.
     consecutive_evade_failures: int = 0
+    # Highest protected escape floor during the current threat episode. Keep
+    # repeated failed routes from ratcheting the next floor downward.
+    escape_floor: Optional[float] = None
 
     def record_evade_result(self, entity_id: Optional[int], escaped: bool) -> None:
         """Track a run_away() outcome against one specific threat."""
@@ -123,6 +126,8 @@ class DefenseRuntime:
         if mode != self.mode:
             self.mode = mode
             self.entered_at = now
+        if mode is DefenseMode.CLEAR:
+            self.escape_floor = None
         self.last_reason = reason
         if mode in (DefenseMode.ALERT, DefenseMode.EVADE, DefenseMode.ENGAGE):
             self.last_threat_at = now
@@ -267,7 +272,12 @@ def _conditional_is_active(
     return distance <= 3.5
 
 
-def _closing_speed(entity: Dict, player_state: Dict) -> float:
+def _closing_speed(
+    entity: Dict,
+    player_state: Dict,
+    *,
+    ignore_grounded_vertical_velocity: bool = False,
+) -> float:
     position = entity.get("position") or {}
     player = player_state.get(
         "block_position",
@@ -282,10 +292,15 @@ def _closing_speed(entity: Dict, player_state: Dict) -> float:
         distance = math.sqrt(dx * dx + dy * dy + dz * dz)
         if distance < 0.01:
             return 0.0
+        player_vertical_velocity = (
+            0.0
+            if ignore_grounded_vertical_velocity
+            else float(player_velocity.get("y", 0))
+        )
         radial_velocity = (
             (float(velocity.get("x", 0)) - float(player_velocity.get("x", 0)))
             * dx
-            + (float(velocity.get("y", 0)) - float(player_velocity.get("y", 0)))
+            + (float(velocity.get("y", 0)) - player_vertical_velocity)
             * dy
             + (float(velocity.get("z", 0)) - float(player_velocity.get("z", 0)))
             * dz
@@ -310,6 +325,26 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
     # evade/relocate loop forever.  Explosives remain fail-closed when any of
     # those observations are missing or uncertain.
     calm_creeper = entity_type == "creeper"
+    if calm_creeper:
+        # Fabric can report vanilla grounded gravity (-0.0784 Y velocity)
+        # even while `is_on_ground` is true. That artificial vertical component
+        # made a stationary creeper below the player look like it was closing.
+        # Only suppress it for an explicitly grounded player with a complete,
+        # finite velocity vector; airborne and unknown states stay fail-closed.
+        if state.get("is_on_ground") is not True:
+            return False
+        try:
+            player_velocity = state["velocity"]
+            if not all(math.isfinite(float(player_velocity[axis])) for axis in ("x", "y", "z")):
+                return False
+            grounded_vertical_velocity = float(player_velocity["y"])
+            if not -0.1 <= grounded_vertical_velocity <= 0.05:
+                return False
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False
+        closing = _closing_speed(
+            entity, state, ignore_grounded_vertical_velocity=True
+        )
     if not (
         (profile.style in (AttackStyle.MELEE, AttackStyle.RANGED) or calm_creeper)
         and entity_type not in _PROJECTILE_TYPES | {"vex"}
@@ -453,6 +488,8 @@ def choose_defense_action(
 ) -> DefenseDecision:
     """Choose a conservative action while retaining post-fight hysteresis."""
     now = time.monotonic() if now is None else now
+    if not threats:
+        runtime.escape_floor = None
     if health < 12.0:
         if threats and threats[0].distance <= 12.0:
             return DefenseDecision(

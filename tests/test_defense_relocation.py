@@ -3,7 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 from baritone_client.common import combat, defense_relocation as recovery, escape_recovery
-from baritone_client.common.defense import EscapeCandidate
+from baritone_client.common.defense import (
+    DefenseRuntime,
+    EscapeCandidate,
+    choose_defense_action,
+)
 from baritone_client.common.tasks import PlayerDeathDetected
 
 
@@ -94,3 +98,41 @@ def test_uncertain_stop_keeps_excavation_disabled(route, monkeypatch):
     monkeypatch.setattr(client.transport, "dispatch", dispatch)
     assert not recovery.relocate(client, threat)
     assert client.transport.setting == "false"
+
+
+def test_active_surface_work_floor_applies_outside_home_radius():
+    client = SimpleNamespace(
+        transport=SimpleNamespace(),
+        _protected_home_anchor=(0, 70, 0),
+        _protected_surface_work=(30, 75, 0),
+    )
+    position = {"x": 30, "y": 72, "z": 0}
+
+    assert recovery.relocation_floor(client, position) == 75
+
+
+def test_escape_floor_does_not_ratchet_down_and_clears_on_fresh_clear():
+    runtime = DefenseRuntime()
+    client = SimpleNamespace(
+        transport=SimpleNamespace(),
+        _mcbaratone_defense_runtime=runtime,
+    )
+
+    first = recovery.relocation_floor(
+        client, {"x": 0, "y": 77.9375, "z": 0}
+    )
+    retry = recovery.relocation_floor(client, {"x": 0, "y": 75, "z": 0})
+
+    assert first == retry == 75.9375
+    assert runtime.escape_floor == first
+
+    choose_defense_action(
+        [],
+        health=20,
+        armor_count=0,
+        has_weapon=False,
+        runtime=runtime,
+    )
+
+    assert runtime.escape_floor is None
+    assert recovery.relocation_floor(client, {"x": 0, "y": 60, "z": 0}) == 58

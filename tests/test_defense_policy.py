@@ -1,6 +1,8 @@
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from baritone_client.actions.combat import CombatAction
+from baritone_client.automator.systems import SafetySystem
 from baritone_client.common import combat, escape_recovery
 from baritone_client.common.defense import (
     DefenseMode,
@@ -206,14 +208,15 @@ class EscapeTransport:
         self.calls = []
         self.entity_reads = 0
         self.setting = "true"
+        self.player_y = 64
 
-    def dispatch(self, route, payload):
+    def dispatch(self, route, payload, **_kwargs):
         self.calls.append((route, payload))
         if route == "get_state":
             return {
                 "health": 20,
                 "world_time": 13000,
-                "block_position": {"x": 0, "y": 64, "z": 0},
+                "block_position": {"x": 0, "y": self.player_y, "z": 0},
                 "is_pathing": False,
             }
         if route == "settings":
@@ -224,7 +227,7 @@ class EscapeTransport:
             return {
                 "player": {
                     "health": 20,
-                    "block_position": {"x": -6, "y": 64, "z": 0},
+                    "block_position": {"x": -6, "y": self.player_y, "z": 0},
                 },
                 "entities": [],
                 "skipped_count": 0,
@@ -294,6 +297,38 @@ def test_run_away_filters_drop_candidates_and_disables_excavation(monkeypatch):
     assert observed_floor == [62.0]
     assert ("settings", {"set": "allowBreak", "value": "false"}) in transport.calls
     assert transport.setting == "true"
+
+
+def test_fresh_safety_system_binds_checkpoint_home_for_escape_floor(monkeypatch):
+    threat = _entity(1, "zombie", 10, 4, 0)
+    transport = EscapeTransport(threat)
+    transport.player_y = 72
+    client = SimpleNamespace(transport=transport)
+    state_manager = SimpleNamespace(custom_data={"base_location": [0, 70, 0]})
+    safety = SafetySystem(
+        client,
+        SimpleNamespace(broadcast=lambda _event: None),
+        state_manager=state_manager,
+    )
+
+    with patch("baritone_client.common.combat.defend_or_flee") as defend:
+        safety.tick()
+
+    defend.assert_called_once_with(client)
+    assert client._protected_home_anchor == (0.0, 70.0, 0.0)
+
+    candidates = [
+        EscapeCandidate(-30, 67, 0, 2.0),
+        EscapeCandidate(-31, 72, 0, 1.0),
+    ]
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [threat])
+    monkeypatch.setattr(escape_recovery, "plan_escape_candidates", lambda *_a, **_k: candidates)
+    monkeypatch.setattr(escape_recovery, "destination_safe", lambda *_a, **_k: True)
+    monkeypatch.setattr(escape_recovery, "verify_escape_from_threats", lambda *_a, **_k: True)
+
+    assert combat.run_away(client, threat, timeout=1)
+    goals = [payload for route, payload in transport.calls if route == "goal"]
+    assert goals == [{"x": -31, "y": 72, "z": 0}]
 
 
 def test_run_away_does_not_start_when_allow_break_setting_is_unknown(monkeypatch):
