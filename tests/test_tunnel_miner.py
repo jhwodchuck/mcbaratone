@@ -247,6 +247,19 @@ def test_retreat_requires_exact_xyz_and_refuses_an_off_trail_position(world):
     assert world.pos == (2, 68, 1)
 
 
+def test_recorded_spine_refuses_a_floor_removed_since_last_trip(world):
+    spine = [(0, 70, 0), (1, 69, 0)]
+    for cell in tp.required_cells(*spine):
+        world.blocks.pop(cell, None)
+    world.blocks.pop((1, 68, 0), None)
+    miner = make_miner(world, spine=spine)
+    with pytest.raises(tm.MineAbort, match="no longer supported"):
+        miner.descend(spine)
+    assert world.pos == spine[0]
+    assert world.dug == []
+    assert world.allow_break == "true"
+
+
 def test_retreat_walks_each_recorded_cell_and_proves_the_entrance(world):
     spine = [(0, 70, 0), (1, 69, 0), (2, 68, 0)]
     for frm, to in zip(spine, spine[1:]):

@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 from .tunnel_planner import (
     FLUIDS, GRAVITY, HAZARDS, IRON_ORES, PLANTS, STONE, Cell, Move, View,
     approach_cells, coarse_waypoint, is_ore, loop_erase, ore_is_safe, plan,
-    required_cells,
+    required_cells, is_support,
 )
 
 OPEN_BLOCKS = frozenset({"minecraft:air", "minecraft:cave_air"})
@@ -317,6 +317,14 @@ class TunnelMiner:
                 dx, dy, dz = (target[i] - here[i] for i in range(3))
                 if abs(dx) + abs(dz) != 1 or abs(dy) > 1:
                     raise MineAbort("recorded tunnel contains a non-adjacent waypoint")
+                # Recorded routes are last-known terrain, not current support.
+                # A later trip may have removed a floor or introduced water.
+                floor = (target[0], target[1] - 1, target[2])
+                head = (target[0], target[1] + 1, target[2])
+                if (not is_support(self.block(floor))
+                        or self.block(target) not in OPEN_BLOCKS | {"minecraft:torch"}
+                        or self.block(head) not in OPEN_BLOCKS | {"minecraft:torch"}):
+                    raise MineAbort("recorded tunnel waypoint is no longer supported and open")
                 arrived = False
                 for _attempt in range(2):
                     self.check(returning=returning)
