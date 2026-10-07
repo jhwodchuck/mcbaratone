@@ -27,6 +27,45 @@ def test_occluded_near_tile_retains_verified_approach_fallback(monkeypatch):
     monkeypatch.setattr(farming, "goto", lambda *_a, **_k: moved.append(True) or True)
     assert plant_farm_tiles(client, [(1,64,0)]) == 1
     assert moved == [True]
+
+
+def test_observed_carrot_crop_replants_with_carrot_not_wheat_seed(monkeypatch):
+    from types import SimpleNamespace
+
+    blocks = {(1, 64, 0): "minecraft:farmland", (1, 65, 0): "minecraft:air"}
+    selected = []
+
+    def dispatch(route, payload):
+        if route == "get_state":
+            return {"position": {"x": .5, "y": 65, "z": .5},
+                    "health": 20, "is_dead": False}
+        if route == "get_block":
+            return {"id": blocks.get((payload["x"], payload["y"], payload["z"]),
+                                     "minecraft:air")}
+        if route == "interact_block":
+            blocks[(payload["x"], payload["y"] + 1, payload["z"])] = "minecraft:carrots"
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    count = lambda _c, item: 1 if item == "minecraft:carrot" else 0
+    monkeypatch.setattr(farming, "count_item", count)
+    monkeypatch.setattr("baritone_client.common.inventory.count_item", count)
+    monkeypatch.setattr(
+        "baritone_client.common.inventory.select_item",
+        lambda _c, item, **_kwargs: selected.append(item) or True,
+    )
+
+    assert plant_farm_tiles(client, [(1, 64, 0)], crop_item="minecraft:carrot") == 1
+    assert selected == ["minecraft:carrot"]
+
+
+def test_unsupported_crop_item_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        farming, "count_item",
+        lambda *_a: pytest.fail("unsupported crop must be rejected before inventory"),
+    )
+
+    assert plant_farm_tiles(object(), [(1, 64, 0)], crop_item="minecraft:melon_seeds") == 0
 from baritone_client.common.tasks import PlayerDeathDetected, SurvivalRecoveryRequired
 
 

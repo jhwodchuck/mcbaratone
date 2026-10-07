@@ -140,6 +140,30 @@ def test_harvest_and_bank_are_credited_only_by_inventory_delta(monkeypatch):
     assert result.total_food_banked == 2
 
 
+def test_direct_crop_harvest_is_progress_but_not_wheat_or_bread(monkeypatch):
+    counts = {"minecraft:carrot": 1, "minecraft:wheat": 0}
+    monkeypatch.setattr(food_supply, "get_inventory", lambda _client: dict(counts))
+    monkeypatch.setattr(food_supply, "_survival_ready", lambda _client: True)
+    monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        food_supply, "harvest_wheat_farm",
+        lambda *_a, **_k: counts.__setitem__("minecraft:carrot", 4) or True,
+    )
+    monkeypatch.setattr(food_supply, "_stock_seeds", lambda *_a, **_k: 0)
+    monkeypatch.setattr(food_supply, "establish_wheat_farm", lambda *_a, **_k: None)
+    monkeypatch.setattr(food_supply, "resolve_storage_location", lambda *_a, **_k: None)
+
+    result = food_supply.run_food_cycle(
+        object(), _state({"wheat_farm": {"origin": [0, 64, 0]}})
+    )
+
+    assert result.success
+    assert result.other_edible_crops_harvested == 3
+    assert result.total_other_edible_crops_harvested == 3
+    assert result.wheat_harvested == 0
+    assert result.bread_crafted == 0
+
+
 def test_known_plot_inspection_is_round_robin_and_bounded(monkeypatch):
     _inventory(monkeypatch, {})
     monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
@@ -348,8 +372,67 @@ def test_last_three_wheat_are_food_not_a_permanent_uncraftable_reserve(monkeypat
         return True
 
     monkeypatch.setattr(food_supply, "craft", craft)
+    monkeypatch.setattr(
+        food_supply,
+        "craft_bread_at_saved_home",
+        lambda _client, _state, _anchor, amount, **kwargs:
+            kwargs["craft"](object(), food_supply.BREAD, amount),
+    )
     result = food_supply.run_food_cycle(object(), _state({}))
     assert result.success and result.bread_crafted == 1
+
+
+def test_failed_home_workstation_does_not_erase_harvest_credit(monkeypatch):
+    counts = {food_supply.WHEAT: 0, food_supply.BREAD: 0}
+    _inventory(monkeypatch, counts)
+    monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        food_supply, "harvest_wheat_farm",
+        lambda *_a, **_k: counts.__setitem__(food_supply.WHEAT, 7) or True,
+    )
+    monkeypatch.setattr(food_supply, "resolve_storage_location", lambda *_a, **_k: None)
+    home_anchor = (10, 65, 10)
+    state = _state({
+        "base_location": list(home_anchor),
+        "food_worker": {"farm_plots": [{"origin": list(home_anchor)}]},
+    })
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a: {
+        "block_position": {"x": 10, "y": 65, "z": 10},
+    }))
+    attempted = []
+
+    def refused(_client, _state, anchor, count, **_kwargs):
+        attempted.append((anchor, count))
+        return False  # unknown/unreachable home workstation
+
+    monkeypatch.setattr(food_supply, "craft_bread_at_saved_home", refused)
+    result = food_supply.run_food_cycle(client, state)
+
+    assert attempted == [(home_anchor, 2)]
+    assert result.wheat_harvested == 7 and result.bread_crafted == 0
+    assert counts[food_supply.WHEAT] == 7 and counts[food_supply.BREAD] == 0
+
+
+def test_food_cycle_does_not_leave_house_through_unverified_closed_door(monkeypatch):
+    _inventory(monkeypatch, {"minecraft:wheat": 0, "minecraft:wheat_seeds": 8})
+    monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        food_supply, "prepare_house_door_for_departure", lambda *_a: False
+    )
+    monkeypatch.setattr(
+        food_supply, "harvest_wheat_farm",
+        lambda *_a, **_k: pytest.fail("farm travel must wait for a verified doorway"),
+    )
+    state = _state({
+        "base_location": [10, 65, 10],
+        "structures": {"starter_house": {"origin": [9, 65, 9]}},
+    })
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a: {}))
+
+    result = food_supply.run_food_cycle(client, state)
+
+    assert not result.success
+    assert "door" in result.detail
 
 
 def test_farm_expansion_rejects_cave_soil_and_returns_home(monkeypatch):

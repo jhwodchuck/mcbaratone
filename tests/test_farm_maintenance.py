@@ -9,6 +9,21 @@ from baritone_client.automator.food_recovery_state import checkpointed_wheat_far
 from baritone_client.automator.common import crop_opportunity
 
 
+def _irrigated_blocks():
+    blocks = {}
+    for dx in range(-2, 3):
+        for dz in range(-2, 3):
+            blocks[(dx, 64, dz)] = {"id": "minecraft:farmland"}
+            blocks[(dx, 65, dz)] = {"id": "minecraft:air"}
+    blocks[(0, 64, 0)] = {
+        "id": "minecraft:water", "state": {"level": "0"}
+    }
+    blocks[(-1, 65, 0)] = {
+        "id": "minecraft:wheat", "state": {"age": "7"}
+    }
+    return blocks
+
+
 def test_replant_repairs_only_bare_observed_soil(monkeypatch):
     blocks = {(1, 64, 0): "minecraft:grass_block",
               (-1, 64, 0): "minecraft:farmland",
@@ -17,20 +32,73 @@ def test_replant_repairs_only_bare_observed_soil(monkeypatch):
               (0, 65, 1): "minecraft:water"}
     monkeypatch.setattr(farming, "_block_id", lambda _c, x, y, z: blocks.get((x,y,z), "minecraft:air"))
     planted = []
-    monkeypatch.setattr(farming, "plant_farm_tiles", lambda _c, tiles: planted.extend(tiles) or len(tiles))
+    monkeypatch.setattr(
+        farming, "plant_farm_tiles",
+        lambda _c, tiles, **_kwargs: planted.extend(tiles) or len(tiles),
+    )
     assert farming.replant_empty_wheat_tiles(None, 0, 64, 0) == 1
     assert planted == [(1, 64, 0)]
+
+
+def test_replant_preserves_observed_carrot_plot_instead_of_seeding_wheat(monkeypatch):
+    blocks = {
+        (0, 65, 1): "minecraft:carrots",
+        (1, 64, 0): "minecraft:farmland",
+    }
+    monkeypatch.setattr(
+        farming, "_block_id",
+        lambda _c, x, y, z: blocks.get((x, y, z), "minecraft:air"),
+    )
+    planted = []
+
+    def plant(_client, tiles, *, crop_item):
+        planted.append((tiles, crop_item))
+        return 1
+
+    monkeypatch.setattr(farming, "plant_farm_tiles", plant)
+
+    assert farming.replant_empty_wheat_tiles(None, 0, 64, 0) == 1
+    assert planted == [([(1, 64, 0)], "minecraft:carrot")]
+
+
+def test_empty_legacy_wheat_plot_keeps_its_explicit_crop_default(monkeypatch):
+    monkeypatch.setattr(
+        farming, "_block_id",
+        lambda _c, _x, y, _z: "minecraft:grass_block" if y == 64 else "minecraft:air",
+    )
+    selected = []
+    monkeypatch.setattr(
+        farming, "plant_farm_tiles",
+        lambda _c, tiles, **kwargs: selected.append(kwargs["crop_item"]) or len(tiles),
+    )
+
+    assert farming.replant_empty_wheat_tiles(None, 0, 64, 0, size=3) == 8
+    assert selected == ["minecraft:wheat_seeds"] * 8
 
 
 @pytest.mark.parametrize("delta", [0, 1])
 def test_harvest_stops_before_explicit_replant_and_requires_delta(monkeypatch, delta):
     calls = []
     clock = [0]
+    blocks = _irrigated_blocks()
+
     def dispatch(route, payload):
+        if route == "get_block":
+            position = (payload["x"], payload["y"], payload["z"])
+            return blocks.get(position, {"id": "minecraft:air"})
         calls.append(route)
-        return {}
+        return {"cancelled": True} if route == "cancel" else {}
+
     client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
     monkeypatch.setattr(farming, "goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "baritone_client.common.farm_crop_identity._capture_mature_wheat",
+        lambda *_a: (),
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.farm_crop_identity._stopped_after_cancel",
+        lambda *_a: True,
+    )
     monkeypatch.setattr(farming.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(farming.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0]+seconds))
     monkeypatch.setattr(farming, "count_item", lambda *_a: 8 + (delta if clock[0] else 0))
@@ -41,12 +109,22 @@ def test_harvest_stops_before_explicit_replant_and_requires_delta(monkeypatch, d
 
 def test_failed_cancel_does_not_start_replant(monkeypatch):
     clock = [0]
+    blocks = _irrigated_blocks()
+
     def dispatch(route, payload):
+        if route == "get_block":
+            position = (payload["x"], payload["y"], payload["z"])
+            return blocks.get(position, {"id": "minecraft:air"})
         if route == "cancel":
             raise RuntimeError("unknown mutation outcome")
         return {}
+
     client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
     monkeypatch.setattr(farming, "goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "baritone_client.common.farm_crop_identity._capture_mature_wheat",
+        lambda *_a: (),
+    )
     monkeypatch.setattr(farming.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(farming.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0]+seconds))
     monkeypatch.setattr(farming, "count_item", lambda *_a: clock[0])

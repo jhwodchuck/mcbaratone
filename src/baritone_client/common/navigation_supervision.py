@@ -112,7 +112,7 @@ def _sleep_until(navigation, seconds: float, deadline: float) -> None:
     )
 
 
-@protect_home_route()
+@protect_home_route(safe_movement=True)
 def goto(client, x: int, y: int, z: int, timeout: int = 120,
          check_interval: float = 2.0, tolerance: float = 3.0,
          on_tick=None, on_defense=None, defense_check_interval: float = 0.5,
@@ -220,7 +220,7 @@ def goto(client, x: int, y: int, z: int, timeout: int = 120,
         raise
 
 
-@protect_home_route(horizontal=True)
+@protect_home_route(horizontal=True, safe_movement=True)
 def goto_xz(client, x: int, z: int, timeout: int = 120,
             check_interval: float = 1.0, tolerance: float = 6.0,
             on_defense=None, defense_check_interval: float = 0.5) -> bool:

@@ -9,9 +9,14 @@ def prepare_iron_inventory(client, state):
     """Bank surplus food, retrieve stone locally, then verify space and tool."""
     from ..common.home_respawn import withdraw_from_home_containers
     from ..common.inventory import deposit_excess_to_chest, resolve_storage_location
-    from ..common.tunnel_miner import MIN_FREE_SLOTS, free_slots
+    from ..common.tunnel_miner import DIGGING_JUNK, MIN_FREE_SLOTS, free_slots
     from .armor_recovery import _home
     from .iron_stockpile import CLUTTER, STORAGE_FOOD_RESERVE
+
+    prep_bank_items = set(CLUTTER) | set(DIGGING_JUNK) | {
+        "minecraft:carrot", "minecraft:wheat_seeds", "minecraft:enchanted_book",
+        "minecraft:lead", "minecraft:bell", "minecraft:leaf_litter",
+    }
 
     anchor = _home(state)
     if anchor is None:
@@ -24,8 +29,12 @@ def prepare_iron_inventory(client, state):
         chest = None  # preparation is local, never a remote storage expedition
     if chest is not None and free_slots(client) < MIN_FREE_SLOTS + 2:
         deposit_excess_to_chest(
-            client, chest, deposit_items=set(CLUTTER) | {"minecraft:carrot"},
-            retain_counts={"minecraft:carrot": STORAGE_FOOD_RESERVE}, state=state,
+            client, chest, deposit_items=prep_bank_items,
+            retain_counts={
+                "minecraft:carrot": STORAGE_FOOD_RESERVE,
+                "minecraft:cobblestone": 64,
+                "minecraft:wheat_seeds": 16,
+            }, state=state,
         )
     if not has_mining_pickaxe(client):
         withdraw_from_home_containers(

@@ -150,6 +150,41 @@ def test_three_failed_approaches_retire_an_unreachable_entrance(bot, monkeypatch
     assert not bot.dug
 
 
+def test_transient_failure_on_a_proven_spine_does_not_blacklist_entrance_or_erase_route(bot, monkeypatch):
+    entrance = (16, 70, 0)
+    spine = [entrance, (17, 69, 0), (18, 68, 0)]
+    st = state({
+        iron_stockpile.KEY: {
+            "entrance": list(entrance), "spine": [list(c) for c in spine],
+            "dry_trips": 2,
+        }
+    })
+    for frm, to in zip(spine, spine[1:]):
+        for cell in tm.required_cells(frm, to):
+            bot.blocks.pop(cell, None)
+    calls = []
+
+    def fail_recorded_waypoints(_client, x, y, z, **_kw):
+        target = (x, y, z)
+        calls.append(target)
+        if target == entrance:
+            bot.pos = entrance
+            return True
+        return False
+
+    monkeypatch.setattr("baritone_client.common.navigation.goto", fail_recorded_waypoints)
+
+    ok, detail, *_ = iron_stockpile.run_supply_trip(bot, st, now=1000.0)
+
+    rec = st.custom_data[iron_stockpile.KEY]
+    assert not ok and "blocked while following the tunnel" in detail
+    assert rec["entrance"] == list(entrance)
+    assert rec["spine"] == [list(c) for c in spine]
+    assert rec["dry_trips"] == 2
+    assert entrance not in rec.get("bad_entrances", [])
+    assert calls.count(entrance) == 1  # no broad navigation fallback after retreat
+
+
 def test_no_entrance_when_the_ground_is_water_or_trees(bot):
     for (x, y, z), block in list(bot.blocks.items()):
         if y == 69:
@@ -181,6 +216,20 @@ def test_failed_inventory_preparation_never_enters_the_mine(bot, monkeypatch):
     ok, detail, *_ = iron_stockpile.run_supply_trip(bot, state(), now=1000)
     assert not ok and "inventory space" in detail
     assert bot.dug == [] and bot.pos == ENTRANCE
+
+
+def test_closed_saved_house_door_blocks_mining_until_departure_is_safe(bot, monkeypatch):
+    with_ore(bot, 64)
+    called = []
+    monkeypatch.setattr(
+        "baritone_client.common.house_door_travel.prepare_house_door_for_departure",
+        lambda *_a: called.append(True) or False,
+    )
+
+    ok, detail, *_ = iron_stockpile.run_supply_trip(bot, state(), now=1000)
+
+    assert not ok and "doorway" in detail
+    assert called == [True] and bot.dug == []
 
 
 def test_the_next_trip_walks_the_recorded_tunnel_instead_of_digging_it_again(bot):
@@ -257,7 +306,8 @@ def test_a_mob_during_the_trip_still_brings_the_bot_home_and_keeps_what_it_mined
 
     ok, detail, *_ = iron_stockpile.run_supply_trip(bot, st, now=1000.0)
 
-    assert "hostile mob" in detail and bot.pos[1] >= 68  # retreated to the surface
+    assert not ok and "hostile mob" in detail and "return route not verified" in detail
+    assert bot.pos[1] < 68  # persistent threats block tunnel travel
     assert st.custom_data[iron_stockpile.KEY]["spine"]  # progress survives
 
 

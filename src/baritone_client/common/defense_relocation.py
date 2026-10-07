@@ -8,11 +8,36 @@ from .tasks import PlayerDeathDetected
 
 
 def relocation_floor(client, position):
-    """Retain the current level and a nearby surface home's saved floor."""
+    """Retain the current level and active protected surface floors."""
     floor = float(position["y"]) - 2
     anchor = getattr(client, "_protected_home_anchor", None)
     if anchor and math.hypot(position["x"] - anchor[0], position["z"] - anchor[2]) <= HOME_RADIUS:
         floor = max(floor, anchor[1] - 2)
+    work = getattr(client, "_protected_surface_work", None)
+    if work is not None:
+        try:
+            if (
+                len(work) == 3
+                and all(math.isfinite(float(value)) for value in work)
+                and math.hypot(position["x"] - work[0], position["z"] - work[2])
+                <= HOME_RADIUS
+            ):
+                floor = max(floor, float(work[1]))
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+    runtime = getattr(client, "_mcbaratone_defense_runtime", None)
+    if runtime is None:
+        runtime = getattr(client.transport, "_mcbaratone_defense_runtime", None)
+    previous = getattr(runtime, "escape_floor", None)
+    if previous is not None:
+        try:
+            if math.isfinite(float(previous)):
+                floor = max(floor, float(previous))
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if runtime is not None and hasattr(runtime, "escape_floor"):
+        runtime.escape_floor = floor
     return floor
 
 

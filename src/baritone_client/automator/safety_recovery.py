@@ -6,6 +6,7 @@ import time
 from typing import Any, Callable, Optional
 
 from ..common.combat import _defense_runtime, defend_or_flee
+from ..common.combat_action import exclusive_combat_action
 from ..common.defense import DefenseMode
 from .local_opportunity import LocalOpportunity, OpportunityKind
 
@@ -74,15 +75,30 @@ def _resolved_mode(client: Any) -> Optional[DefenseMode]:
 def run_self_defense(
     client: Any, observe: Callable[[], Any]
 ) -> tuple[bool, str, int, int]:
-    """Run bounded defensive state-machine ticks and measure their effect."""
+    """Run bounded defensive ticks while exclusively owning this client.
+
+    SafetySystem runs in a background thread and also advances defense. Keep
+    the complete scheduled retry window under the same per-transport action
+    lock, so the background tick defers instead of issuing duplicate movement
+    and escape commands during this opportunity.
+    """
     before = int(getattr(observe(), "nearby_hostiles", 0) or 0)
-    deadline = time.monotonic() + _TICK_BUDGET_SECONDS
-    intervened = False
-    for _ in range(_MAX_TICKS):
-        acted = defend_or_flee(client, allow_safe_recovery_movement=True)
-        intervened = intervened or acted
-        if not acted or time.monotonic() >= deadline:
-            break
+    with exclusive_combat_action(client, blocking=False) as acquired:
+        if not acquired:
+            after = int(getattr(observe(), "nearby_hostiles", 0) or 0)
+            return (
+                False,
+                "defense deferred while another client action owns controls",
+                before,
+                after,
+            )
+        deadline = time.monotonic() + _TICK_BUDGET_SECONDS
+        intervened = False
+        for _ in range(_MAX_TICKS):
+            acted = defend_or_flee(client, allow_safe_recovery_movement=True)
+            intervened = intervened or acted
+            if not acted or time.monotonic() >= deadline:
+                break
     after = int(getattr(observe(), "nearby_hostiles", 0) or 0)
     # `nearby_hostiles` is a 24m-radius entity count, but a verified evade
     # (escape_recovery.run_away) only needs to clear a much shorter
