@@ -22,7 +22,12 @@ def setup(monkeypatch):
 
 def test_successful_report_without_space_or_tool_does_not_start_mining(setup):
     assert prep.prepare_iron_inventory(object(), object()) == "no durable stone-or-better pickaxe for iron"
-    assert setup.deposits[0]["retain_counts"] == {"minecraft:carrot": 64}
+    assert setup.deposits[0]["retain_counts"] == {
+        "minecraft:carrot": 64, "minecraft:cobblestone": 64,
+        "minecraft:wheat_seeds": 16,
+    }
+    assert "minecraft:cobblestone" in setup.deposits[0]["deposit_items"]
+    assert "minecraft:enchanted_book" in setup.deposits[0]["deposit_items"]
     assert "minecraft:bread" not in setup.deposits[0]["deposit_items"]
     assert setup.withdrawals[0]["max_vertical"] == 8
 
@@ -53,6 +58,19 @@ def test_preparation_rechecks_real_space_and_pickaxe(setup, monkeypatch):
     monkeypatch.setattr("baritone_client.common.inventory.deposit_excess_to_chest", bank)
     monkeypatch.setattr(prep, "restore_kit", craft)
     assert prep.prepare_iron_inventory(object(), object()) == ""
+
+
+def test_rubble_and_valuable_but_non_trip_items_are_banked_with_food_and_seed_reserves(setup):
+    setup.tool = True
+    prep.prepare_iron_inventory(object(), object())
+
+    bank = setup.deposits[0]
+    assert {"minecraft:cobblestone", "minecraft:deepslate"} <= bank["deposit_items"]
+    assert {"minecraft:lead", "minecraft:bell", "minecraft:leaf_litter"} <= bank["deposit_items"]
+    assert bank["retain_counts"] == {
+        "minecraft:carrot": 64, "minecraft:cobblestone": 64,
+        "minecraft:wheat_seeds": 16,
+    }
 
 
 def test_preparation_read_error_propagates_without_authorizing_trip(setup, monkeypatch):

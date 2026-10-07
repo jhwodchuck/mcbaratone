@@ -85,14 +85,24 @@ def own_cells_of(spine: Sequence[Cell]) -> Set[Cell]:
 
 def free_slots(client: Any) -> int:
     """Empty main-inventory slots (the hotbar and the 27 above it)."""
-    items = _unwrap(client.transport.dispatch("get_inventory", {})).get("inventory", [])
-    used = sum(
-        1
-        for item in items
-        if 0 <= int(item.get("slot", -1)) <= 35
-        and item.get("id") not in (None, "", "minecraft:air")
-        and int(item.get("count", 1) or 0) > 0
-    )
+    from ..inventory_evidence import valid_inventory
+
+    raw = client.transport.dispatch("get_inventory", {})
+    data = raw.get("data", raw) if isinstance(raw, dict) else None
+    if not valid_inventory(data) or not isinstance(data.get("inventory"), list):
+        # A missing/partial snapshot must never look like a completely empty
+        # pack. Callers treat zero slots as a reason to stop before digging.
+        return 0
+    items = data["inventory"]
+    occupied = set()
+    for item in items:
+        if item.get("id") in (None, "", "minecraft:air") or int(item.get("count", 0)) <= 0:
+            continue
+        slot = item.get("slot")
+        if isinstance(slot, bool) or not isinstance(slot, int) or not 0 <= slot <= 35 or slot in occupied:
+            return 0
+        occupied.add(slot)
+    used = len(occupied)
     return 36 - used
 
 
@@ -181,7 +191,7 @@ class TunnelMiner:
             if e.get("type") in HOSTILES and float(e.get("distance", 99) or 99) <= HOSTILE_RADIUS
         )
 
-    def check(self) -> Dict[str, Any]:
+    def check(self, *, returning: bool = False) -> Dict[str, Any]:
         """Raise ``MineAbort`` unless it is still safe to keep digging."""
         live = self.state()
         if live.get("is_dead") or float(live.get("health", 0) or 0) <= 0:
@@ -190,7 +200,7 @@ class TunnelMiner:
             raise MineAbort("left the overworld")
         if float(live.get("health", 20) or 0) < ABORT_HEALTH:
             raise MineAbort("health low")
-        if time.monotonic() > self.deadline:
+        if not returning and time.monotonic() > self.deadline:
             raise MineAbort("time")
         if self.hostiles():
             # The safety system owns fighting; give it a moment, then leave.
@@ -284,35 +294,79 @@ class TunnelMiner:
             self.advance(move)
 
     # -- movement over our own tunnel --------------------------------------
-    def _hop(self, cells: Sequence[Cell], *, each: int = 5, timeout: int = 40) -> None:
+    def _hop(
+        self, cells: Sequence[Cell], *, timeout: int = 40,
+        returning: bool = False, return_deadline: Optional[float] = None,
+    ) -> None:
         from .navigation import goto
 
-        hops = list(cells[each - 1::each]) + [cells[-1]]
-        for target in hops:
-            self.check()
-            if not goto(self.client, *target, timeout=timeout, check_interval=0.5, tolerance=1.5):
-                if self.cell() != target:
+        if not cells:
+            return
+        setting = self._call("settings", {"get": "allowBreak"}).get("value")
+        if setting not in ("true", "false"):
+            raise MineAbort("cannot verify digging is disabled for tunnel travel")
+        if setting == "true":
+            self._call("settings", {"set": "allowBreak", "value": "false"})
+            if self._call("settings", {"get": "allowBreak"}).get("value") != "false":
+                raise MineAbort("could not disable digging for tunnel travel")
+        try:
+            here = self.cell()
+            for target in cells:
+                if return_deadline is not None and time.monotonic() >= return_deadline:
+                    raise MineAbort("return route time limit")
+                dx, dy, dz = (target[i] - here[i] for i in range(3))
+                if abs(dx) + abs(dz) != 1 or abs(dy) > 1:
+                    raise MineAbort("recorded tunnel contains a non-adjacent waypoint")
+                arrived = False
+                for _attempt in range(2):
+                    self.check(returning=returning)
+                    if return_deadline is not None and time.monotonic() >= return_deadline:
+                        raise MineAbort("return route time limit")
+                    goto(
+                        self.client, *target,
+                        timeout=min(timeout, max(1, int(return_deadline - time.monotonic())))
+                        if return_deadline is not None else timeout,
+                        check_interval=0.5, tolerance=0.8,
+                    )
+                    observed = self.cell()
+                    if observed == target:
+                        arrived = True
+                        break
+                if not arrived:
                     raise MineAbort("blocked while following the tunnel")
+                here = target
+        finally:
+            # Navigation must have stopped before restoring a setting that
+            # could let Baritone break terrain on its next path.
+            live = self._call("get_state")
+            if live.get("is_pathing") is False and setting == "true":
+                self._call("settings", {"set": "allowBreak", "value": "true"})
+                if self._call("settings", {"get": "allowBreak"}).get("value") != "true":
+                    raise MineAbort("could not restore allowBreak after tunnel travel")
 
     def descend(self, spine: Sequence[Cell]) -> None:
         """Walk a recorded spine from the entrance to its end."""
         if len(spine) > 1:
+            if self.cell() != spine[0]:
+                raise MineAbort("not at the recorded tunnel entrance")
             self._hop(spine[1:])
 
     def retreat(self) -> bool:
         """Retrace our own trail to the entrance; True when the bot got there."""
         path = list(reversed(loop_erase(self.trail)))
-        if len(path) <= 1:
-            return True
-        from .navigation import goto
-
         try:
-            for target in list(path[4::5]) + [path[-1]]:
-                if not goto(self.client, *target, timeout=45, check_interval=0.5, tolerance=1.5):
-                    if self.cell() != target:
-                        break
-            return abs(self.cell()[1] - path[-1][1]) <= 2
-        except MineAbort:
+            here = self.cell()
+            forward = list(reversed(path))
+            if here not in forward:
+                return False
+            index = forward.index(here)
+            route = list(reversed(forward[: index + 1]))
+            if len(route) > 1:
+                deadline = time.monotonic() + 240.0
+                self._hop(route[1:], timeout=20, returning=True, return_deadline=deadline)
+            return self.cell() == forward[0]
+        except MineAbort as exc:
+            print(f"TUNNEL MINER: retreat stopped ({exc.reason})")
             return False
 
     # -- the mining loop ----------------------------------------------------

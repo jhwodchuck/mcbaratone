@@ -31,6 +31,8 @@ class FakeWorld:
         self.placed = []
         self.hostile_after_digs = None
         self.used_slots = 1
+        self.allow_break = "true"
+        self.pathing = False
         self.transport = SimpleNamespace(dispatch=self.dispatch)
 
     def open(self, cell):
@@ -42,7 +44,13 @@ class FakeWorld:
             return {
                 "block_position": {"x": x, "y": y, "z": z}, "health": self.health,
                 "food_level": 20, "dimension": "minecraft:overworld", "is_dead": self.health <= 0,
+                "is_pathing": self.pathing,
             }
+        if route == "settings":
+            if "get" in payload:
+                return {"value": self.allow_break}
+            self.allow_break = str(payload.get("value"))
+            return {"status": "requested"}
         if route == "get_block":
             return {"id": self.blocks.get((payload["x"], payload["y"], payload["z"]), AIR)}
         if route == "get_view":
@@ -163,7 +171,8 @@ def test_a_hostile_mob_ends_the_trip_after_the_defence_has_had_its_chance(world)
         miner.mine(1, lambda: world.raw_iron)
 
     assert stop.value.reason == "hostile mob"
-    assert miner.retreat() is True  # still gets home
+    assert miner.retreat() is False  # a persistent nearby threat still blocks travel
+    assert world.pos in miner.trail
 
 
 def test_low_health_and_the_clock_stop_the_trip(world):
@@ -199,6 +208,55 @@ def test_a_recorded_spine_is_walked_and_its_cells_count_as_our_own(world):
     assert tm.own_cells_of(spine) >= {(2, 68, 0), (2, 69, 0), (3, 67, 0), (3, 68, 0)}
     miner.descend(spine)
     assert world.pos == (3, 67, 0)
+    assert world.allow_break == "true"
+
+
+def test_spine_traversal_retries_a_transient_waypoint_failure_and_never_skips_cells(world, monkeypatch):
+    spine = [(0, 70, 0), (1, 69, 0), (2, 68, 0)]
+    for frm, to in zip(spine, spine[1:]):
+        for cell in tp.required_cells(frm, to):
+            world.blocks.pop(cell, None)
+    real_goto = world.goto
+    calls = []
+
+    def transient(client, x, y, z, **kw):
+        assert world.allow_break == "false"
+        calls.append((x, y, z))
+        if len(calls) == 1:
+            return False
+        return real_goto(client, x, y, z, **kw)
+
+    monkeypatch.setattr("baritone_client.common.navigation.goto", transient)
+    miner = make_miner(world, spine=spine)
+    miner.descend(spine)
+
+    assert calls == [(1, 69, 0), (1, 69, 0), (2, 68, 0)]
+    assert world.pos == spine[-1] and world.allow_break == "true"
+
+
+def test_retreat_requires_exact_xyz_and_refuses_an_off_trail_position(world):
+    spine = [(0, 70, 0), (1, 69, 0), (2, 68, 0)]
+    for frm, to in zip(spine, spine[1:]):
+        for cell in tp.required_cells(frm, to):
+            world.blocks.pop(cell, None)
+    miner = make_miner(world, spine=spine)
+    miner.descend(spine)
+
+    world.pos = (2, 68, 1)  # matching height is not proof of reaching the entrance
+    assert miner.retreat() is False
+    assert world.pos == (2, 68, 1)
+
+
+def test_retreat_walks_each_recorded_cell_and_proves_the_entrance(world):
+    spine = [(0, 70, 0), (1, 69, 0), (2, 68, 0)]
+    for frm, to in zip(spine, spine[1:]):
+        for cell in tp.required_cells(frm, to):
+            world.blocks.pop(cell, None)
+    miner = make_miner(world, spine=spine)
+    miner.descend(spine)
+
+    assert miner.retreat() is True
+    assert world.pos == spine[0] and world.allow_break == "true"
 
 
 def test_torch_placement_gives_up_after_three_misses_but_mining_goes_on(world, monkeypatch):
@@ -241,3 +299,15 @@ def test_a_pack_that_cannot_be_cleared_ends_the_trip_cleanly(world, monkeypatch)
     monkeypatch.setattr("baritone_client.common.inventory.drop_items", lambda *_a, **_k: 0)
     assert make_miner(world).mine(1, lambda: world.raw_iron) == "inventory full"
     assert world.dug == []  # never starts digging with nowhere to put the drops
+
+
+def test_invalid_inventory_snapshot_is_zero_free_slots_and_fails_closed():
+    broken = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=lambda route, _payload: {} if route == "get_inventory" else {})
+    )
+    assert tm.free_slots(broken) == 0
+
+    missing_slot = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda route, _payload: {
+        "inventory": [{"id": "minecraft:stone", "count": 64}]
+    }))
+    assert tm.free_slots(missing_slot) == 0

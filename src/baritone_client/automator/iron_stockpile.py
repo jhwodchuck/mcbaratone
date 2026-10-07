@@ -244,10 +244,18 @@ def _near(client: Any, anchor: Tuple[int, int, int], distance: float) -> bool:
         return False
 
 
+def _at_cell(client: Any, target: Tuple[int, int, int]) -> bool:
+    position = _live(client).get("block_position") or {}
+    try:
+        return tuple(int(float(position[axis])) for axis in ("x", "y", "z")) == target
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def _make_room(client: Any, state: Any) -> int:
     """Bank clutter in the home chest so a trip never starts with a full pack."""
     from ..common.inventory import deposit_excess_to_chest
-    from ..common.tunnel_miner import free_slots
+    from ..common.tunnel_miner import DIGGING_JUNK, free_slots
 
     chest = _supply_chest(state)
     if chest is None:
@@ -258,7 +266,12 @@ def _make_room(client: Any, state: Any) -> int:
     except Exception:
         return 0
     try:
-        moved = deposit_excess_to_chest(client, chest, deposit_items=set(CLUTTER))
+        # Mining rubble is safe to bank, and can otherwise occupy a slot for
+        # every block type collected on prior trips before preparation runs.
+        moved = deposit_excess_to_chest(
+            client, chest, deposit_items=set(CLUTTER) | set(DIGGING_JUNK),
+            retain_counts={"minecraft:cobblestone": 64},
+        )
     except Exception as exc:
         print(f"IRON SUPPLY: could not bank clutter ({exc})")
         return 0
@@ -324,7 +337,10 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
     if entrance is None:
         return done(False, "no safe surface entrance near the base")
     rec["entrance"] = list(entrance)
-    if not goto(client, *entrance, timeout=150, tolerance=1.5, radius=1):
+    if (
+        not goto(client, *entrance, timeout=150, tolerance=0.8)
+        or not _at_cell(client, entrance)
+    ):
         rec["approach_failures"] = int(rec.get("approach_failures", 0) or 0) + 1
         if rec["approach_failures"] >= 3:
             rec.setdefault("bad_entrances", []).append(list(entrance))
@@ -352,23 +368,24 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
         raise
     finally:
         rec["spine"] = [list(c) for c in loop_erase(miner.trail)][-400:]
-    if "died" not in reason and not miner.retreat():
-        goto(client, *entrance, timeout=240, tolerance=2.0)
+    returned = reason != "died" and miner.retreat()
     mined = max(0, _count(client, RAW_IRON) - raw_start)
     if mined:
         rec["dry_trips"] = 0
-    elif not reason.startswith(("time", "died", "hostile", "health", "needs")):
-        # Three trips in a row that found nothing and were not cut short by the
-        # clock or a mob: this entrance or its tunnel is the problem. Start over.
+    elif reason == "no reachable iron":
+        # Only a completed search with no reachable ore says anything about
+        # geology. Inventory pressure and failed tunnel navigation are
+        # operational failures; they must not retire a proven entrance.
         rec["dry_trips"] = int(rec.get("dry_trips", 0) or 0) + 1
         if rec["dry_trips"] >= 3:
             rec.setdefault("bad_entrances", []).append(list(entrance))
             for stale in ("entrance", "spine", "dry_trips"):
                 rec.pop(stale, None)
-    smelted = _smelt_raw_iron(client, state) if mined else 0
+    smelted = _smelt_raw_iron(client, state) if mined and returned else 0
     banked = _bank(client, state) if smelted else 0
-    detail = f"mined {mined} raw iron ({reason or 'done'}); smelted {smelted}; banked {banked}; {miner.stats.moves} tunnel moves"
-    return done(mined > 0, detail)
+    return_detail = "" if returned else "; return route not verified, raw iron retained"
+    detail = f"mined {mined} raw iron ({reason or 'done'}); smelted {smelted}; banked {banked}; {miner.stats.moves} tunnel moves{return_detail}"
+    return done(mined > 0 and returned, detail)
 
 
 __all__ = [
