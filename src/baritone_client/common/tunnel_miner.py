@@ -306,16 +306,18 @@ class TunnelMiner:
         returning: bool = False, return_deadline: Optional[float] = None,
     ) -> None:
         from .navigation import goto
+        from .home_surface import _read_break_setting, _write_break_setting
 
         if not cells:
             return
-        setting = self._call("settings", {"get": "allowBreak"}).get("value")
-        if setting not in ("true", "false"):
-            raise MineAbort("cannot verify digging is disabled for tunnel travel")
-        if setting == "true":
-            self._call("settings", {"set": "allowBreak", "value": "false"})
-            if self._call("settings", {"get": "allowBreak"}).get("value") != "false":
-                raise MineAbort("could not disable digging for tunnel travel")
+        try:
+            setting = _read_break_setting(self.client)
+            if setting == "true":
+                # The bridge acknowledges the request before the game thread
+                # applies it; the shared helper polls for observed state.
+                _write_break_setting(self.client, "false")
+        except Exception as exc:
+            raise MineAbort(f"cannot verify digging is disabled for tunnel travel: {exc}") from exc
         try:
             here = self.cell()
             for target in cells:
@@ -356,10 +358,11 @@ class TunnelMiner:
             live = self._call("get_state")
             if live.get("is_pathing") is not False:
                 raise MineAbort("tunnel travel stop was not verified")
-            if live.get("is_pathing") is False and setting == "true":
-                self._call("settings", {"set": "allowBreak", "value": "true"})
-                if self._call("settings", {"get": "allowBreak"}).get("value") != "true":
-                    raise MineAbort("could not restore allowBreak after tunnel travel")
+            if setting == "true":
+                try:
+                    _write_break_setting(self.client, "true")
+                except Exception as exc:
+                    raise MineAbort(f"could not restore allowBreak after tunnel travel: {exc}") from exc
 
     def descend(self, spine: Sequence[Cell]) -> None:
         """Walk a recorded spine from the entrance to its end."""

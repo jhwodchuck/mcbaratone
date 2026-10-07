@@ -32,6 +32,11 @@ class FakeWorld:
         self.hostile_after_digs = None
         self.used_slots = 1
         self.allow_break = "true"
+        self.pending_allow_break = None
+        self.allow_break_apply_after_reads = 0
+        self.pending_allow_break_reads = 0
+        self.never_apply_allow_break = False
+        self.allow_break_writes = []
         self.pathing = False
         self.transport = SimpleNamespace(dispatch=self.dispatch)
 
@@ -48,8 +53,20 @@ class FakeWorld:
             }
         if route == "settings":
             if "get" in payload:
+                if self.pending_allow_break is not None and not self.never_apply_allow_break:
+                    if self.pending_allow_break_reads <= 0:
+                        self.allow_break = self.pending_allow_break
+                        self.pending_allow_break = None
+                    else:
+                        self.pending_allow_break_reads -= 1
                 return {"value": self.allow_break}
-            self.allow_break = str(payload.get("value"))
+            value = str(payload.get("value"))
+            self.allow_break_writes.append(value)
+            self.pending_allow_break = value
+            self.pending_allow_break_reads = self.allow_break_apply_after_reads
+            if self.pending_allow_break_reads <= 0 and not self.never_apply_allow_break:
+                self.allow_break = value
+                self.pending_allow_break = None
             return {"status": "requested"}
         if route == "get_block":
             return {"id": self.blocks.get((payload["x"], payload["y"], payload["z"]), AIR)}
@@ -232,6 +249,47 @@ def test_spine_traversal_retries_a_transient_waypoint_failure_and_never_skips_ce
 
     assert calls == [(1, 69, 0), (1, 69, 0), (2, 68, 0)]
     assert world.pos == spine[-1] and world.allow_break == "true"
+
+
+def test_allow_break_changes_are_observed_even_when_game_thread_applies_them_late(world, monkeypatch):
+    spine = [(0, 70, 0), (1, 69, 0)]
+    for cell in tp.required_cells(*spine):
+        world.blocks.pop(cell, None)
+    world.allow_break_apply_after_reads = 2
+    real_goto = world.goto
+
+    def observe_disabled(client, *args, **kwargs):
+        assert world.allow_break == "false"
+        return real_goto(client, *args, **kwargs)
+
+    monkeypatch.setattr("baritone_client.common.navigation.goto", observe_disabled)
+    miner = make_miner(world, spine=spine)
+
+    miner.descend(spine)
+
+    assert world.pos == spine[-1]
+    assert world.allow_break == "true"
+    assert world.allow_break_writes == ["false", "true"]
+
+
+def test_allow_break_that_never_applies_refuses_tunnel_movement(world, monkeypatch):
+    spine = [(0, 70, 0), (1, 69, 0)]
+    for cell in tp.required_cells(*spine):
+        world.blocks.pop(cell, None)
+    world.never_apply_allow_break = True
+    moves = []
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.goto",
+        lambda *_a, **_k: moves.append(1) or True,
+    )
+    miner = make_miner(world, spine=spine)
+
+    with pytest.raises(tm.MineAbort, match="cannot verify digging is disabled"):
+        miner.descend(spine)
+
+    assert moves == []
+    assert world.pos == spine[0]
+    assert world.allow_break == "true"
 
 
 def test_retreat_requires_exact_xyz_and_refuses_an_off_trail_position(world):
