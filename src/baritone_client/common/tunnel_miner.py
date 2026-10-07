@@ -9,6 +9,7 @@ to the surface. It never uses Baritone's ``mine``, which dives into caves.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
@@ -152,8 +153,20 @@ class TunnelMiner:
         position = live.get("block_position") or live.get("position") or {}
         try:
             live["cell"] = tuple(int(float(position[axis])) for axis in ("x", "y", "z"))
-        except (KeyError, TypeError, ValueError) as exc:
-            raise MineAbort("player position unavailable") from exc
+            health = live["health"]
+            health_value = float(health)
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise MineAbort("player telemetry invalid") from exc
+        if (
+            isinstance(health, bool)
+            or not isinstance(health, (int, float))
+            or not math.isfinite(health_value)
+            or health_value < 0
+            or not isinstance(live.get("is_dead"), bool)
+            or not isinstance(live.get("dimension"), str)
+            or not live["dimension"]
+        ):
+            raise MineAbort("player telemetry invalid")
         return live
 
     def cell(self) -> Cell:
@@ -186,12 +199,41 @@ class TunnelMiner:
         return max(0, self.free_slots() - before)
 
     # -- safety -------------------------------------------------------------
-    def hostiles(self) -> int:
-        entities = self._call("get_entities", {"radius": int(HOSTILE_RADIUS) + 3}).get("entities", [])
+    def hostiles(self, player_state: Optional[Dict[str, Any]] = None) -> int:
+        """Count actionable nearby threats using the canonical defense policy.
+
+        Missing or malformed observations must stop a trip, not masquerade as
+        an empty area. The miner keeps its tighter seven-block work radius,
+        while ``assess_threats`` applies the shared visibility/aggression rules.
+        """
+        from .defense import assess_threats
+
+        if player_state is None:
+            player_state = self.state()
+        if not isinstance(player_state, dict) or "cell" not in player_state:
+            raise MineAbort("player telemetry invalid")
+
+        entities = self._call(
+            "get_entities", {"radius": int(HOSTILE_RADIUS) + 3}
+        ).get("entities")
+        if not isinstance(entities, list):
+            raise MineAbort("entity telemetry invalid")
+        for entity in entities:
+            if not isinstance(entity, dict) or not isinstance(entity.get("type"), str):
+                raise MineAbort("entity telemetry invalid")
+            distance = entity.get("distance")
+            try:
+                distance_value = float(distance)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise MineAbort("entity telemetry invalid") from exc
+            if (isinstance(distance, bool) or not isinstance(distance, (int, float))
+                    or not math.isfinite(distance_value) or distance_value < 0):
+                raise MineAbort("entity telemetry invalid")
+
         return sum(
             1
-            for e in entities
-            if e.get("type") in HOSTILES and float(e.get("distance", 99) or 99) <= HOSTILE_RADIUS
+            for threat in assess_threats(entities, player_state)
+            if threat.distance <= HOSTILE_RADIUS
         )
 
     def check(self, *, returning: bool = False) -> Dict[str, Any]:
@@ -205,15 +247,18 @@ class TunnelMiner:
             raise MineAbort("health low")
         if not returning and time.monotonic() > self.deadline:
             raise MineAbort("time")
-        if self.hostiles():
+        if self.hostiles(live):
             # The safety system owns fighting; give it a moment, then leave.
             waited = 0.0
-            while waited < self.patience and self.hostiles():
+            while waited < self.patience:
                 time.sleep(1.0)
                 waited += 1.0
-                if float(self.state().get("health", 20) or 0) < ABORT_HEALTH:
+                live = self.state()
+                if float(live.get("health", 20) or 0) < ABORT_HEALTH:
                     raise MineAbort("health low")
-            if self.hostiles():
+                if not self.hostiles(live):
+                    break
+            else:
                 raise MineAbort("hostile mob")
         return live
 

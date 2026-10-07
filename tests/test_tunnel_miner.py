@@ -25,6 +25,11 @@ class FakeWorld:
         self.pos = ENTRANCE
         self.health = 20.0
         self.entities = []
+        self.entity_response = None
+        self.entity_error = False
+        self.state_response = None
+        self.state_error = False
+        self.state_extra = {}
         self.raw_iron = 0
         self.torches = 12
         self.dug = []
@@ -45,11 +50,16 @@ class FakeWorld:
 
     def dispatch(self, route, payload):
         if route == "get_state":
+            if self.state_error:
+                raise RuntimeError("state unavailable")
+            if self.state_response is not None:
+                return self.state_response
             x, y, z = self.pos
             return {
                 "block_position": {"x": x, "y": y, "z": z}, "health": self.health,
                 "food_level": 20, "dimension": "minecraft:overworld", "is_dead": self.health <= 0,
                 "is_pathing": self.pathing,
+                **self.state_extra,
             }
         if route == "settings":
             if "get" in payload:
@@ -77,6 +87,10 @@ class FakeWorld:
                 if abs(x - px) <= r and abs(y - py) <= r and abs(z - pz) <= r
             ]}
         if route == "get_entities":
+            if self.entity_error:
+                raise RuntimeError("entities unavailable")
+            if self.entity_response is not None:
+                return self.entity_response
             return {"entities": list(self.entities)}
         if route == "get_inventory":
             return {"inventory": [
@@ -190,6 +204,121 @@ def test_a_hostile_mob_ends_the_trip_after_the_defence_has_had_its_chance(world)
     assert stop.value.reason == "hostile mob"
     assert miner.retreat() is False  # a persistent nearby threat still blocks travel
     assert world.pos in miner.trail
+
+
+def _occluded_hostile(kind="zombie", distance=6.0):
+    return {
+        "type": f"minecraft:{kind}", "distance": distance,
+        "position": {"x": distance, "y": 70, "z": 0},
+        "velocity": {"x": 0, "y": 0, "z": 0},
+        "can_see_player": False, "is_aggressive": False,
+    }
+
+
+@pytest.mark.parametrize("kind,distance", [("zombie", 6.0), ("creeper", 6.5)])
+def test_occluded_calm_nearby_mob_does_not_block_mining_or_retreat(world, kind, distance):
+    if kind == "creeper":
+        world.state_extra = {
+            "is_on_ground": True,
+            "velocity": {"x": 0, "y": -0.0784, "z": 0},
+        }
+    world.entities = [_occluded_hostile(kind, distance)]
+    miner = make_miner(world, patience=0)
+
+    assert miner.check()["cell"] == ENTRANCE
+    assert miner.hostiles() == 0
+
+    # Give retreat one observed, open step to retrace.
+    world.pos = (1, 70, 0)
+    world.blocks.pop((1, 70, 0), None)
+    world.blocks.pop((1, 71, 0), None)
+    miner.trail = [ENTRANCE, world.pos]
+    assert miner.retreat() is True
+    assert world.pos == ENTRANCE
+
+
+@pytest.mark.parametrize(
+    "entity",
+    [
+        {"type": "minecraft:zombie", "distance": 5.0},
+        {
+            "type": "minecraft:zombie", "distance": 5.0,
+            "position": {"x": 5, "y": 70, "z": 0},
+            "velocity": {"x": 0, "y": 0, "z": 0},
+            "can_see_player": True, "is_aggressive": True,
+        },
+    ],
+    ids=["unknown-visibility", "visible-aggressive"],
+)
+def test_unknown_or_visible_nearby_hostile_still_blocks_the_trip(world, entity):
+    world.entities = [entity]
+    miner = make_miner(world, patience=0)
+
+    with pytest.raises(tm.MineAbort, match="hostile mob"):
+        miner.check()
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {},
+        {"entities": None},
+        {"entities": [None]},
+        {"entities": [{"type": "minecraft:zombie", "distance": "unknown"}]},
+        {"entities": [{"type": "minecraft:zombie", "distance": float("inf")}]},
+        {"entities": [{"type": "minecraft:zombie", "distance": True}]},
+    ],
+    ids=[
+        "missing-list", "null-list", "malformed-entry", "malformed-distance",
+        "infinite-distance", "boolean-distance",
+    ],
+)
+def test_malformed_entity_telemetry_fails_closed(world, response):
+    world.entity_response = response
+    miner = make_miner(world, patience=0)
+
+    with pytest.raises(tm.MineAbort, match="entity telemetry invalid"):
+        miner.check()
+
+
+def test_entity_query_error_fails_closed_during_retreat(world):
+    world.entity_error = True
+    world.pos = (1, 70, 0)
+    world.blocks.pop((1, 70, 0), None)
+    world.blocks.pop((1, 71, 0), None)
+    miner = make_miner(world, patience=0)
+    miner.trail = [ENTRANCE, world.pos]
+
+    assert miner.retreat() is False
+    assert world.pos == (1, 70, 0)
+
+
+@pytest.mark.parametrize(
+    "bad_state",
+    [
+        {},
+        {"block_position": {"x": 0}},
+        {
+            "block_position": {"x": 0, "y": 70, "z": 0},
+            "health": "unknown", "is_dead": False,
+            "dimension": "minecraft:overworld",
+        },
+    ],
+    ids=["missing-state", "missing-position", "malformed-health"],
+)
+def test_missing_or_malformed_player_telemetry_fails_closed(world, bad_state):
+    world.state_response = bad_state
+    miner = make_miner(world, patience=0)
+
+    with pytest.raises(tm.MineAbort):
+        miner.check()
+
+
+def test_player_state_query_error_fails_closed(world):
+    world.state_error = True
+
+    with pytest.raises(tm.MineAbort):
+        make_miner(world).check()
 
 
 def test_low_health_and_the_clock_stop_the_trip(world):
