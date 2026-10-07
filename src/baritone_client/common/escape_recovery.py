@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, Dict, Optional
 
@@ -225,6 +226,7 @@ def verify_escape_from_threats(
     *,
     timeout: float,
     minimum_gain: float,
+    minimum_y: Optional[float] = None,
 ) -> bool:
     """Verify separation from every original and newly urgent threat."""
     from . import combat as api
@@ -240,6 +242,16 @@ def verify_escape_from_threats(
         entities = snapshot["entities"]
         state = snapshot["player"]
         position = state.get("block_position", state.get("position", {})) or {}
+        try:
+            current_y = float(position["y"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False
+        if not math.isfinite(current_y) or (
+            minimum_y is not None and current_y < minimum_y
+        ):
+            if minimum_y is not None:
+                client._last_escape_failure_reason = "unsafe_descent"
+            return False
         by_id = {
             int(entity["id"]): entity
             for entity in entities
@@ -300,9 +312,19 @@ def run_away(
     from . import combat as api
 
     client._last_escape_failure_reason = None
+    previous_break = None
+    verified = False
     try:
         state = client.transport.dispatch("get_state", {})
         position = state.get("block_position", state.get("position", {})) or {}
+        if not all(
+            math.isfinite(float(position[axis])) for axis in ("x", "y", "z")
+        ):
+            client._last_escape_failure_reason = "unknown_player_position"
+            return False
+        from .defense_relocation import relocation_floor
+
+        minimum_y = relocation_floor(client, position)
         try:
             nearby = api.scan_for_threats(
                 client,
@@ -346,7 +368,8 @@ def run_away(
         safe = [
             candidate
             for candidate in candidates[:4]
-            if destination_safe(client, candidate.x, candidate.y, candidate.z)
+            if candidate.y >= minimum_y
+            and destination_safe(client, candidate.x, candidate.y, candidate.z)
         ]
         combat_telemetry.record_combat_action(
             client,
@@ -359,6 +382,16 @@ def run_away(
             print("FLEE: no terrain-safe escape endpoint found")
             client._last_escape_failure_reason = "no_safe_endpoint"
             return False
+        # A combat route must not excavate a drop or tunnel while the player
+        # is under pressure.  Refuse if this safety setting cannot be read;
+        # restore it only after the route is observed stopped.
+        from .home_surface import _read_break_setting, _write_break_setting
+
+        previous_break = _read_break_setting(client)
+        if previous_break not in ("true", "false"):
+            raise ValueError("allowBreak setting unavailable or malformed")
+        if previous_break == "true":
+            _write_break_setting(client, "false")
         per_candidate = max(1.5, timeout / len(safe))
         for candidate in safe:
             destination = {
@@ -387,6 +420,7 @@ def run_away(
                 position,
                 timeout=per_candidate,
                 minimum_gain=minimum_gain,
+                minimum_y=minimum_y,
             ):
                 combat_telemetry.record_combat_action(
                     client,
@@ -395,20 +429,44 @@ def run_away(
                     destination=destination,
                 )
                 print("FLEE: separation verified")
-                return True
+                verified = True
+                break
             client.transport.dispatch("cancel", {})
+            if client._last_escape_failure_reason == "unsafe_descent":
+                break
             combat_telemetry.record_combat_action(
                 client,
                 "escape_route",
                 outcome="failed",
                 destination=destination,
             )
-        print("FLEE: candidate routes did not increase separation")
-        client._last_escape_failure_reason = "no_separation_gain"
-        return False
+        if not verified and client._last_escape_failure_reason != "unsafe_descent":
+            print("FLEE: candidate routes did not increase separation")
+            client._last_escape_failure_reason = "no_separation_gain"
     except api.PlayerDeathDetected:
         raise
     except Exception as exc:
         client._last_escape_failure_reason = "error"
         print(f"Run away failed: {exc}")
-        return False
+    finally:
+        if previous_break is not None:
+            stopped = False
+            try:
+                api._stop_for_defense(client)
+                stopped = (
+                    client.transport.dispatch("get_state", {}).get("is_pathing")
+                    is False
+                )
+            except Exception:
+                stopped = False
+            if stopped and previous_break == "true":
+                try:
+                    from .home_surface import _write_break_setting
+
+                    _write_break_setting(client, previous_break)
+                except Exception:
+                    stopped = False
+            if not stopped:
+                verified = False
+                client._last_escape_failure_reason = "route_stop_unverified"
+    return verified

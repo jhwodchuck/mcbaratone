@@ -299,22 +299,44 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
     """Keep shelter only on explicit, fresh evidence of a non-actionable mob.
 
     A nearby cave mob must not drive the player out of a safe work area.
-    Unknown telemetry, contact, pursuit, explosives, bosses, and wall-crossing
-    vexes retain the conservative policy; every snapshot reassesses visibility.
+    Unknown telemetry, contact, pursuit, other explosives, bosses, and
+    wall-crossing vexes retain the conservative policy; every snapshot
+    reassesses visibility.
     """
+    # Creepers are normally avoid-only, but a creeper that is positively
+    # observed as calm, occluded, stationary, and well outside fuse range is
+    # not an actionable threat.  Without this narrow exception, an idle
+    # creeper just beyond the 10m action radius can keep the controller in an
+    # evade/relocate loop forever.  Explosives remain fail-closed when any of
+    # those observations are missing or uncertain.
+    calm_creeper = entity_type == "creeper"
     if not (
-        profile.style in (AttackStyle.MELEE, AttackStyle.RANGED)
+        (profile.style in (AttackStyle.MELEE, AttackStyle.RANGED) or calm_creeper)
         and entity_type not in _PROJECTILE_TYPES | {"vex"}
         and entity.get("can_see_player") is False
         and entity.get("is_aggressive") is False
+        and not any(entity.get(key) is True for key in ("is_attacking", "angry_at_player"))
         and _explicit_aggression(entity, state) is False
-        and math.isfinite(distance) and 5.0 < distance < 999.0
+        and math.isfinite(distance)
+        and (6.0 if calm_creeper else 5.0) < distance < 999.0
         and closing <= 0.05
     ):
         return False
     target = entity.get("target_id")
     if target is not None and target == state.get("entity_id", state.get("player_id")):
         return False
+    if calm_creeper:
+        # Radial speed alone can miss lateral motion toward a corner of the
+        # player's position.  Require the creeper itself to be stationary,
+        # and avoid suppressing one whose target is ambiguous.
+        if target is not None:
+            return False
+        try:
+            velocity = entity["velocity"]
+            if math.sqrt(sum(float(velocity[axis]) ** 2 for axis in ("x", "y", "z"))) > 0.05:
+                return False
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False
     vectors = [entity.get("position"), entity.get("velocity"),
                state.get("block_position", state.get("position"))]
     if "velocity" in state:

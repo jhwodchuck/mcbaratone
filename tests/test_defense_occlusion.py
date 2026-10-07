@@ -48,7 +48,12 @@ def test_occluded_calm_nonclosing_mobs_do_not_displace_sheltered_work(kind, dist
         {"velocity": {}},
         {"velocity": {"x": "invalid", "y": 0, "z": 0}},
         {"position": {}},
-        {"type": "minecraft:creeper"},
+        {"type": "minecraft:creeper", "distance": 5},
+        {"type": "minecraft:creeper", "can_see_player": None},
+        {"type": "minecraft:creeper", "is_aggressive": None},
+        {"type": "minecraft:creeper", "angry_at_player": True},
+        {"type": "minecraft:creeper", "is_attacking": True},
+        {"type": "minecraft:creeper", "target_id": 101},
         {"type": "minecraft:warden"},
         {"type": "minecraft:vex"},
         {"type": "minecraft:arrow", "distance": 1},
@@ -57,6 +62,26 @@ def test_occluded_calm_nonclosing_mobs_do_not_displace_sheltered_work(kind, dist
 def test_occlusion_exception_does_not_hide_actionable_or_uncertain_threats(change):
     mob = dict(sheltered_mob(), **change)
     assert assess_threats([mob], PLAYER)
+
+
+def test_distant_stationary_occluded_calm_creeper_does_not_force_evasion():
+    creeper = sheltered_mob("creeper", 9.2)
+
+    assert assess_threats([creeper], PLAYER) == []
+
+
+def test_occluded_creeper_still_threatens_when_moving_toward_player():
+    creeper = sheltered_mob("creeper", 9.2)
+    creeper["velocity"]["x"] = -0.2
+
+    assert assess_threats([creeper], PLAYER)
+
+
+def test_occluded_creeper_still_threatens_when_moving_sideways():
+    creeper = sheltered_mob("creeper", 9.2)
+    creeper["velocity"]["z"] = 0.1
+
+    assert assess_threats([creeper], PLAYER)
 
 
 @pytest.mark.parametrize("field", ["can_see_player", "is_aggressive", "velocity", "position"])
