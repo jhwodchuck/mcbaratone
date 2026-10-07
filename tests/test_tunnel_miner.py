@@ -442,6 +442,33 @@ def test_a_recorded_spine_is_walked_and_its_cells_count_as_our_own(world):
     assert world.allow_break == "true"
 
 
+def test_descent_and_retreat_attach_a_fresh_corridor_defense_to_each_hop(world, monkeypatch):
+    from baritone_client.common.tunnel_travel_defense import CorridorStepDefense
+
+    spine = [(0, 70, 0), (1, 69, 0), (2, 68, 0)]
+    for frm, to in zip(spine, spine[1:]):
+        for cell in tp.required_cells(frm, to):
+            world.blocks.pop(cell, None)
+    real_goto = world.goto
+    callbacks = []
+
+    def supervised(client, x, y, z, **kwargs):
+        callback = kwargs.get("on_defense")
+        assert isinstance(callback, CorridorStepDefense)
+        callbacks.append(((x, y, z), callback.origin, callback.target))
+        return real_goto(client, x, y, z, **kwargs)
+
+    monkeypatch.setattr("baritone_client.common.navigation.goto", supervised)
+    miner = make_miner(world, spine=spine)
+
+    miner.descend(spine)
+    assert world.pos == spine[-1]
+    assert miner.retreat() is True
+    assert world.pos == spine[0]
+    assert [call[0] for call in callbacks] == [spine[1], spine[2], spine[1], spine[0]]
+    assert all(origin != target for _goal, origin, target in callbacks)
+
+
 def test_spine_traversal_retries_a_transient_waypoint_failure_and_never_skips_cells(world, monkeypatch):
     spine = [(0, 70, 0), (1, 69, 0), (2, 68, 0)]
     for frm, to in zip(spine, spine[1:]):

@@ -393,25 +393,27 @@ class TunnelMiner:
                 dx, dy, dz = (target[i] - here[i] for i in range(3))
                 if abs(dx) + abs(dz) != 1 or abs(dy) > 1:
                     raise MineAbort("recorded tunnel contains a non-adjacent waypoint")
-                # Recorded routes are last-known terrain, not current support.
-                # A later trip may have removed a floor or introduced water.
-                floor = (target[0], target[1] - 1, target[2])
-                head = (target[0], target[1] + 1, target[2])
-                if (not is_support(self.block(floor))
-                        or self.block(target) not in OPEN_BLOCKS | {"minecraft:torch"}
-                        or self.block(head) not in OPEN_BLOCKS | {"minecraft:torch"}):
-                    raise MineAbort("recorded tunnel waypoint is no longer supported and open")
                 arrived = False
                 for _attempt in range(2):
                     self.check(returning=returning)
                     if return_deadline is not None and time.monotonic() >= return_deadline:
                         raise MineAbort("return route time limit")
+                    from .tunnel_travel_defense import CorridorStepDefense
+
+                    on_defense = CorridorStepDefense(
+                        self.client, here, target, self.block
+                    )
+                    if not on_defense.preflight():
+                        raise MineAbort(on_defense.abort_reason or "tunnel corridor is unsafe")
                     goto(
                         self.client, *target,
                         timeout=min(timeout, max(1, int(return_deadline - time.monotonic())))
                         if return_deadline is not None else timeout,
                         check_interval=0.5, tolerance=0.8,
+                        on_defense=on_defense,
                     )
+                    if on_defense.abort_reason is not None:
+                        raise MineAbort(on_defense.abort_reason)
                     observed = self.cell()
                     if observed == target:
                         arrived = True
