@@ -67,9 +67,17 @@ def test_harvest_stops_before_explicit_replant_and_requires_delta(monkeypatch, d
     clock = [0]
     def dispatch(route, payload):
         calls.append(route)
-        return {}
+        return {"cancelled": True} if route == "cancel" else {}
     client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
     monkeypatch.setattr(farming, "goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "baritone_client.common.farm_crop_identity._capture_mature_wheat",
+        lambda *_a: (),
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.farm_crop_identity._stopped_after_cancel",
+        lambda *_a: True,
+    )
     monkeypatch.setattr(farming.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(farming.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0]+seconds))
     monkeypatch.setattr(farming, "count_item", lambda *_a: 8 + (delta if clock[0] else 0))
@@ -86,6 +94,10 @@ def test_failed_cancel_does_not_start_replant(monkeypatch):
         return {}
     client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
     monkeypatch.setattr(farming, "goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "baritone_client.common.farm_crop_identity._capture_mature_wheat",
+        lambda *_a: (),
+    )
     monkeypatch.setattr(farming.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(farming.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0]+seconds))
     monkeypatch.setattr(farming, "count_item", lambda *_a: clock[0])

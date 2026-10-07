@@ -759,36 +759,7 @@ def relocate_wheat_farm(
 
 @protect_home_route(surface_work=True)
 def harvest_wheat_farm(client, x: int, y: int, z: int, range_: int = 8) -> bool:
-    """Run Baritone's own farm process over the established patch.
+    """Harvest a wheat patch and preserve its observed crop identity."""
+    from .farm_crop_identity import run_wheat_farm_harvest
 
-    Baritone's farm process harvests mature crops and replants from carried
-    seeds within range -- verified here by wheat count actually increasing,
-    since the bridge command reports "started", not "produced results".
-    """
-    if not goto(client, x, y + 1, z, timeout=120, tolerance=4, radius=2):
-        return False
-
-    before = count_item(client, "minecraft:wheat")
-    try:
-        client.transport.dispatch("farm", {"range": range_})
-    except Exception as exc:
-        print(f"  Farm harvest dispatch failed: {exc}")
-        return False
-
-    harvested = False
-    try:
-        deadline = time.monotonic() + 60.0
-        while time.monotonic() < deadline:
-            time.sleep(2)
-            if not farm_surface_safe(client):
-                return False
-            if count_item(client, "minecraft:wheat") > before:
-                harvested = True
-                break
-    finally:
-        client.transport.dispatch("cancel", {})
-    # The native process may deliver the first drop before it replants.
-    # Finish explicitly, including soil reverted by footsteps, without
-    # disturbing immature crops or claiming carried wheat as a new harvest.
-    replant_empty_wheat_tiles(client, x, y, z)
-    return harvested
+    return run_wheat_farm_harvest(client, x, y, z, range_)

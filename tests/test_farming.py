@@ -555,6 +555,19 @@ def test_establish_wheat_farm_uses_carried_starter_seed_batch(monkeypatch):
 def test_harvest_wheat_farm_confirms_via_wheat_increase(monkeypatch):
     client, calls, _ = _client()
     monkeypatch.setattr(farming, "goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "baritone_client.common.farm_crop_identity._capture_mature_wheat",
+        lambda *_a: (),
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.farm_crop_identity._stopped_after_cancel",
+        lambda *_a: True,
+    )
+    def dispatch(route, payload=None):
+        calls.append((route, payload))
+        return {"cancelled": True} if route == "cancel" else {}
+
+    client.transport.dispatch = dispatch
     counts = iter([0, 0, 3])
     monkeypatch.setattr(farming, "count_item", lambda *_a: next(counts, 3))
     monkeypatch.setattr(farming.time, "sleep", lambda _s: None)
