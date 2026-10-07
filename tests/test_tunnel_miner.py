@@ -272,6 +272,33 @@ def test_retreat_walks_each_recorded_cell_and_proves_the_entrance(world):
     assert world.pos == spine[0] and world.allow_break == "true"
 
 
+def test_adjacent_ore_under_a_recorded_route_cell_is_not_mined(world):
+    ore = (1, 70, 0)
+    world.blocks[ore] = IRON
+    miner = make_miner(world)
+    miner.trail.append((1, 71, 0))  # ore is the support floor for this old cell
+    view = miner.view()
+
+    assert not miner.mine_adjacent(view, ENTRANCE, lambda: world.raw_iron)
+    assert world.blocks[ore] == IRON
+    assert world.raw_iron == 0 and not world.dug
+
+
+def test_advance_refuses_a_plan_that_would_remove_any_recorded_floor(world):
+    miner = make_miner(world)
+    world.pos = (1, 70, 0)
+    miner.trail.append(world.pos)
+    move = tp.Move(
+        world.pos, (1, 70, 1), ((1, 70, 1), (1, 71, 1)),
+        ((1, 69, 0),),
+    )
+
+    with pytest.raises(tm.MineAbort, match="recorded tunnel floor"):
+        miner.advance(move)
+    assert world.blocks[(1, 69, 0)] == "minecraft:grass_block"
+    assert not world.dug
+
+
 def test_torch_placement_gives_up_after_three_misses_but_mining_goes_on(world, monkeypatch):
     world.blocks[(6, 55, 3)] = IRON
     attempts = []

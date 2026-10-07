@@ -159,6 +159,9 @@ def test_transient_failure_on_a_proven_spine_does_not_blacklist_entrance_or_eras
             "dry_trips": 2,
         }
     })
+    for frm, to in zip(spine, spine[1:]):
+        for cell in tm.required_cells(frm, to):
+            bot.blocks.pop(cell, None)
     calls = []
 
     def fail_recorded_waypoints(_client, x, y, z, **_kw):

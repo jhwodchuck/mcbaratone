@@ -126,6 +126,9 @@ class TunnelMiner:
         self.patience = float(patience)
         self.trail: List[Cell] = list(spine) or ([entrance] if entrance else [])
         self.own: Set[Cell] = own_cells_of(self.trail)
+        self._protected_floor_cells: Set[Cell] = {
+            (cell[0], cell[1] - 1, cell[2]) for cell in self.trail
+        }
         self.skip: Set[Cell] = set()
         self.stats = TripStats()
         self._since_torch = 0
@@ -278,12 +281,16 @@ class TunnelMiner:
             raise MineAbort("moved off the planned path")
         if not self.trail or self.trail[-1] != here:
             self.trail = loop_erase(self.trail + [here])  # e.g. entered a cell off
+        protected_floors = self._protected_floors(here)
+        if any(cell in protected_floors for cell in move.dig):
+            raise MineAbort("planned dig would remove a recorded tunnel floor")
         if move.dig:
             self.equip()
         for cell in move.dig:
             self.dig(cell)
         self.step(move.to)
         self.own.update(move.required)
+        self._protected_floor_cells.add((move.to[0], move.to[1] - 1, move.to[2]))
         self.trail = loop_erase(self.trail + [move.to])[-MAX_TRAIL:]
         self.stats.moves += 1
         self._since_torch += 1
@@ -395,11 +402,15 @@ class TunnelMiner:
     def mine_adjacent(self, view: View, here: Cell, raw_now: Callable[[], int]) -> bool:
         """Mine any safe iron ore touching the bot's feet or head cell."""
         standing = self.own | {here, (here[0], here[1] + 1, here[2])}
+        protected_floors = self._protected_floors(here)
         for ore in sorted(view.iron_ores() - self.skip):
             touching = (
                 abs(ore[0] - here[0]) + abs(ore[2] - here[2]) == 1 and ore[1] in (here[1], here[1] + 1)
             )
             if not touching:
+                continue
+            if ore in protected_floors:
+                self.skip.add(ore)
                 continue
             if not ore_is_safe(view, ore, standing, self.surface_y):
                 self.skip.add(ore)
@@ -413,6 +424,13 @@ class TunnelMiner:
                 print(f"TUNNEL MINER: {ore} dug but no raw iron arrived")
             return True
         return False
+
+    def _protected_floors(self, here: Cell) -> Set[Cell]:
+        """Floors for the complete saved/current route, across plan batches."""
+        return self._protected_floor_cells | {
+            (cell[0], cell[1] - 1, cell[2])
+            for cell in set(self.trail) | {here}
+        }
 
     def mine(self, raw_goal: int, raw_now: Callable[[], int]) -> str:
         """Dig toward iron until the goal, the clock or a safety limit."""
@@ -435,13 +453,19 @@ class TunnelMiner:
             if self.mine_adjacent(view, here, raw_now):
                 continue
             ores = set()
+            protected_floors = self._protected_floors(here)
             for ore in view.iron_ores() - self.skip:
-                if ore_is_safe(view, ore, self.own, self.surface_y):
+                if ore in protected_floors:
+                    self.skip.add(ore)
+                elif ore_is_safe(view, ore, self.own, self.surface_y):
                     ores.add(ore)
                 else:
                     self.skip.add(ore)
             goals = {cell for ore in ores for cell in approach_cells(ore)}
-            path = plan(view, here, goals, self.own, self.surface_y) if goals else None
+            path = plan(
+                view, here, goals, self.own, self.surface_y,
+                protected_floors=protected_floors,
+            ) if goals else None
             if goals and not path:
                 # Unreachable from here: forget ores we could have planned to.
                 self.skip.update(o for o in ores if any(view.inside(c) for c in approach_cells(o)))
@@ -454,7 +478,10 @@ class TunnelMiner:
                 for steps, prefer_z in ((PLAN_MOVES, False), (PLAN_MOVES, True), (3, False)):
                     waypoint = coarse_waypoint(here, target, steps, prefer_z=prefer_z)
                     if waypoint != here:
-                        path = plan(view, here, {waypoint}, self.own, self.surface_y)
+                        path = plan(
+                            view, here, {waypoint}, self.own, self.surface_y,
+                            protected_floors=protected_floors,
+                        )
                         if path:
                             break
                 if not path:
