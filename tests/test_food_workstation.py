@@ -15,13 +15,25 @@ class _Client:
         self.live = {
             "block_position": dict(zip(("x", "y", "z"), position)),
             "health": 20, "is_dead": False, "is_pathing": False,
+            "is_on_ground": True,
             "dimension": "minecraft:overworld", "game_mode": "survival",
         }
+        self.blocks = {}
+        self.routes = []
         self.transport = SimpleNamespace(dispatch=self.dispatch)
 
     def dispatch(self, route, _payload=None):
+        self.routes.append((route, _payload))
         if route == "get_state":
             return dict(self.live)
+        if route == "get_block":
+            position = tuple(_payload[key] for key in ("x", "y", "z"))
+            return self.blocks.get(position, {"id": "minecraft:air"})
+        if route == "interact_block":
+            for position, block in list(self.blocks.items()):
+                if block.get("id") == "minecraft:oak_door":
+                    block["state"]["open"] = "false"
+            return {"accepted": True}
         raise AssertionError(f"unexpected route {route}")
 
 
@@ -217,6 +229,179 @@ def test_saved_anchor_outside_house_routes_to_known_interior_table(monkeypatch, 
     assert returns == [True]
     assert routes and routes[0][1] == {"timeout": 20, "tolerance": 0.5, "radius": 0}
     assert crafts == [(food_workstation.BREAD, 2)]
+
+
+def test_open_saved_house_door_is_closed_before_strict_table_proof(monkeypatch, state):
+    client = _Client(position=(HOME[0], HOME[1], HOME[2]))
+    lower = (HOUSE[0] + 3, HOUSE[1] + 1, HOUSE[2])
+    upper = (HOUSE[0] + 3, HOUSE[1] + 2, HOUSE[2])
+    for position, half in ((lower, "lower"), (upper, "upper")):
+        client.blocks[position] = {
+            "id": "minecraft:oak_door",
+            "state": {"half": half, "open": "true"},
+        }
+    routes, crafts, sheltered_checks = [], [], []
+
+    def goto(_client, x, y, z, **kwargs):
+        routes.append(((x, y, z), kwargs))
+        client.live["block_position"] = {"x": x + 0.5, "y": y, "z": z + 0.5}
+        return True
+
+    from baritone_client.common import farming, survival_farm
+    monkeypatch.setattr(farming, "_block_data", lambda _c, x, y, z: (
+        {"id": "minecraft:crafting_table"} if (x, y, z) == TABLE
+        else {"id": "minecraft:stone"} if y == HOUSE[1]
+        else {"id": "minecraft:air"}
+    ))
+    monkeypatch.setattr(survival_farm, "_hostile_close", lambda *_a: False)
+    monkeypatch.setattr("baritone_client.common.navigation.goto", goto)
+    monkeypatch.setattr(
+        "baritone_client.common.enclosed_workstation.sheltered_bread_table",
+        lambda _c: (
+            sheltered_checks.append(True) or len(sheltered_checks) > 1,
+            TABLE if len(sheltered_checks) > 1 else None,
+        ),
+    )
+
+    assert _call(
+        client, state, survival_ready=lambda _c: True,
+        return_home=lambda *_a: pytest.fail("already near saved home"),
+        craft=lambda _c, item, count: crafts.append((item, count)) or True,
+    )
+    interactions = [payload for route, payload in client.routes if route == "interact_block"]
+    assert interactions == [{"x": upper[0], "y": upper[1], "z": upper[2]}]
+    assert client.blocks[lower]["state"]["open"] == "false"
+    assert client.blocks[upper]["state"]["open"] == "false"
+    assert len(sheltered_checks) == 2
+    assert any(point == (HOUSE[0] + 4, HOUSE[1] + 1, HOUSE[2] + 1) for point, _ in routes)
+    assert crafts == [(food_workstation.BREAD, 2)]
+
+
+def test_timed_out_door_toggle_is_not_retried_while_still_open(monkeypatch, state):
+    client = _Client(position=(HOME[0], HOME[1], HOME[2]))
+    lower = (HOUSE[0] + 3, HOUSE[1] + 1, HOUSE[2])
+    upper = (HOUSE[0] + 3, HOUSE[1] + 2, HOUSE[2])
+    for position, half in ((lower, "lower"), (upper, "upper")):
+        client.blocks[position] = {
+            "id": "minecraft:oak_door",
+            "state": {"half": half, "open": "true"},
+        }
+    from baritone_client.common import farming, survival_farm
+    monkeypatch.setattr(farming, "_block_data", lambda _c, x, y, z: (
+        {"id": "minecraft:crafting_table"} if (x, y, z) == TABLE
+        else {"id": "minecraft:stone"} if y == HOUSE[1]
+        else {"id": "minecraft:air"}
+    ))
+    monkeypatch.setattr(survival_farm, "_hostile_close", lambda *_a: False)
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.goto",
+        lambda _c, x, y, z, **_kwargs: (
+            client.live.update(block_position={"x": x + 0.5, "y": y, "z": z + 0.5})
+            or True
+        ),
+    )
+    interactions = []
+
+    def dispatch(route, payload=None):
+        if route == "interact_block":
+            interactions.append(payload)
+            raise TimeoutError("uncertain toggle")
+        return client.dispatch(route, payload)
+
+    client.transport.dispatch = dispatch
+    monkeypatch.setattr(
+        "baritone_client.common.enclosed_workstation.sheltered_bread_table",
+        lambda _c: (False, None),
+    )
+    crafts = []
+
+    assert not _call(
+        client, state, survival_ready=lambda _c: True,
+        return_home=lambda *_a: pytest.fail("already near saved home"),
+        craft=lambda *args: crafts.append(args) or True,
+    )
+    assert len(interactions) == 1
+    assert client.blocks[lower]["state"]["open"] == "true"
+    assert crafts == []
+
+
+@pytest.mark.parametrize(
+    "position,grounded",
+    [
+        ((HOUSE[0] + 4.5, HOUSE[1] + 1, HOUSE[2] + 1.5), False),
+        ((HOUSE[0] + 4.5, HOUSE[1] + 2, HOUSE[2] + 1.5), True),
+    ],
+)
+def test_final_craft_pose_requires_grounded_exact_interior_y(
+    monkeypatch, state, position, grounded
+):
+    client = _Client(position=(HOME[0], HOME[1], HOME[2]))
+    from baritone_client.common import farming
+    monkeypatch.setattr(farming, "_block_data", lambda _c, x, y, z: (
+        {"id": "minecraft:crafting_table"} if (x, y, z) == TABLE
+        else {"id": "minecraft:stone"} if y == HOUSE[1]
+        else {"id": "minecraft:air"}
+    ))
+
+    def goto(_client, x, y, z, **_kwargs):
+        client.live["block_position"] = dict(zip(("x", "y", "z"), position))
+        client.live["is_on_ground"] = grounded
+        return True
+
+    monkeypatch.setattr("baritone_client.common.navigation.goto", goto)
+    monkeypatch.setattr(
+        "baritone_client.common.enclosed_workstation.sheltered_bread_table",
+        lambda _c: (True, TABLE),
+    )
+    crafts = []
+
+    assert not _call(
+        client, state, survival_ready=lambda _c: True,
+        return_home=lambda *_a: True,
+        craft=lambda *args: crafts.append(args) or True,
+    )
+    assert crafts == []
+
+
+def test_recorded_house_door_stand_rejects_non_support_floor(monkeypatch):
+    from baritone_client.common import farming
+
+    monkeypatch.setattr(
+        farming,
+        "_block_data",
+        lambda _c, _x, y, _z: {"id": "minecraft:air" if y >= 66 else "minecraft:torch"},
+    )
+    assert not food_workstation._safe_stand_block(_Client(), (13, 66, 10))
+
+
+def test_unverified_saved_house_door_close_fails_closed(monkeypatch, state):
+    client = _Client(position=(HOME[0], HOME[1], HOME[2]))
+    lower = (HOUSE[0] + 3, HOUSE[1] + 1, HOUSE[2])
+    upper = (HOUSE[0] + 3, HOUSE[1] + 2, HOUSE[2])
+    for position, half in ((lower, "lower"), (upper, "upper")):
+        client.blocks[position] = {
+            "id": "minecraft:oak_door",
+            "state": {"half": half, "open": "unknown"},
+        }
+    crafts = []
+    from baritone_client.common import farming
+    monkeypatch.setattr(farming, "_block_data", lambda _c, x, y, z: (
+        {"id": "minecraft:crafting_table"} if (x, y, z) == TABLE
+        else {"id": "minecraft:stone"} if y == HOUSE[1]
+        else {"id": "minecraft:air"}
+    ))
+    monkeypatch.setattr(
+        "baritone_client.common.enclosed_workstation.sheltered_bread_table",
+        lambda _c: (False, None),
+    )
+
+    assert not _call(
+        client, state, survival_ready=lambda _c: True,
+        return_home=lambda *_a: pytest.fail("already near saved home"),
+        craft=lambda *a: crafts.append(a) or True,
+    )
+    assert not any(route == "interact_block" for route, _ in client.routes)
+    assert crafts == []
 
 
 def test_unreachable_known_house_table_never_spends_wheat(monkeypatch, state):

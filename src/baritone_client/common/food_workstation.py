@@ -11,7 +11,9 @@ HOME_HORIZONTAL_TOLERANCE = 8.0
 HOME_FLOOR_MARGIN = 2.0
 
 
-def _fresh_safe_position(client: Any) -> Optional[Tuple[float, float, float]]:
+def _fresh_safe_position(
+    client: Any, *, require_grounded: bool = False
+) -> Optional[Tuple[float, float, float]]:
     """Read complete, alive Survival state before trusting a home arrival."""
     try:
         response = client.transport.dispatch("get_state", {})
@@ -35,6 +37,8 @@ def _fresh_safe_position(client: Any) -> Optional[Tuple[float, float, float]]:
         if live.get("is_dead") is not False:
             return None
         if live.get("is_pathing") is not False:
+            return None
+        if require_grounded and live.get("is_on_ground") is not True:
             return None
         if "overworld" not in str(live.get("dimension", "")).lower():
             return None
@@ -81,28 +85,154 @@ def _starter_house_origin(state: Any, anchor):
     result = tuple(origin)
     if math.hypot(result[0] - anchor[0], result[2] - anchor[2]) > 24.0:
         return None
-    if result[1] < anchor[1] - HOME_FLOOR_MARGIN:
+    if not anchor[1] - HOME_FLOOR_MARGIN <= result[1] <= anchor[1] + 8:
         return None
     return result
 
 
 def _safe_stand_block(client, position):
     from .farming import _block_data
+    from .tunnel_planner import GRAVITY, is_support
 
     x, y, z = position
     try:
         if any(_block_data(client, x, dy, z).get("id") != "minecraft:air" for dy in (y, y + 1)):
             return False
         support = str(_block_data(client, x, y - 1, z).get("id", ""))
-        return bool(support) and not any(
-            token in support for token in (
-                "air", "water", "lava", "powder_snow", "magma", "campfire",
-                "cactus", "dripstone", "leaves", "fence", "pane", "slab",
-                "stairs", "trapdoor",
-            )
-        )
+        from .base import _ALL_PLANKS
+
+        return (support in _ALL_PLANKS or is_support(support)) and support not in GRAVITY
     except Exception:
         return False
+
+
+def _house_door_open(client, lower, upper):
+    blocks = []
+    for position, half in ((lower, "lower"), (upper, "upper")):
+        try:
+            response = client.transport.dispatch(
+                "get_block", dict(zip(("x", "y", "z"), position))
+            )
+        except Exception:
+            return None
+        if not isinstance(response, Mapping):
+            return None
+        for envelope in (response, response.get("data")):
+            if isinstance(envelope, Mapping) and (
+                envelope.get("success") is False
+                or str(envelope.get("status", "")).casefold() in {"error", "failed", "failure"}
+                or envelope.get("error") not in (None, "", False)
+            ):
+                return None
+        block = response.get("data", response)
+        state = block.get("state") if isinstance(block, Mapping) else None
+        if (
+            not isinstance(state, Mapping)
+            or str(state.get("half", "")).casefold() != half
+            or not isinstance(block.get("id"), str)
+            or not block["id"].startswith("minecraft:")
+            or not block["id"].endswith("_door")
+            or not (
+                type(state.get("open")) is bool
+                or state.get("open") in ("true", "false")
+            )
+        ):
+            return None
+        blocks.append((block["id"], state["open"] in (True, "true")))
+    if blocks[0][0] != blocks[1][0] or blocks[0][1] != blocks[1][1]:
+        return None
+    return blocks[0][1]
+
+
+def _door_interaction_safe(client, survival_ready):
+    if not survival_ready(client) or _fresh_safe_position(
+        client, require_grounded=True
+    ) is None:
+        return False
+    try:
+        response = client.transport.dispatch("get_state", {})
+        if not isinstance(response, Mapping):
+            return False
+        for envelope in (response, response.get("data")):
+            if isinstance(envelope, Mapping) and (
+                envelope.get("success") is False
+                or str(envelope.get("status", "")).casefold() == "error"
+                or envelope.get("error")
+            ):
+                return False
+        live = response.get("data", response)
+        if not isinstance(live, Mapping):
+            return False
+        from .survival_farm import _hostile_close
+
+        if _hostile_close(client, live):
+            return False
+        return _fresh_safe_position(client, require_grounded=True) is not None
+    except (PlayerDeathDetected, SurvivalRecoveryRequired):
+        raise
+    except Exception:
+        return False
+
+
+def _close_recorded_house_door(client, origin, anchor, survival_ready):
+    """Close only the recorded starter-house doorway, proving each toggle."""
+    from .navigation import goto
+
+    ox, oy, oz = origin
+    lower = (ox + 3, oy + 1, oz)
+    upper = (ox + 3, oy + 2, oz)
+    open_state = _house_door_open(client, lower, upper)
+    if open_state is False:
+        return True
+    if open_state is None:
+        return False
+
+    # The front door is at the center of the north wall. Start at the
+    # diagonally adjacent interior cell; bounded alternatives handle a
+    # blocked floor tile without searching outside the saved house.
+    stands = [
+        (ox + dx, oy + 1, oz + dz)
+        for dx, dz in ((4, 1), (2, 1), (5, 1), (1, 1), (4, 2), (2, 2))
+    ]
+    for stand in stands:
+        if not _safe_stand_block(client, stand):
+            continue
+        if not goto(client, *stand, timeout=20, tolerance=0.5, radius=0):
+            continue
+        arrived = _fresh_safe_position(client, require_grounded=True)
+        if (
+            arrived is None
+            or tuple(math.floor(value) for value in arrived) != stand
+            or arrived[1] < anchor[1] - HOME_FLOOR_MARGIN
+        ):
+            continue
+
+        # The bridge raycasts to block centers. Try the known upper door half
+        # first from safe interior stands, then the lower half only after a
+        # fresh read still proves the door open.
+        for target in (upper, lower):
+            open_state = _house_door_open(client, lower, upper)
+            if open_state is False:
+                return True
+            if open_state is None or not _door_interaction_safe(client, survival_ready):
+                return False
+            try:
+                client.transport.dispatch(
+                    "interact_block", dict(zip(("x", "y", "z"), target))
+                )
+            except (PlayerDeathDetected, SurvivalRecoveryRequired):
+                raise
+            except Exception:
+                # A transport timeout can arrive after the game applied the
+                # toggle. Reconcile once, and never risk retoggling an open
+                # door after an uncertain completion.
+                return _house_door_open(client, lower, upper) is False
+            open_state = _house_door_open(client, lower, upper)
+            if open_state is False:
+                return True
+            if open_state is None:
+                return False
+    return _house_door_open(client, lower, upper) is False
 
 
 def craft_bread_at_saved_home(
@@ -166,7 +296,7 @@ def craft_bread_at_saved_home(
         from .farming import _block_data
         from .navigation import goto
 
-        ox, _, oz = origin
+        ox, oy, oz = origin
         interior_slots = _bed_slots(state, origin)
         interior = set(interior_slots)
         tables = [
@@ -200,15 +330,35 @@ def craft_bread_at_saved_home(
                 from .enclosed_workstation import sheltered_bread_table
 
                 restricted, observed = sheltered_bread_table(client)
+                if restricted is not True:
+                    if not _close_recorded_house_door(
+                        client, origin, anchor, survival_ready
+                    ):
+                        return False
+                    if not goto(
+                        client, *stand, timeout=20, tolerance=0.5, radius=0
+                    ):
+                        return False
+                    restored_stand = _fresh_safe_position(
+                        client, require_grounded=True
+                    )
+                    if (
+                        restored_stand is None
+                        or tuple(math.floor(value) for value in restored_stand) != stand
+                        or math.floor(restored_stand[1]) != oy + 1
+                    ):
+                        return False
+                    restricted, observed = sheltered_bread_table(client)
                 if restricted is not True or observed not in tables:
                     continue
-                verified = _fresh_safe_position(client)
+                verified = _fresh_safe_position(client, require_grounded=True)
                 if verified is None or not survival_ready(client):
                     return False
                 if (
                     not (ox < math.floor(verified[0]) < ox + 6)
                     or not (oz < math.floor(verified[2]) < oz + 6)
-                    or verified[1] < anchor[1] - HOME_FLOOR_MARGIN
+                    or tuple(math.floor(value) for value in verified) != stand
+                    or math.floor(verified[1]) != oy + 1
                 ):
                     continue
                 return bool(craft(client, BREAD, count))
