@@ -37,6 +37,70 @@ def test_occluded_calm_nonclosing_mobs_do_not_displace_sheltered_work(kind, dist
     assert assess_threats([sheltered_mob(kind, distance)], PLAYER) == []
 
 
+def vertical_cave_mob(*, mob_y=14):
+    return {
+        **sheltered_mob("skeleton", 10),
+        "position": {"x": 8, "y": mob_y, "z": 0},
+        "velocity": {"x": -0.2, "y": 0, "z": 0},
+    }
+
+
+def grounded_surface_player(*, on_ground=True):
+    return {
+        **PLAYER,
+        "block_position": {"x": 0, "y": 20, "z": 0},
+        "velocity": {"x": 0, "y": -0.0784, "z": 0},
+        "is_on_ground": on_ground,
+    }
+
+
+def test_distant_calm_occluded_cave_mob_does_not_preempt_grounded_surface_work():
+    # The mob is moving toward the player, but remains six blocks below.
+    assert assess_threats(
+        [vertical_cave_mob()], grounded_surface_player()
+    ) == []
+
+
+def test_vertical_suppression_requires_six_blocks_of_separation():
+    mob = vertical_cave_mob(mob_y=14.01)
+
+    assert assess_threats([mob], grounded_surface_player())
+
+
+@pytest.mark.parametrize("on_ground", [False, None])
+def test_vertical_suppression_requires_explicit_grounded_player(on_ground):
+    assert assess_threats(
+        [vertical_cave_mob()], grounded_surface_player(on_ground=on_ground)
+    )
+
+
+@pytest.mark.parametrize("velocity", [None, {}, {"x": 0, "y": 0, "z": float("nan")}])
+def test_vertical_suppression_requires_complete_finite_player_velocity(velocity):
+    player = {**grounded_surface_player(), "velocity": velocity}
+
+    assert assess_threats([vertical_cave_mob()], player)
+
+
+def test_vertical_suppression_rechecks_fresh_visibility_and_aggression():
+    mob = vertical_cave_mob()
+    player = grounded_surface_player()
+    assert assess_threats([mob], player) == []
+
+    mob["can_see_player"] = True
+    assert assess_threats([mob], player)
+
+    mob["can_see_player"] = False
+    mob["is_aggressive"] = True
+    assert assess_threats([mob], player)
+
+
+def test_same_level_calm_occluded_mob_approaching_player_stays_actionable():
+    mob = sheltered_mob("skeleton", 10)
+    mob["velocity"]["x"] = -0.2
+
+    assert assess_threats([mob], PLAYER)
+
+
 @pytest.mark.parametrize(
     "change",
     [

@@ -325,6 +325,7 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
     # evade/relocate loop forever.  Explosives remain fail-closed when any of
     # those observations are missing or uncertain.
     calm_creeper = entity_type == "creeper"
+    vertically_separated = False
     if calm_creeper:
         # Fabric can report vanilla grounded gravity (-0.0784 Y velocity)
         # even while `is_on_ground` is true. That artificial vertical component
@@ -345,6 +346,32 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
         closing = _closing_speed(
             entity, state, ignore_grounded_vertical_velocity=True
         )
+    elif (
+        profile.style in (AttackStyle.MELEE, AttackStyle.RANGED)
+        and state.get("is_on_ground") is True
+    ):
+        # Grounded mobs several blocks below the surface can move laterally
+        # without being able to reach the player. Require complete fresh
+        # player velocity here so airborne falls and unknown ground state
+        # retain the normal closing-speed policy.
+        try:
+            mob_y = float(entity["position"]["y"])
+            player_y = float(
+                state.get("block_position", state.get("position"))["y"]
+            )
+            player_velocity = state["velocity"]
+            velocity_is_finite = all(
+                math.isfinite(float(player_velocity[axis]))
+                for axis in ("x", "y", "z")
+            )
+            vertically_separated = (
+                velocity_is_finite
+                and math.isfinite(mob_y)
+                and math.isfinite(player_y)
+                and abs(mob_y - player_y) >= 6.0
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            vertically_separated = False
     if not (
         (profile.style in (AttackStyle.MELEE, AttackStyle.RANGED) or calm_creeper)
         and entity_type not in _PROJECTILE_TYPES | {"vex"}
@@ -354,7 +381,7 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
         and _explicit_aggression(entity, state) is False
         and math.isfinite(distance)
         and (6.0 if calm_creeper else 5.0) < distance < 999.0
-        and closing <= 0.05
+        and (closing <= 0.05 or vertically_separated)
     ):
         return False
     target = entity.get("target_id")
