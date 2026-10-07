@@ -165,6 +165,22 @@ def test_fresh_snapshot_that_breaks_canonical_assessment_stays_stopped(monkeypat
     assert client._mcbaratone_defense_runtime.mode.value == "alert"
 
 
+def test_changed_creeper_identity_gets_one_canonical_reassessment_only(monkeypatch):
+    changed = snapshot(tick=2)
+    changed["entities"][0]["id"] = 77
+    client = prepare(monkeypatch, snapshot(), [changed])
+    calls = []
+    monkeypatch.setattr(
+        combat, "run_away", lambda _client, entity: calls.append(entity["id"]) or True
+    )
+    waits = []
+    monkeypatch.setattr(combat.time, "sleep", lambda seconds: waits.append(seconds))
+
+    assert combat.defend_or_flee(client) is True
+    assert calls == [77]
+    assert waits == [0.1]
+
+
 @pytest.mark.parametrize(
     "update",
     [

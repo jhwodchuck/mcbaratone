@@ -2,9 +2,10 @@
 
 import math
 import time
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
-from .defense import assess_threats
+from .defense import DefenseMode, assess_threats
+from . import combat_telemetry
 
 
 _RECHECKS = 4
@@ -165,3 +166,46 @@ def reobserve_transient_airborne_creeper(
         if not same_case:
             return "fresh", fresh
     return "hold", None
+
+
+def handle_transient_airborne_creeper(
+    client,
+    snapshot: Dict,
+    primary,
+    assessments,
+    runtime,
+    reassess: Callable[..., bool],
+    allow_safe_recovery_movement: bool,
+) -> bool:
+    """Resolve the bounded observation after the caller stops navigation."""
+    observation, fresh = reobserve_transient_airborne_creeper(
+        client, snapshot, primary, assessments
+    )
+    if observation == "none":
+        return False
+    if observation == "hold":
+        client._last_defense_intervention = "airborne_threat_recheck"
+        runtime.transition(
+            DefenseMode.ALERT,
+            "airborne threat remains uncertain after bounded recheck",
+        )
+        combat_telemetry.record_combat_action(
+            client,
+            "defense_intervention",
+            outcome="airborne_threat_recheck",
+        )
+        return True
+
+    resolved = reassess(
+        client,
+        allow_safe_recovery_movement=allow_safe_recovery_movement,
+        observed_snapshot=fresh,
+        _skip_airborne_recheck=True,
+    )
+    if not resolved:
+        client._last_defense_intervention = (
+            "airborne_threat_recheck_clear"
+            if runtime.mode == DefenseMode.CLEAR
+            else "airborne_threat_recheck_intervened"
+        )
+    return True
