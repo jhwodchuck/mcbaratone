@@ -350,7 +350,7 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
         profile.style in (AttackStyle.MELEE, AttackStyle.RANGED)
         and state.get("is_on_ground") is True
     ):
-        # Grounded mobs several blocks below the surface can move laterally
+        # Occluded mobs several blocks below the surface can move laterally
         # without being able to reach the player. Require complete fresh
         # player velocity here so airborne falls and unknown ground state
         # retain the normal closing-speed policy.
@@ -366,9 +366,10 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
             )
             vertically_separated = (
                 velocity_is_finite
+                and -0.1 <= float(player_velocity["y"]) <= 0.05
                 and math.isfinite(mob_y)
                 and math.isfinite(player_y)
-                and abs(mob_y - player_y) >= 6.0
+                and player_y - mob_y >= 6.0
             )
         except (KeyError, TypeError, ValueError, OverflowError):
             vertically_separated = False

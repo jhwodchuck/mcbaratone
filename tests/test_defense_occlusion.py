@@ -67,6 +67,16 @@ def test_vertical_suppression_requires_six_blocks_of_separation():
     assert assess_threats([mob], grounded_surface_player())
 
 
+def test_vertical_suppression_does_not_expand_to_mobs_above_player():
+    assert assess_threats([vertical_cave_mob(mob_y=26)], grounded_surface_player())
+
+
+def test_vertical_suppression_rejects_abnormal_grounded_descent_velocity():
+    player = grounded_surface_player()
+    player["velocity"]["y"] = -0.2
+    assert assess_threats([vertical_cave_mob()], player)
+
+
 @pytest.mark.parametrize("on_ground", [False, None])
 def test_vertical_suppression_requires_explicit_grounded_player(on_ground):
     assert assess_threats(
