@@ -201,7 +201,9 @@ def test_safe_movement_unknown_or_malformed_prior_value_refuses_route(bad, monke
 
     assert not route(client, 1, 64, 1)
     assert not any(
-        r == "settings" and p.get("set") in {"allowParkour", "maxFallHeightNoWater"}
+        r == "settings"
+        and ((p.get("set") == "allowParkour" and p.get("value") == "false")
+             or (p.get("set") == "maxFallHeightNoWater" and p.get("value") == "1"))
         for r, p in calls
     )
     assert settings["allowBreak"] == "true"
@@ -248,6 +250,80 @@ def test_safe_movement_lost_readback_refuses_route_and_restores_after_stop(monke
     )
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        {"success": False, "key": "allowParkour", "value": "true"},
+        {"status": "error", "data": {"key": "allowParkour", "value": "true"}},
+        {"data": {"error": "read failed", "key": "allowParkour", "value": "true"}},
+    ],
+    ids=["raw-success-false", "raw-status-error", "nested-error"],
+)
+def test_safe_movement_failed_setting_envelopes_refuse_route(failure, monkeypatch):
+    settings = {"allowBreak": "true", "allowParkour": "true", "maxFallHeightNoWater": "3"}
+    calls = []
+
+    def dispatch(route, payload):
+        calls.append((route, payload))
+        if route == "settings":
+            name = payload.get("get", payload.get("set"))
+            if "set" in payload:
+                settings[name] = payload["value"]
+            if payload.get("get") == "allowParkour":
+                return failure
+            return {"key": name, "value": settings[name]}
+        if route == "get_state":
+            return {"is_pathing": False}
+        return {}
+
+    monkeypatch.setattr(home_surface.time, "sleep", lambda *_a: None)
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=dispatch),
+        _protected_home_anchor=(1, 64, 1),
+    )
+
+    @home_surface.protect_home_route(safe_movement=True)
+    def route(client, x, y, z):
+        pytest.fail("failed setting telemetry must not start movement")
+
+    assert not route(client, 1, 64, 1)
+    assert settings["allowParkour"] == "true"
+    assert not any(
+        r == "settings" and p.get("set") in {"allowParkour", "maxFallHeightNoWater"}
+        for r, p in calls
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        {"success": False, "key": "allowBreak", "value": "true"},
+        {"data": {"status": "error", "key": "allowBreak", "value": "true"}},
+    ],
+    ids=["raw-failure", "nested-failure"],
+)
+def test_safe_movement_failed_allow_break_read_refuses_route(failure):
+    calls = []
+
+    def dispatch(route, payload):
+        calls.append((route, payload))
+        if route == "settings" and payload.get("get") == "allowBreak":
+            return failure
+        return {"is_pathing": False}
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=dispatch),
+        _protected_home_anchor=(1, 64, 1),
+    )
+
+    @home_surface.protect_home_route(safe_movement=True)
+    def route(client, x, y, z):
+        pytest.fail("failed allowBreak telemetry must not start movement")
+
+    assert not route(client, 1, 64, 1)
+    assert not any(r == "settings" and "set" in p for r, p in calls)
+
+
 @pytest.mark.parametrize("pathing", [True, None])
 def test_safe_movement_settings_stay_conservative_without_verified_stop(pathing):
     settings = {
@@ -276,6 +352,45 @@ def test_safe_movement_settings_stay_conservative_without_verified_stop(pathing)
         return True
 
     assert not uncertain_route(client, 1, 64, 1)
+    assert settings == {
+        "allowBreak": "false",
+        "allowParkour": "false",
+        "maxFallHeightNoWater": "1",
+    }
+
+
+@pytest.mark.parametrize(
+    "failed_state",
+    [
+        {"success": False, "is_pathing": False},
+        {"status": "error", "data": {"is_pathing": False}},
+        {"data": {"error": "state read failed", "is_pathing": False}},
+    ],
+    ids=["raw-success-false", "raw-status-error", "nested-error"],
+)
+def test_failed_stop_state_envelopes_never_restore_prior_settings(failed_state):
+    settings = {"allowBreak": "true", "allowParkour": "true", "maxFallHeightNoWater": "3"}
+
+    def dispatch(route, payload):
+        if route == "settings":
+            name = payload.get("get", payload.get("set"))
+            if "set" in payload:
+                settings[name] = payload["value"]
+            return {"key": name, "value": settings[name]}
+        if route == "get_state":
+            return failed_state
+        return {}
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=dispatch),
+        _protected_home_anchor=(1, 64, 1),
+    )
+
+    @home_surface.protect_home_route(safe_movement=True)
+    def route(client, x, y, z):
+        return True
+
+    assert not route(client, 1, 64, 1)
     assert settings == {
         "allowBreak": "false",
         "allowParkour": "false",

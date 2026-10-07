@@ -52,19 +52,42 @@ def below_home_surface(guard, position):
             and position["y"] < floor)
 
 
-def _read_break_setting(client):
+def _checked_response_data(response, operation):
+    data = response
+    seen = set()
+    while isinstance(data, dict) and id(data) not in seen:
+        seen.add(id(data))
+        if (data.get("success") is False or str(data.get("status", "")).lower() == "error"
+                or data.get("error")):
+            raise ValueError(f"{operation} returned an error response")
+        nested = data.get("data")
+        if not isinstance(nested, dict):
+            return data
+        data = nested
+    raise ValueError(f"{operation} response is malformed")
+
+
+def _read_break_setting(client, *, strict=False):
     response = client.transport.dispatch("settings", {"get": "allowBreak"})
+    if strict:
+        response = _checked_response_data(response, "allowBreak read")
     value = response.get("value") if isinstance(response, dict) else None
     if value not in ("true", "false"):
         raise ValueError("allowBreak setting unavailable or malformed")
     return value
 
 
-def _write_break_setting(client, value):
-    client.transport.dispatch("settings", {"set": "allowBreak", "value": value})
+def _write_break_setting(client, value, *, strict=False):
+    response = client.transport.dispatch("settings", {"set": "allowBreak", "value": value})
+    if strict:
+        _checked_response_data(response, "allowBreak write")
     # The bridge replies 'requested', not 'applied'. Never start on that alone.
     for _ in range(3):
-        if _read_break_setting(client) == value:
+        observed = (
+            _read_break_setting(client, strict=True)
+            if strict else _read_break_setting(client)
+        )
+        if observed == value:
             return
         time.sleep(0.05)
     raise ValueError("allowBreak update was not observed")
@@ -75,7 +98,8 @@ _SAFE_ROUTE_SETTINGS = {"allowParkour": "false", "maxFallHeightNoWater": "1"}
 
 def _read_route_setting(client, name):
     response = client.transport.dispatch("settings", {"get": name})
-    key = response.get("key") if isinstance(response, dict) else None
+    response = _checked_response_data(response, f"{name} read")
+    key = response.get("key")
     if not isinstance(key, str) or key.lower() != name.lower():
         raise ValueError(f"{name} setting unavailable or malformed")
     value = response.get("value")
@@ -93,7 +117,8 @@ def _read_route_setting(client, name):
 
 
 def _write_route_setting(client, name, value):
-    client.transport.dispatch("settings", {"set": name, "value": value})
+    response = client.transport.dispatch("settings", {"set": name, "value": value})
+    _checked_response_data(response, f"{name} write")
     for _ in range(3):
         if _read_route_setting(client, name) == value:
             return
@@ -126,7 +151,10 @@ def protect_home_route(*, horizontal=False, surface_work=False, safe_movement=Fa
             prior_work = getattr(client, "_protected_surface_work", None)
             result = False
             try:
-                previous = _read_break_setting(client)
+                previous = (
+                    _read_break_setting(client, strict=True)
+                    if safe_movement else _read_break_setting(client)
+                )
                 if safe_movement:
                     previous_movement = {
                         name: _read_route_setting(client, name)
@@ -135,7 +163,10 @@ def protect_home_route(*, horizontal=False, surface_work=False, safe_movement=Fa
                 # Read every prior value before the first write so partial
                 # observations can never leave a half-applied travel policy.
                 if previous == "true":
-                    _write_break_setting(client, "false")
+                    if safe_movement:
+                        _write_break_setting(client, "false", strict=True)
+                    else:
+                        _write_break_setting(client, "false")
                 if safe_movement:
                     for name, value in _SAFE_ROUTE_SETTINGS.items():
                         _write_route_setting(client, name, value)
@@ -151,6 +182,8 @@ def protect_home_route(*, horizontal=False, surface_work=False, safe_movement=Fa
                 if previous == "true" or previous_movement:
                     try:
                         live = client.transport.dispatch("get_state", {})
+                        if safe_movement:
+                            live = _checked_response_data(live, "route stop read")
                         if live.get("is_pathing") is not False:
                             raise ValueError("route stop is unverified; safe settings remain active")
                         restore_failed = False
@@ -161,7 +194,10 @@ def protect_home_route(*, horizontal=False, surface_work=False, safe_movement=Fa
                                 restore_failed = True
                                 print(f"HOME ROUTE: could not restore {name} ({exc})")
                         if previous == "true":
-                            _write_break_setting(client, previous)
+                            if safe_movement:
+                                _write_break_setting(client, previous, strict=True)
+                            else:
+                                _write_break_setting(client, previous)
                         if restore_failed:
                             result = False
                     except Exception as exc:
