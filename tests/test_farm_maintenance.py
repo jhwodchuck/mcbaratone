@@ -17,9 +17,48 @@ def test_replant_repairs_only_bare_observed_soil(monkeypatch):
               (0, 65, 1): "minecraft:water"}
     monkeypatch.setattr(farming, "_block_id", lambda _c, x, y, z: blocks.get((x,y,z), "minecraft:air"))
     planted = []
-    monkeypatch.setattr(farming, "plant_farm_tiles", lambda _c, tiles: planted.extend(tiles) or len(tiles))
+    monkeypatch.setattr(
+        farming, "plant_farm_tiles",
+        lambda _c, tiles, **_kwargs: planted.extend(tiles) or len(tiles),
+    )
     assert farming.replant_empty_wheat_tiles(None, 0, 64, 0) == 1
     assert planted == [(1, 64, 0)]
+
+
+def test_replant_preserves_observed_carrot_plot_instead_of_seeding_wheat(monkeypatch):
+    blocks = {
+        (0, 65, 1): "minecraft:carrots",
+        (1, 64, 0): "minecraft:farmland",
+    }
+    monkeypatch.setattr(
+        farming, "_block_id",
+        lambda _c, x, y, z: blocks.get((x, y, z), "minecraft:air"),
+    )
+    planted = []
+
+    def plant(_client, tiles, *, crop_item):
+        planted.append((tiles, crop_item))
+        return 1
+
+    monkeypatch.setattr(farming, "plant_farm_tiles", plant)
+
+    assert farming.replant_empty_wheat_tiles(None, 0, 64, 0) == 1
+    assert planted == [([(1, 64, 0)], "minecraft:carrot")]
+
+
+def test_empty_legacy_wheat_plot_keeps_its_explicit_crop_default(monkeypatch):
+    monkeypatch.setattr(
+        farming, "_block_id",
+        lambda _c, _x, y, _z: "minecraft:grass_block" if y == 64 else "minecraft:air",
+    )
+    selected = []
+    monkeypatch.setattr(
+        farming, "plant_farm_tiles",
+        lambda _c, tiles, **kwargs: selected.append(kwargs["crop_item"]) or len(tiles),
+    )
+
+    assert farming.replant_empty_wheat_tiles(None, 0, 64, 0, size=3) == 8
+    assert selected == ["minecraft:wheat_seeds"] * 8
 
 
 @pytest.mark.parametrize("delta", [0, 1])

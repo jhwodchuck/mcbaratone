@@ -33,6 +33,11 @@ from .farm_site_travel import (
 WHEAT = "minecraft:wheat"
 SEEDS = "minecraft:wheat_seeds"
 BREAD = "minecraft:bread"
+OTHER_EDIBLE_CROPS = (
+    "minecraft:carrot",
+    "minecraft:potato",
+    "minecraft:beetroot",
+)
 #: Farms must stay within one short walk of the durable base anchor. A plot
 #: further out is not an asset: the worker stops visiting it, the harvest step
 #: times out travelling, and the fleet accumulates farms it never uses. At 64
@@ -68,6 +73,8 @@ class FoodCycleResult:
     total_plots: int = 0
     total_crop_tiles: int = 0
     total_wheat_harvested: int = 0
+    other_edible_crops_harvested: int = 0
+    total_other_edible_crops_harvested: int = 0
     total_crops_replanted: int = 0
     total_bread_crafted: int = 0
     total_prepared_food_banked: int = 0
@@ -522,6 +529,9 @@ def _result(
         total_plots=int(worker.get("plots", 0) or 0),
         total_crop_tiles=int(worker.get("crop_tiles", 0) or 0),
         total_wheat_harvested=int(worker.get("wheat_harvested", 0) or 0),
+        total_other_edible_crops_harvested=int(
+            worker.get("other_edible_crops_harvested", 0) or 0
+        ),
         total_crops_replanted=int(worker.get("crops_replanted", 0) or 0),
         total_bread_crafted=int(worker.get("bread_crafted", 0) or 0),
         total_prepared_food_banked=int(worker.get("prepared_food_banked", 0) or 0),
@@ -634,6 +644,7 @@ def run_food_cycle(
     known = _plots(state)
     worker["farm_plots"] = [{"origin": list(plot)} for plot in known]
     harvested = 0
+    other_edible_harvested = 0
     limit = max(1, int(max_plots_per_cycle))
     cursor = int(worker.get("plot_cursor", 0) or 0)
     inspected = (
@@ -646,9 +657,15 @@ def run_food_cycle(
     )
     unreachable = []
     for plot in (p for p in inspected if not plot_on_cooldown(state, p)):
-        plot_before = _count(get_inventory(client), WHEAT)
+        before_plot = get_inventory(client)
+        plot_before = _count(before_plot, WHEAT)
         harvest_wheat_farm(client, *plot, range_=max(1, int(farm_range)))
-        harvested += max(0, _count(get_inventory(client), WHEAT) - plot_before)
+        after_plot = get_inventory(client)
+        harvested += max(0, _count(after_plot, WHEAT) - plot_before)
+        other_edible_harvested += sum(
+            max(0, _count(after_plot, item) - _count(before_plot, item))
+            for item in OTHER_EDIBLE_CROPS
+        )
         # harvest_wheat_farm returns False both when it never arrived and when
         # it arrived to find nothing ripe, so its flag cannot distinguish them.
         # Measure instead: still far from the plot means the trip failed, and
@@ -761,12 +778,16 @@ def run_food_cycle(
 
     # Gathering seeds is real progress: it is the bootstrap the whole food
     # economy waits on, and a cycle that stocks them has not done nothing.
-    success = bool(harvested or new_plots or bread_crafted or banked or seeds_gathered)
+    success = bool(
+        harvested or other_edible_harvested or new_plots or bread_crafted
+        or banked or seeds_gathered
+    )
     values = {
         "cycles": int(success),
         "plots": new_plots,
         "crop_tiles": crop_tiles,
         "wheat_harvested": harvested,
+        "other_edible_crops_harvested": other_edible_harvested,
         "crops_replanted": replanted,
         "bread_crafted": bread_crafted,
         "prepared_food_banked": banked,
@@ -778,6 +799,8 @@ def run_food_cycle(
         f"harvested {harvested} wheat, established {new_plots} plot, "
         f"crafted {bread_crafted} bread, banked {banked} prepared food"
         + (f", gathered {seeds_gathered} seeds" if seeds_gathered else "")
+        + (f", harvested {other_edible_harvested} other edible crops"
+           if other_edible_harvested else "")
     )
     return _result(worker, success, detail, **values)
 

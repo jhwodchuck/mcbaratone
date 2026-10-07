@@ -140,6 +140,30 @@ def test_harvest_and_bank_are_credited_only_by_inventory_delta(monkeypatch):
     assert result.total_food_banked == 2
 
 
+def test_direct_crop_harvest_is_progress_but_not_wheat_or_bread(monkeypatch):
+    counts = {"minecraft:carrot": 1, "minecraft:wheat": 0}
+    monkeypatch.setattr(food_supply, "get_inventory", lambda _client: dict(counts))
+    monkeypatch.setattr(food_supply, "_survival_ready", lambda _client: True)
+    monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        food_supply, "harvest_wheat_farm",
+        lambda *_a, **_k: counts.__setitem__("minecraft:carrot", 4) or True,
+    )
+    monkeypatch.setattr(food_supply, "_stock_seeds", lambda *_a, **_k: 0)
+    monkeypatch.setattr(food_supply, "establish_wheat_farm", lambda *_a, **_k: None)
+    monkeypatch.setattr(food_supply, "resolve_storage_location", lambda *_a, **_k: None)
+
+    result = food_supply.run_food_cycle(
+        object(), _state({"wheat_farm": {"origin": [0, 64, 0]}})
+    )
+
+    assert result.success
+    assert result.other_edible_crops_harvested == 3
+    assert result.total_other_edible_crops_harvested == 3
+    assert result.wheat_harvested == 0
+    assert result.bread_crafted == 0
+
+
 def test_known_plot_inspection_is_round_robin_and_bounded(monkeypatch):
     _inventory(monkeypatch, {})
     monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
