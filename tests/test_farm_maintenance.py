@@ -9,6 +9,21 @@ from baritone_client.automator.food_recovery_state import checkpointed_wheat_far
 from baritone_client.automator.common import crop_opportunity
 
 
+def _irrigated_blocks():
+    blocks = {}
+    for dx in range(-2, 3):
+        for dz in range(-2, 3):
+            blocks[(dx, 64, dz)] = {"id": "minecraft:farmland"}
+            blocks[(dx, 65, dz)] = {"id": "minecraft:air"}
+    blocks[(0, 64, 0)] = {
+        "id": "minecraft:water", "state": {"level": "0"}
+    }
+    blocks[(-1, 65, 0)] = {
+        "id": "minecraft:wheat", "state": {"age": "7"}
+    }
+    return blocks
+
+
 def test_replant_repairs_only_bare_observed_soil(monkeypatch):
     blocks = {(1, 64, 0): "minecraft:grass_block",
               (-1, 64, 0): "minecraft:farmland",
@@ -65,9 +80,15 @@ def test_empty_legacy_wheat_plot_keeps_its_explicit_crop_default(monkeypatch):
 def test_harvest_stops_before_explicit_replant_and_requires_delta(monkeypatch, delta):
     calls = []
     clock = [0]
+    blocks = _irrigated_blocks()
+
     def dispatch(route, payload):
+        if route == "get_block":
+            position = (payload["x"], payload["y"], payload["z"])
+            return blocks.get(position, {"id": "minecraft:air"})
         calls.append(route)
         return {"cancelled": True} if route == "cancel" else {}
+
     client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
     monkeypatch.setattr(farming, "goto", lambda *_a, **_k: True)
     monkeypatch.setattr(
@@ -88,10 +109,16 @@ def test_harvest_stops_before_explicit_replant_and_requires_delta(monkeypatch, d
 
 def test_failed_cancel_does_not_start_replant(monkeypatch):
     clock = [0]
+    blocks = _irrigated_blocks()
+
     def dispatch(route, payload):
+        if route == "get_block":
+            position = (payload["x"], payload["y"], payload["z"])
+            return blocks.get(position, {"id": "minecraft:air"})
         if route == "cancel":
             raise RuntimeError("unknown mutation outcome")
         return {}
+
     client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
     monkeypatch.setattr(farming, "goto", lambda *_a, **_k: True)
     monkeypatch.setattr(

@@ -12,14 +12,29 @@ def _crop(crop_id, age):
     return {"id": crop_id, "state": {"age": age}}
 
 
+def _irrigated_plot_blocks(origin=(0, 64, 0)):
+    x, y, z = origin
+    blocks = {}
+    for dx in range(-2, 3):
+        for dz in range(-2, 3):
+            blocks[(x + dx, y, z + dz)] = {"id": "minecraft:farmland"}
+            blocks[(x + dx, y + 1, z + dz)] = {"id": "minecraft:air"}
+    blocks[(x, y, z)] = {
+        "id": "minecraft:water", "state": {"level": "0"}
+    }
+    blocks[(x - 1, y + 1, z)] = _crop("minecraft:wheat", 7)
+    return blocks
+
+
 def test_harvest_repairs_only_observed_mature_wheat_replaced_by_immature_crop(monkeypatch):
     position = (-1, 65, 0)
     mature_carrot = (1, 65, 0)
-    blocks = {
+    blocks = _irrigated_plot_blocks()
+    blocks.update({
         position: _crop("minecraft:wheat", 7),
         mature_carrot: _crop("minecraft:carrots", 7),
         (-1, 64, 0): {"id": "minecraft:farmland"},
-    }
+    })
     calls = []
     wheat_count = [0]
 
@@ -88,9 +103,13 @@ def test_crop_snapshot_fails_closed_on_an_unknown_block_read():
 
 def test_uncertain_native_farm_start_is_cancelled_without_crop_repair(monkeypatch):
     calls = []
+    blocks = _irrigated_plot_blocks()
 
     def dispatch(route, payload):
         calls.append(route)
+        if route == "get_block":
+            pos = (payload["x"], payload["y"], payload["z"])
+            return blocks.get(pos, {"id": "minecraft:air"})
         if route == "farm":
             raise TimeoutError("response lost after transmission")
         return {"cancelled": True}
@@ -100,7 +119,7 @@ def test_uncertain_native_farm_start_is_cancelled_without_crop_repair(monkeypatc
     monkeypatch.setattr(identity, "_capture_mature_wheat", lambda *_a: ())
     monkeypatch.setattr(farming, "count_item", lambda *_a: 0)
     assert identity.run_wheat_farm_harvest(client, 0, 64, 0, 8) is False
-    assert calls == ["farm", "cancel"]
+    assert calls[-2:] == ["farm", "cancel"]
 
 
 @pytest.mark.parametrize(
@@ -114,7 +133,8 @@ def test_unacknowledged_cancel_never_repairs_crop_identity(
     monkeypatch, cancel_response
 ):
     position = (-1, 65, 0)
-    blocks = {position: _crop("minecraft:wheat", 7)}
+    blocks = _irrigated_plot_blocks()
+    blocks[position] = _crop("minecraft:wheat", 7)
     calls = []
     farm_started = [False]
 
@@ -146,6 +166,36 @@ def test_unacknowledged_cancel_never_repairs_crop_identity(
 
     assert identity.run_wheat_farm_harvest(client, 0, 64, 0, 8) is False
     assert "dig_block" not in calls
+
+
+def test_stale_height_fails_closed_before_crop_snapshot_or_native_harvest(monkeypatch):
+    actual_plot_y = 65
+    blocks = _irrigated_plot_blocks((0, actual_plot_y, 0))
+    calls = []
+
+    def dispatch(route, payload):
+        calls.append(route)
+        if route == "get_block":
+            pos = (payload["x"], payload["y"], payload["z"])
+            return blocks.get(pos, {"id": "minecraft:air"})
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    monkeypatch.setattr(farming, "goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        identity,
+        "_capture_mature_wheat",
+        lambda *_a: pytest.fail("must reject stale height before crop snapshot"),
+    )
+    monkeypatch.setattr(
+        farming,
+        "count_item",
+        lambda *_a: pytest.fail("must reject stale height before inventory reads"),
+    )
+
+    assert identity.run_wheat_farm_harvest(client, 0, 64, 0, 8) is False
+    assert "farm" not in calls
+    assert "cancel" not in calls
 
 
 def _repair_fixture(monkeypatch, crop_id="minecraft:carrots", age=1):

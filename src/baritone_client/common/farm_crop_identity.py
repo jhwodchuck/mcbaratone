@@ -262,8 +262,15 @@ def _restore_converted_wheat(client, positions):
 def run_wheat_farm_harvest(client, x, y, z, range_):
     """Run the bounded native harvest, then reconcile proven crop substitutions."""
     from . import farming
+    from .farm_plot_evidence import verified_crop_plot_plane
 
     if not farming.goto(client, x, y + 1, z, timeout=120, tolerance=4, radius=2):
+        return False
+    if not verified_crop_plot_plane(client, (x, y, z)):
+        print(
+            "  Refusing native farm harvest: plot plane is unverified at "
+            f"{(x, y, z)}."
+        )
         return False
     original_wheat = _capture_mature_wheat(client, x, y, z)
     before = farming.count_item(client, _WHEAT)
