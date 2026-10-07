@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
+from math import isfinite
 
 
 _WHEAT = "minecraft:wheat"
@@ -100,6 +101,24 @@ def _stopped_after_cancel(client, timeout=2.0):
     return False
 
 
+def _player_at_crop_height(client, crop_y):
+    """Require a grounded player at the crop's interaction plane."""
+    try:
+        state = _successful_data(client.transport.dispatch("get_state", {}))
+        position = state.get("position") if state is not None else None
+        feet_y = position.get("y") if isinstance(position, Mapping) else None
+        if isinstance(feet_y, bool):
+            return False
+        feet_y = float(feet_y)
+        return (
+            isfinite(feet_y)
+            and feet_y >= crop_y - 0.2
+            and state.get("is_on_ground") is True
+        )
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def _restore_converted_wheat(client, positions):
     """Restore only mature wheat cells now holding a fresh wrong crop."""
     from . import farming
@@ -121,8 +140,57 @@ def _restore_converted_wheat(client, positions):
                 or soil is None or soil["id"] != "minecraft:farmland"
                 or farming.count_item(client, "minecraft:wheat_seeds") < 1
                 or farming.count_item(client, _CROP_ITEMS[current["id"]]) < 1
+            ):
+                continue
+
+            if not _stopped_after_cancel(client):
+                continue
+            if (
+                not _player_at_crop_height(client, crop_y)
                 or not _within_block_reach(client, *ground)
+            ):
+                if not farming.farm_surface_safe(client):
+                    return restored
+                if not farming.goto(
+                    client, x, crop_y, z, timeout=30, tolerance=1.1, radius=0
+                ):
+                    continue
+
+                # Navigation may have changed the world or stopped short;
+                # re-prove every condition before any crop mutation.
+                if (
+                    not farming.farm_surface_safe(client)
+                    or not _stopped_after_cancel(client)
+                ):
+                    continue
+                current = _read_block(client, position)
+                soil = _read_block(client, ground)
+                if (
+                    current is None or current["id"] not in _OTHER_CROPS
+                    or _age(current) not in {0, 1}
+                    or soil is None or soil["id"] != "minecraft:farmland"
+                    or farming.count_item(client, "minecraft:wheat_seeds") < 1
+                    or farming.count_item(client, _CROP_ITEMS[current["id"]]) < 1
+                    or not _player_at_crop_height(client, crop_y)
+                    or not _within_block_reach(client, *ground)
+                ):
+                    continue
+
+            # Reconfirm the crop and soil at the mutation boundary; height,
+            # reach, and stopped-state checks above must all still hold.
+            if (
+                not farming.farm_surface_safe(client)
                 or not _stopped_after_cancel(client)
+                or not _player_at_crop_height(client, crop_y)
+                or not _within_block_reach(client, *ground)
+            ):
+                continue
+            current = _read_block(client, position)
+            soil = _read_block(client, ground)
+            if (
+                current is None or current["id"] not in _OTHER_CROPS
+                or _age(current) not in {0, 1}
+                or soil is None or soil["id"] != "minecraft:farmland"
             ):
                 continue
 
@@ -154,7 +222,14 @@ def _restore_converted_wheat(client, positions):
             soil = _read_block(client, ground)
             if soil is None or soil["id"] != "minecraft:farmland":
                 continue
-            if not farming._till_and_plant_tile(client, *ground):
+            try:
+                wheat_planted = farming._till_and_plant_tile(client, *ground)
+            except (PlayerDeathDetected, SurvivalRecoveryRequired):
+                raise
+            except Exception as exc:
+                print(f"  Wheat identity planting failed {position}: {exc}")
+                wheat_planted = False
+            if not wheat_planted:
                 after_plant = _read_block(client, position)
                 if after_plant is not None and after_plant["id"] == _WHEAT:
                     restored += 1
@@ -162,9 +237,14 @@ def _restore_converted_wheat(client, positions):
                 if after_plant is not None and after_plant["id"] in _AIR:
                     from .farm_planting import _plant_non_wheat_crop
 
-                    _plant_non_wheat_crop(
-                        client, *ground, _CROP_ITEMS[current["id"]]
-                    )
+                    try:
+                        _plant_non_wheat_crop(
+                            client, *ground, _CROP_ITEMS[current["id"]]
+                        )
+                    except (PlayerDeathDetected, SurvivalRecoveryRequired):
+                        raise
+                    except Exception as exc:
+                        print(f"  Wheat identity rollback failed {position}: {exc}")
                     rollback = _read_block(client, position)
                     if rollback is None or rollback["id"] != current["id"]:
                         print(f"  Wheat identity repair rollback unverified {position}")

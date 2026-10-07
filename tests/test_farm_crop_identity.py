@@ -34,7 +34,11 @@ def test_harvest_repairs_only_observed_mature_wheat_replaced_by_immature_crop(mo
         if route == "cancel":
             return {"cancelled": True}
         if route == "get_state":
-            return {"is_pathing": False}
+            return {
+                "is_pathing": False,
+                "is_on_ground": True,
+                "position": {"x": -1.0, "y": 65.0, "z": 0.0},
+            }
         if route == "dig_block":
             pos = (payload["x"], payload["y"], payload["z"])
             blocks[pos] = {"id": "minecraft:air"}
@@ -152,6 +156,8 @@ def _repair_fixture(monkeypatch, crop_id="minecraft:carrots", age=1):
 
     def dispatch(route, payload):
         calls.append((route, payload))
+        if route == "get_state":
+            return client.synthetic_state[0]
         if route == "get_block":
             pos = (payload["x"], payload["y"], payload["z"])
             return blocks.get(pos, {"id": "minecraft:air"})
@@ -160,6 +166,11 @@ def _repair_fixture(monkeypatch, crop_id="minecraft:carrots", age=1):
         return {}
 
     client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    client.synthetic_state = [{
+        "position": {"x": -1.0, "y": 65.0, "z": 0.0},
+        "is_on_ground": True,
+        "is_pathing": False,
+    }]
     monkeypatch.setattr(farming, "farm_surface_safe", lambda *_a: True)
     monkeypatch.setattr(
         "baritone_client.common.farm_planting._within_block_reach",
@@ -232,7 +243,10 @@ def test_failed_crop_dig_does_not_attempt_to_plant(monkeypatch):
 
 def test_failed_wheat_plant_attempt_restores_original_crop(monkeypatch):
     client, position, ground, blocks, calls = _repair_fixture(monkeypatch)
-    monkeypatch.setattr(farming, "_till_and_plant_tile", lambda *_a: False)
+    def failed_wheat_plant(*_args):
+        raise RuntimeError("InteractionRejected: target face unavailable")
+
+    monkeypatch.setattr(farming, "_till_and_plant_tile", failed_wheat_plant)
 
     def restore_crop(_client, x, y, z, crop_item):
         assert crop_item == "minecraft:carrot"
@@ -248,6 +262,71 @@ def test_failed_wheat_plant_attempt_restores_original_crop(monkeypatch):
     assert blocks[position]["id"] == "minecraft:carrots"
     assert blocks[ground]["id"] == "minecraft:farmland"
     assert any(route == "dig_block" for route, _payload in calls)
+
+
+@pytest.mark.parametrize("starting_position", ["below", "airborne"])
+def test_unsafe_stand_navigates_to_crop_height_then_reproves_before_dig(
+    monkeypatch, starting_position
+):
+    client, position, _ground, _blocks, calls = _repair_fixture(monkeypatch)
+    if starting_position == "below":
+        client.synthetic_state[0]["position"]["y"] = 60.0
+    else:
+        client.synthetic_state[0]["is_on_ground"] = False
+    goto_calls = []
+
+    def goto(_client, x, y, z, **kwargs):
+        goto_calls.append(((x, y, z), kwargs))
+        client.synthetic_state[0]["position"]["y"] = 65.0
+        client.synthetic_state[0]["is_on_ground"] = True
+        return True
+
+    monkeypatch.setattr(farming, "goto", goto)
+
+    identity._restore_converted_wheat(client, [position])
+
+    assert goto_calls == [
+        ((-1, 65, 0), {"timeout": 30, "tolerance": 1.1, "radius": 0})
+    ]
+    assert any(route == "dig_block" for route, _payload in calls)
+
+
+@pytest.mark.parametrize("changed_fact", ["crop", "soil", "grounded", "stopped"])
+def test_navigation_must_reprove_crop_soil_and_safe_stopped_pose(
+    monkeypatch, changed_fact
+):
+    client, position, ground, blocks, calls = _repair_fixture(monkeypatch)
+    client.synthetic_state[0]["position"]["y"] = 60.0
+
+    def goto(_client, *_args, **_kwargs):
+        client.synthetic_state[0]["position"]["y"] = 65.0
+        if changed_fact == "crop":
+            blocks[position] = _crop("minecraft:carrots", 7)
+        elif changed_fact == "soil":
+            blocks[ground] = {"id": "minecraft:dirt"}
+        elif changed_fact == "grounded":
+            client.synthetic_state[0]["is_on_ground"] = False
+        elif changed_fact == "stopped":
+            monkeypatch.setattr(
+                identity, "_stopped_after_cancel", lambda *_a: False
+            )
+        return True
+
+    monkeypatch.setattr(farming, "goto", goto)
+
+    identity._restore_converted_wheat(client, [position])
+
+    assert not any(route == "dig_block" for route, _payload in calls), changed_fact
+
+
+def test_refused_navigation_from_low_stand_does_not_dig(monkeypatch):
+    client, position, _ground, _blocks, calls = _repair_fixture(monkeypatch)
+    client.synthetic_state[0]["position"]["y"] = 60.0
+    monkeypatch.setattr(farming, "goto", lambda *_a, **_k: False)
+
+    identity._restore_converted_wheat(client, [position])
+
+    assert not any(route == "dig_block" for route, _payload in calls)
 
 
 def test_block_reads_reject_error_envelopes_at_both_levels():
