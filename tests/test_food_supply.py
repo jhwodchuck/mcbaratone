@@ -372,8 +372,45 @@ def test_last_three_wheat_are_food_not_a_permanent_uncraftable_reserve(monkeypat
         return True
 
     monkeypatch.setattr(food_supply, "craft", craft)
+    monkeypatch.setattr(
+        food_supply,
+        "craft_bread_at_saved_home",
+        lambda _client, _state, _anchor, amount, **kwargs:
+            kwargs["craft"](object(), food_supply.BREAD, amount),
+    )
     result = food_supply.run_food_cycle(object(), _state({}))
     assert result.success and result.bread_crafted == 1
+
+
+def test_failed_home_workstation_does_not_erase_harvest_credit(monkeypatch):
+    counts = {food_supply.WHEAT: 0, food_supply.BREAD: 0}
+    _inventory(monkeypatch, counts)
+    monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        food_supply, "harvest_wheat_farm",
+        lambda *_a, **_k: counts.__setitem__(food_supply.WHEAT, 7) or True,
+    )
+    monkeypatch.setattr(food_supply, "resolve_storage_location", lambda *_a, **_k: None)
+    home_anchor = (10, 65, 10)
+    state = _state({
+        "base_location": list(home_anchor),
+        "food_worker": {"farm_plots": [{"origin": list(home_anchor)}]},
+    })
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a: {
+        "block_position": {"x": 10, "y": 65, "z": 10},
+    }))
+    attempted = []
+
+    def refused(_client, _state, anchor, count, **_kwargs):
+        attempted.append((anchor, count))
+        return False  # unknown/unreachable home workstation
+
+    monkeypatch.setattr(food_supply, "craft_bread_at_saved_home", refused)
+    result = food_supply.run_food_cycle(client, state)
+
+    assert attempted == [(home_anchor, 2)]
+    assert result.wheat_harvested == 7 and result.bread_crafted == 0
+    assert counts[food_supply.WHEAT] == 7 and counts[food_supply.BREAD] == 0
 
 
 def test_farm_expansion_rejects_cave_soil_and_returns_home(monkeypatch):
