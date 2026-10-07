@@ -747,15 +747,7 @@ def run_food_cycle(
     wheat_available = _count(after_harvest, WHEAT)
     breads_requested = max(0, wheat_available // 3)
     if breads_requested:
-        craft_bread_at_saved_home(
-            client,
-            state,
-            _base_anchor(state),
-            breads_requested,
-            survival_ready=_survival_ready,
-            return_home=_return_to_anchor,
-            craft=craft,
-        )
+        craft_bread_at_saved_home(client, state, _base_anchor(state), breads_requested, survival_ready=_survival_ready, return_home=_return_to_anchor, craft=craft)
     after_craft = get_inventory(client)
     bread_crafted = max(0, _count(after_craft, BREAD) - bread_before)
 
