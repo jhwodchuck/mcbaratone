@@ -1,7 +1,8 @@
 """Keep surface-bound home routes out of the underground home footprint.
 
 The saved anchor identifies the route, not proof of a floor or shelter. This
-reactive guard cancels a drop; it does not promise a safe route or excavation.
+guard constrains protected home routes, but does not promise a safe route or
+excavation.
 """
 
 import math
@@ -69,12 +70,43 @@ def _write_break_setting(client, value):
     raise ValueError("allowBreak update was not observed")
 
 
-def protect_home_route(*, horizontal=False, surface_work=False):
-    """Disable digging for a homeward route and restore only after a stop.
+_SAFE_ROUTE_SETTINGS = {"allowParkour": "false", "maxFallHeightNoWater": "1"}
 
-    This uses existing settings routes, not a bridge modification. Explicit
-    underground goals are exempt. If cleanup cannot prove the route stopped,
-    leave digging disabled rather than unprotect a potentially active goal.
+
+def _read_route_setting(client, name):
+    response = client.transport.dispatch("settings", {"get": name})
+    key = response.get("key") if isinstance(response, dict) else None
+    if not isinstance(key, str) or key.lower() != name.lower():
+        raise ValueError(f"{name} setting unavailable or malformed")
+    value = response.get("value")
+    if not isinstance(value, str):
+        raise ValueError(f"{name} setting unavailable or malformed")
+    if name == "allowParkour" and value not in ("true", "false"):
+        raise ValueError("allowParkour setting unavailable or malformed")
+    if name == "maxFallHeightNoWater":
+        try:
+            if str(int(value)) != value or int(value) < 0:
+                raise ValueError
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("maxFallHeightNoWater setting unavailable or malformed") from exc
+    return value
+
+
+def _write_route_setting(client, name, value):
+    client.transport.dispatch("settings", {"set": name, "value": value})
+    for _ in range(3):
+        if _read_route_setting(client, name) == value:
+            return
+        time.sleep(0.05)
+    raise ValueError(f"{name} update was not observed")
+
+
+def protect_home_route(*, horizontal=False, surface_work=False, safe_movement=False):
+    """Guard a homeward route's digging and optional movement settings.
+
+    Safe movement is restricted to callers that opt in and goals inside the
+    saved home/surface guard. If cleanup cannot prove the route stopped, leave
+    temporary settings in their conservative state rather than alter a live goal.
     """
     def decorate(function):
         call_signature = signature(function)
@@ -90,12 +122,23 @@ def protect_home_route(*, horizontal=False, surface_work=False):
             if not guarded:
                 return function(*args, **kwargs)
             previous = None
+            previous_movement = {}
             prior_work = getattr(client, "_protected_surface_work", None)
             result = False
             try:
                 previous = _read_break_setting(client)
+                if safe_movement:
+                    previous_movement = {
+                        name: _read_route_setting(client, name)
+                        for name in _SAFE_ROUTE_SETTINGS
+                    }
+                # Read every prior value before the first write so partial
+                # observations can never leave a half-applied travel policy.
                 if previous == "true":
                     _write_break_setting(client, "false")
+                if safe_movement:
+                    for name, value in _SAFE_ROUTE_SETTINGS.items():
+                        _write_route_setting(client, name, value)
                 if surface_work:
                     client._protected_surface_work = (x, y - HOME_FLOOR_MARGIN, z)
                 result = function(*args, **kwargs)
@@ -105,14 +148,24 @@ def protect_home_route(*, horizontal=False, surface_work=False):
                 print(f"HOME ROUTE: refused unverified digging protection ({exc})")
             finally:
                 client._protected_surface_work = prior_work
-                if previous == "true":
+                if previous == "true" or previous_movement:
                     try:
                         live = client.transport.dispatch("get_state", {})
                         if live.get("is_pathing") is not False:
-                            raise ValueError("route stop is unverified; digging remains disabled")
-                        _write_break_setting(client, previous)
+                            raise ValueError("route stop is unverified; safe settings remain active")
+                        restore_failed = False
+                        for name, value in reversed(tuple(previous_movement.items())):
+                            try:
+                                _write_route_setting(client, name, value)
+                            except Exception as exc:
+                                restore_failed = True
+                                print(f"HOME ROUTE: could not restore {name} ({exc})")
+                        if previous == "true":
+                            _write_break_setting(client, previous)
+                        if restore_failed:
+                            result = False
                     except Exception as exc:
-                        print(f"HOME ROUTE: could not restore prior digging setting ({exc})")
+                        print(f"HOME ROUTE: could not restore protected route settings ({exc})")
                         result = False
             return result
         return wrapped

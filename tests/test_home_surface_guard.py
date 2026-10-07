@@ -11,15 +11,20 @@ from baritone_client.common import combat, home_surface, navigation
 def test_homeward_route_cancels_on_drop_before_defense_or_arrival(monkeypatch, horizontal):
     calls = []
     reads = 0
-    setting = "true"
+    settings = {
+        "allowBreak": "true",
+        "allowParkour": "true",
+        "maxFallHeightNoWater": "3",
+    }
 
     def dispatch(route, payload, **kwargs):
-        nonlocal reads, setting
+        nonlocal reads
         calls.append((route, payload))
         if route == "settings":
+            name = payload.get("get", payload.get("set"))
             if "set" in payload:
-                setting = payload["value"]
-            return {"key": "allowBreak", "value": setting}
+                settings[name] = payload["value"]
+            return {"key": name, "value": settings[name]}
         if route == "get_state":
             reads += 1
             return {"health": 20, "food_level": 20, "is_pathing": False,
@@ -34,7 +39,11 @@ def test_homeward_route_cancels_on_drop_before_defense_or_arrival(monkeypatch, h
     assert not result
     assert client._last_navigation_outcome == "home_surface_abort"
     assert sum(route == "cancel" for route, _ in calls) == 1
-    assert setting == "true"
+    assert settings == {
+        "allowBreak": "true",
+        "allowParkour": "true",
+        "maxFallHeightNoWater": "3",
+    }
 
 
 def test_guard_preserves_explicit_mining_and_outside_home_routes():
@@ -90,6 +99,188 @@ def test_unverified_stop_keeps_digging_disabled():
         return False
     assert not uncertain_route(client, 100, 64, 100)
     assert setting == "false"
+
+
+def test_safe_movement_policy_is_verified_before_route_and_restored_after_stop():
+    settings = {
+        "allowBreak": "true",
+        "allowParkour": "true",
+        "maxFallHeightNoWater": "3",
+    }
+    calls = []
+
+    def dispatch(route, payload):
+        calls.append((route, payload))
+        if route == "settings":
+            name = payload.get("get", payload.get("set"))
+            if "set" in payload:
+                settings[name] = payload["value"]
+            return {"key": name, "value": settings[name]}
+        if route == "get_state":
+            return {"is_pathing": False}
+        return {}
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=dispatch),
+        _protected_home_anchor=(1, 64, 1),
+    )
+
+    @home_surface.protect_home_route(safe_movement=True)
+    def route(client, x, y, z):
+        assert settings == {
+            "allowBreak": "false",
+            "allowParkour": "false",
+            "maxFallHeightNoWater": "1",
+        }
+        return True
+
+    assert route(client, 1, 64, 1)
+    assert settings == {
+        "allowBreak": "true",
+        "allowParkour": "true",
+        "maxFallHeightNoWater": "3",
+    }
+    first_update = next(i for i, (r, p) in enumerate(calls) if r == "settings" and "set" in p)
+    assert all(r == "settings" for r, _p in calls[:first_update])
+    assert calls[first_update][1] == {"set": "allowBreak", "value": "false"}
+    assert calls[-1][0] == "settings"
+
+
+def test_safe_movement_settings_are_untouched_outside_the_home_guard():
+    settings = {"allowBreak": "true", "allowParkour": "true", "maxFallHeightNoWater": "3"}
+    calls = []
+
+    def dispatch(route, payload):
+        calls.append((route, payload))
+        if route == "settings":
+            name = payload.get("get", payload.get("set"))
+            if "set" in payload:
+                settings[name] = payload["value"]
+            return {"key": name, "value": settings[name]}
+        return {"is_pathing": False}
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=dispatch),
+        _protected_home_anchor=(100, 64, 100),
+    )
+
+    @home_surface.protect_home_route(safe_movement=True)
+    def route(client, x, y, z):
+        return True
+
+    assert route(client, 200, 64, 200)
+    assert not calls
+    assert settings == {
+        "allowBreak": "true",
+        "allowParkour": "true",
+        "maxFallHeightNoWater": "3",
+    }
+
+
+@pytest.mark.parametrize("bad", [None, "unknown", "NaN", "1.5"])
+def test_safe_movement_unknown_or_malformed_prior_value_refuses_route(bad, monkeypatch):
+    settings = {"allowBreak": "true", "allowParkour": "true", "maxFallHeightNoWater": bad}
+    calls = []
+
+    def dispatch(route, payload):
+        calls.append((route, payload))
+        if route == "settings":
+            name = payload.get("get", payload.get("set"))
+            return {"key": name, "value": settings[name]}
+        return {"is_pathing": False}
+
+    monkeypatch.setattr(home_surface.time, "sleep", lambda *_a: None)
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=dispatch),
+        _protected_home_anchor=(1, 64, 1),
+    )
+
+    @home_surface.protect_home_route(safe_movement=True)
+    def route(client, x, y, z):
+        pytest.fail("unsafe settings must not start movement")
+
+    assert not route(client, 1, 64, 1)
+    assert not any(
+        r == "settings" and p.get("set") in {"allowParkour", "maxFallHeightNoWater"}
+        for r, p in calls
+    )
+    assert settings["allowBreak"] == "true"
+
+
+def test_safe_movement_lost_readback_refuses_route_and_restores_after_stop(monkeypatch):
+    settings = {
+        "allowBreak": "true",
+        "allowParkour": "true",
+        "maxFallHeightNoWater": "3",
+    }
+    calls = []
+
+    def dispatch(route, payload):
+        calls.append((route, payload))
+        if route == "settings":
+            name = payload.get("get", payload.get("set"))
+            if "set" in payload and name != "allowParkour":
+                settings[name] = payload["value"]
+            return {"key": name, "value": settings[name]}
+        if route == "get_state":
+            return {"is_pathing": False}
+        return {}
+
+    monkeypatch.setattr(home_surface.time, "sleep", lambda *_a: None)
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=dispatch),
+        _protected_home_anchor=(1, 64, 1),
+    )
+
+    @home_surface.protect_home_route(safe_movement=True)
+    def route(client, x, y, z):
+        pytest.fail("movement must not start without the requested readback")
+
+    assert not route(client, 1, 64, 1)
+    assert settings == {
+        "allowBreak": "true",
+        "allowParkour": "true",
+        "maxFallHeightNoWater": "3",
+    }
+    assert not any(
+        r == "settings" and p.get("set") == "maxFallHeightNoWater" and p.get("value") == "1"
+        for r, p in calls
+    )
+
+
+@pytest.mark.parametrize("pathing", [True, None])
+def test_safe_movement_settings_stay_conservative_without_verified_stop(pathing):
+    settings = {
+        "allowBreak": "true",
+        "allowParkour": "true",
+        "maxFallHeightNoWater": "3",
+    }
+
+    def dispatch(route, payload):
+        if route == "settings":
+            name = payload.get("get", payload.get("set"))
+            if "set" in payload:
+                settings[name] = payload["value"]
+            return {"key": name, "value": settings[name]}
+        if route == "get_state":
+            return {} if pathing is None else {"is_pathing": pathing}
+        return {}
+
+    client = SimpleNamespace(
+        transport=SimpleNamespace(dispatch=dispatch),
+        _protected_home_anchor=(1, 64, 1),
+    )
+
+    @home_surface.protect_home_route(safe_movement=True)
+    def uncertain_route(client, x, y, z):
+        return True
+
+    assert not uncertain_route(client, 1, 64, 1)
+    assert settings == {
+        "allowBreak": "false",
+        "allowParkour": "false",
+        "maxFallHeightNoWater": "1",
+    }
 
 
 def test_death_propagates_through_home_route_cleanup():
