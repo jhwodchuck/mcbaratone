@@ -305,6 +305,10 @@ def craft_bread_at_saved_home(
         ]
         if not tables:
             return False
+        from .house_door_travel import prepare_house_door_for_entry
+
+        if not prepare_house_door_for_entry(client, state, anchor):
+            return False
         for tx, ty, tz in tables:
             stands = [
                 (tx + dx, ty, tz + dz)

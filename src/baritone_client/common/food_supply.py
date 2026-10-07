@@ -29,6 +29,7 @@ from .farm_site_travel import (
     horizontal_distance as _horizontal_distance,
 )
 from .food_workstation import craft_bread_at_saved_home
+from .house_door_travel import prepare_house_door_for_departure
 
 
 WHEAT = "minecraft:wheat"
@@ -663,13 +664,12 @@ def run_food_cycle(
         safe_to_work = eat_until_hunger(client, minimum_food=14)
     except Exception:
         safe_to_work = False
-    if not safe_to_work:
+    if not safe_to_work or not prepare_house_door_for_departure(
+        client, state, _base_anchor(state)
+    ):
         _flush(state, client)
-        return _result(
-            worker,
-            False,
-            "survival recovery could not restore food before farm travel",
-        )
+        reason = "survival recovery could not restore food before farm travel" if not safe_to_work else "house door blocked"
+        return _result(worker, False, reason)
     known = _plots(state)
     anchor = _base_anchor(state)
     retired = _retire_distant_plots(state, worker, anchor)
@@ -741,7 +741,6 @@ def run_food_cycle(
                 replanted = 1
             elif candidate is not None:
                 worker["failed_plot_sites"].append(list(candidate))
-
     after_harvest = get_inventory(client)
     bread_before = _count(after_harvest, BREAD)
     wheat_available = _count(after_harvest, WHEAT)
@@ -750,7 +749,6 @@ def run_food_cycle(
         craft_bread_at_saved_home(client, state, _base_anchor(state), breads_requested, survival_ready=_survival_ready, return_home=_return_to_anchor, craft=craft)
     after_craft = get_inventory(client)
     bread_crafted = max(0, _count(after_craft, BREAD) - bread_before)
-
     banked = 0
     chest = resolve_storage_location(client, state=state, verify=False)
     if chest is not None and _count(after_craft, BREAD) > max(0, int(personal_food_reserve)):

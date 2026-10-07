@@ -74,6 +74,10 @@ def _mock_known_house(monkeypatch, client, *, table=TABLE):
 
     monkeypatch.setattr(farming, "_block_data", block)
     monkeypatch.setattr("baritone_client.common.navigation.goto", goto)
+    monkeypatch.setattr(
+        "baritone_client.common.house_door_travel.prepare_house_door_for_entry",
+        lambda *_a: True,
+    )
 
 
 def test_reachable_saved_home_uses_only_its_enclosed_table(monkeypatch, state):
@@ -196,9 +200,10 @@ def test_missing_home_table_fails_without_crafting_or_material_prep(monkeypatch,
 
 def test_saved_anchor_outside_house_routes_to_known_interior_table(monkeypatch, state):
     client = _Client()
-    routes, crafts, returns = [], [], []
+    routes, crafts, returns, travel_order = [], [], [], []
 
     def goto(_client, x, y, z, **kwargs):
+        travel_order.append("interior_goto")
         routes.append(((x, y, z), kwargs))
         client.live["block_position"] = {"x": x + 0.5, "y": y, "z": z + 0.5}
         return True
@@ -210,6 +215,14 @@ def test_saved_anchor_outside_house_routes_to_known_interior_table(monkeypatch, 
         else {"id": "minecraft:air"}
     ))
     monkeypatch.setattr("baritone_client.common.navigation.goto", goto)
+    def prepare_entry(*_args):
+        travel_order.append("door_check")
+        return True
+
+    monkeypatch.setattr(
+        "baritone_client.common.house_door_travel.prepare_house_door_for_entry",
+        prepare_entry,
+    )
     monkeypatch.setattr(
         "baritone_client.common.enclosed_workstation.sheltered_bread_table",
         lambda _c: (True, TABLE),
@@ -227,6 +240,7 @@ def test_saved_anchor_outside_house_routes_to_known_interior_table(monkeypatch, 
         craft=lambda _c, item, count: crafts.append((item, count)) or True,
     )
     assert returns == [True]
+    assert travel_order[:2] == ["door_check", "interior_goto"]
     assert routes and routes[0][1] == {"timeout": 20, "tolerance": 0.5, "radius": 0}
     assert crafts == [(food_workstation.BREAD, 2)]
 
@@ -238,7 +252,7 @@ def test_open_saved_house_door_is_closed_before_strict_table_proof(monkeypatch, 
     for position, half in ((lower, "lower"), (upper, "upper")):
         client.blocks[position] = {
             "id": "minecraft:oak_door",
-            "state": {"half": half, "open": "true"},
+            "state": {"half": half, "open": "true", "facing": "south"},
         }
     routes, crafts, sheltered_checks = [], [], []
 
@@ -284,7 +298,7 @@ def test_timed_out_door_toggle_is_not_retried_while_still_open(monkeypatch, stat
     for position, half in ((lower, "lower"), (upper, "upper")):
         client.blocks[position] = {
             "id": "minecraft:oak_door",
-            "state": {"half": half, "open": "true"},
+            "state": {"half": half, "open": "true", "facing": "south"},
         }
     from baritone_client.common import farming, survival_farm
     monkeypatch.setattr(farming, "_block_data", lambda _c, x, y, z: (
@@ -417,6 +431,10 @@ def test_unreachable_known_house_table_never_spends_wheat(monkeypatch, state):
     monkeypatch.setattr(
         "baritone_client.common.navigation.goto",
         lambda _c, *args, **_kwargs: attempts.append(args) or False,
+    )
+    monkeypatch.setattr(
+        "baritone_client.common.house_door_travel.prepare_house_door_for_entry",
+        lambda *_a: True,
     )
 
     assert not _call(

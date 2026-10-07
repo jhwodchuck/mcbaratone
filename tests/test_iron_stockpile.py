@@ -218,6 +218,20 @@ def test_failed_inventory_preparation_never_enters_the_mine(bot, monkeypatch):
     assert bot.dug == [] and bot.pos == ENTRANCE
 
 
+def test_closed_saved_house_door_blocks_mining_until_departure_is_safe(bot, monkeypatch):
+    with_ore(bot, 64)
+    called = []
+    monkeypatch.setattr(
+        "baritone_client.common.house_door_travel.prepare_house_door_for_departure",
+        lambda *_a: called.append(True) or False,
+    )
+
+    ok, detail, *_ = iron_stockpile.run_supply_trip(bot, state(), now=1000)
+
+    assert not ok and "doorway" in detail
+    assert called == [True] and bot.dug == []
+
+
 def test_the_next_trip_walks_the_recorded_tunnel_instead_of_digging_it_again(bot):
     with_ore(bot, 64)
     st = state()

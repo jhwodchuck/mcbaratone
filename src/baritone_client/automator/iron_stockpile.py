@@ -336,6 +336,10 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
     entrance = tuple(entrance) if isinstance(entrance, (list, tuple)) and len(entrance) == 3 else choose_entrance(client, state)
     if entrance is None:
         return done(False, "no safe surface entrance near the base")
+    from ..common.house_door_travel import prepare_house_door_for_departure
+
+    if not prepare_house_door_for_departure(client, state, anchor):
+        return done(False, "saved-house doorway is not safe for mine travel")
     rec["entrance"] = list(entrance)
     if (
         not goto(client, *entrance, timeout=150, tolerance=0.8)

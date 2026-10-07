@@ -413,6 +413,28 @@ def test_failed_home_workstation_does_not_erase_harvest_credit(monkeypatch):
     assert counts[food_supply.WHEAT] == 7 and counts[food_supply.BREAD] == 0
 
 
+def test_food_cycle_does_not_leave_house_through_unverified_closed_door(monkeypatch):
+    _inventory(monkeypatch, {"minecraft:wheat": 0, "minecraft:wheat_seeds": 8})
+    monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        food_supply, "prepare_house_door_for_departure", lambda *_a: False
+    )
+    monkeypatch.setattr(
+        food_supply, "harvest_wheat_farm",
+        lambda *_a, **_k: pytest.fail("farm travel must wait for a verified doorway"),
+    )
+    state = _state({
+        "base_location": [10, 65, 10],
+        "structures": {"starter_house": {"origin": [9, 65, 9]}},
+    })
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a: {}))
+
+    result = food_supply.run_food_cycle(client, state)
+
+    assert not result.success
+    assert "door" in result.detail
+
+
 def test_farm_expansion_rejects_cave_soil_and_returns_home(monkeypatch):
     monkeypatch.setattr(food_supply, "_approach_candidate", lambda *_a: None)
     monkeypatch.setattr(food_supply, "find_farm_surface_near", lambda *_a: (32, 50, 0))
