@@ -33,6 +33,7 @@ from .passive_hunt_navigation import (
     PassiveHuntNavigation,
     find_unrequested_hostile,
 )
+from .airborne_threat_confirmation import reobserve_transient_airborne_creeper
 
 from ..core.exceptions import TransportError
 
@@ -1510,6 +1511,36 @@ def defend_or_flee(
     )
     _stop_for_defense(client)
     if decision.mode == DefenseMode.EVADE:
+        if snapshot is not None:
+            observation, fresh = reobserve_transient_airborne_creeper(
+                client, snapshot, primary, assessments
+            )
+            if observation == "hold":
+                client._last_defense_intervention = "airborne_threat_recheck"
+                runtime.transition(
+                    DefenseMode.ALERT,
+                    "airborne threat remains uncertain after bounded recheck",
+                )
+                combat_telemetry.record_combat_action(
+                    client,
+                    "defense_intervention",
+                    outcome="airborne_threat_recheck",
+                )
+                return True
+            if observation == "fresh":
+                resolved = defend_or_flee(
+                    client,
+                    allow_safe_recovery_movement=allow_safe_recovery_movement,
+                    observed_snapshot=fresh,
+                )
+                if not resolved:
+                    client._last_defense_intervention = (
+                        "airborne_threat_recheck_clear"
+                        if runtime.mode == DefenseMode.CLEAR
+                        else "airborne_threat_recheck_intervened"
+                    )
+                    return True
+                return resolved
         threat_id = primary.entity.get("id")
         escaped = run_away(client, primary.entity)
         runtime.record_evade_result(threat_id, escaped)
