@@ -302,6 +302,13 @@ def test_entity_error_envelopes_fail_closed_even_with_empty_entities(world, resp
         make_miner(world, patience=0).check()
 
 
+@pytest.mark.parametrize("skipped", [1, True, "0", None, -1])
+def test_partial_entity_snapshots_fail_closed(world, skipped):
+    world.entity_response = {"entities": [], "skipped_count": skipped}
+    with pytest.raises(tm.MineAbort, match="entity telemetry incomplete"):
+        make_miner(world).check()
+
+
 def test_entity_query_error_fails_closed_during_retreat(world):
     world.entity_error = True
     world.pos = (1, 70, 0)

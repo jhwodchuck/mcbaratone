@@ -231,9 +231,13 @@ class TunnelMiner:
         if not isinstance(player_state, dict) or "cell" not in player_state:
             raise MineAbort("player telemetry invalid")
 
-        entities = self._call(
+        observation = self._call(
             "get_entities", {"radius": int(HOSTILE_RADIUS) + 3}
-        ).get("entities")
+        )
+        skipped = observation.get("skipped_count", 0)
+        if isinstance(skipped, bool) or not isinstance(skipped, int) or skipped != 0:
+            raise MineAbort("entity telemetry incomplete")
+        entities = observation.get("entities")
         if not isinstance(entities, list):
             raise MineAbort("entity telemetry invalid")
         for entity in entities:
