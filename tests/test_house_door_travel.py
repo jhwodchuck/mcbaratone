@@ -136,6 +136,60 @@ def test_no_nonplaceable_tool_means_no_door_pulse(monkeypatch, state):
     assert not any(route == "use_item" for route, _ in client.routes)
 
 
+@pytest.mark.parametrize("invalid", ["snapshot", "selected_slot", "duplicate_slot", "count"])
+def test_invalid_post_selection_inventory_restores_prior_slot(monkeypatch, state, invalid):
+    client = _DoorClient((HOME[0] + 0.25, HOME[1], HOME[2] + 0.25))
+    _world(monkeypatch, client)
+    original = client.dispatch
+    reads = 0
+
+    def dispatch(route, payload=None):
+        nonlocal reads
+        result = original(route, payload)
+        if route == "get_inventory":
+            reads += 1
+            if reads == 2:
+                if invalid == "snapshot":
+                    result["snapshot_valid"] = False
+                elif invalid == "selected_slot":
+                    result["selected_slot"] = True
+                elif invalid == "duplicate_slot":
+                    result["inventory"][1]["slot"] = 0
+                else:
+                    result["inventory"][1]["count"] = True
+        return result
+    client.transport.dispatch = dispatch
+
+    assert not house_door_travel.prepare_house_door_for_entry(client, state, HOME)
+    selected = [payload["slot"] for route, payload in client.routes if route == "select_slot"]
+    assert selected == [1, 0]
+    assert client.selected == 0
+    assert not any(route == "use_item" for route, _ in client.routes)
+
+
+def test_missing_post_selection_held_item_restores_prior_slot(monkeypatch, state):
+    client = _DoorClient((HOME[0] + 0.25, HOME[1], HOME[2] + 0.25))
+    _world(monkeypatch, client)
+    original = client.dispatch
+    reads = 0
+
+    def dispatch(route, payload=None):
+        nonlocal reads
+        result = original(route, payload)
+        if route == "get_inventory":
+            reads += 1
+            if reads == 2:
+                result["inventory"] = [entry for entry in result["inventory"] if entry["slot"] != 1]
+        return result
+    client.transport.dispatch = dispatch
+
+    assert not house_door_travel.prepare_house_door_for_entry(client, state, HOME)
+    selected = [payload["slot"] for route, payload in client.routes if route == "select_slot"]
+    assert selected == [1, 0]
+    assert client.selected == 0
+    assert not any(route == "use_item" for route, _ in client.routes)
+
+
 def test_unexpected_door_facing_fails_closed(monkeypatch, state):
     client = _DoorClient((HOME[0] + 0.25, HOME[1], HOME[2] + 0.25))
     client.facing = "west"

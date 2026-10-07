@@ -108,25 +108,20 @@ def _in_house(position, origin):
     return interior or (x == ox + 3 and y == oy + 1 and z == oz)
 
 
-def _safe_tool_slot(client):
-    """Return (current, chosen) slots without swapping or consuming items."""
-    try:
-        raw = client.transport.dispatch("get_inventory", {})
-    except Exception:
-        return None
+def _inventory_snapshot(raw):
     from ..inventory_evidence import valid_inventory
 
     data = _data(raw)
     if data is None or not valid_inventory(raw) or not valid_inventory(data):
         return None
-    entries = data.get("inventory") if data else None
-    current = data.get("selected_slot") if data else None
+    entries = data.get("inventory")
+    selected = data.get("selected_slot")
     if (
         not isinstance(entries, list)
         or any(not isinstance(entry, Mapping) for entry in entries)
-        or isinstance(current, bool)
-        or not isinstance(current, int)
-        or not 0 <= current <= 8
+        or isinstance(selected, bool)
+        or not isinstance(selected, int)
+        or not 0 <= selected <= 8
         or any(
             isinstance(entry.get("slot"), bool)
             or not isinstance(entry.get("slot"), int)
@@ -135,6 +130,20 @@ def _safe_tool_slot(client):
         )
         or len({entry["slot"] for entry in entries}) != len(entries)
     ):
+        return None
+    return data
+
+
+def _safe_tool_slot(client):
+    """Return (current, chosen) slots without swapping or consuming items."""
+    try:
+        raw = client.transport.dispatch("get_inventory", {})
+    except Exception:
+        return None
+    data = _inventory_snapshot(raw)
+    entries = data.get("inventory") if data else None
+    current = data.get("selected_slot") if data else None
+    if data is None or not 0 <= current <= 8:
         return None
 
     def safe(entry):
@@ -161,26 +170,24 @@ def _safe_tool_slot(client):
     chosen = int(candidate["slot"])
     try:
         client.transport.dispatch("select_slot", {"slot": chosen})
-        verified = _data(client.transport.dispatch("get_inventory", {}))
+        verified = _inventory_snapshot(client.transport.dispatch("get_inventory", {}))
     except Exception:
         _restore_slot(client, current)
         return None
-    if (
-        not verified
-        or not isinstance(verified.get("inventory"), list)
-        or any(not isinstance(entry, Mapping) for entry in verified["inventory"])
-        or verified.get("selected_slot") != chosen
-    ):
+    if verified is None or verified.get("selected_slot") != chosen:
         _restore_slot(client, current)
         return None
     held = next((entry for entry in verified.get("inventory", []) if entry.get("slot") == chosen), None)
-    return (current, chosen) if held is not None and safe(held) else None
+    if held is None or not safe(held):
+        _restore_slot(client, current)
+        return None
+    return current, chosen
 
 
 def _restore_slot(client, slot):
     try:
         client.transport.dispatch("select_slot", {"slot": slot})
-        data = _data(client.transport.dispatch("get_inventory", {}))
+        data = _inventory_snapshot(client.transport.dispatch("get_inventory", {}))
         return bool(data and data.get("selected_slot") == slot)
     except Exception:
         return False
