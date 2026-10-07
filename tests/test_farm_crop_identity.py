@@ -82,6 +82,23 @@ def test_crop_snapshot_fails_closed_on_an_unknown_block_read():
     assert identity._capture_mature_wheat(client, 0, 64, 0) is None
 
 
+def test_uncertain_native_farm_start_is_cancelled_without_crop_repair(monkeypatch):
+    calls = []
+
+    def dispatch(route, payload):
+        calls.append(route)
+        if route == "farm":
+            raise TimeoutError("response lost after transmission")
+        return {"cancelled": True}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    monkeypatch.setattr(farming, "goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(identity, "_capture_mature_wheat", lambda *_a: ())
+    monkeypatch.setattr(farming, "count_item", lambda *_a: 0)
+    assert identity.run_wheat_farm_harvest(client, 0, 64, 0, 8) is False
+    assert calls == ["farm", "cancel"]
+
+
 @pytest.mark.parametrize(
     "cancel_response",
     [

@@ -191,6 +191,8 @@ def run_wheat_farm_harvest(client, x, y, z, range_):
         client.transport.dispatch("farm", {"range": range_})
     except Exception as exc:
         print(f"  Farm harvest dispatch failed: {exc}")
+        # A lost response does not prove the native process never started.
+        client.transport.dispatch("cancel", {})
         return False
 
     safe = True
