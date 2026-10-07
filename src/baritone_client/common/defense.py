@@ -325,6 +325,7 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
     # evade/relocate loop forever.  Explosives remain fail-closed when any of
     # those observations are missing or uncertain.
     calm_creeper = entity_type == "creeper"
+    stationary_creeper = False
     vertically_separated = False
     if calm_creeper:
         # Fabric can report vanilla grounded gravity (-0.0784 Y velocity)
@@ -341,6 +342,15 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
             grounded_vertical_velocity = float(player_velocity["y"])
             if not -0.1 <= grounded_vertical_velocity <= 0.05:
                 return False
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False
+        try:
+            velocity = entity["velocity"]
+            components = [float(velocity[axis]) for axis in ("x", "y", "z")]
+            stationary_creeper = (
+                all(math.isfinite(component) for component in components)
+                and math.sqrt(sum(component * component for component in components)) <= 0.05
+            )
         except (KeyError, TypeError, ValueError, OverflowError):
             return False
         closing = _closing_speed(
@@ -382,23 +392,16 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
         and _explicit_aggression(entity, state) is False
         and math.isfinite(distance)
         and (6.0 if calm_creeper else 5.0) < distance < 999.0
-        and (closing <= 0.05 or vertically_separated)
+        and (not calm_creeper or stationary_creeper)
+        and (closing <= 0.05 or vertically_separated or stationary_creeper)
     ):
         return False
     target = entity.get("target_id")
     if target is not None and target == state.get("entity_id", state.get("player_id")):
         return False
     if calm_creeper:
-        # Radial speed alone can miss lateral motion toward a corner of the
-        # player's position.  Require the creeper itself to be stationary,
-        # and avoid suppressing one whose target is ambiguous.
+        # Do not suppress a creeper with an ambiguous target.
         if target is not None:
-            return False
-        try:
-            velocity = entity["velocity"]
-            if math.sqrt(sum(float(velocity[axis]) ** 2 for axis in ("x", "y", "z"))) > 0.05:
-                return False
-        except (KeyError, TypeError, ValueError, OverflowError):
             return False
     vectors = [entity.get("position"), entity.get("velocity"),
                state.get("block_position", state.get("position"))]

@@ -197,12 +197,38 @@ def test_airborne_player_descent_keeps_creeper_actionable():
     assert assess_threats([creeper], player)
 
 
-def test_grounded_player_horizontal_approach_keeps_creeper_actionable():
+def test_grounded_player_horizontal_approach_does_not_make_stationary_creeper_closing():
     player = {
         **GROUNDED_PLAYER,
         "velocity": {"x": 0.2, "y": -0.0784000015258789, "z": 0},
     }
-    creeper = sheltered_mob("creeper", 9.2)
+    creeper = sheltered_mob("creeper", 8)
+
+    assert assess_threats([creeper], player) == []
+
+
+def test_stationary_creeper_reactivates_when_fresh_visibility_or_aggression_changes():
+    player = {
+        **GROUNDED_PLAYER,
+        "velocity": {"x": 0.2, "y": -0.0784000015258789, "z": 0},
+    }
+    creeper = sheltered_mob("creeper", 8)
+    assert assess_threats([creeper], player) == []
+
+    creeper["can_see_player"] = True
+    assert assess_threats([creeper], player)
+
+    creeper["can_see_player"] = False
+    creeper["is_aggressive"] = True
+    assert assess_threats([creeper], player)
+
+
+def test_player_motion_does_not_hide_creeper_at_contact_boundary():
+    player = {
+        **GROUNDED_PLAYER,
+        "velocity": {"x": 0.2, "y": -0.0784000015258789, "z": 0},
+    }
+    creeper = sheltered_mob("creeper", 6)
 
     assert assess_threats([creeper], player)
 
