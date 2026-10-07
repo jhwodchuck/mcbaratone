@@ -11,22 +11,50 @@ _OTHER_CROPS = {
     "minecraft:carrots", "minecraft:potatoes", "minecraft:beetroots",
 }
 _AIR = {"minecraft:air", "minecraft:cave_air"}
+_CROP_ITEMS = {
+    "minecraft:carrots": "minecraft:carrot",
+    "minecraft:potatoes": "minecraft:potato",
+    "minecraft:beetroots": "minecraft:beetroot_seeds",
+}
+
+
+def _successful_data(response):
+    """Unwrap only mappings that are not explicit transport/command errors."""
+    if not isinstance(response, Mapping):
+        return None
+    for envelope in (response, response.get("data")):
+        if not isinstance(envelope, Mapping):
+            continue
+        if envelope.get("success") is False:
+            return None
+        if str(envelope.get("status", "")).lower() in {"error", "failed", "failure"}:
+            return None
+        if envelope.get("error") not in (None, "", False):
+            return None
+    data = response.get("data", response)
+    return data if isinstance(data, Mapping) else None
 
 
 def _read_block(client, position):
     response = client.transport.dispatch(
         "get_block", {"x": position[0], "y": position[1], "z": position[2]}
     )
-    data = response.get("data", response) if isinstance(response, Mapping) else None
-    return data if isinstance(data, Mapping) and isinstance(data.get("id"), str) else None
+    data = _successful_data(response)
+    return data if data is not None and isinstance(data.get("id"), str) and data["id"] else None
 
 
 def _age(block):
     state = block.get("state")
-    try:
-        return int(state["age"]) if isinstance(state, Mapping) else None
-    except (KeyError, TypeError, ValueError):
+    raw_age = state.get("age") if isinstance(state, Mapping) else None
+    if isinstance(raw_age, bool):
         return None
+    if isinstance(raw_age, int):
+        age = raw_age
+    elif isinstance(raw_age, str) and raw_age.isdecimal():
+        age = int(raw_age)
+    else:
+        return None
+    return age if 0 <= age <= 7 else None
 
 
 def _capture_mature_wheat(client, x, y, z, size=5):
@@ -48,7 +76,7 @@ def _capture_mature_wheat(client, x, y, z, size=5):
                 age = _age(block)
                 if age is None:
                     return None
-                if age >= 7:
+                if age == 7:
                     mature.append(position)
     return tuple(mature)
 
@@ -61,7 +89,8 @@ def _stopped_after_cancel(client, timeout=2.0):
             live = client.transport.dispatch("get_state", {})
         except Exception:
             live = None
-        if isinstance(live, Mapping) and live.get("is_pathing") is False:
+        state = _successful_data(live)
+        if state is not None and state.get("is_pathing") is False:
             clear_observations += 1
             if clear_observations >= 2:
                 return True
@@ -90,7 +119,10 @@ def _restore_converted_wheat(client, positions):
                 current is None or current["id"] not in _OTHER_CROPS
                 or _age(current) not in {0, 1}
                 or soil is None or soil["id"] != "minecraft:farmland"
+                or farming.count_item(client, "minecraft:wheat_seeds") < 1
+                or farming.count_item(client, _CROP_ITEMS[current["id"]]) < 1
                 or not _within_block_reach(client, *ground)
+                or not _stopped_after_cancel(client)
             ):
                 continue
 
@@ -120,11 +152,22 @@ def _restore_converted_wheat(client, positions):
             if after_dig is None or after_dig["id"] not in _AIR:
                 continue
             soil = _read_block(client, ground)
-            if (
-                soil is None or soil["id"] != "minecraft:farmland"
-                or not _within_block_reach(client, *ground)
-                or not farming._till_and_plant_tile(client, *ground)
-            ):
+            if soil is None or soil["id"] != "minecraft:farmland":
+                continue
+            if not farming._till_and_plant_tile(client, *ground):
+                after_plant = _read_block(client, position)
+                if after_plant is not None and after_plant["id"] == _WHEAT:
+                    restored += 1
+                    continue
+                if after_plant is not None and after_plant["id"] in _AIR:
+                    from .farm_planting import _plant_non_wheat_crop
+
+                    _plant_non_wheat_crop(
+                        client, *ground, _CROP_ITEMS[current["id"]]
+                    )
+                    rollback = _read_block(client, position)
+                    if rollback is None or rollback["id"] != current["id"]:
+                        print(f"  Wheat identity repair rollback unverified {position}")
                 continue
             planted = _read_block(client, position)
             if planted is not None and planted["id"] == _WHEAT:
@@ -165,9 +208,10 @@ def run_wheat_farm_harvest(client, x, y, z, range_):
     finally:
         cancelled = client.transport.dispatch("cancel", {})
 
+    cancel_result = _successful_data(cancelled)
     if (
-        not isinstance(cancelled, Mapping)
-        or cancelled.get("cancelled") is not True
+        cancel_result is None
+        or cancel_result.get("cancelled") is not True
         or not _stopped_after_cancel(client)
     ):
         return False

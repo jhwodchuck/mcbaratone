@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from baritone_client.common import farming
 from baritone_client.common import farm_crop_identity as identity
 
@@ -40,7 +42,10 @@ def test_harvest_repairs_only_observed_mature_wheat_replaced_by_immature_crop(mo
 
     client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
     monkeypatch.setattr(farming, "goto", lambda *_a, **_k: True)
-    monkeypatch.setattr(farming, "count_item", lambda *_a: wheat_count[0])
+    def count_item(_client, item):
+        return wheat_count[0] if item == "minecraft:wheat" else 1
+
+    monkeypatch.setattr(farming, "count_item", count_item)
     monkeypatch.setattr(farming, "farm_surface_safe", lambda *_a: True)
     monkeypatch.setattr(
         "baritone_client.common.farm_planting._within_block_reach",
@@ -77,7 +82,16 @@ def test_crop_snapshot_fails_closed_on_an_unknown_block_read():
     assert identity._capture_mature_wheat(client, 0, 64, 0) is None
 
 
-def test_unacknowledged_cancel_never_repairs_crop_identity(monkeypatch):
+@pytest.mark.parametrize(
+    "cancel_response",
+    [
+        {"cancelled": False},
+        {"success": False, "cancelled": True},
+    ],
+)
+def test_unacknowledged_cancel_never_repairs_crop_identity(
+    monkeypatch, cancel_response
+):
     position = (-1, 65, 0)
     blocks = {position: _crop("minecraft:wheat", 7)}
     calls = []
@@ -92,7 +106,7 @@ def test_unacknowledged_cancel_never_repairs_crop_identity(monkeypatch):
             blocks[position] = _crop("minecraft:carrots", 1)
             farm_started[0] = True
         if route == "cancel":
-            return {"cancelled": False}
+            return cancel_response
         return {}
 
     client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
@@ -111,3 +125,150 @@ def test_unacknowledged_cancel_never_repairs_crop_identity(monkeypatch):
 
     assert identity.run_wheat_farm_harvest(client, 0, 64, 0, 8) is False
     assert "dig_block" not in calls
+
+
+def _repair_fixture(monkeypatch, crop_id="minecraft:carrots", age=1):
+    position = (-1, 65, 0)
+    ground = (-1, 64, 0)
+    blocks = {position: _crop(crop_id, age), ground: {"id": "minecraft:farmland"}}
+    calls = []
+
+    def dispatch(route, payload):
+        calls.append((route, payload))
+        if route == "get_block":
+            pos = (payload["x"], payload["y"], payload["z"])
+            return blocks.get(pos, {"id": "minecraft:air"})
+        if route == "dig_block":
+            blocks[position] = {"id": "minecraft:air"}
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch))
+    monkeypatch.setattr(farming, "farm_surface_safe", lambda *_a: True)
+    monkeypatch.setattr(
+        "baritone_client.common.farm_planting._within_block_reach",
+        lambda *_a: True,
+    )
+    monkeypatch.setattr(identity, "_stopped_after_cancel", lambda *_a: True)
+    monkeypatch.setattr(
+        farming, "count_item",
+        lambda _client, item: 1 if item in {
+            "minecraft:wheat_seeds", "minecraft:carrot",
+        } else 0,
+    )
+
+    def plant(_client, x, y, z):
+        blocks[(x, y + 1, z)] = _crop("minecraft:wheat", 0)
+        return True
+
+    monkeypatch.setattr(farming, "_till_and_plant_tile", plant)
+    return client, position, ground, blocks, calls
+
+
+@pytest.mark.parametrize("condition", ["no-seeds", "unreachable", "changed-soil", "mature-crop"])
+def test_repair_requires_seed_reach_unchanged_farmland_and_immature_crop(
+    monkeypatch, condition
+):
+    client, position, ground, blocks, calls = _repair_fixture(
+        monkeypatch, age=7 if condition == "mature-crop" else 1,
+    )
+    if condition == "no-seeds":
+        monkeypatch.setattr(
+            farming, "count_item",
+            lambda _client, item: 1 if item == "minecraft:carrot" else 0,
+        )
+    elif condition == "unreachable":
+        monkeypatch.setattr(
+            "baritone_client.common.farm_planting._within_block_reach",
+            lambda *_a: False,
+        )
+    elif condition == "changed-soil":
+        blocks[ground] = {"id": "minecraft:dirt"}
+
+    identity._restore_converted_wheat(client, [position])
+    assert not any(route == "dig_block" for route, _payload in calls), condition
+
+
+def test_failed_crop_dig_does_not_attempt_to_plant(monkeypatch):
+    client, position, _ground, blocks, calls = _repair_fixture(monkeypatch)
+    dispatch = client.transport.dispatch
+
+    def failed_dig(route, payload):
+        if route == "dig_block":
+            calls.append((route, payload))
+            return {"success": False, "error": "could not start"}
+        return dispatch(route, payload)
+
+    client.transport.dispatch = failed_dig
+    monkeypatch.setattr(farming, "_till_and_plant_tile", lambda *_a: pytest.fail("crop remains"))
+    clock = [0.0]
+    monkeypatch.setattr(identity.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        identity.time, "sleep",
+        lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+
+    identity._restore_converted_wheat(client, [position])
+
+    assert blocks[position]["id"] == "minecraft:carrots"
+    assert any(route == "dig_block" for route, _payload in calls)
+
+
+def test_failed_wheat_plant_attempt_restores_original_crop(monkeypatch):
+    client, position, ground, blocks, calls = _repair_fixture(monkeypatch)
+    monkeypatch.setattr(farming, "_till_and_plant_tile", lambda *_a: False)
+
+    def restore_crop(_client, x, y, z, crop_item):
+        assert crop_item == "minecraft:carrot"
+        blocks[(x, y + 1, z)] = _crop("minecraft:carrots", 0)
+        return True
+
+    monkeypatch.setattr(
+        "baritone_client.common.farm_planting._plant_non_wheat_crop",
+        restore_crop,
+    )
+
+    assert identity._restore_converted_wheat(client, [position]) == 0
+    assert blocks[position]["id"] == "minecraft:carrots"
+    assert blocks[ground]["id"] == "minecraft:farmland"
+    assert any(route == "dig_block" for route, _payload in calls)
+
+
+def test_block_reads_reject_error_envelopes_at_both_levels():
+    for response in (
+        {"success": False, "data": {"id": "minecraft:wheat"}},
+        {"data": {"success": False, "id": "minecraft:wheat"}},
+        {"status": "error", "data": {"id": "minecraft:wheat"}},
+        {"data": {"status": "ERROR", "id": "minecraft:wheat"}},
+        {"error": "unavailable", "data": {"id": "minecraft:wheat"}},
+    ):
+        client = SimpleNamespace(
+            transport=SimpleNamespace(dispatch=lambda *_a: response)
+        )
+        assert identity._read_block(client, (0, 64, 0)) is None
+
+
+def test_stopped_state_rejects_error_envelopes_and_still_pathing(monkeypatch):
+    responses = iter((
+        {"success": False, "data": {"is_pathing": False}},
+        {"data": {"status": "error", "is_pathing": False}},
+        {"is_pathing": True},
+    ))
+    client = SimpleNamespace(
+        transport=SimpleNamespace(
+            dispatch=lambda route, _payload: next(responses) if route == "get_state" else {}
+        )
+    )
+    clock = [0.0]
+    monkeypatch.setattr(identity.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        identity.time, "sleep",
+        lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+
+    assert identity._stopped_after_cancel(client, timeout=0.25) is False
+
+
+def test_age_parser_rejects_boolean_fractional_and_out_of_range_ages():
+    for value in (True, 7.5, -1, 8, 10**100, "7.0", "8"):
+        assert identity._age({"state": {"age": value}}) is None
+    assert identity._age({"state": {"age": "7"}}) == 7
