@@ -281,6 +281,27 @@ def test_malformed_entity_telemetry_fails_closed(world, response):
         miner.check()
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"success": False, "entities": []},
+        {"status": "error", "data": {"entities": []}},
+        {"error": "query failed", "data": {"entities": []}},
+        {"data": {"success": False, "entities": []}},
+        {"data": {"error": "query failed", "entities": []}},
+    ],
+    ids=[
+        "raw-success-false", "raw-status-error", "raw-error",
+        "data-success-false", "data-error",
+    ],
+)
+def test_entity_error_envelopes_fail_closed_even_with_empty_entities(world, response):
+    world.entity_response = response
+
+    with pytest.raises(tm.MineAbort, match="telemetry error"):
+        make_miner(world, patience=0).check()
+
+
 def test_entity_query_error_fails_closed_during_retreat(world):
     world.entity_error = True
     world.pos = (1, 70, 0)
@@ -312,6 +333,63 @@ def test_missing_or_malformed_player_telemetry_fails_closed(world, bad_state):
 
     with pytest.raises(tm.MineAbort):
         miner.check()
+
+
+@pytest.mark.parametrize(
+    "coordinate",
+    [True, float("inf"), float("nan")],
+    ids=["boolean", "infinite", "not-a-number"],
+)
+def test_boolean_or_nonfinite_player_coordinates_fail_closed(world, coordinate):
+    world.state_response = {
+        "block_position": {"x": coordinate, "y": 70, "z": 0},
+        "health": 20, "is_dead": False, "dimension": "minecraft:overworld",
+    }
+
+    with pytest.raises(tm.MineAbort, match="player telemetry invalid"):
+        make_miner(world).check()
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"success": False, "data": {
+            "block_position": {"x": 0, "y": 70, "z": 0}, "health": 20,
+            "is_dead": False, "dimension": "minecraft:overworld",
+        }},
+        {"status": "error", "data": {
+            "block_position": {"x": 0, "y": 70, "z": 0}, "health": 20,
+            "is_dead": False, "dimension": "minecraft:overworld",
+        }},
+        {"data": {"success": False,
+                   "block_position": {"x": 0, "y": 70, "z": 0}, "health": 20,
+                   "is_dead": False, "dimension": "minecraft:overworld"}},
+        {"data": {"error": "state query failed",
+                   "block_position": {"x": 0, "y": 70, "z": 0}, "health": 20,
+                   "is_dead": False, "dimension": "minecraft:overworld"}},
+    ],
+    ids=["raw-success-false", "raw-status-error", "data-success-false", "data-error"],
+)
+def test_state_error_envelopes_fail_closed_even_with_valid_state(world, response):
+    world.state_response = response
+
+    with pytest.raises(tm.MineAbort, match="telemetry error"):
+        make_miner(world).check()
+
+
+def test_success_status_wrappers_remain_valid_for_state_and_entity_reads(world):
+    world.state_response = {
+        "status": "ok",
+        "data": {
+            "block_position": {"x": 0, "y": 70, "z": 0}, "health": 20,
+            "is_dead": False, "dimension": "minecraft:overworld",
+        },
+    }
+    world.entity_response = {"status": "ok", "data": {"entities": []}}
+
+    miner = make_miner(world)
+    assert miner.check()["cell"] == ENTRANCE
+    assert miner.hostiles() == 0
 
 
 def test_player_state_query_error_fails_closed(world):

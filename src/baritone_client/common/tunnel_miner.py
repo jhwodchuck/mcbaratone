@@ -139,9 +139,18 @@ class TunnelMiner:
     # -- bridge access ------------------------------------------------------
     def _call(self, route: str, payload: Optional[dict] = None) -> Dict[str, Any]:
         try:
-            return _unwrap(self.client.transport.dispatch(route, payload or {}))
+            response = self.client.transport.dispatch(route, payload or {})
         except Exception as exc:
             raise MineAbort(f"bridge {route} failed: {exc}") from exc
+        if route in {"get_state", "get_entities"}:
+            for envelope in (response, response.get("data") if isinstance(response, dict) else None):
+                if isinstance(envelope, dict) and (
+                    envelope.get("success") is False
+                    or str(envelope.get("status", "")).lower() == "error"
+                    or envelope.get("error")
+                ):
+                    raise MineAbort(f"bridge {route} telemetry error")
+        return _unwrap(response)
 
     def _default_count(self, item: str) -> int:
         from .inventory import count_item
@@ -152,7 +161,16 @@ class TunnelMiner:
         live = self._call("get_state")
         position = live.get("block_position") or live.get("position") or {}
         try:
-            live["cell"] = tuple(int(float(position[axis])) for axis in ("x", "y", "z"))
+            coordinates = []
+            for axis in ("x", "y", "z"):
+                coordinate = position[axis]
+                if isinstance(coordinate, bool) or not isinstance(coordinate, (int, float)):
+                    raise ValueError("coordinate must be numeric")
+                coordinate_value = float(coordinate)
+                if not math.isfinite(coordinate_value):
+                    raise ValueError("coordinate must be finite")
+                coordinates.append(int(coordinate_value))
+            live["cell"] = tuple(coordinates)
             health = live["health"]
             health_value = float(health)
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
