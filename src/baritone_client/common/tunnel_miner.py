@@ -89,7 +89,7 @@ def free_slots(client: Any) -> int:
 
     raw = client.transport.dispatch("get_inventory", {})
     data = raw.get("data", raw) if isinstance(raw, dict) else None
-    if not valid_inventory(data) or not isinstance(data.get("inventory"), list):
+    if not valid_inventory(raw) or not valid_inventory(data) or not isinstance(data.get("inventory"), list):
         # A missing/partial snapshot must never look like a completely empty
         # pack. Callers treat zero slots as a reason to stop before digging.
         return 0
@@ -354,6 +354,8 @@ class TunnelMiner:
             # Navigation must have stopped before restoring a setting that
             # could let Baritone break terrain on its next path.
             live = self._call("get_state")
+            if live.get("is_pathing") is not False:
+                raise MineAbort("tunnel travel stop was not verified")
             if live.get("is_pathing") is False and setting == "true":
                 self._call("settings", {"set": "allowBreak", "value": "true"})
                 if self._call("settings", {"get": "allowBreak"}).get("value") != "true":

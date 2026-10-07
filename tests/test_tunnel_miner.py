@@ -351,3 +351,21 @@ def test_invalid_inventory_snapshot_is_zero_free_slots_and_fails_closed():
         "inventory": [{"id": "minecraft:stone", "count": 64}]
     }))
     assert tm.free_slots(missing_slot) == 0
+
+
+@pytest.mark.parametrize("flags", [{"snapshot_valid": False}, {"error": "unavailable"}])
+def test_invalid_inventory_envelope_cannot_supply_capacity(flags):
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a: {
+        **flags, "data": {"inventory": []},
+    }))
+    assert tm.free_slots(client) == 0
+
+
+def test_tunnel_travel_refuses_unverified_stop_and_keeps_digging_disabled(world):
+    spine = [ENTRANCE, (1, 69, 0)]
+    for cell in tp.required_cells(*spine):
+        world.blocks.pop(cell, None)
+    world.pathing = True
+    with pytest.raises(tm.MineAbort, match="stop was not verified"):
+        make_miner(world, spine=spine).descend(spine)
+    assert world.allow_break == "false"
