@@ -310,6 +310,31 @@ def _closing_speed(
         return 0.0
 
 
+def _creeper_below_work_floor(entity, state, distance, closing):
+    """Recognize a hidden cave creeper without lowering same-level clearance."""
+    try:
+        if any(key in entity and entity[key] is not False
+               for key in ("is_attacking", "angry_at_player")):
+            return False
+        vectors = (entity["position"], state.get("position", state.get("block_position")))
+        if any(
+            isinstance(vector[axis], bool) or not isinstance(vector[axis], (int, float))
+            or not math.isfinite(vector[axis])
+            for vector in vectors for axis in ("x", "y", "z")
+        ):
+            return False
+        mob, player = vectors
+        observed = math.dist(
+            [mob[axis] for axis in ("x", "y", "z")],
+            [player[axis] for axis in ("x", "y", "z")],
+        )
+        return (player["y"] - mob["y"] >= 5.0 and distance > 5.0
+                and observed > 5.0 and abs(distance - observed) <= 0.25
+                and closing <= 0.05)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
 def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
     """Keep shelter only on explicit, fresh evidence of a non-actionable mob.
 
@@ -391,7 +416,9 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
         and not any(entity.get(key) is True for key in ("is_attacking", "angry_at_player"))
         and _explicit_aggression(entity, state) is False
         and math.isfinite(distance)
-        and (6.0 if calm_creeper else 5.0) < distance < 999.0
+        and distance < 999.0
+        and (distance > (6.0 if calm_creeper else 5.0)
+             or (calm_creeper and _creeper_below_work_floor(entity, state, distance, closing)))
         and (not calm_creeper or stationary_creeper)
         and (closing <= 0.05 or vertically_separated or stationary_creeper)
     ):
