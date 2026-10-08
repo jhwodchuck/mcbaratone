@@ -12,7 +12,7 @@ def home(monkeypatch):
     stock, actions = {}, []
     state = SimpleNamespace(custom_data={"base_location": list(anchor), "structures": {"starter_house": {"origin": [0, 70, 0]}}})
     client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda route, payload: {"id": blocks.get(tuple(payload[a] for a in ("x", "y", "z")), "minecraft:air")}))
-    observed = SimpleNamespace(free=2, safe=True, place=True, bank=True)
+    observed = SimpleNamespace(free=2, safe=True, place=True, bank=True, original_at_home=storage._at_home)
     monkeypatch.setattr(storage, "_at_home", lambda *_a: observed.safe)
     monkeypatch.setattr("baritone_client.common.inventory.count_item", lambda _c, item: stock.get(item, 0))
     def craft(_c, item, count):
@@ -107,3 +107,50 @@ def test_observed_plank_house_materials_support_capacity(home, material):
     home[3][(5, 70, 1)] = material
     home[3][(6, 71, 1)] = material
     assert bank(home)
+
+
+def test_local_preparation_first_reaches_verified_home(home, monkeypatch):
+    home[6].safe = False
+    monkeypatch.setattr("baritone_client.common.food_workstation._fresh_safe_position", lambda *_a, **_k: (3, 71, 8))
+    def arrive(*_a):
+        home[6].safe = True
+    monkeypatch.setattr("baritone_client.common.food_return._return", arrive)
+    monkeypatch.setattr(storage, "_bank", storage._bank.__wrapped__)
+    assert storage.bank_mining_overflow(home[0], home[1], home[2], 10, set(), {})
+
+
+def test_home_navigation_ack_without_arrival_does_not_build(home, monkeypatch):
+    home[6].safe = False
+    monkeypatch.setattr("baritone_client.common.food_workstation._fresh_safe_position", lambda *_a, **_k: (3, 71, 8))
+    monkeypatch.setattr("baritone_client.common.food_return._return", lambda *_a: True)
+    assert not storage.bank_mining_overflow(home[0], home[1], home[2], 10, set(), {})
+    assert home[5] == []
+
+
+@pytest.mark.parametrize("position", [(3, 65, 3), (100, 71, 100), None])
+def test_preparation_never_leaves_remote_or_underground_work_for_capacity(home, monkeypatch, position):
+    home[6].safe = False
+    monkeypatch.setattr("baritone_client.common.food_workstation._fresh_safe_position", lambda *_a, **_k: position)
+    monkeypatch.setattr("baritone_client.common.food_return._return", lambda *_a: pytest.fail("unsafe capacity travel"))
+    assert not storage.bank_mining_overflow(home[0], home[1], home[2], 10, set(), {})
+
+
+@pytest.mark.parametrize("unsafe", [None, "health", "food", "dead", "moving", "airborne", "threat", "dimension", "mode"])
+def test_indoor_capacity_requires_fresh_local_survival_margin(home, monkeypatch, unsafe):
+    live = {"is_dead": False, "is_pathing": False, "is_on_ground": True,
+            "health": 20, "food_level": 20, "world_time": 13000,
+            "dimension": "minecraft:overworld", "game_mode": "survival"}
+    if unsafe == "health": live["health"] = 17
+    elif unsafe == "food": live["food_level"] = 13
+    elif unsafe == "dead": live["is_dead"] = True
+    elif unsafe == "moving": live["is_pathing"] = True
+    elif unsafe == "airborne": live["is_on_ground"] = False
+    elif unsafe == "dimension": live["dimension"] = "minecraft:the_nether"
+    elif unsafe == "mode": live["game_mode"] = "creative"
+    home[0].transport.dispatch = lambda *_a: live
+    monkeypatch.setattr("baritone_client.common.food_workstation._fresh_safe_position", lambda *_a, **_k: home[2])
+    def scan(*_a, **kwargs):
+        assert kwargs["radius"] == 8 and kwargs["raise_on_error"] is True
+        return [{"type": "minecraft:creeper"}] if unsafe == "threat" else []
+    monkeypatch.setattr("baritone_client.common.combat.scan_for_threats", scan)
+    assert home[6].original_at_home(home[0], home[2]) is (unsafe is None)

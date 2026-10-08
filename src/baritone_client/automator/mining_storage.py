@@ -14,11 +14,17 @@ def _block(client, cell):
 
 def _at_home(client, anchor):
     from ..common.food_workstation import _fresh_safe_position
-    from .charcoal_wood import _safe
+    from ..common.combat import scan_for_threats
 
     position = _fresh_safe_position(client, require_grounded=True)
-    return (position is not None and math.dist(position, anchor) <= 4
-            and abs(position[1] - anchor[1]) <= 1 and _safe(client, anchor))
+    if position is None or math.dist(position, anchor) > 4 or abs(position[1] - anchor[1]) > 1:
+        return False
+    live = client.transport.dispatch("get_state", {})
+    return (live.get("is_dead") is False and live.get("is_pathing") is False
+            and live.get("dimension") == "minecraft:overworld" and live.get("game_mode") == "survival"
+            and live.get("is_on_ground") is True and float(live.get("health", 0)) >= 18
+            and int(live.get("food_level", 0)) >= 14
+            and not scan_for_threats(client, radius=8, raise_on_error=True, player_state=live))
 
 
 def _spot(client, state, anchor):
@@ -103,7 +109,16 @@ def bank_mining_overflow(client, state, anchor, required, items, retains):
     bind_home_surface(client, state)
     try:
         if not _at_home(client, anchor):
-            return False
+            from ..common.food_workstation import _fresh_safe_position
+            from ..common.food_return import _return
+
+            position = _fresh_safe_position(client, require_grounded=True)
+            if (position is None or math.dist(position, anchor) > 32
+                    or abs(position[1] - anchor[1]) > 2):
+                return False
+            _return(client, *anchor)
+            if not _at_home(client, anchor):
+                return False
         return _bank(client, state, anchor, required, items, retains)
     except (PlayerDeathDetected, SurvivalRecoveryRequired):
         raise
