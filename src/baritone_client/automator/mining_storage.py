@@ -22,6 +22,9 @@ def _at_home(client, anchor):
 
 
 def _spot(client, state, anchor):
+    from ..common.base import _ALL_PLANKS
+
+    house_blocks = {"minecraft:cobblestone", "minecraft:stone"} | set(_ALL_PLANKS)
     house = state.custom_data.get("structures", {}).get("starter_house", {})
     origin = house.get("origin")
     if not isinstance(origin, (list, tuple)) or len(origin) != 3:
@@ -37,8 +40,8 @@ def _spot(client, state, anchor):
         wall = (ox + (6 if dx == 5 else 0), oy + 1, oz + dz)
         if (_block(client, cell) in AIR
                 and _block(client, (cell[0], cell[1] + 1, cell[2])) in AIR
-                and _block(client, (cell[0], cell[1] - 1, cell[2])) in {"minecraft:cobblestone", "minecraft:stone", "minecraft:oak_planks"}
-                and _block(client, wall) == "minecraft:cobblestone"):
+                and _block(client, (cell[0], cell[1] - 1, cell[2])) in house_blocks
+                and _block(client, wall) in house_blocks):
             return cell
     return None
 

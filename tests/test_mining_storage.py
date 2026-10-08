@@ -100,3 +100,10 @@ def test_read_failure_is_closed(home, monkeypatch):
     def fail(*_a): raise RuntimeError("unknown block")
     monkeypatch.setattr(storage, "_block", fail)
     assert not storage.bank_mining_overflow(home[0], home[1], home[2], 10, set(), {})
+
+
+@pytest.mark.parametrize("material", ["minecraft:oak_planks", "minecraft:spruce_planks", "minecraft:cobblestone"])
+def test_observed_plank_house_materials_support_capacity(home, material):
+    home[3][(5, 70, 1)] = material
+    home[3][(6, 71, 1)] = material
+    assert bank(home)
