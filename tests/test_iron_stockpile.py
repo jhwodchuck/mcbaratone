@@ -137,16 +137,17 @@ def test_a_bad_entrance_is_never_chosen_again(bot):
     assert iron_stockpile.choose_entrance(bot, st) not in (None, first)
 
 
-def test_three_failed_approaches_retire_an_unreachable_entrance(bot, monkeypatch):
+def test_interrupted_approaches_preserve_the_route_and_retry_without_four_hour_delay(bot, monkeypatch):
     entrance = [16, 70, 0]
-    st = state({iron_stockpile.KEY: {"entrance": entrance, "spine": [entrance]}})
+    st = state({iron_stockpile.KEY: {"entrance": entrance, "spine": [entrance], "failures": 18}})
     monkeypatch.setattr("baritone_client.common.navigation.goto", lambda *_a, **_k: False)
     for attempt in range(3):
         ok, detail, *_ = iron_stockpile.run_supply_trip(bot, st, now=1000 + attempt)
         assert not ok and "could not reach" in detail
+        assert st.custom_data[iron_stockpile.KEY]["next_trip"] == 1600 + attempt
     rec = st.custom_data[iron_stockpile.KEY]
-    assert entrance in rec["bad_entrances"]
-    assert "entrance" not in rec and "spine" not in rec
+    assert entrance not in rec.get("bad_entrances", [])
+    assert rec["entrance"] == entrance and rec["spine"] == [entrance]
     assert not bot.dug
 
 
@@ -181,6 +182,7 @@ def test_transient_failure_on_a_proven_spine_does_not_blacklist_entrance_or_eras
     assert rec["entrance"] == list(entrance)
     assert rec["spine"] == [list(c) for c in spine]
     assert rec["dry_trips"] == 2
+    assert rec["next_trip"] == 1600.0
     assert entrance not in rec.get("bad_entrances", [])
     assert calls.count(entrance) == 1  # no broad navigation fallback after retreat
 

@@ -316,7 +316,7 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
         # The surface around the base is only loaded (and so only readable)
         # when the bot is there, so a trip starts by walking home.
         if not goto(client, *anchor, timeout=300, tolerance=8.0, radius=6):
-            return done(False, "could not get home to start a mining trip")
+            return done(False, "could not get home to start a mining trip", retry_after=600.0)
     _make_room(client, state)
     from .iron_preparation import prepare_iron_inventory
 
@@ -348,18 +348,16 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
     from ..common.house_door_travel import prepare_house_door_for_departure
 
     if not prepare_house_door_for_departure(client, state, anchor):
-        return done(False, "saved-house doorway is not safe for mine travel")
+        return done(False, "saved-house doorway is not safe for mine travel", retry_after=600.0)
     rec["entrance"] = list(entrance)
     if (
         not goto(client, *entrance, timeout=150, tolerance=0.8)
         or not _at_cell(client, entrance)
     ):
         rec["approach_failures"] = int(rec.get("approach_failures", 0) or 0) + 1
-        if rec["approach_failures"] >= 3:
-            rec.setdefault("bad_entrances", []).append(list(entrance))
-            for stale in ("entrance", "spine", "approach_failures"):
-                rec.pop(stale, None)
-        return done(False, "could not reach the mine entrance")
+        # Interrupted travel does not establish bad terrain or depleted ore.
+        # Retain the proven route; fresh navigation/terrain checks still gate it.
+        return done(False, "could not reach the mine entrance", retry_after=600.0)
     rec["approach_failures"] = 0
 
     spine: List[Tuple[int, int, int]] = [tuple(c) for c in rec.get("spine", [])] or [entrance]
@@ -399,7 +397,8 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
     banked = _bank(client, state) if smelted else 0
     return_detail = "" if returned else "; return route not verified, raw iron retained"
     detail = f"mined {mined} raw iron ({reason or 'done'}); smelted {smelted}; banked {banked}; {miner.stats.moves} tunnel moves{return_detail}"
-    return done(mined > 0 and returned, detail)
+    return done(mined > 0 and returned, detail,
+                retry_after=600.0 if reason != "no reachable iron" else None)
 
 
 __all__ = [
