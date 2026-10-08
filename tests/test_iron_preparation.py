@@ -101,3 +101,23 @@ def test_verified_overflow_space_admits_trip(setup, monkeypatch):
         return False  # observed inventory, not the helper's return, is authoritative
     monkeypatch.setattr("baritone_client.automator.mining_storage.bank_mining_overflow", bank)
     assert prep.prepare_iron_inventory(object(), object()) == ""
+
+
+@pytest.mark.parametrize("verified_room", [False, True])
+def test_rejected_original_chest_can_reach_guarded_overflow(setup, monkeypatch, verified_room):
+    from baritone_client.core.exceptions import CommandError
+
+    setup.tool = True
+    attempted = []
+    def rejected(*_a, **_k):
+        raise CommandError("Target is not visible on a real block ray")
+    def overflow(*_a):
+        attempted.append(True)
+        if verified_room:
+            setup.free = 10
+        return True  # Only the independently observed slot count admits mining.
+    monkeypatch.setattr("baritone_client.common.inventory.deposit_excess_to_chest", rejected)
+    monkeypatch.setattr("baritone_client.automator.mining_storage.bank_mining_overflow", overflow)
+    result = prep.prepare_iron_inventory(object(), object())
+    assert attempted == [True]
+    assert (result == "") is verified_room

@@ -2,6 +2,7 @@
 
 from math import hypot
 
+from ..core.exceptions import CommandError
 from .weapon_upkeep import has_mining_pickaxe, restore_kit
 
 
@@ -33,10 +34,15 @@ def prepare_iron_inventory(client, state):
         "minecraft:wheat_seeds": 16,
     }
     if chest is not None and free_slots(client) < ROOM_WANTED:
-        deposit_excess_to_chest(
-            client, chest, deposit_items=prep_bank_items,
-            retain_counts=retains, state=state,
-        )
+        try:
+            deposit_excess_to_chest(
+                client, chest, deposit_items=prep_bank_items,
+                retain_counts=retains, state=state,
+            )
+        except CommandError as exc:
+            # A rejected interaction is not an inventory observation. The
+            # guarded overflow path may still recover at the verified home.
+            print(f"IRON PREPARATION: home chest interaction rejected ({exc})")
     if not has_mining_pickaxe(client):
         withdraw_from_home_containers(
             client, state, "minecraft:cobblestone", 3,
