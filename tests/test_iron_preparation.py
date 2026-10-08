@@ -103,6 +103,26 @@ def test_verified_overflow_space_admits_trip(setup, monkeypatch):
     assert prep.prepare_iron_inventory(object(), object()) == ""
 
 
+@pytest.mark.parametrize("transferred", [False, True])
+def test_copper_is_stored_to_recover_the_last_required_slot(setup, monkeypatch, transferred):
+    setup.tool, setup.free = True, 9
+    copper = {"carried": 4, "stored": 0}
+
+    def overflow(_client, _state, _anchor, _required, items, _retains):
+        assert "minecraft:raw_copper" in items
+        assert not {"minecraft:raw_iron", "minecraft:iron_ingot", "minecraft:bread",
+                    "minecraft:stone_pickaxe", "minecraft:torch"} & items
+        if transferred:
+            copper["stored"], copper["carried"] = copper["carried"], 0
+            setup.free += 1
+        return True  # Acknowledgement alone must never admit the expedition.
+
+    monkeypatch.setattr("baritone_client.automator.mining_storage.bank_mining_overflow", overflow)
+    result = prep.prepare_iron_inventory(object(), object())
+    assert (result == "") is transferred
+    assert copper == ({"carried": 0, "stored": 4} if transferred else {"carried": 4, "stored": 0})
+
+
 @pytest.mark.parametrize("verified_room", [False, True])
 def test_rejected_original_chest_can_reach_guarded_overflow(setup, monkeypatch, verified_room):
     from baritone_client.core.exceptions import CommandError

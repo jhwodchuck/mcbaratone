@@ -17,6 +17,7 @@ def prepare_iron_inventory(client, state):
     prep_bank_items = set(CLUTTER) | set(DIGGING_JUNK) | {
         "minecraft:carrot", "minecraft:wheat_seeds", "minecraft:enchanted_book",
         "minecraft:lead", "minecraft:bell", "minecraft:leaf_litter",
+        "minecraft:raw_copper",
     }
 
     anchor = _home(state)
