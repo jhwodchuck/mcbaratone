@@ -239,7 +239,8 @@ def _near(client: Any, anchor: Tuple[int, int, int], distance: float) -> bool:
 
     position = _live(client).get("block_position") or {}
     try:
-        return hypot(float(position["x"]) - anchor[0], float(position["z"]) - anchor[2]) <= distance
+        return (hypot(float(position["x"]) - anchor[0], float(position["z"]) - anchor[2]) <= distance
+                and abs(float(position["y"]) - anchor[1]) <= 2)
     except (KeyError, TypeError, ValueError):
         return False
 
@@ -291,7 +292,7 @@ def _schedule(rec: dict, now: float, ok: bool) -> None:
 
 def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> Tuple[bool, str, int, int]:
     """One bounded trip. Returns the scheduler's (success, detail, before, after)."""
-    from ..common.navigation import goto
+    from ..common.navigation import goto, recovery_navigation_defense
     from ..common.tasks import PlayerDeathDetected, SurvivalRecoveryRequired
     from ..common.tunnel_miner import MineAbort, TunnelMiner
     from ..common.tunnel_planner import loop_erase
@@ -315,7 +316,8 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
     if anchor is not None and not _near(client, anchor, HOME_RANGE):
         # The surface around the base is only loaded (and so only readable)
         # when the bot is there, so a trip starts by walking home.
-        if not goto(client, *anchor, timeout=300, tolerance=8.0, radius=6):
+        if not goto(client, *anchor, timeout=300, tolerance=2.0,
+                    on_defense=recovery_navigation_defense):
             return done(False, "could not get home to start a mining trip", retry_after=600.0)
     _make_room(client, state)
     from .iron_preparation import prepare_iron_inventory

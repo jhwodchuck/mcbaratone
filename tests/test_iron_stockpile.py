@@ -131,6 +131,26 @@ def test_entrance_is_plain_ground_outside_the_built_zone(bot):
     assert max(abs(x), abs(z)) >= 8  # beyond the house/farm zone and its margin
 
 
+def test_below_home_requires_exact_upward_recovery_before_inventory_work(bot, monkeypatch):
+    bot.pos = (0, 64, 0)
+    entrance = [16, 70, 0]
+    st = state({iron_stockpile.KEY: {"entrance": entrance, "spine": [entrance], "failures": 18}})
+    calls = []
+    def blocked(_c, x, y, z, **kwargs):
+        calls.append(((x, y, z), kwargs))
+        return False
+    monkeypatch.setattr("baritone_client.common.navigation.goto", blocked)
+    monkeypatch.setattr("baritone_client.automator.iron_preparation.prepare_iron_inventory",
+                        lambda *_a: pytest.fail("inventory preparation before upward recovery"))
+    ok, detail, *_ = iron_stockpile.run_supply_trip(bot, st, now=1000)
+    assert not ok and "could not get home" in detail
+    target, kwargs = calls[0]
+    assert target == (0, 70, 0) and kwargs["tolerance"] == 2.0
+    assert "radius" not in kwargs and callable(kwargs["on_defense"])
+    assert st.custom_data[iron_stockpile.KEY]["spine"] == [entrance]
+    assert st.custom_data[iron_stockpile.KEY]["next_trip"] == 1600
+
+
 def test_a_bad_entrance_is_never_chosen_again(bot):
     first = iron_stockpile.choose_entrance(bot, state())
     st = state({iron_stockpile.KEY: {"bad_entrances": [list(first)]}})
