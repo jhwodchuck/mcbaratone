@@ -52,7 +52,12 @@ def return_from_food_attempt(client, state):
     record["verified"] = False
     try:
         client.transport.dispatch("stop", {})
-        position = _position(client)
+        position = None
+        for _ in range(5):
+            position = _position(client)
+            if position is not None:
+                break
+            time.sleep(0.1)
         if position is None:
             return False
         record["last_attempt_at"] = time.time()

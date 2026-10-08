@@ -36,6 +36,17 @@ def test_acknowledged_return_without_displacement_stays_unverified(monkeypatch):
     assert not state.custom_data["food_return"]["verified"]
 
 
+def test_return_waits_for_observed_stop_before_starting_a_route(monkeypatch):
+    client, state, live = world()
+    states = [dict(live, is_pathing=True), live]
+    client.transport.dispatch = lambda route, _payload: live if route == "stop" else states.pop(0) if states else live
+    trips = []
+    monkeypatch.setattr(recovery.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(recovery, "_return", lambda *_a: trips.append(1))
+    recovery.return_from_food_attempt(client, state)
+    assert trips == [1]
+
+
 def test_death_yields_to_survival_instead_of_starting_a_return(monkeypatch):
     client, state, _live = world()
     monkeypatch.setattr(recovery, "_return", lambda *_a: pytest.fail("survival owns this recovery"))
