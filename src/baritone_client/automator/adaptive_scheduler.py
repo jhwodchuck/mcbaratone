@@ -38,6 +38,7 @@ from .objective import Objective
 from .state_manager import Phase
 from .specialty_scheduler import select_profile_specialty_opportunities, select_specialty_opportunity
 from .work_progress import productive_snapshot, record_productive_attempt
+from .work_retry import retry_cooldown
 CROP_BLOCKS = (
     "minecraft:wheat",
     "minecraft:carrots",
@@ -780,11 +781,11 @@ class AdaptiveScheduler:
             runtime = {}
             custom["adaptive_scheduler"] = runtime
         return runtime
-    def _cooldown_ready(self, kind: OpportunityKind, now: float) -> bool: return food_opportunity.cooldown_ready(self._runtime(), kind, now, self._COOLDOWNS)
+    def _cooldown_ready(self, kind: OpportunityKind, now: float) -> bool:
+        return food_opportunity.cooldown_ready(self._runtime(), kind, now, {kind: retry_cooldown(self.state, kind.value, self._COOLDOWNS[kind])})
 
     def _record_opportunity_result(self, result: OpportunityResult) -> None:
         record_opportunity_result(self._runtime(), result, time.time())
-
 
 __all__ = [
     "AdaptiveScheduler",

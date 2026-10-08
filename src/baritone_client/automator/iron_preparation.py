@@ -2,6 +2,7 @@
 
 from math import hypot
 
+from ..core.exceptions import CommandError
 from .weapon_upkeep import has_mining_pickaxe, restore_kit
 
 
@@ -9,9 +10,9 @@ def prepare_iron_inventory(client, state):
     """Bank surplus food, retrieve stone locally, then verify space and tool."""
     from ..common.home_respawn import withdraw_from_home_containers
     from ..common.inventory import deposit_excess_to_chest, resolve_storage_location
-    from ..common.tunnel_miner import DIGGING_JUNK, MIN_FREE_SLOTS, free_slots
+    from ..common.tunnel_miner import DIGGING_JUNK, free_slots
     from .armor_recovery import _home
-    from .iron_stockpile import CLUTTER, STORAGE_FOOD_RESERVE
+    from .iron_stockpile import CLUTTER, STORAGE_FOOD_RESERVE, ROOM_WANTED
 
     prep_bank_items = set(CLUTTER) | set(DIGGING_JUNK) | {
         "minecraft:carrot", "minecraft:wheat_seeds", "minecraft:enchanted_book",
@@ -27,15 +28,21 @@ def prepare_iron_inventory(client, state):
         or abs(chest[1] - anchor[1]) > 8
     ):
         chest = None  # preparation is local, never a remote storage expedition
-    if chest is not None and free_slots(client) < MIN_FREE_SLOTS + 2:
-        deposit_excess_to_chest(
-            client, chest, deposit_items=prep_bank_items,
-            retain_counts={
-                "minecraft:carrot": STORAGE_FOOD_RESERVE,
-                "minecraft:cobblestone": 64,
-                "minecraft:wheat_seeds": 16,
-            }, state=state,
-        )
+    retains = {
+        "minecraft:carrot": STORAGE_FOOD_RESERVE,
+        "minecraft:cobblestone": 64,
+        "minecraft:wheat_seeds": 16,
+    }
+    if chest is not None and free_slots(client) < ROOM_WANTED:
+        try:
+            deposit_excess_to_chest(
+                client, chest, deposit_items=prep_bank_items,
+                retain_counts=retains, state=state,
+            )
+        except CommandError as exc:
+            # A rejected interaction is not an inventory observation. The
+            # guarded overflow path may still recover at the verified home.
+            print(f"IRON PREPARATION: home chest interaction rejected ({exc})")
     if not has_mining_pickaxe(client):
         withdraw_from_home_containers(
             client, state, "minecraft:cobblestone", 3,
@@ -44,6 +51,10 @@ def prepare_iron_inventory(client, state):
         restore_kit(client)
     if not has_mining_pickaxe(client):
         return "no durable stone-or-better pickaxe for iron"
-    if free_slots(client) < MIN_FREE_SLOTS:
+    if free_slots(client) < ROOM_WANTED:
+        from .mining_storage import bank_mining_overflow
+
+        bank_mining_overflow(client, state, anchor, ROOM_WANTED, prep_bank_items, retains)
+    if free_slots(client) < ROOM_WANTED:
         return "not enough verified inventory space for iron"
     return ""

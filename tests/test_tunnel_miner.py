@@ -571,6 +571,38 @@ def test_retreat_walks_each_recorded_cell_and_proves_the_entrance(world):
     assert world.pos == spine[0] and world.allow_break == "true"
 
 
+def test_long_verified_return_gets_time_for_each_checked_hop(world, monkeypatch):
+    spine = [(x, 70, 0) for x in range(31)]
+    for x, _, z in spine:
+        world.blocks[(x, 69, z)] = STONE
+    miner = make_miner(world, spine=spine)
+    world.pos = spine[-1]
+    clock = [1000.0]
+    monkeypatch.setattr(tm.time, "monotonic", lambda: clock[0])
+    real_goto = world.goto
+
+    def slow_hop(*args, **kwargs):
+        clock[0] += 10.0
+        return real_goto(*args, **kwargs)
+
+    monkeypatch.setattr("baritone_client.common.navigation.goto", slow_hop)
+    assert miner.retreat()
+    assert clock[0] == 1300.0  # exceeds the old fixed four-minute deadline
+    assert world.pos == spine[0] and not world.dug
+
+
+def test_checkpoint_failure_does_not_interrupt_verified_return(world):
+    spine = [(0, 70, 0), (1, 70, 0)]
+    world.pos = spine[-1]
+
+    def broken_checkpoint(_trail):
+        raise OSError("disk unavailable")
+
+    miner = make_miner(world, spine=spine, on_progress=broken_checkpoint)
+    assert miner.retreat()
+    assert world.pos == spine[0] and not world.dug
+
+
 def test_adjacent_ore_under_a_recorded_route_cell_is_not_mined(world):
     ore = (1, 70, 0)
     world.blocks[ore] = IRON

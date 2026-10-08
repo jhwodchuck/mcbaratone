@@ -119,6 +119,7 @@ class TunnelMiner:
         min_y: int = 12,
         count_fn: Optional[Callable[[str], int]] = None,
         patience: float = HOSTILE_PATIENCE,
+        on_progress: Optional[Callable[[Sequence[Cell]], None]] = None,
     ) -> None:
         self.client = client
         self.surface_y = int(surface_y)
@@ -135,6 +136,7 @@ class TunnelMiner:
         self._since_torch = 0
         self._torch_failures = 0
         self._count = count_fn or self._default_count
+        self.on_progress = on_progress
 
     # -- bridge access ------------------------------------------------------
     def _call(self, route: str, payload: Optional[dict] = None) -> Dict[str, Any]:
@@ -362,6 +364,15 @@ class TunnelMiner:
         self.stats.moves += 1
         self._since_torch += 1
         self.torch(move.frm, move.to)
+        self._note_progress()
+
+    def _note_progress(self) -> None:
+        if self.on_progress is not None:
+            try:
+                self.on_progress(self.trail)
+            except Exception as exc:
+                # Checkpoint I/O must never interrupt a safe return walk.
+                print(f"TUNNEL MINER: progress checkpoint failed ({exc})")
 
     def execute(self, path: Sequence[Move]) -> None:
         for move in path:
@@ -421,6 +432,7 @@ class TunnelMiner:
                 if not arrived:
                     raise MineAbort("blocked while following the tunnel")
                 here = target
+                self._note_progress()
         finally:
             # Navigation must have stopped before restoring a setting that
             # could let Baritone break terrain on its next path.
@@ -451,7 +463,11 @@ class TunnelMiner:
             index = forward.index(here)
             route = list(reversed(forward[: index + 1]))
             if len(route) > 1:
-                deadline = time.monotonic() + 240.0
+                # Every cell receives fresh corridor checks and exact XYZ
+                # verification. A fixed four minutes strands long saved
+                # routes even when every step succeeds. Still bound the
+                # complete return and each individual hop.
+                deadline = time.monotonic() + min(1200.0, max(240.0, 12.0 * (len(route) - 1)))
                 self._hop(route[1:], timeout=20, returning=True, return_deadline=deadline)
             return self.cell() == forward[0]
         except MineAbort as exc:

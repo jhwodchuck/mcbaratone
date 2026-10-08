@@ -131,22 +131,43 @@ def test_entrance_is_plain_ground_outside_the_built_zone(bot):
     assert max(abs(x), abs(z)) >= 8  # beyond the house/farm zone and its margin
 
 
+def test_below_home_requires_exact_upward_recovery_before_inventory_work(bot, monkeypatch):
+    bot.pos = (0, 64, 0)
+    entrance = [16, 70, 0]
+    st = state({iron_stockpile.KEY: {"entrance": entrance, "spine": [entrance], "failures": 18}})
+    calls = []
+    def blocked(_c, x, y, z, **kwargs):
+        calls.append(((x, y, z), kwargs))
+        return False
+    monkeypatch.setattr("baritone_client.common.navigation.goto", blocked)
+    monkeypatch.setattr("baritone_client.automator.iron_preparation.prepare_iron_inventory",
+                        lambda *_a: pytest.fail("inventory preparation before upward recovery"))
+    ok, detail, *_ = iron_stockpile.run_supply_trip(bot, st, now=1000)
+    assert not ok and "could not get home" in detail
+    target, kwargs = calls[0]
+    assert target == (0, 70, 0) and kwargs["tolerance"] == 2.0
+    assert "radius" not in kwargs and callable(kwargs["on_defense"])
+    assert st.custom_data[iron_stockpile.KEY]["spine"] == [entrance]
+    assert st.custom_data[iron_stockpile.KEY]["next_trip"] == 1600
+
+
 def test_a_bad_entrance_is_never_chosen_again(bot):
     first = iron_stockpile.choose_entrance(bot, state())
     st = state({iron_stockpile.KEY: {"bad_entrances": [list(first)]}})
     assert iron_stockpile.choose_entrance(bot, st) not in (None, first)
 
 
-def test_three_failed_approaches_retire_an_unreachable_entrance(bot, monkeypatch):
+def test_interrupted_approaches_preserve_the_route_and_retry_without_four_hour_delay(bot, monkeypatch):
     entrance = [16, 70, 0]
-    st = state({iron_stockpile.KEY: {"entrance": entrance, "spine": [entrance]}})
+    st = state({iron_stockpile.KEY: {"entrance": entrance, "spine": [entrance], "failures": 18}})
     monkeypatch.setattr("baritone_client.common.navigation.goto", lambda *_a, **_k: False)
     for attempt in range(3):
         ok, detail, *_ = iron_stockpile.run_supply_trip(bot, st, now=1000 + attempt)
         assert not ok and "could not reach" in detail
+        assert st.custom_data[iron_stockpile.KEY]["next_trip"] == 1600 + attempt
     rec = st.custom_data[iron_stockpile.KEY]
-    assert entrance in rec["bad_entrances"]
-    assert "entrance" not in rec and "spine" not in rec
+    assert entrance not in rec.get("bad_entrances", [])
+    assert rec["entrance"] == entrance and rec["spine"] == [entrance]
     assert not bot.dug
 
 
@@ -181,6 +202,7 @@ def test_transient_failure_on_a_proven_spine_does_not_blacklist_entrance_or_eras
     assert rec["entrance"] == list(entrance)
     assert rec["spine"] == [list(c) for c in spine]
     assert rec["dry_trips"] == 2
+    assert rec["next_trip"] == 1600.0
     assert entrance not in rec.get("bad_entrances", [])
     assert calls.count(entrance) == 1  # no broad navigation fallback after retreat
 
@@ -284,6 +306,22 @@ def test_a_trip_without_torches_runs_a_shorter_dark_trip_and_asks_for_torches_on
     bot.pos = ENTRANCE
     iron_stockpile.run_supply_trip(bot, st, now=1000.0 + iron_stockpile.TORCH_RETRY_SECONDS + 1)
     assert asked == [1, 1]
+
+
+def test_missing_torches_are_repaired_before_entering_a_deep_saved_mine(bot, monkeypatch):
+    spine = [[16, 70, 0], [17, 69, 0], [18, 50, 0]]
+    st = state({iron_stockpile.KEY: {"entrance": spine[0], "spine": spine}})
+    bot.torches = 0
+    asked = []
+    monkeypatch.setattr("baritone_client.automator.base_lighting.ensure_torches", lambda *_a: asked.append(1) or 0)
+    monkeypatch.setattr(tm.TunnelMiner, "descend", lambda *_a: pytest.fail("unlit deep route must not start"))
+    ok, detail, *_ = iron_stockpile.run_supply_trip(bot, st, now=5000)
+    assert not ok and "needs torches before descent" in detail
+    assert asked == [1] and not bot.dug
+    assert st.custom_data[iron_stockpile.KEY]["spine"] == spine
+    assert st.custom_data[iron_stockpile.KEY].get("bad_entrances", []) == []
+    assert st.custom_data[iron_stockpile.KEY]["next_trip"] == 5600
+    assert st.custom_data[iron_stockpile.KEY]["torch_retry"] <= 5600
 
 
 def test_clutter_is_banked_before_a_trip_when_the_pack_is_nearly_full(bot):
