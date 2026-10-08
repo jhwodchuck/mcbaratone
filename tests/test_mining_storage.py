@@ -154,3 +154,19 @@ def test_indoor_capacity_requires_fresh_local_survival_margin(home, monkeypatch,
         return [{"type": "minecraft:creeper"}] if unsafe == "threat" else []
     monkeypatch.setattr("baritone_client.common.combat.scan_for_threats", scan)
     assert home[6].original_at_home(home[0], home[2]) is (unsafe is None)
+
+
+@pytest.mark.parametrize("actually_freed", [True, False])
+def test_full_pack_reclaims_only_rubble_before_wood_collection(home, monkeypatch, actually_freed):
+    home[6].free = 0
+    def drop(_c, items, **kwargs):
+        assert "minecraft:carrot" not in items and "minecraft:iron_ingot" not in items
+        assert kwargs == {"max_stacks": 2, "retain_counts": {"minecraft:cobblestone": 64}}
+        home[5].append(("drop",))
+        if actually_freed:
+            home[6].free = 1
+        return 2  # acknowledgement alone must not admit wood collection
+    monkeypatch.setattr("baritone_client.common.inventory.drop_items", drop)
+    assert bank(home) is actually_freed
+    if not actually_freed:
+        assert home[5] == [("drop",)]

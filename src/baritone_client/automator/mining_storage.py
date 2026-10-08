@@ -55,10 +55,10 @@ def _spot(client, state, anchor):
 @protect_home_route(surface_work=True, safe_movement=True)
 def _bank(client, state, anchor, required, items, retains):
     from ..common.harness_ops import place_block_exact
-    from ..common.inventory import count_item, craft, deposit_excess_to_chest, get_inventory
+    from ..common.inventory import count_item, craft, deposit_excess_to_chest, get_inventory, drop_items
     from ..common.resources import LOG_TO_PLANKS, PLANK_ITEMS
     from ..common.storage_catalog import catalog_for
-    from ..common.tunnel_miner import free_slots
+    from ..common.tunnel_miner import free_slots, DIGGING_JUNK
     from .charcoal_wood import gather_charcoal_logs
 
     record = state.custom_data.setdefault("mining_storage", {})
@@ -72,6 +72,11 @@ def _bank(client, state, anchor, required, items, retains):
             return False
         if count_item(client, "minecraft:chest") < 1:
             if sum(count_item(client, p) for p in PLANK_ITEMS) < 8:
+                if free_slots(client) < 1:
+                    drop_items(client, sorted(DIGGING_JUNK), max_stacks=2,
+                               retain_counts={"minecraft:cobblestone": 64})
+                    if free_slots(client) < 1 or not _at_home(client, anchor):
+                        return False
                 if sum(count_item(client, log) for log in LOG_TO_PLANKS) < 2:
                     gather_charcoal_logs(client, state, 2, anchor)
                 if not _at_home(client, anchor):
