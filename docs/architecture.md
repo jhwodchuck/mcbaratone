@@ -42,6 +42,29 @@ Higher levels include the lower context but cannot be inferred from them. A
 successful response is therefore never reported as a durable gameplay result
 without the corresponding observation.
 
+## Unattended recovery evidence
+
+Successful cycle counts and escaping nearby threats are activity, not resource
+production. The work ledger credits observed output counters and positive
+resource/equipment deltas. Per-kind zero-output streaks survive checkpoint
+reloads and unrelated successful work. Repeated production attempts back off
+up to fifteen minutes; emergency food, defense, and equipment retain their
+normal admission rules.
+
+Mine preparation retrieves local stored torches, fuel, and sticks before wood
+gathering. Its charcoal fallback harvests one locally observed natural trunk
+in daylight with protected travel and fresh inventory evidence. Rejected trees
+cool down; available saplings are replanted and a home return is attempted.
+A deep saved route stays intact when lighting prerequisites fail.
+Verified tunnel travel checkpoints the route periodically without crediting
+production, and long returns have a bounded budget scaled to the checked path.
+
+These contracts require offline regression tests and live acceptance separately.
+An unattended acceptance run must demonstrate net food reserve growth,
+replenished equipment/resources, verified returns, and a new objective over a
+full day without operator repair. Heartbeats and harvest-only loops cannot
+establish that acceptance.
+
 ## Uncertain mutations
 
 Read operations may be retried within a bound. Mutating operations require

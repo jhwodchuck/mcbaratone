@@ -286,6 +286,22 @@ def test_a_trip_without_torches_runs_a_shorter_dark_trip_and_asks_for_torches_on
     assert asked == [1, 1]
 
 
+def test_missing_torches_are_repaired_before_entering_a_deep_saved_mine(bot, monkeypatch):
+    spine = [[16, 70, 0], [17, 69, 0], [18, 50, 0]]
+    st = state({iron_stockpile.KEY: {"entrance": spine[0], "spine": spine}})
+    bot.torches = 0
+    asked = []
+    monkeypatch.setattr("baritone_client.automator.base_lighting.ensure_torches", lambda *_a: asked.append(1) or 0)
+    monkeypatch.setattr(tm.TunnelMiner, "descend", lambda *_a: pytest.fail("unlit deep route must not start"))
+    ok, detail, *_ = iron_stockpile.run_supply_trip(bot, st, now=5000)
+    assert not ok and "needs torches before descent" in detail
+    assert asked == [1] and not bot.dug
+    assert st.custom_data[iron_stockpile.KEY]["spine"] == spine
+    assert st.custom_data[iron_stockpile.KEY].get("bad_entrances", []) == []
+    assert st.custom_data[iron_stockpile.KEY]["next_trip"] == 5600
+    assert st.custom_data[iron_stockpile.KEY]["torch_retry"] <= 5600
+
+
 def test_clutter_is_banked_before_a_trip_when_the_pack_is_nearly_full(bot):
     with_ore(bot, 64)
     bot.used_slots = 33

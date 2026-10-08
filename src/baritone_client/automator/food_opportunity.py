@@ -147,13 +147,15 @@ def cooldown_ready(
 
 
 def reachable_farm_location(signals: Any) -> tuple[int, int, int] | None:
-    """Return a nearby observed or checkpointed crop patch."""
-    if signals.crop_location is not None:
-        return signals.crop_location
+    """Prefer the maintained nearby plot over an incidental nearest crop.
+
+    Its checkpoint identifies where to inspect, not proof that crops remain.
+    The crop executor still verifies terrain and crop identity before work.
+    """
     known = signals.known_farm_location
-    if known is None or hypot(known[0] - signals.position[0], known[2] - signals.position[2]) > 64:
-        return None
-    return known
+    if known is not None and hypot(known[0] - signals.position[0], known[2] - signals.position[2]) <= 64:
+        return known
+    return signals.crop_location
 
 
 def _banked_total(cycle: Any, fallback: int) -> int:

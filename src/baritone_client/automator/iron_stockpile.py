@@ -296,6 +296,7 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
     from ..common.tunnel_miner import MineAbort, TunnelMiner
     from ..common.tunnel_planner import loop_erase
     from .armor_recovery import _home, _smelt_raw_iron
+    from .mining_checkpoint import checkpoint_progress
 
     current = time.time() if now is None else float(now)
     rec = _record(state)
@@ -303,8 +304,10 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
     before = iron_stock(client, state)
     anchor = _home(state)
 
-    def done(ok: bool, detail: str):
+    def done(ok: bool, detail: str, *, retry_after: Optional[float] = None):
         _schedule(rec, current, ok)
+        if retry_after is not None and not ok:
+            rec["next_trip"] = current + retry_after
         after = iron_stock(client, state)
         print(f"IRON SUPPLY: {detail} (stock {before}->{after})")
         return ok, detail, before, after
@@ -330,6 +333,12 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
         except Exception as exc:
             print(f"IRON SUPPLY: could not make torches ({exc})")
     lit = _count(client, TORCH) >= MIN_TORCHES
+    saved_spine = rec.get("spine", [])
+    if not lit and saved_spine and min(c[1] for c in saved_spine) < saved_spine[0][1] - 12:
+        # The miner refuses deep unlit work. Do not spend the entire trip
+        # walking down a saved route whose prerequisite is still missing.
+        rec["torch_retry"] = min(float(rec.get("torch_retry", current) or current), current + 600.0)
+        return done(False, "deep saved mine needs torches before descent; route preserved", retry_after=600.0)
     if not lit:
         print("IRON SUPPLY: no torches; running a shorter dark trip")
     entrance = rec.get("entrance")
@@ -359,6 +368,7 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
         deadline=time.monotonic() + (TRIP_SECONDS if lit else DARK_TRIP_SECONDS),
         spine=spine, entrance=entrance, min_y=MIN_Y,
         patience=12.0 if lit else DARK_PATIENCE,
+        on_progress=checkpoint_progress(client, state, rec),
     )
     raw_start = _count(client, RAW_IRON)
     goal = raw_start + max(1, min(MAX_RAW_PER_TRIP, TARGET_STOCK - before))
