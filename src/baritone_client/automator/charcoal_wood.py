@@ -8,6 +8,7 @@ from ..common.home_surface import protect_home_route
 
 GROUND = {"minecraft:dirt", "minecraft:grass_block", "minecraft:podzol", "minecraft:coarse_dirt"}
 AIR = {"minecraft:air", "minecraft:cave_air"}
+FOOT_SPACE = AIR | {"minecraft:leaf_litter", "minecraft:short_grass", "minecraft:fern"}
 
 
 def _safe(client, anchor):
@@ -70,12 +71,12 @@ def gather_charcoal_logs(client, state, wanted, anchor):
         found = client.transport.dispatch("find_blocks", {
             "blocks": list(LOG_TO_PLANKS), "radius": 48, "limit": 100,
         }).get("found", [])
-        candidates = sorted(found, key=lambda row: (row["y"], row.get("distance", 0)))
+        candidates = sorted(found, key=lambda row: (row.get("distance", float("inf")), row["y"]))
         for row in candidates[:100]:
             x, y, z = (int(row[a]) for a in ("x", "y", "z"))
             key = f"{x},{y},{z}"
             if (key in blocked or not 10 < math.hypot(x - anchor[0], z - anchor[2]) <= 48
-                    or abs(y - anchor[1]) > 4):
+                    or not anchor[1] - 2 <= y <= anchor[1] + 4):
                 continue
             log = _block(client, (x, y, z))
             if log not in LOG_TO_PLANKS or _block(client, (x, y - 1, z)) not in GROUND:
@@ -87,7 +88,7 @@ def gather_charcoal_logs(client, state, wanted, anchor):
                 continue
             stands = [(x + dx, y, z + dz) for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1))
                       if _block(client, (x + dx, y - 1, z + dz)) in GROUND
-                      and _block(client, (x + dx, y, z + dz)) in AIR
+                      and _block(client, (x + dx, y, z + dz)) in FOOT_SPACE
                       and _block(client, (x + dx, y + 1, z + dz)) in AIR]
             if not stands:
                 continue

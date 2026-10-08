@@ -83,3 +83,27 @@ def test_ray_rejection_cools_down_the_failed_tree_and_preserves_home_return(tree
     attempts = len(trips)
     assert wood.gather_charcoal_logs(client, state, 5, (0, 70, 0)) == 0
     assert len(trips) == attempts
+
+
+@pytest.mark.parametrize("cover", ["leaf_litter", "short_grass", "fern"])
+def test_noncolliding_ground_cover_keeps_supported_tree_stand_usable(tree, cover):
+    client, state, blocks, _live, inventory, digs, trips = tree
+    blocks[(21, 70, 0)] = "minecraft:" + cover
+    assert wood.gather_charcoal_logs(client, state, 5, (0, 70, 0)) == 5
+    assert inventory["minecraft:oak_log"] == 5
+    assert digs == [(20, 70 + dy, 0) for dy in range(5)]
+    assert trips[0] == (21, 70, 0) and trips[-1] == (0, 70, 0)
+
+
+@pytest.mark.parametrize("obstruction", ["water", "oak_leaves", "stone"])
+def test_ground_cover_allowance_does_not_admit_obstructed_stands(tree, obstruction):
+    client, state, blocks, _live, _inventory, digs, trips = tree
+    blocks[(21, 70, 0)] = "minecraft:" + obstruction
+    assert wood.gather_charcoal_logs(client, state, 5, (0, 70, 0)) == 0
+    assert not digs and not trips
+
+
+def test_tree_below_protected_surface_floor_is_not_admitted(tree):
+    client, state, _blocks, _live, _inventory, digs, trips = tree
+    assert wood.gather_charcoal_logs(client, state, 5, (0, 73, 0)) == 0
+    assert not digs and not trips
