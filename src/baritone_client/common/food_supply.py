@@ -30,6 +30,7 @@ from .farm_site_travel import (
 )
 from .food_workstation import craft_bread_at_saved_home
 from .house_door_travel import prepare_house_door_for_departure
+from .food_return import return_after_food_cycle
 
 
 WHEAT = "minecraft:wheat"
@@ -637,6 +638,7 @@ def _harvest_known_plots(client, state, worker, known, limit, cursor, farm_range
     return harvested, other_edible, None
 
 
+@return_after_food_cycle
 def run_food_cycle(
     client: Any,
     state: Any,

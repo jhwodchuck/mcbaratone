@@ -56,6 +56,8 @@ gathering. Its charcoal fallback harvests one locally observed natural trunk
 in daylight with protected travel and fresh inventory evidence. Rejected trees
 cool down; available saplings are replanted and a home return is attempted.
 A deep saved route stays intact when lighting prerequisites fail.
+Food attempts also make a bounded protected return after zero output or a
+failed expansion; a separate fresh XYZ/grounded check records the return.
 Verified tunnel travel checkpoints the route periodically without crediting
 production, and long returns have a bounded budget scaled to the checked path.
 
