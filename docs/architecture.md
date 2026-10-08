@@ -60,6 +60,11 @@ Food attempts also make a bounded protected return after zero output or a
 failed expansion; a separate fresh XYZ/grounded check records the return.
 Verified tunnel travel checkpoints the route periodically without crediting
 production, and long returns have a bounded budget scaled to the checked path.
+Mining preparation requires ten observed free slots, rather than merely the
+mid-trip minimum. If local storage cannot make room, a daylight, threat-checked
+batch may supply one chest in an observed empty interior house corner. The
+chest and resulting free inventory space are verified independently; failed
+preparation retries after a short delay without descending the saved mine.
 
 These contracts require offline regression tests and live acceptance separately.
 An unattended acceptance run must demonstrate net food reserve growth,

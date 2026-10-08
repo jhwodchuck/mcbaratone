@@ -17,6 +17,7 @@ def setup(monkeypatch):
     monkeypatch.setattr(prep, "restore_kit", lambda _c: [])
     monkeypatch.setattr("baritone_client.common.inventory.deposit_excess_to_chest", lambda *_a, **k: observed.deposits.append(k) or 4)
     monkeypatch.setattr("baritone_client.common.home_respawn.withdraw_from_home_containers", lambda *_a, **k: observed.withdrawals.append(k))
+    monkeypatch.setattr("baritone_client.automator.mining_storage.bank_mining_overflow", lambda *_a: False)
     return observed
 
 
@@ -48,7 +49,7 @@ def test_preparation_never_banks_at_remote_or_deep_storage(setup, monkeypatch, c
 
 def test_preparation_rechecks_real_space_and_pickaxe(setup, monkeypatch):
     def bank(*_a, **_k):
-        setup.free = 4
+        setup.free = 10
         return 3
 
     def craft(_c):
@@ -80,3 +81,23 @@ def test_preparation_read_error_propagates_without_authorizing_trip(setup, monke
     monkeypatch.setattr("baritone_client.common.tunnel_miner.free_slots", failed)
     with pytest.raises(RuntimeError):
         prep.prepare_iron_inventory(object(), object())
+
+
+def test_minimum_mid_trip_room_is_not_enough_to_start_a_long_trip(setup):
+    setup.tool, setup.free = True, 3
+    assert "inventory space" in prep.prepare_iron_inventory(object(), object())
+
+
+def test_overflow_acknowledgement_without_free_slots_cannot_admit_trip(setup, monkeypatch):
+    setup.tool = True
+    monkeypatch.setattr("baritone_client.automator.mining_storage.bank_mining_overflow", lambda *_a: True)
+    assert "inventory space" in prep.prepare_iron_inventory(object(), object())
+
+
+def test_verified_overflow_space_admits_trip(setup, monkeypatch):
+    setup.tool = True
+    def bank(*_a):
+        setup.free = 10
+        return False  # observed inventory, not the helper's return, is authoritative
+    monkeypatch.setattr("baritone_client.automator.mining_storage.bank_mining_overflow", bank)
+    assert prep.prepare_iron_inventory(object(), object()) == ""

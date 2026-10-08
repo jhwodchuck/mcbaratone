@@ -321,7 +321,7 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
     from .iron_preparation import prepare_iron_inventory
 
     if reason := prepare_iron_inventory(client, state):
-        return done(False, reason)
+        return done(False, reason, retry_after=600.0)
     if _count(client, TORCH) < MIN_TORCHES and anchor is not None and current >= float(rec.get("torch_retry", 0) or 0):
         from .base_lighting import ensure_torches
 
