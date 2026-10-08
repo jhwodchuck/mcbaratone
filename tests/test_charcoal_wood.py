@@ -105,5 +105,68 @@ def test_ground_cover_allowance_does_not_admit_obstructed_stands(tree, obstructi
 
 def test_tree_below_protected_surface_floor_is_not_admitted(tree):
     client, state, _blocks, _live, _inventory, digs, trips = tree
+    client._protected_home_anchor = (0, 73, 0)
     assert wood.gather_charcoal_logs(client, state, 5, (0, 73, 0)) == 0
     assert not digs and not trips
+
+
+def test_progressive_break_waits_for_actual_removal_before_collecting(tree):
+    client, state, blocks, _live, inventory, digs, trips = tree
+    original = client.transport.dispatch
+    pending = {}
+    def dispatch(route, payload):
+        cell = tuple(payload.get(a) for a in ("x", "y", "z"))
+        if route == "dig_block":
+            pending[cell] = 5
+            return {"started": True}
+        if route == "get_block" and cell in pending:
+            pending[cell] -= 1
+            if pending[cell] == 0:
+                original("dig_block", dict(zip(("x", "y", "z"), cell)))
+                pending.pop(cell)
+        return original(route, payload)
+    client.transport.dispatch = dispatch
+    assert wood.gather_charcoal_logs(client, state, 1, (0, 70, 0)) == 1
+    assert inventory["minecraft:oak_log"] == 1 and digs == [(20, 70, 0)]
+    assert trips[-1] == (0, 70, 0)
+
+
+def test_acknowledged_but_unchanged_log_is_stopped_without_false_credit(tree):
+    client, state, _blocks, _live, _inventory, digs, trips = tree
+    original = client.transport.dispatch
+    stopped = []
+    def dispatch(route, payload):
+        if route == "dig_block":return {"started": True}
+        if route == "stop":stopped.append(True);return {"success": True}
+        return original(route, payload)
+    client.transport.dispatch = dispatch
+    assert wood.gather_charcoal_logs(client, state, 1, (0, 70, 0)) == 0
+    assert stopped == [True] and not digs
+    assert trips[-1] == (0, 70, 0)
+
+
+def test_lighting_zone_centre_does_not_replace_the_saved_home_return(tree):
+    client, state, _blocks, _live, _inventory, _digs, trips = tree
+    assert wood.gather_charcoal_logs(client, state, 1, (5, 70, 5)) == 1
+    assert trips[-1] == client._protected_home_anchor
+
+
+@pytest.mark.parametrize("failure", ["unknown_block", "threat_telemetry"])
+def test_progressive_break_stops_on_uncertain_observation(tree, monkeypatch, failure):
+    client, _state, _blocks, _live, _inventory, _digs, _trips = tree
+    original = client.transport.dispatch
+    stopped = []
+    def dispatch(route, payload):
+        if route == "dig_block":return {"started": True}
+        if route == "stop":stopped.append(True);return {}
+        if route == "get_block" and failure == "unknown_block":return {"id": "minecraft:void_air"}
+        return original(route, payload)
+    client.transport.dispatch = dispatch
+    if failure == "threat_telemetry":
+        def unavailable(*_args):raise RuntimeError("telemetry unavailable")
+        monkeypatch.setattr(wood, "_safe", unavailable)
+        with pytest.raises(RuntimeError, match="telemetry unavailable"):
+            wood._break_log(client, (20, 70, 0), "minecraft:oak_log", (0, 70, 0))
+    else:
+        assert not wood._break_log(client, (20, 70, 0), "minecraft:oak_log", (0, 70, 0))
+    assert stopped == [True]

@@ -42,6 +42,26 @@ def _travel(client, x, y, z):
     return goto(client, x, y, z, timeout=45, tolerance=1.25)
 
 
+def _break_log(client, cell, log, anchor):
+    """A dig acknowledgement starts progressive mining; it is not removal."""
+    client.transport.dispatch("dig_block", dict(zip(("x", "y", "z"), cell), max_ticks=200))
+    deadline = time.monotonic() + 11.0
+    removed = False
+    try:
+        for _ in range(44):
+            time.sleep(0.25)
+            observed = _block(client, cell)
+            if observed in AIR:
+                removed = True
+                return True
+            if observed != log or time.monotonic() >= deadline or not _safe(client, anchor):
+                break
+    finally:
+        if not removed:
+            client.transport.dispatch("stop", {})
+    return False
+
+
 def gather_charcoal_logs(client, state, wanted, anchor):
     """Harvest at most one observed trunk and return toward the saved home.
 
@@ -56,6 +76,7 @@ def gather_charcoal_logs(client, state, wanted, anchor):
 
     if anchor is None or getattr(client, "_protected_home_anchor", None) is None:
         return 0
+    anchor = tuple(client._protected_home_anchor)  # a lighting-zone centre is not home
     rec = state.custom_data.setdefault("charcoal_wood", {})
     blocked = rec.setdefault("rejected_until", {})
     now = time.time()
@@ -104,9 +125,7 @@ def gather_charcoal_logs(client, state, wanted, anchor):
                     if count_item(client, axe) > 0:
                         select_item(client, axe, allow_swap=True)
                         break
-                client.transport.dispatch("dig_block", dict(zip(("x", "y", "z"), cell), max_ticks=200))
-                time.sleep(0.75)
-                if _block(client, cell) == log:
+                if not _break_log(client, cell, log, anchor):
                     break
             if _block(client, (x, y, z)) in AIR and _safe(client, anchor):
                 _travel(client, x, y, z)  # collect drops on the verified former trunk floor
