@@ -65,6 +65,8 @@ mid-trip minimum. If local storage cannot make room, a daylight, threat-checked
 batch may supply one chest in an observed empty interior house corner. The
 chest and resulting free inventory space are verified independently; failed
 preparation retries after a short delay without descending the saved mine.
+Storage interaction clears only incidental ground cover; walls, floors and
+workstations are preserved when they obstruct a container face.
 
 These contracts require offline regression tests and live acceptance separately.
 An unattended acceptance run must demonstrate net food reserve growth,
