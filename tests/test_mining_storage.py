@@ -47,7 +47,7 @@ def home(monkeypatch):
 
 def bank(home):
     c, s, anchor, *_ = home
-    return storage._bank.__wrapped__(c, s, anchor, 10, {"minecraft:carrot"}, {"minecraft:carrot": 64})
+    return storage._bank.__wrapped__(c, s, *anchor, 10, {"minecraft:carrot"}, {"minecraft:carrot": 64})
 
 
 def test_capacity_chain_verifies_chest_and_space_and_preserves_reserves(home):
@@ -170,3 +170,30 @@ def test_full_pack_reclaims_only_rubble_before_wood_collection(home, monkeypatch
     assert bank(home) is actually_freed
     if not actually_freed:
         assert home[5] == [("drop",)]
+
+
+@pytest.mark.parametrize("unknown_settings", [False, True])
+def test_public_entry_executes_real_coordinate_bound_guard(home, unknown_settings):
+    client, state, anchor, *_ = home
+    original = client.transport.dispatch
+    settings = {"allowBreak": "true", "allowParkour": "true", "maxFallHeightNoWater": "3"}
+    writes = []
+    def dispatch(route, payload):
+        if route == "settings":
+            if "get" in payload:
+                return {} if unknown_settings else {"key": payload["get"], "value": settings[payload["get"]]}
+            settings[payload["set"]] = payload["value"]
+            writes.append((payload["set"], payload["value"]))
+            return {"success": True}
+        if route == "get_state":
+            return {"is_pathing": False}
+        return original(route, payload)
+    client.transport.dispatch = dispatch
+    result = storage.bank_mining_overflow(client, state, anchor, 10, set(), {})
+    assert result is (not unknown_settings)
+    if unknown_settings:
+        assert home[5] == [] and writes == []
+    else:
+        assert ("allowBreak", "false") in writes and ("maxFallHeightNoWater", "1") in writes
+        assert settings == {"allowBreak": "true", "allowParkour": "true", "maxFallHeightNoWater": "3"}
+        assert any(a[0] == "deposit" for a in home[5])

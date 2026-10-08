@@ -53,7 +53,7 @@ def _spot(client, state, anchor):
 
 
 @protect_home_route(surface_work=True, safe_movement=True)
-def _bank(client, state, anchor, required, items, retains):
+def _bank(client, state, x, y, z, required, items, retains):
     from ..common.harness_ops import place_block_exact
     from ..common.inventory import count_item, craft, deposit_excess_to_chest, get_inventory, drop_items
     from ..common.resources import LOG_TO_PLANKS, PLANK_ITEMS
@@ -61,6 +61,7 @@ def _bank(client, state, anchor, required, items, retains):
     from ..common.tunnel_miner import free_slots, DIGGING_JUNK
     from .charcoal_wood import gather_charcoal_logs
 
+    anchor = (x, y, z)
     record = state.custom_data.setdefault("mining_storage", {})
     saved = record.get("chest")
     chest = tuple(saved) if isinstance(saved, (list, tuple)) and len(saved) == 3 else None
@@ -124,7 +125,7 @@ def bank_mining_overflow(client, state, anchor, required, items, retains):
             _return(client, *anchor)
             if not _at_home(client, anchor):
                 return False
-        return _bank(client, state, anchor, required, items, retains)
+        return _bank(client, state, *anchor, required, items, retains)
     except (PlayerDeathDetected, SurvivalRecoveryRequired):
         raise
     except Exception as exc:
