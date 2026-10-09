@@ -83,6 +83,37 @@ def test_deposit_ack_without_room_is_failure(home):
     assert not bank(home)
 
 
+@pytest.mark.parametrize("arrived", [True, False])
+def test_crafting_on_another_house_level_returns_before_storage_placement(home, monkeypatch, arrived):
+    home[4]["minecraft:oak_planks"] = 8
+    original = __import__("baritone_client.common.inventory", fromlist=["craft"]).craft
+    def upstairs(client, item, count):
+        result = original(client, item, count)
+        home[6].safe = False
+        return result
+    monkeypatch.setattr("baritone_client.common.inventory.craft", upstairs)
+    monkeypatch.setattr("baritone_client.common.harness_ops.close_container", lambda *_a: home[5].append(("close",)))
+    monkeypatch.setattr("baritone_client.common.food_workstation._fresh_safe_position", lambda *_a, **_k: (3, 75, 3))
+    def return_home(*_a):
+        home[5].append(("return",))
+        home[6].safe = arrived
+        return True
+    monkeypatch.setattr("baritone_client.common.food_return._return", return_home)
+    assert bank(home) is arrived
+    assert [a[0] for a in home[5]] == (["craft", "close", "return", "place", "catalog", "deposit"] if arrived else ["craft", "close", "return"])
+
+
+@pytest.mark.parametrize("position", [None, (3, 80, 3), (100, 75, 100)])
+def test_post_crafting_unknown_or_remote_position_never_starts_capacity_return(home, monkeypatch, position):
+    home[4]["minecraft:chest"] = 1
+    home[6].safe = False
+    monkeypatch.setattr("baritone_client.common.harness_ops.close_container", lambda *_a: None)
+    monkeypatch.setattr("baritone_client.common.food_workstation._fresh_safe_position", lambda *_a, **_k: position)
+    monkeypatch.setattr("baritone_client.common.food_return._return", lambda *_a: pytest.fail("unsafe capacity return"))
+    assert not bank(home)
+    assert home[5] == []
+
+
 def test_existing_overflow_is_reused_without_new_gather_or_build(home):
     home[1].custom_data["mining_storage"] = {"chest": [5, 71, 1]}
     home[3][(5, 71, 1)] = "minecraft:chest"

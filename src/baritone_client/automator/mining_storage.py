@@ -124,8 +124,23 @@ def _bank(client, state, x, y, z, required, items, retains):
             if sum(count_item(client, p) for p in PLANK_ITEMS) < 8:
                 return False
             craft(client, "minecraft:chest", 1)
-        if count_item(client, "minecraft:chest") < 1 or not _at_home(client, anchor):
+        if count_item(client, "minecraft:chest") < 1:
             return False
+        if not _at_home(client, anchor):
+            from ..common.food_workstation import _fresh_safe_position
+            from ..common.food_return import _return
+            from ..common.harness_ops import close_container
+
+            # Crafting can approach a workstation on another house level.
+            # Return before placement, then require the original home margins.
+            close_container(client)
+            position = _fresh_safe_position(client, require_grounded=True)
+            if (position is None or math.dist(position, anchor) > 32
+                    or abs(position[1] - anchor[1]) > 8):
+                return False
+            _return(client, *anchor)
+            if not _at_home(client, anchor):
+                return False
         # Recheck the target after gathering/crafting; never clear an obstruction.
         if _spot(client, state, anchor) != chest:
             return False
