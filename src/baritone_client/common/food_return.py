@@ -1,6 +1,5 @@
 """Return from a bounded food attempt even when it produced no bread."""
 
-import math
 import time
 from functools import wraps
 
@@ -17,10 +16,10 @@ def _position(client):
 
 @allow_recovery_navigation
 @protect_home_route(surface_work=True, safe_movement=True)
-def _return(client, x, y, z):
-    from .navigation import goto
+def _return(client, x, y, z, state):
+    from .house_door_travel import return_to_saved_house
 
-    return goto(client, x, y, z, timeout=150, tolerance=2.0)
+    return return_to_saved_house(client, state, (x, y, z))
 
 
 def return_after_food_cycle(function):
@@ -50,6 +49,7 @@ def return_from_food_attempt(client, state):
         return False
     record = custom.setdefault("food_return", {})
     record["verified"] = False
+    from .house_door_travel import saved_house_arrival
     try:
         client.transport.dispatch("stop", {})
         position = None
@@ -61,10 +61,10 @@ def return_from_food_attempt(client, state):
         if position is None:
             return False
         record["last_attempt_at"] = time.time()
-        if math.dist(position, anchor) > 4:
-            _return(client, *anchor)
+        if not saved_house_arrival(position, state, anchor):
+            _return(client, *anchor, state)
         observed = _position(client)
-        verified = observed is not None and math.dist(observed, anchor) <= 4
+        verified = saved_house_arrival(observed, state, anchor)
         record["verified"] = verified
         if verified:
             record["last_verified_at"] = time.time()

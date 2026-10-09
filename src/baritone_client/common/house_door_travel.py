@@ -193,6 +193,24 @@ def _restore_slot(client, slot):
         return False
 
 
+def _safe_door_stand(client, position):
+    """A floor torch is passable for travel; workstation placement stays strict."""
+    from .farming import _block_data
+    from .tunnel_planner import GRAVITY, is_support
+    from .base import _ALL_PLANKS
+
+    x, y, z = position
+    try:
+        feet = _block_data(client, x, y, z).get("id")
+        head = _block_data(client, x, y + 1, z).get("id")
+        floor = _block_data(client, x, y - 1, z).get("id")
+        return (feet in {"minecraft:air", "minecraft:torch", "minecraft:wall_torch"}
+                and head == "minecraft:air" and floor not in GRAVITY
+                and (floor in _ALL_PLANKS or is_support(floor)))
+    except Exception:
+        return False
+
+
 def _open_from_side(client, origin, side):
     from .food_workstation import _door_interaction_safe
 
@@ -204,10 +222,9 @@ def _open_from_side(client, origin, side):
     if opened is not False:
         return False
     stand = (ox + 3, oy + 1, oz + (1 if side == "inside" else -1))
-    from .food_workstation import _safe_stand_block
     from .navigation import goto
 
-    if not _safe_stand_block(client, stand):
+    if not _safe_door_stand(client, stand):
         return False
     fresh = _state(client)
     if fresh is None:
@@ -308,3 +325,59 @@ def prepare_house_door_for_entry(client: Any, state: Any, anchor: Sequence[int])
     if _in_house(fresh[1], origin):
         return True
     return _open_from_side(client, origin, "outside")
+
+
+def saved_house_arrival(position, state, anchor):
+    """Nearby underground cells are not a return to the recorded house."""
+    from .food_workstation import _starter_house_origin
+
+    origin = _starter_house_origin(state, anchor)
+    return (position is not None and origin is not None
+            and _in_house(position, origin) and math.dist(position, anchor) <= 4)
+
+
+def return_to_saved_house(client, state, anchor):
+    """Enter through the observed doorway, verifying each exact surface stage."""
+    from .food_workstation import _starter_house_origin
+    from .navigation import goto
+    from .tasks import PlayerDeathDetected, SurvivalRecoveryRequired
+
+    try:
+        if (len(anchor) != 3 or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                                  or not math.isfinite(v) for v in anchor)):
+            return False
+        origin = _starter_house_origin(state, anchor)
+        if origin is None:
+            return False
+        ox, oy, oz = origin
+        target = (math.floor(anchor[0]), oy + 1, math.floor(anchor[2]))
+        if not _in_house(target, origin) or not _safe_door_stand(client, target):
+            return False
+        fresh = _state(client)
+        if fresh is None:
+            return False
+
+        def travel(cell, timeout):
+            goto(client, *cell, timeout=timeout, tolerance=0.5, radius=0)
+            observed = _state(client)
+            return (observed is not None
+                    and tuple(math.floor(v) for v in observed[1]) == cell)
+
+        if not _in_house(fresh[1], origin):
+            exterior = (ox + 3, oy + 1, oz - 1)
+            if not _safe_door_stand(client, exterior) or not travel(exterior, 150):
+                return False
+            if not _open_from_side(client, origin, "outside"):
+                return False
+            if not travel((ox + 3, oy + 1, oz), 20):
+                return False
+            if _door_state(client, (ox + 3, oy + 1, oz), (ox + 3, oy + 2, oz)) is not True:
+                return False
+        if not _safe_door_stand(client, target) or not travel(target, 20):
+            return False
+        arrived = _state(client)
+        return arrived is not None and saved_house_arrival(arrived[1], state, anchor)
+    except (PlayerDeathDetected, SurvivalRecoveryRequired):
+        raise
+    except Exception:
+        return False
