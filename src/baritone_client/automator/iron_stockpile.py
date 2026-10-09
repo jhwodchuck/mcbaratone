@@ -294,7 +294,7 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
     """One bounded trip. Returns the scheduler's (success, detail, before, after)."""
     from ..common.navigation import goto, recovery_navigation_defense
     from ..common.tasks import PlayerDeathDetected, SurvivalRecoveryRequired
-    from ..common.tunnel_miner import MineAbort, TunnelMiner
+    from ..common.tunnel_miner import MineAbort, TunnelMiner, route_travel_seconds
     from ..common.tunnel_planner import loop_erase
     from .armor_recovery import _home, _smelt_raw_iron
     from .mining_checkpoint import checkpoint_progress
@@ -365,7 +365,7 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
     spine: List[Tuple[int, int, int]] = [tuple(c) for c in rec.get("spine", [])] or [entrance]
     miner = TunnelMiner(
         client, surface_y=entrance[1],
-        deadline=time.monotonic() + min(2400.0, max(240.0, 12.0 * (len(spine) - 1))),
+        deadline=time.monotonic() + route_travel_seconds(spine),
         spine=spine, entrance=entrance, min_y=MIN_Y,
         patience=12.0 if lit else DARK_PATIENCE,
         on_progress=checkpoint_progress(client, state, rec),

@@ -52,6 +52,34 @@ def _spot(client, state, anchor):
     return None
 
 
+def _full(client, chest):
+    """Only a complete freshly opened chest snapshot can justify expansion."""
+    from ..common.harness_ops import open_container, close_container
+
+    try:
+        if not open_container(client, chest, timeout=4.0):
+            return False
+        raw = client.transport.dispatch("get_screen", {})
+        if not isinstance(raw, dict):
+            return False
+        data = raw.get("data", raw) if isinstance(raw, dict) else {}
+        if not isinstance(data, dict):
+            return False
+        slots, total = data.get("slots"), data.get("total_slots")
+        if (raw.get("error") or raw.get("status") == "error" or data.get("error")
+                or raw.get("success") is False or data.get("success") is False
+                or data.get("status") == "error" or type(data.get("sync_id")) is not int
+                or data["sync_id"] <= 0 or type(total) is not int or total not in (63, 90) or not isinstance(slots, list)
+                or len(slots) != total or any(not isinstance(s, dict) or type(s.get("slot")) is not int for s in slots)
+                or {s["slot"] for s in slots} != set(range(total))):
+            return False
+        return all(isinstance(s.get("id"), str) and s["id"] != "minecraft:air"
+                   and type(s.get("count")) is int and s["count"] > 0
+                   for s in slots if s["slot"] < total - 36)
+    finally:
+        close_container(client)
+
+
 @protect_home_route(surface_work=True, safe_movement=True)
 def _bank(client, state, x, y, z, required, items, retains):
     from ..common.harness_ops import place_block_exact
@@ -67,6 +95,13 @@ def _bank(client, state, x, y, z, required, items, retains):
     chest = tuple(saved) if isinstance(saved, (list, tuple)) and len(saved) == 3 else None
     if chest is not None and (math.dist(chest, anchor) > 4.5 or _block(client, chest) != "minecraft:chest"):
         chest = None
+    if chest is not None:
+        deposited = deposit_excess_to_chest(client, chest, deposit_items=items, retain_counts=retains, state=state)
+        if free_slots(client) >= required:
+            return True
+        if deposited < 0 or not _at_home(client, anchor) or not _full(client, chest):
+            return False
+        chest = None  # Retain the old checkpoint landmark until new placement is verified.
     if chest is None:
         chest = _spot(client, state, anchor)
         if chest is None:
@@ -109,7 +144,7 @@ def _bank(client, state, x, y, z, required, items, retains):
 
 
 def bank_mining_overflow(client, state, anchor, required, items, retains):
-    """One chest, one nearby daylight wood batch, then verified free slots."""
+    """Reuse capacity or add one verified home chest, then prove free slots."""
     from ..common.tasks import PlayerDeathDetected, SurvivalRecoveryRequired
 
     bind_home_surface(client, state)

@@ -90,6 +90,56 @@ def test_existing_overflow_is_reused_without_new_gather_or_build(home):
     assert [a[0] for a in home[5]] == ["deposit"]
 
 
+@pytest.mark.parametrize("full", [True, False, None])
+def test_full_existing_overflow_adds_only_one_verified_capacity_batch(home, monkeypatch, full):
+    old = (5, 71, 1)
+    home[1].custom_data["mining_storage"] = {"chest": list(old)}
+    home[3].update({old: "minecraft:chest", (5, 70, 5): "minecraft:cobblestone", (6, 71, 5): "minecraft:cobblestone"})
+    monkeypatch.setattr(storage, "_full", lambda *_a: full)
+    calls = []
+    def deposit(_c, chest, **kwargs):
+        calls.append(chest)
+        if chest != old:
+            home[6].free = 10
+        return 0 if chest == old else 3
+    monkeypatch.setattr("baritone_client.common.inventory.deposit_excess_to_chest", deposit)
+    assert bank(home) is (full is True)
+    assert calls == ([old, (5, 71, 5)] if full is True else [old])
+    assert home[1].custom_data["mining_storage"]["chest"] == ([5, 71, 5] if full is True else list(old))
+    assert sum(a[0] == "place" for a in home[5]) == (1 if full is True else 0)
+    assert home[3][old] == "minecraft:chest"
+
+
+def test_rejected_overflow_never_justifies_capacity_growth(home, monkeypatch):
+    home[1].custom_data["mining_storage"] = {"chest": [5, 71, 1]}
+    home[3][(5, 71, 1)] = "minecraft:chest"
+    monkeypatch.setattr("baritone_client.common.inventory.deposit_excess_to_chest", lambda *_a, **_k: -1)
+    monkeypatch.setattr(storage, "_full", lambda *_a: pytest.fail("rejected chest is not a full chest"))
+    assert not bank(home)
+    assert home[5] == []
+
+
+@pytest.mark.parametrize("case", ["full", "empty", "partial", "duplicate", "error", "sync", "count", "unknown", "total", "envelope"])
+def test_fullness_requires_complete_fresh_container_evidence(home, monkeypatch, case):
+    slots = [{"slot": n, "id": "minecraft:stone" if n < 27 else "minecraft:air", "count": 1 if n < 27 else 0} for n in range(63)]
+    screen = {"sync_id": 2, "total_slots": 63, "slots": slots}
+    if case == "empty": slots[0].update(id="minecraft:air", count=0)
+    elif case == "partial": slots.pop()
+    elif case == "duplicate": slots[1]["slot"] = 0
+    elif case == "error": screen["success"] = False
+    elif case == "sync": screen["sync_id"] = False
+    elif case == "count": slots[0]["count"] = True
+    elif case == "unknown": screen = None
+    elif case == "total": screen["total_slots"] = 63.0
+    elif case == "envelope": screen = {"status": "error", "data": screen}
+    closed = []
+    monkeypatch.setattr("baritone_client.common.harness_ops.open_container", lambda *_a, **_k: True)
+    monkeypatch.setattr("baritone_client.common.harness_ops.close_container", lambda *_a: closed.append(True))
+    home[0].transport.dispatch = lambda *_a: screen
+    assert storage._full(home[0], (5, 71, 1)) is (case == "full")
+    assert closed == [True]
+
+
 def test_failed_home_observation_refuses_all_work(home):
     home[6].safe = False
     assert not storage.bank_mining_overflow(home[0], home[1], home[2], 10, set(), {})

@@ -36,6 +36,7 @@ class FakeWorld:
         self.placed = []
         self.hostile_after_digs = None
         self.used_slots = 1
+        self.pick_damage = 0
         self.allow_break = "true"
         self.pending_allow_break = None
         self.allow_break_apply_after_reads = 0
@@ -93,10 +94,12 @@ class FakeWorld:
                 return self.entity_response
             return {"entities": list(self.entities)}
         if route == "get_inventory":
-            return {"inventory": [
+            rows = [
                 {"slot": n, "id": "minecraft:stone_pickaxe" if n == 0 else "minecraft:dirt", "count": 1}
                 for n in range(self.used_slots)
-            ]}
+            ]
+            rows[0].update(max_damage=131, damage=self.pick_damage)
+            return {"inventory": rows, "snapshot_valid": True, "selected_slot": 0}
         if route == "find_blocks":
             return {"found": [
                 {"x": x, "y": y, "z": z} for (x, y, z), b in self.blocks.items() if b in payload["blocks"]
@@ -131,7 +134,7 @@ def world(monkeypatch):
     w = FakeWorld()
     monkeypatch.setattr("baritone_client.common.navigation.goto", w.goto)
     monkeypatch.setattr("baritone_client.common.harness_ops.place_block_exact", w.place)
-    monkeypatch.setattr("baritone_client.common.resources.equip_best_pickaxe", lambda _c: True)
+    monkeypatch.setattr("baritone_client.common.resources.equip_best_pickaxe", lambda _c, **_k: True)
     monkeypatch.setattr(tm.time, "sleep", lambda _s: None)
     return w
 
@@ -572,7 +575,7 @@ def test_retreat_walks_each_recorded_cell_and_proves_the_entrance(world):
 
 
 def test_long_verified_return_gets_time_for_each_checked_hop(world, monkeypatch):
-    spine = [(x, 70, 0) for x in range(31)]
+    spine = [(x, 70, 0) for x in range(201)]
     for x, _, z in spine:
         world.blocks[(x, 69, z)] = STONE
     miner = make_miner(world, spine=spine)
@@ -587,8 +590,49 @@ def test_long_verified_return_gets_time_for_each_checked_hop(world, monkeypatch)
 
     monkeypatch.setattr("baritone_client.common.navigation.goto", slow_hop)
     assert miner.retreat()
-    assert clock[0] == 1300.0  # exceeds the old fixed four-minute deadline
+    assert clock[0] == 3000.0  # exceeds the old twenty-minute cap
     assert world.pos == spine[0] and not world.dug
+
+
+def test_travel_budget_covers_retained_routes_and_stays_bounded():
+    assert tm.route_travel_seconds([ENTRANCE]) == 240
+    assert tm.route_travel_seconds([ENTRANCE] * 400) == 4788
+    assert tm.route_travel_seconds([ENTRANCE] * 1000) == 4800
+
+
+@pytest.mark.parametrize("remaining", [0, 1, 16, 32, 33])
+def test_dig_keeps_pickaxe_return_reserve(world, remaining):
+    world.pick_damage = 131 - remaining
+    target = (0, 69, 0)
+    miner = make_miner(world)
+    if remaining <= 32:
+        with pytest.raises(tm.MineAbort, match="pickaxe"):
+            miner.dig(target)
+        assert world.dug == []
+    else:
+        miner.dig(target)
+        assert len(world.dug) == 1
+
+
+@pytest.mark.parametrize("case", ["missing", "boolean", "error", "stale", "selected", "wrong_tool", "mapping", "duplicate"])
+def test_uncertain_held_tool_never_starts_a_dig(world, case):
+    original = world.transport.dispatch
+    def dispatch(route, payload):
+        result = original(route, payload)
+        if route == "get_inventory":
+            if case == "missing": result["inventory"][0].pop("max_damage")
+            elif case == "boolean": result["inventory"][0]["damage"] = False
+            elif case == "error": result["success"] = False
+            elif case == "stale": result["snapshot_valid"] = False
+            elif case == "selected": result["selected_slot"] = False
+            elif case == "wrong_tool": result["inventory"][0]["id"] = "minecraft:stone_sword"
+            elif case == "mapping": result["inventory"] = {"minecraft:stone_pickaxe": 1}
+            elif case == "duplicate": result["inventory"].append(dict(result["inventory"][0]))
+        return result
+    world.transport.dispatch = dispatch
+    with pytest.raises(tm.MineAbort, match="durability unverified"):
+        make_miner(world).dig((0, 69, 0))
+    assert world.dug == []
 
 
 def test_checkpoint_failure_does_not_interrupt_verified_return(world):

@@ -49,6 +49,13 @@ TORCH_EVERY = 7
 PLAN_MOVES = 5
 MAX_TRAIL = 400
 MIN_FREE_SLOTS = 3
+PICKAXE_RETURN_RESERVE = 32
+MINING_PICKAXES = {f"minecraft:{tier}_pickaxe" for tier in ("stone", "iron", "diamond", "netherite")}
+
+
+def route_travel_seconds(cells: Sequence[Cell]) -> float:
+    """Bound travel by the saved route, including the longest retained trail."""
+    return min(4800.0, max(240.0, 12.0 * (len(cells) - 1)))
 
 
 class MineAbort(Exception):
@@ -300,8 +307,7 @@ class TunnelMiner:
         ):
             raise MineAbort(f"unexpected block {block}")
         for attempt in range(2):
-            if attempt:
-                self.equip()  # eating mid-dig swaps the held item
+            self.equip()  # Recheck the held tool before every block/retry.
             self._call("dig_block", {"x": cell[0], "y": cell[1], "z": cell[2], "max_ticks": 160})
             deadline = time.monotonic() + 9.0
             while time.monotonic() < deadline:
@@ -314,9 +320,29 @@ class TunnelMiner:
 
     def equip(self) -> None:
         from .resources import equip_best_pickaxe
+        from ..inventory_evidence import unwrap_inventory, valid_inventory
 
-        if not equip_best_pickaxe(self.client):
+        if not equip_best_pickaxe(self.client, pickaxe_ids=sorted(MINING_PICKAXES)):
             raise MineAbort("no pickaxe")
+        try:
+            raw = self.client.transport.dispatch("get_inventory", {})
+        except Exception as exc:
+            raise MineAbort("pickaxe durability unverified") from exc
+        data = unwrap_inventory(raw)
+        if (not valid_inventory(raw) or not isinstance(data, dict) or raw.get("success") is False
+                or data.get("success") is False or data.get("snapshot_valid") is not True
+                or not isinstance(data.get("inventory"), list)):
+            raise MineAbort("pickaxe durability unverified")
+        selected = data.get("selected_slot")
+        rows = data.get("inventory", [])
+        matches = [r for r in rows if type(r.get("slot")) is int and r["slot"] == selected] if type(selected) is int and 0 <= selected < 9 else []
+        held = matches[0] if len(matches) == 1 else {}
+        maximum, damage = held.get("max_damage"), held.get("damage")
+        if (held.get("id") not in MINING_PICKAXES or held.get("count", 0) <= 0
+                or type(maximum) is not int or type(damage) is not int or not 0 <= damage < maximum):
+            raise MineAbort("pickaxe durability unverified")
+        if maximum - damage <= PICKAXE_RETURN_RESERVE:
+            raise MineAbort("pickaxe return reserve")
 
     def step(self, target: Cell) -> None:
         from .navigation import goto
@@ -467,7 +493,7 @@ class TunnelMiner:
                 # verification. A fixed four minutes strands long saved
                 # routes even when every step succeeds. Still bound the
                 # complete return and each individual hop.
-                deadline = time.monotonic() + min(1200.0, max(240.0, 12.0 * (len(route) - 1)))
+                deadline = time.monotonic() + route_travel_seconds(route)
                 self._hop(route[1:], timeout=20, returning=True, return_deadline=deadline)
             return self.cell() == forward[0]
         except MineAbort as exc:
