@@ -40,25 +40,30 @@ def _entries(client: Any) -> list:
     return [i for i in items if isinstance(i, dict) and int(i.get("count", 0) or 0) > 0]
 
 
-def _durable(item: dict) -> bool:
+def _durable(item: dict, minimum_uses: int = WORN_OUT_USES) -> bool:
     from ..common.combat_loadout import remaining_durability
 
     remaining = remaining_durability(item)
-    return remaining is None or remaining > WORN_OUT_USES
+    return remaining is None or remaining > minimum_uses
 
 
 def has_usable(entries: list, role: str) -> bool:
     """A carried weapon or pickaxe with real life left in it."""
+    from ..common.tunnel_miner import PICKAXE_RETURN_RESERVE
+
     # A pickaxe scores as a weapon too, but at 3 damage it is not a defence.
     suffixes = ("_sword", "_axe") if role == "weapon" else ("_pickaxe",)
-    return any(str(i.get("id", "")).endswith(suffixes) and _durable(i) for i in entries)
+    minimum = WORN_OUT_USES if role == "weapon" else PICKAXE_RETURN_RESERVE
+    return any(str(i.get("id", "")).endswith(suffixes) and _durable(i, minimum) for i in entries)
 
 
 def has_mining_pickaxe(client: Any) -> bool:
     """Iron requires a durable stone-or-better pickaxe, not wood or gold."""
+    from ..common.tunnel_miner import PICKAXE_RETURN_RESERVE
+
     return any(
         item.get("id") in {f"minecraft:{tier}_pickaxe" for tier in ("stone", "iron", "diamond", "netherite")}
-        and _durable(item) for item in _entries(client)
+        and _durable(item, PICKAXE_RETURN_RESERVE) for item in _entries(client)
     )
 
 
