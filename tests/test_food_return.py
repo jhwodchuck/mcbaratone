@@ -65,3 +65,12 @@ def test_unsafe_or_unknown_state_never_starts_return(monkeypatch, case):
     else:live.pop("block_position")
     monkeypatch.setattr(recovery, "_return", lambda *_a: pytest.fail("unsafe return"))
     assert not recovery.return_from_food_attempt(client, state)
+
+
+def test_nearby_cave_position_is_not_a_home_arrival(monkeypatch):
+    client,state,live=world()
+    live["block_position"]={"x":0,"y":67,"z":0}
+    trips=[]
+    monkeypatch.setattr(recovery,"_return",lambda *_a:trips.append(1))
+    assert not recovery.return_from_food_attempt(client,state)
+    assert trips==[1] and not state.custom_data["food_return"]["verified"]
