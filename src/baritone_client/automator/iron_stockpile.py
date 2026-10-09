@@ -317,7 +317,7 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
         # The surface around the base is only loaded (and so only readable)
         # when the bot is there, so a trip starts by walking home.
         if not goto(client, *anchor, timeout=300, tolerance=2.0,
-                    on_defense=recovery_navigation_defense):
+                    on_defense=lambda: recovery_navigation_defense(client)):
             return done(False, "could not get home to start a mining trip", retry_after=600.0)
     _make_room(client, state)
     from .iron_preparation import prepare_iron_inventory

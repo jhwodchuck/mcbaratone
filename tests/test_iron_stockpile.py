@@ -136,8 +136,12 @@ def test_below_home_requires_exact_upward_recovery_before_inventory_work(bot, mo
     entrance = [16, 70, 0]
     st = state({iron_stockpile.KEY: {"entrance": entrance, "spine": [entrance], "failures": 18}})
     calls = []
+    defended = []
+    monkeypatch.setattr("baritone_client.common.combat.defend_or_flee",
+                        lambda client, **kwargs: defended.append((client, kwargs)) or False)
     def blocked(_c, x, y, z, **kwargs):
         calls.append(((x, y, z), kwargs))
+        assert kwargs["on_defense"]() is False
         return False
     monkeypatch.setattr("baritone_client.common.navigation.goto", blocked)
     monkeypatch.setattr("baritone_client.automator.iron_preparation.prepare_iron_inventory",
@@ -147,6 +151,7 @@ def test_below_home_requires_exact_upward_recovery_before_inventory_work(bot, mo
     target, kwargs = calls[0]
     assert target == (0, 70, 0) and kwargs["tolerance"] == 2.0
     assert "radius" not in kwargs and callable(kwargs["on_defense"])
+    assert defended == [(bot, {"allow_safe_recovery_movement": True})]
     assert st.custom_data[iron_stockpile.KEY]["spine"] == [entrance]
     assert st.custom_data[iron_stockpile.KEY]["next_trip"] == 1600
 
