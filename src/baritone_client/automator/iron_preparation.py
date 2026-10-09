@@ -8,13 +8,17 @@ from .weapon_upkeep import has_mining_pickaxe, restore_kit
 
 def prepare_iron_inventory(client, state):
     """Bank surplus food, retrieve stone locally, then verify space and tool."""
-    from ..common.home_respawn import withdraw_from_home_containers
-    from ..common.inventory import deposit_excess_to_chest, resolve_storage_location
+    from ..common.home_respawn import WOOL_ITEMS, withdraw_from_home_containers
+    from ..common.inventory import deposit_excess_to_chest, get_inventory, resolve_storage_location
+    from ..common.resources import PLANK_ITEMS
     from ..common.tunnel_miner import DIGGING_JUNK, free_slots
     from .armor_recovery import _home
     from .iron_stockpile import CLUTTER, STORAGE_FOOD_RESERVE, ROOM_WANTED
 
-    prep_bank_items = set(CLUTTER) | set(DIGGING_JUNK) | {
+    # Building leftovers belong at home; retain a wood reserve for field repairs.
+    prep_bank_items = set(CLUTTER) | set(DIGGING_JUNK) | set(PLANK_ITEMS) | set(WOOL_ITEMS) | {
+        item.replace("_planks", "_door") for item in PLANK_ITEMS
+    } | {
         "minecraft:carrot", "minecraft:wheat_seeds", "minecraft:enchanted_book",
         "minecraft:lead", "minecraft:bell", "minecraft:leaf_litter",
         "minecraft:raw_copper",
@@ -34,6 +38,11 @@ def prepare_iron_inventory(client, state):
         "minecraft:cobblestone": 64,
         "minecraft:wheat_seeds": 16,
     }
+    if free_slots(client) < ROOM_WANTED:
+        inventory = get_inventory(client)  # Unknown inventory must abort before banking.
+        planks = [item for item in PLANK_ITEMS if inventory.get(item, 0) > 0]
+        if planks:
+            retains[max(planks, key=lambda item: inventory[item])] = 4
     if chest is not None and free_slots(client) < ROOM_WANTED:
         try:
             deposit_excess_to_chest(

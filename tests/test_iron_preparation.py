@@ -13,6 +13,7 @@ def setup(monkeypatch):
     monkeypatch.setattr("baritone_client.automator.armor_recovery._home", lambda _s: (0, 70, 0))
     monkeypatch.setattr("baritone_client.common.inventory.resolve_storage_location", lambda *_a, **_k: (2, 70, 2))
     monkeypatch.setattr("baritone_client.common.tunnel_miner.free_slots", lambda _c: observed.free)
+    monkeypatch.setattr("baritone_client.common.inventory.get_inventory", lambda _c: {})
     monkeypatch.setattr(prep, "has_mining_pickaxe", lambda _c: observed.tool)
     monkeypatch.setattr(prep, "restore_kit", lambda _c: [])
     monkeypatch.setattr("baritone_client.common.inventory.deposit_excess_to_chest", lambda *_a, **k: observed.deposits.append(k) or 4)
@@ -141,3 +142,46 @@ def test_rejected_original_chest_can_reach_guarded_overflow(setup, monkeypatch, 
     result = prep.prepare_iron_inventory(object(), object())
     assert attempted == [True]
     assert (result == "") is verified_room
+
+
+@pytest.mark.parametrize("transferred", [False, True])
+@pytest.mark.parametrize("plank_reserve", [2, 4])
+def test_building_leftovers_free_room_without_banking_trip_supplies(setup, monkeypatch, transferred, plank_reserve):
+    setup.tool, setup.free = True, 7
+    carried = {
+        "minecraft:oak_planks": plank_reserve, "minecraft:birch_planks": 2,
+        "minecraft:oak_door": 2, "minecraft:white_wool": 2,
+        "minecraft:oak_log": 2, "minecraft:stick": 2,
+        "minecraft:bread": 8, "minecraft:torch": 12,
+        "minecraft:stone_pickaxe": 1, "minecraft:iron_sword": 1,
+        "minecraft:iron_helmet": 1, "minecraft:raw_iron": 3,
+    }
+    original = dict(carried)
+    monkeypatch.setattr("baritone_client.common.inventory.get_inventory", lambda _c: dict(carried))
+
+    def bank(*_a, deposit_items, retain_counts, **_k):
+        if transferred:
+            for item in list(carried):
+                if item in deposit_items and carried[item] > retain_counts.get(item, 0):
+                    carried[item] = retain_counts.get(item, 0)
+                    if carried[item] == 0:
+                        del carried[item]
+                        setup.free += 1
+        return 3  # A transfer claim alone cannot admit mining.
+
+    monkeypatch.setattr("baritone_client.common.inventory.deposit_excess_to_chest", bank)
+    result = prep.prepare_iron_inventory(object(), object())
+    assert (result == "") is transferred
+    banked = {"minecraft:birch_planks", "minecraft:oak_door", "minecraft:white_wool"}
+    assert carried == ({k: v for k, v in original.items() if k not in banked} if transferred else original)
+    assert setup.free == (10 if transferred else 7)
+
+
+def test_unknown_building_inventory_cannot_authorize_preparation(setup, monkeypatch):
+    setup.tool = True
+    def failed(_c):
+        raise RuntimeError("inventory unavailable")
+    monkeypatch.setattr("baritone_client.common.inventory.get_inventory", failed)
+    with pytest.raises(RuntimeError, match="inventory unavailable"):
+        prep.prepare_iron_inventory(object(), object())
+    assert setup.deposits == []
