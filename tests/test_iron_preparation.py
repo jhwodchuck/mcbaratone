@@ -40,6 +40,18 @@ def test_inventory_full_still_blocks_a_usable_tool(setup):
     assert setup.withdrawals == []
 
 
+def test_partial_player_stacks_are_compacted_before_banking(setup, monkeypatch):
+    import sys
+    setup.tool, setup.free = True, 9
+    def compact(_client, anchor, required):
+        assert anchor == (0, 70, 0) and required == 10
+        setup.free = 10
+    monkeypatch.setitem(sys.modules, "baritone_client.automator.mining_compaction",
+                        SimpleNamespace(compact_home_stacks=compact))
+    assert prep.prepare_iron_inventory(object(), object()) == ""
+    assert setup.deposits == [] and setup.withdrawals == []
+
+
 @pytest.mark.parametrize("chest", [(200, 70, 0), (0, 30, 0)])
 def test_preparation_never_banks_at_remote_or_deep_storage(setup, monkeypatch, chest):
     setup.tool = True

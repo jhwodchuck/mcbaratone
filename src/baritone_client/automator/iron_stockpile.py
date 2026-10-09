@@ -231,7 +231,7 @@ def _bank(client: Any, state: Any) -> int:
     return max(0, before - _count(client, IRON_INGOT))
 
 
-HOME_RANGE = 40.0
+HOME_RANGE = 4.0
 
 
 def _near(client: Any, anchor: Tuple[int, int, int], distance: float) -> bool:
@@ -314,10 +314,10 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
         return ok, detail, before, after
 
     if anchor is not None and not _near(client, anchor, HOME_RANGE):
-        # The surface around the base is only loaded (and so only readable)
-        # when the bot is there, so a trip starts by walking home.
-        if not goto(client, *anchor, timeout=300, tolerance=2.0,
-                    on_defense=lambda: recovery_navigation_defense(client)):
+        # Storage preparation needs actual home arrival, even after a short flee.
+        if (not goto(client, *anchor, timeout=300, tolerance=2.0,
+                     on_defense=lambda: recovery_navigation_defense(client))
+                or not _near(client, anchor, HOME_RANGE)):
             return done(False, "could not get home to start a mining trip", retry_after=600.0)
     _make_room(client, state)
     from .iron_preparation import prepare_iron_inventory
@@ -365,7 +365,7 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
     spine: List[Tuple[int, int, int]] = [tuple(c) for c in rec.get("spine", [])] or [entrance]
     miner = TunnelMiner(
         client, surface_y=entrance[1],
-        deadline=time.monotonic() + (TRIP_SECONDS if lit else DARK_TRIP_SECONDS),
+        deadline=time.monotonic() + min(2400.0, max(240.0, 12.0 * (len(spine) - 1))),
         spine=spine, entrance=entrance, min_y=MIN_Y,
         patience=12.0 if lit else DARK_PATIENCE,
         on_progress=checkpoint_progress(client, state, rec),
@@ -375,6 +375,8 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
     reason = ""
     try:
         miner.descend(spine)
+        miner.check()  # expired/unsafe travel cannot renew the work deadline
+        miner.deadline = time.monotonic() + (TRIP_SECONDS if lit else DARK_TRIP_SECONDS)
         reason = miner.mine(goal, lambda: _count(client, RAW_IRON))
     except MineAbort as abort:
         reason = abort.reason

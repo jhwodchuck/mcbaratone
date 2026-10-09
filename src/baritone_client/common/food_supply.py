@@ -302,20 +302,19 @@ def _retire_distant_plots(
 
 
 def _return_to_anchor(client: Any, anchor: Optional[Tuple[int, int, int]]) -> bool:
-    """Walk back toward base so the next cycle starts within reach.
+    """Return with a separate travel budget and clear-area recovery movement.
 
-    A 468-block journey cannot finish inside the harvest step's 120s travel
-    budget, which is why the worker never got home on its own. This trip is
-    given room to complete, and partial progress still helps: the next cycle
-    starts closer than the last.
+    Long journeys exceed the harvest budget; partial travel still brings the
+    next cycle closer to home. Actual threats can still interrupt the return.
     """
     if anchor is None:
         return False
     try:
-        from .navigation import goto as _goto
+        from .navigation import goto as _goto, recovery_navigation_defense
 
         return bool(_goto(client, anchor[0], anchor[1], anchor[2],
-                          timeout=RETURN_HOME_TIMEOUT, tolerance=8.0))
+                          timeout=RETURN_HOME_TIMEOUT, tolerance=8.0,
+                          on_defense=lambda: recovery_navigation_defense(client)))
     except Exception:
         return False
 
@@ -638,6 +637,26 @@ def _harvest_known_plots(client, state, worker, known, limit, cursor, farm_range
     return harvested, other_edible, None
 
 
+def _prepare_bread(client, state, personal_food_reserve, seed_reserve):
+    before = get_inventory(client)
+    requested = _count(before, WHEAT) // 3
+    if requested:
+        craft_bread_at_saved_home(client, state, _base_anchor(state), requested, survival_ready=_survival_ready, return_home=_return_to_anchor, craft=craft)
+    after = get_inventory(client)
+    crafted = max(0, _count(after, BREAD) - _count(before, BREAD))
+    banked = 0
+    chest = resolve_storage_location(client, state=state, verify=False)
+    if chest is not None and _count(after, BREAD) > max(0, int(personal_food_reserve)):
+        deposited = deposit_excess_to_chest(
+            client, chest, deposit_items={BREAD},
+            retain_counts={BREAD: max(0, int(personal_food_reserve)), SEEDS: max(0, int(seed_reserve))},
+            state=state,
+        )
+        if deposited >= 0:
+            banked = max(0, _count(after, BREAD) - _count(get_inventory(client), BREAD))
+    return crafted, banked
+
+
 @return_after_food_cycle
 def run_food_cycle(
     client: Any,
@@ -651,12 +670,7 @@ def run_food_cycle(
     personal_food_reserve: int = 8,
     seed_reserve: int = 8,
 ) -> FoodCycleResult:
-    """Harvest known plots, craft/bank proven surplus, or add exactly one plot.
-
-    This intentionally has no lifetime plot limit.  Each invocation has one
-    short farm pass for a round-robin subset of known plots and may establish
-    *one* irrigated plot near the durable base/farm anchor when none yield.
-    """
+    """Prepare carried grain first, then take one bounded farm/expansion pass."""
     worker = _worker(state)
     worker["attempts"] = int(worker.get("attempts", 0) or 0) + 1
     if not _survival_ready(client):
@@ -666,6 +680,14 @@ def run_food_cycle(
         safe_to_work = eat_until_hunger(client, minimum_food=14)
     except Exception:
         safe_to_work = False
+    if safe_to_work and _count(get_inventory(client), WHEAT) >= 3:
+        crafted, banked = _prepare_bread(client, state, personal_food_reserve, seed_reserve)
+        if crafted or banked:
+            values = {"cycles": 1, "bread_crafted": crafted, "prepared_food_banked": banked}
+            for key, value in values.items():
+                worker[key] = int(worker.get(key, 0) or 0) + value
+            _flush(state, client)
+            return _result(worker, True, f"crafted {crafted} bread from carried wheat; banked {banked}", **values)
     if not safe_to_work or not prepare_house_door_for_departure(
         client, state, _base_anchor(state)
     ):
@@ -708,14 +730,7 @@ def run_food_cycle(
     waiting_for_crops = _waiting_for_crops(client, state, harvested)
     if harvested == 0 and not waiting_for_crops:
         anchor = _anchor(state, known)
-        # Seeds are the bootstrap for the whole food economy and every bot in
-        # the fleet carried zero. Grass breaking already existed, but only
-        # inside establish_wheat_farm -- after travel and after irrigation --
-        # so any site that failed earlier meant no seeds were ever collected
-        # and the next attempt started empty again. The 29 seeds in storage
-        # are no help: they sit as ones and twos across thirteen chests.
-        # Stock up first; seeds keep, and a reserve makes every later attempt
-        # cheaper.
+        # Stock seeds before irrigation/travel failures can prevent collection.
         seeds_gathered = _stock_seeds(client, seed_reserve)
         home = _home_first(client, state, worker, anchor, known, seeds_gathered)
         if home is not None:
@@ -743,30 +758,7 @@ def run_food_cycle(
                 replanted = 1
             elif candidate is not None:
                 worker["failed_plot_sites"].append(list(candidate))
-    after_harvest = get_inventory(client)
-    bread_before = _count(after_harvest, BREAD)
-    wheat_available = _count(after_harvest, WHEAT)
-    breads_requested = max(0, wheat_available // 3)
-    if breads_requested:
-        craft_bread_at_saved_home(client, state, _base_anchor(state), breads_requested, survival_ready=_survival_ready, return_home=_return_to_anchor, craft=craft)
-    after_craft = get_inventory(client)
-    bread_crafted = max(0, _count(after_craft, BREAD) - bread_before)
-    banked = 0
-    chest = resolve_storage_location(client, state=state, verify=False)
-    if chest is not None and _count(after_craft, BREAD) > max(0, int(personal_food_reserve)):
-        deposited = deposit_excess_to_chest(
-            client,
-            chest,
-            deposit_items={BREAD},
-            retain_counts={
-                BREAD: max(0, int(personal_food_reserve)),
-                SEEDS: max(0, int(seed_reserve)),
-            },
-            state=state,
-        )
-        if deposited >= 0:
-            after_bank = get_inventory(client)
-            banked = max(0, _count(after_craft, BREAD) - _count(after_bank, BREAD))
+    bread_crafted, banked = _prepare_bread(client, state, personal_food_reserve, seed_reserve)
 
     # Gathering seeds is real progress: it is the bootstrap the whole food
     # economy waits on, and a cycle that stocks them has not done nothing.

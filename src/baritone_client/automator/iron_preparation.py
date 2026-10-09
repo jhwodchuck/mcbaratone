@@ -27,6 +27,10 @@ def prepare_iron_inventory(client, state):
     anchor = _home(state)
     if anchor is None:
         return "no home anchor for inventory preparation"
+    if free_slots(client) < ROOM_WANTED:
+        from .mining_compaction import compact_home_stacks
+
+        compact_home_stacks(client, anchor, ROOM_WANTED)
     chest = resolve_storage_location(client, state=state, verify=True)
     if chest is not None and (
         hypot(chest[0] - anchor[0], chest[2] - anchor[2]) > 32
