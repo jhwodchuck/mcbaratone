@@ -765,3 +765,18 @@ def test_first_plot_does_not_reuse_flowing_water_as_irrigation(monkeypatch):
 
     assert food_supply._establish_candidate(client, state, None, 5) is None
     assert lookups == [{"radius": 20}]
+
+
+@pytest.mark.parametrize("intervened", [False, True])
+def test_return_home_allows_recovery_movement_but_keeps_defense(monkeypatch, intervened):
+    from baritone_client.common import combat, navigation
+    client = SimpleNamespace()
+    defended = []
+    monkeypatch.setattr(combat, "defend_or_flee", lambda c, **kw: defended.append((c, kw)) or intervened)
+    def goto(c, x, y, z, **kw):
+        assert c is client and (x, y, z) == (0, 70, 0)
+        assert kw["timeout"] == food_supply.RETURN_HOME_TIMEOUT
+        return not kw["on_defense"]()
+    monkeypatch.setattr(navigation, "goto", goto)
+    assert food_supply._return_to_anchor(client, (0, 70, 0)) is (not intervened)
+    assert defended == [(client, {"allow_safe_recovery_movement": True})]

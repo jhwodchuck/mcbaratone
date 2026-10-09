@@ -302,20 +302,19 @@ def _retire_distant_plots(
 
 
 def _return_to_anchor(client: Any, anchor: Optional[Tuple[int, int, int]]) -> bool:
-    """Walk back toward base so the next cycle starts within reach.
+    """Return with a separate travel budget and clear-area recovery movement.
 
-    A 468-block journey cannot finish inside the harvest step's 120s travel
-    budget, which is why the worker never got home on its own. This trip is
-    given room to complete, and partial progress still helps: the next cycle
-    starts closer than the last.
+    Long journeys exceed the harvest budget; partial travel still brings the
+    next cycle closer to home. Actual threats can still interrupt the return.
     """
     if anchor is None:
         return False
     try:
-        from .navigation import goto as _goto
+        from .navigation import goto as _goto, recovery_navigation_defense
 
         return bool(_goto(client, anchor[0], anchor[1], anchor[2],
-                          timeout=RETURN_HOME_TIMEOUT, tolerance=8.0))
+                          timeout=RETURN_HOME_TIMEOUT, tolerance=8.0,
+                          on_defense=lambda: recovery_navigation_defense(client)))
     except Exception:
         return False
 

@@ -162,6 +162,70 @@ def test_a_bad_entrance_is_never_chosen_again(bot):
     assert iron_stockpile.choose_entrance(bot, st) not in (None, first)
 
 
+@pytest.mark.parametrize("arrived", [True, False])
+def test_nearby_surface_position_must_reach_home_before_storage(bot, monkeypatch, arrived):
+    bot.pos = (20, 70, 0)
+    calls = []
+    def go_home(_client, x, y, z, **_kwargs):
+        calls.append("home")
+        assert (x, y, z) == (0, 70, 0)
+        if arrived:
+            bot.pos = (0, 70, 0)
+        return True  # a navigation acknowledgement alone is insufficient
+    def prepare(*_args):
+        calls.append("prepare")
+        assert bot.pos == (0, 70, 0)
+        return "preparation deferred"
+    monkeypatch.setattr("baritone_client.common.navigation.goto", go_home)
+    monkeypatch.setattr("baritone_client.automator.iron_preparation.prepare_iron_inventory", prepare)
+    ok, detail, *_ = iron_stockpile.run_supply_trip(bot, state(), now=1000)
+    assert not ok
+    assert calls == (["home", "prepare"] if arrived else ["home"])
+    assert ("preparation deferred" if arrived else "could not get home") in detail
+
+
+@pytest.mark.parametrize("lit", [True, False])
+def test_saved_route_travel_does_not_consume_mining_work_time(bot, monkeypatch, lit):
+    clock = [100.0]
+    monkeypatch.setattr(iron_stockpile.time, "monotonic", lambda: clock[0])
+    bot.torches = 12 if lit else 1
+    budget = iron_stockpile.TRIP_SECONDS if lit else iron_stockpile.DARK_TRIP_SECONDS
+    spine = [[16 + n, 70, 0] for n in range(151)]
+    st = state({iron_stockpile.KEY: {"entrance": spine[0], "spine": spine, "torch_retry": 9000}})
+    def descend(miner, _spine):
+        clock[0] += budget + 1
+        miner.check()
+    def mine(miner, _goal, _count):
+        clock[0] += budget - 1
+        miner.check()
+        bot.raw_iron += 2
+        return "quota"
+    monkeypatch.setattr(tm.TunnelMiner, "descend", descend)
+    monkeypatch.setattr(tm.TunnelMiner, "mine", mine)
+    monkeypatch.setattr(tm.TunnelMiner, "retreat", lambda _miner: True)
+    ok, detail, *_ = iron_stockpile.run_supply_trip(bot, st, now=1000)
+    assert ok and "mined 2" in detail and bot.ingots == 2
+    assert st.custom_data[iron_stockpile.KEY]["spine"] == spine
+
+
+def test_saved_route_travel_timeout_retraces_without_starting_work(bot, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(iron_stockpile.time, "monotonic", lambda: clock[0])
+    spine = [[16 + n, 70, 0] for n in range(151)]
+    st = state({iron_stockpile.KEY: {"entrance": spine[0], "spine": spine}})
+    def descend(miner, _spine):
+        clock[0] += 2401
+        miner.check()
+    retreated = []
+    monkeypatch.setattr(tm.TunnelMiner, "descend", descend)
+    monkeypatch.setattr(tm.TunnelMiner, "mine", lambda *_a: pytest.fail("expired travel must not start work"))
+    monkeypatch.setattr(tm.TunnelMiner, "retreat", lambda _miner: retreated.append(True) or True)
+    ok, detail, *_ = iron_stockpile.run_supply_trip(bot, st, now=1000)
+    assert not ok and "time" in detail and retreated == [True]
+    assert st.custom_data[iron_stockpile.KEY]["spine"] == spine
+    assert st.custom_data[iron_stockpile.KEY].get("dry_trips", 0) == 0
+
+
 def test_interrupted_approaches_preserve_the_route_and_retry_without_four_hour_delay(bot, monkeypatch):
     entrance = [16, 70, 0]
     st = state({iron_stockpile.KEY: {"entrance": entrance, "spine": [entrance], "failures": 18}})
