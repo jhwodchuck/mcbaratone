@@ -31,7 +31,7 @@ def bot(monkeypatch):
     w = Bot()
     monkeypatch.setattr("baritone_client.common.navigation.goto", w.goto)
     monkeypatch.setattr("baritone_client.common.harness_ops.place_block_exact", w.place)
-    monkeypatch.setattr("baritone_client.common.resources.equip_best_pickaxe", lambda _c: True)
+    monkeypatch.setattr("baritone_client.common.resources.equip_best_pickaxe", lambda _c, **_k: True)
     monkeypatch.setattr(tm.time, "sleep", lambda _s: None)
     counts = {
         "minecraft:torch": lambda: w.torches,

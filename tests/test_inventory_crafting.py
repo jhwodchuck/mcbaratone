@@ -50,6 +50,21 @@ def test_remote_loaded_crafting_table_is_not_selected_for_survival_work():
     )
 
 
+def test_workstation_selection_counts_height_before_choosing_a_nearby_roof():
+    client = DummyClient(DummyTransport({"get_state": {"block_position": {"x": 10, "y": 70, "z": 10}}}))
+    assert inventory._nearest_local_crafting_table(client, [
+        {"x": 11, "y": 74, "z": 10},
+        {"x": 12, "y": 70, "z": 11},
+    ]) == (12, 70, 11)
+    assert inventory._nearest_local_crafting_table(client, [{"x": 10, "y": 83, "z": 10}]) is None
+
+
+@pytest.mark.parametrize("height", [None, True, float("nan"), float("inf")])
+def test_unverified_player_height_cannot_choose_a_crafting_workstation(height):
+    client = DummyClient(DummyTransport({"get_state": {"block_position": {"x": 10, "y": height, "z": 10}}}))
+    assert inventory._nearest_local_crafting_table(client, [{"x": 11, "y": 70, "z": 10}]) is None
+
+
 class RecipeAwareTransport:
     """Tiny inventory simulator for dependency-order regression tests."""
 
