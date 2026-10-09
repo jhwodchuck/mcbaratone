@@ -2,7 +2,6 @@
 
 from typing import Dict, Optional, List, Tuple
 import logging
-import math
 import time
 from .storage_safety import remember_unreachable_storage, storage_retry_ready
 
@@ -972,42 +971,10 @@ def ensure_tool_sticks(client, item_id: str, count: int = 1) -> bool:
     return count_item(client, "minecraft:stick") >= required
 
 
-def _nearest_local_crafting_table(
-    client,
-    found_tables,
-    *,
-    maximum_distance: float = 12.0,
-):
-    """Reject loaded tables that require a survival-expensive commute."""
-    try:
-        state = client.transport.dispatch("get_state", {})
-        position = state.get("block_position", state.get("position", {}))
-        coordinates = [position[axis] for axis in ("x", "y", "z")]
-        if any(isinstance(value, bool) for value in coordinates):
-            return None
-        px = float(position["x"])
-        py = float(position["y"])
-        pz = float(position["z"])
-        if not all(math.isfinite(value) for value in (px, py, pz)):
-            return None
-    except (KeyError, TypeError, ValueError):
-        return None
+def _nearest_local_crafting_table(client, found_tables, *, maximum_distance: float = 12.0):
+    from .crafting_workstation import nearest_local_crafting_table
 
-    candidates = []
-    for table in found_tables:
-        try:
-            x = int(table["x"])
-            y = int(table["y"])
-            z = int(table["z"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        distance = ((x - px) ** 2 + (y - py) ** 2 + (z - pz) ** 2) ** 0.5
-        if distance <= float(maximum_distance):
-            candidates.append((distance, x, y, z))
-    if not candidates:
-        return None
-    _, x, y, z = min(candidates)
-    return (x, y, z)
+    return nearest_local_crafting_table(client, found_tables, maximum_distance=maximum_distance)
 
 
 def craft(client, item_id: str, count: int = 1) -> bool:
