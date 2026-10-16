@@ -31,6 +31,7 @@ from .farm_site_travel import (
 from .food_workstation import craft_bread_at_saved_home
 from .house_door_travel import prepare_house_door_for_departure
 from .food_return import return_after_food_cycle
+from .inventory_disposal import shed_surplus_seeds
 
 
 WHEAT = "minecraft:wheat"
@@ -722,6 +723,10 @@ def run_food_cycle(
     )
     if unreachable_result is not None:
         return unreachable_result
+    if harvested:
+        # Each harvest returns more seed than replanting needs; shed it at
+        # the farm instead of carrying it home into the chests.
+        shed_surplus_seeds(client)
 
     new_plots = 0
     crop_tiles = 0

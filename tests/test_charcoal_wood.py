@@ -170,3 +170,11 @@ def test_progressive_break_stops_on_uncertain_observation(tree, monkeypatch, fai
     else:
         assert not wood._break_log(client, (20, 70, 0), "minecraft:oak_log", (0, 70, 0))
     assert stopped == [True]
+
+
+def test_no_usable_trunk_says_so(tree, capsys):
+    """A silent zero hid why A1 never made sticks for its iron-trip torches."""
+    client, state, _blocks, _live, _inventory, digs, _trips = tree
+    client._protected_home_anchor = (0, 73, 0)
+    assert wood.gather_charcoal_logs(client, state, 5, (0, 73, 0)) == 0
+    assert "no natural trunk" in capsys.readouterr().out

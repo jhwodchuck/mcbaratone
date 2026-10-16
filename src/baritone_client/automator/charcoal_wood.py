@@ -136,6 +136,7 @@ def gather_charcoal_logs(client, state, wanted, anchor):
             gained = max(0, count_item(client, log) - before)
             rec["logs_harvested"] = int(rec.get("logs_harvested", 0)) + gained
             return gained
+        print(f"CHARCOAL WOOD: no natural trunk 10-48 blocks from home near its height ({len(candidates)} log(s) seen)")
     except (PlayerDeathDetected, SurvivalRecoveryRequired):
         raise
     except Exception as exc:

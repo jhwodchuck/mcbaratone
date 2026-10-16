@@ -5,11 +5,19 @@ from math import hypot
 from ..core.exceptions import CommandError
 from .weapon_upkeep import has_mining_pickaxe, restore_kit
 
+#: Worthless stacks thrown away only once banking cannot make room. Plain
+#: digging spoil (cobblestone keeps its retain floor) and inedible drops.
+LAST_RESORT_JUNK = frozenset({
+    "minecraft:rotten_flesh", "minecraft:poisonous_potato", "minecraft:spider_eye",
+    "minecraft:wildflowers", "minecraft:leaf_litter", "minecraft:feather",
+})
+
 
 def prepare_iron_inventory(client, state):
     """Bank surplus food, retrieve stone locally, then verify space and tool."""
     from ..common.home_respawn import WOOL_ITEMS, withdraw_from_home_containers
-    from ..common.inventory import deposit_excess_to_chest, get_inventory, resolve_storage_location
+    from ..common.inventory import deposit_excess_to_chest, drop_items, get_inventory, resolve_storage_location
+    from ..common.inventory_disposal import SEED_CARRY_CAP, shed_surplus_seeds, throw_clutter
     from ..common.resources import PLANK_ITEMS
     from ..common.tunnel_miner import DIGGING_JUNK, free_slots
     from .armor_recovery import _home
@@ -19,14 +27,17 @@ def prepare_iron_inventory(client, state):
     prep_bank_items = set(CLUTTER) | set(DIGGING_JUNK) | set(PLANK_ITEMS) | set(WOOL_ITEMS) | {
         item.replace("_planks", "_door") for item in PLANK_ITEMS
     } | {
-        "minecraft:carrot", "minecraft:wheat_seeds", "minecraft:enchanted_book",
-        "minecraft:lead", "minecraft:bell", "minecraft:leaf_litter",
-        "minecraft:raw_copper",
+        "minecraft:carrot", "minecraft:enchanted_book", "minecraft:lead",
+        "minecraft:bell", "minecraft:leaf_litter", "minecraft:raw_copper",
     }
 
     anchor = _home(state)
     if anchor is None:
         return "no home anchor for inventory preparation"
+    # Surplus seeds are thrown, not banked: they filled every home chest.
+    # The trip leaves right after, so the thrown stacks despawn unvisited.
+    if free_slots(client) < ROOM_WANTED:
+        shed_surplus_seeds(client, SEED_CARRY_CAP)
     if free_slots(client) < ROOM_WANTED:
         from .mining_compaction import compact_home_stacks
 
@@ -40,7 +51,7 @@ def prepare_iron_inventory(client, state):
     retains = {
         "minecraft:carrot": STORAGE_FOOD_RESERVE,
         "minecraft:cobblestone": 64,
-        "minecraft:wheat_seeds": 16,
+        "minecraft:wheat_seeds": SEED_CARRY_CAP,
     }
     if free_slots(client) < ROOM_WANTED:
         inventory = get_inventory(client)  # Unknown inventory must abort before banking.
@@ -69,6 +80,19 @@ def prepare_iron_inventory(client, state):
         from .mining_storage import bank_mining_overflow
 
         bank_mining_overflow(client, state, anchor, ROOM_WANTED, prep_bank_items, retains)
+    if free_slots(client) < ROOM_WANTED:
+        throw_clutter(client)  # eggs may hatch chicks; snowballs just go
+    missing = ROOM_WANTED - free_slots(client)
+    if missing > 0:
+        # Full home chests left ~350 trips refused for space; plain spoil is
+        # cheaper to dig again than another day without iron. Keep the
+        # biggest wool stack for a bed; odd colours are spare.
+        carried = get_inventory(client)
+        wool = sorted((item for item in WOOL_ITEMS if carried.get(item, 0) > 0), key=lambda item: -carried[item])
+        drop_items(
+            client, sorted(set(DIGGING_JUNK) | LAST_RESORT_JUNK | set(wool[1:])),
+            max_stacks=missing, retain_counts=retains,
+        )
     if free_slots(client) < ROOM_WANTED:
         return "not enough verified inventory space for iron"
     return ""
