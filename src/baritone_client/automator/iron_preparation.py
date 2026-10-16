@@ -9,7 +9,7 @@ from .weapon_upkeep import has_mining_pickaxe, restore_kit
 #: digging spoil (cobblestone keeps its retain floor) and inedible drops.
 LAST_RESORT_JUNK = frozenset({
     "minecraft:rotten_flesh", "minecraft:poisonous_potato", "minecraft:spider_eye",
-    "minecraft:wildflowers", "minecraft:leaf_litter",
+    "minecraft:wildflowers", "minecraft:leaf_litter", "minecraft:feather",
 })
 
 
@@ -17,7 +17,7 @@ def prepare_iron_inventory(client, state):
     """Bank surplus food, retrieve stone locally, then verify space and tool."""
     from ..common.home_respawn import WOOL_ITEMS, withdraw_from_home_containers
     from ..common.inventory import deposit_excess_to_chest, drop_items, get_inventory, resolve_storage_location
-    from ..common.inventory_disposal import SEED_CARRY_CAP, shed_surplus_seeds
+    from ..common.inventory_disposal import SEED_CARRY_CAP, shed_surplus_seeds, throw_clutter
     from ..common.resources import PLANK_ITEMS
     from ..common.tunnel_miner import DIGGING_JUNK, free_slots
     from .armor_recovery import _home
@@ -80,12 +80,17 @@ def prepare_iron_inventory(client, state):
         from .mining_storage import bank_mining_overflow
 
         bank_mining_overflow(client, state, anchor, ROOM_WANTED, prep_bank_items, retains)
+    if free_slots(client) < ROOM_WANTED:
+        throw_clutter(client)  # eggs may hatch chicks; snowballs just go
     missing = ROOM_WANTED - free_slots(client)
     if missing > 0:
         # Full home chests left ~350 trips refused for space; plain spoil is
-        # cheaper to dig again than another day without iron.
+        # cheaper to dig again than another day without iron. Keep the
+        # biggest wool stack for a bed; odd colours are spare.
+        carried = get_inventory(client)
+        wool = sorted((item for item in WOOL_ITEMS if carried.get(item, 0) > 0), key=lambda item: -carried[item])
         drop_items(
-            client, sorted(set(DIGGING_JUNK) | LAST_RESORT_JUNK),
+            client, sorted(set(DIGGING_JUNK) | LAST_RESORT_JUNK | set(wool[1:])),
             max_stacks=missing, retain_counts=retains,
         )
     if free_slots(client) < ROOM_WANTED:
