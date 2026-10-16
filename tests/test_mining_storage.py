@@ -94,7 +94,10 @@ def test_crafting_on_another_house_level_returns_before_storage_placement(home, 
     monkeypatch.setattr("baritone_client.common.inventory.craft", upstairs)
     monkeypatch.setattr("baritone_client.common.harness_ops.close_container", lambda *_a: home[5].append(("close",)))
     monkeypatch.setattr("baritone_client.common.food_workstation._fresh_safe_position", lambda *_a, **_k: (3, 75, 3))
-    def return_home(*_a):
+    def return_home(client, x, y, z, state):
+        # The real signature: a fake taking *args hid a missing ``state``
+        # that crashed every live overflow attempt (A1 2026-10-15).
+        assert state is home[1]
         home[5].append(("return",))
         home[6].safe = arrived
         return True
@@ -193,7 +196,8 @@ def test_observed_plank_house_materials_support_capacity(home, material):
 def test_local_preparation_first_reaches_verified_home(home, monkeypatch):
     home[6].safe = False
     monkeypatch.setattr("baritone_client.common.food_workstation._fresh_safe_position", lambda *_a, **_k: (3, 71, 8))
-    def arrive(*_a):
+    def arrive(client, x, y, z, state):
+        assert state is home[1]
         home[6].safe = True
     monkeypatch.setattr("baritone_client.common.food_return._return", arrive)
     monkeypatch.setattr(storage, "_bank", storage._bank.__wrapped__)

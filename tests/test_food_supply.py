@@ -816,3 +816,22 @@ def test_carried_grain_gets_no_production_credit_without_inventory_change(monkey
     assert not result.success and result.bread_crafted == 0
     assert attempted == ([True] if safe else [])
     assert st.custom_data["food_worker"].get("bread_crafted", 0) == 0
+
+
+@pytest.mark.parametrize("gain", [0, 4])
+def test_seed_surplus_is_shed_at_the_farm_only_after_a_harvest(monkeypatch, gain):
+    """Each harvest returns more seed than replanting uses; A1 carried 548."""
+    counts = {"minecraft:wheat": 0, "minecraft:bread": 10}
+    monkeypatch.setattr(food_supply, "get_inventory", lambda _client: dict(counts))
+    monkeypatch.setattr(food_supply, "_survival_ready", lambda _client: True)
+    monkeypatch.setattr(food_supply, "eat_until_hunger", lambda *_a, **_k: True)
+    monkeypatch.setattr(food_supply, "harvest_wheat_farm",
+                        lambda *_a, **_k: counts.__setitem__("minecraft:wheat", gain) or True)
+    monkeypatch.setattr(food_supply, "local_farm_wait_reason", lambda *_a: "growing wheat")
+    monkeypatch.setattr(food_supply, "craft", lambda *_a, **_k: False)
+    monkeypatch.setattr(food_supply, "resolve_storage_location", lambda *_a, **_k: None)
+    shed = []
+    monkeypatch.setattr(food_supply, "shed_surplus_seeds", lambda client: shed.append(client) or 0)
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a: {}))
+    food_supply.run_food_cycle(client, _state({"wheat_farm": {"origin": [0, 64, 0]}}))
+    assert shed == ([client] if gain else [])
