@@ -121,11 +121,16 @@ def restore_water_routes(function: Callable) -> Callable:
         try:
             return function(client, *args, **kwargs)
         finally:
-            try:
-                allow_water(client)
-            except Exception as exc:
-                print(f"WATER: could not restore water routing ({exc})")
+            _best_effort(allow_water, client)
     return wrapped
+
+
+def _best_effort(change: Callable, client: Any) -> None:
+    """A routing change is a safety margin; never let it fail the caller."""
+    try:
+        change(client)
+    except Exception as exc:
+        print(f"WATER: could not {change.__name__.replace('_', ' ')} routes ({exc})")
 
 
 def avoiding_water(function: Callable) -> Callable:
@@ -133,11 +138,11 @@ def avoiding_water(function: Callable) -> Callable:
     unreachable for a starving bot."""
     @wraps(function)
     def wrapped(client: Any, *args: Any, **kwargs: Any) -> Any:
-        avoid_water(client)
+        _best_effort(avoid_water, client)
         try:
             return function(client, *args, **kwargs)
         finally:
-            allow_water(client)
+            _best_effort(allow_water, client)
     return wrapped
 
 
