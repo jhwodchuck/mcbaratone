@@ -157,3 +157,28 @@ def fence_drowning_death(state: Any, client: Any, death: Any, recovery: dict, po
     if hazard is not None:
         bind_drowning_hazards(client, state)
         print(f"RECOVERY: fenced drowning spot {hazard} for later food searches")
+
+
+def turn_back_at_fence(exploration: Any, client: Any, state: dict) -> bool:
+    """Leave a drowning fence the search walked into from outside.
+
+    Seven drownings at one riverbed: turn back at the fence rather than
+    trusting the next waypoint to route around it. A search that starts
+    inside a fence (a pond at home) may still leave.
+    """
+    from .movement_recovery import block_position
+    from .navigation import recovery_goto
+
+    here = block_position(state)
+    hazard = fenced_hazard(client, here[0], here[2])
+    if hazard is None:
+        exploration.clear_of_fences = here
+        return False
+    if not exploration.exploring or exploration.clear_of_fences is None:
+        return False
+    print(f"RECOVERY: food search reached the fence around drowning spot {hazard}; turning back")
+    exploration.stop(client)
+    recovery_goto(client, *exploration.clear_of_fences, timeout=20, check_interval=0.5, tolerance=2.0)
+    exploration.start(client, client.transport.dispatch("get_state", {}))
+    time.sleep(3)
+    return True

@@ -28,7 +28,7 @@ from .emergency_food import (
     wait_for_safe_regeneration,
 )
 from .health_recovery import recover_health
-from .water_hazards import restore_water_routes
+from .water_hazards import restore_water_routes, turn_back_at_fence
 from .movement_recovery import block_position
 from .passive_hunt_navigation import (
     PassiveHuntNavigation,
@@ -658,7 +658,7 @@ def acquire_emergency_food(
         if not enforce_dry_food_search_state(client, state, stop_exploring):
             return False
         exploration.observe(state)
-        if exploration.turn_back_at_fence(client, state):
+        if turn_back_at_fence(exploration, client, state):
             continue
         if recovery_complete(state):
             stop_exploring()

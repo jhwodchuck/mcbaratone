@@ -631,8 +631,7 @@ class EmergencyExploration:
         if self.exploring:
             client.transport.dispatch("cancel", {})
             client.transport.dispatch("chat", {"message": "#stop"})
-        # Skip a waypoint inside a drowning fence; one full turn bounds it.
-        for _ in range(len(ExplorationWaypoints._DIRECTIONS)):
+        for _ in range(8):  # Skip waypoints inside a drowning fence.
             target_x, target_z = self.waypoints.next()
             self.waypoint_cursor += 1
             if fenced_hazard(client, target_x, target_z) is None:
@@ -652,29 +651,6 @@ class EmergencyExploration:
 
     def observe(self, state: Dict) -> None:
         self.movement.observe(state)
-
-    def turn_back_at_fence(self, client: Any, state: Dict) -> bool:
-        """Leave a drowning fence the search walked into from outside.
-
-        Seven drownings at one riverbed: turn back at the fence rather than
-        trusting the next waypoint to route around it. A search that starts
-        inside a fence (a pond at home) may still leave.
-        """
-        here = block_position(state)
-        hazard = fenced_hazard(client, here[0], here[2])
-        if hazard is None:
-            self.clear_of_fences = here
-            return False
-        if not self.exploring or self.clear_of_fences is None:
-            return False
-        from .navigation import recovery_goto
-
-        print(f"RECOVERY: food search reached the fence around drowning spot {hazard}; turning back")
-        self.stop(client)
-        recovery_goto(client, *self.clear_of_fences, timeout=20, check_interval=0.5, tolerance=2.0)
-        self.start(client, client.transport.dispatch("get_state", {}))
-        time.sleep(3)
-        return True
 
     def needs_rotation(self, state: Dict) -> bool:
         return (
