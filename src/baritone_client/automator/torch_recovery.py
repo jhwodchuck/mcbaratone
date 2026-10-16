@@ -54,3 +54,33 @@ def retrieve_torch_supplies(client: Any, state: Any, wanted: int, anchor) -> Non
     if fuel < batches:
         fetch("minecraft:charcoal", count_item(client, "minecraft:charcoal") + batches - fuel)
     fetch("minecraft:stick", batches)
+    _fetch_stick_wood(client, batches - count_item(client, "minecraft:stick"), fetch)
+
+
+def _fetch_stick_wood(client: Any, sticks_short: int, fetch) -> None:
+    """Bring home wood back for sticks when none are stored.
+
+    Iron preparation banks spare planks at home. Live A1 2026-10-15 had 52
+    planks in its chests, 2 charcoal and no wood carried, so every iron trip
+    deferred on 'needs torches' because no stick could be crafted.
+    """
+    from ..common.inventory import count_item
+    from ..common.resources import LOG_TO_PLANKS, PLANK_ITEMS
+
+    if sticks_short <= 0:
+        return
+    wanted = 2 * math.ceil(sticks_short / 4)  # two planks craft four sticks
+
+    def planks() -> int:
+        return sum(count_item(client, item) for item in PLANK_ITEMS)
+
+    for item in PLANK_ITEMS:
+        if planks() >= wanted:
+            return
+        fetch(item, count_item(client, item) + wanted - planks())
+    if planks() >= wanted or any(count_item(client, log) > 0 for log in LOG_TO_PLANKS):
+        return
+    for log in LOG_TO_PLANKS:  # one log crafts four planks
+        fetch(log, 1)
+        if count_item(client, log) > 0:
+            return
