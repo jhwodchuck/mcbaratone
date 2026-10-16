@@ -82,7 +82,7 @@ def test_water_avoidance_is_restored_only_when_set_unless_forced():
     hazards.allow_water(client, sleep=lambda _s: None)
     hazards.allow_water(client, force=True, sleep=lambda _s: None)
     assert transport.chats() == [
-        "#set blocksToAvoid minecraft:water,minecraft:seagrass,minecraft:tall_seagrass,"
+        "#set blocksToAvoid minecraft:tripwire,minecraft:water,minecraft:seagrass,minecraft:tall_seagrass,"
         "minecraft:kelp,minecraft:kelp_plant",
         "#set reset blocksToAvoid",
         "#set reset blocksToAvoid",
@@ -125,7 +125,7 @@ def test_exploration_avoids_water_and_skips_fenced_waypoints(monkeypatch):
     exploration.start(client, transport.dispatch("get_state", {}))
 
     routes = [(route, payload) for route, payload in transport.calls if route in ("chat", "explore")]
-    assert routes[0][1]["message"].startswith("#set blocksToAvoid minecraft:water")
+    assert routes[0][1]["message"].startswith("#set blocksToAvoid minecraft:tripwire,minecraft:water")
     # The first waypoint, (24, 0), sits on the hazard; the next one is used.
     assert routes[1] == ("explore", {"x": 0, "z": 24})
     exploration.stop(client)
@@ -196,7 +196,7 @@ def test_hunting_for_emergency_food_never_routes_through_water(monkeypatch):
     emergency_food.hunt_target(client, {"type": "pig"}, minimum_health=12.0,
                                recovery_complete=lambda _s=None: False)
     chats = transport.chats()
-    assert chats[0].startswith("#set blocksToAvoid minecraft:water")
+    assert chats[0].startswith("#set blocksToAvoid minecraft:tripwire,minecraft:water")
     assert chats[-1] == "#set reset blocksToAvoid"
 
 
