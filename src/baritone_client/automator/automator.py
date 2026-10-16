@@ -251,14 +251,7 @@ class EndGameAutomator:
             print(f"Shared landmark import deferred: {exc}")
 
         from ..common.home_surface import bind_home_surface
-        bind_home_surface(self.client, self.state)
-        try:
-            from ..common.water_hazards import allow_water
-
-            # Baritone saves #set changes; never inherit a crashed search's ban.
-            allow_water(self.client, force=True)
-        except Exception as exc:
-            print(f"Water routing reset deferred: {exc}")
+        bind_home_surface(self.client, self.state, reset_water_routes=True)
         return self.state.get_current_phase()
 
 

@@ -171,20 +171,44 @@ def test_food_search_turns_back_at_a_drowning_fence(monkeypatch):
 
 
 def test_drowning_death_is_fenced_once_per_death():
-    from baritone_client.actions.death_recovery_action import _fence_drowning
-
     state = SimpleNamespace(custom_data={})
-    context = SimpleNamespace(state=state, client=SimpleNamespace())
+    client = SimpleNamespace()
     recovery = {}
     death = {"last_damage_source": {"type": "drown"}}
     position = {"x": -411, "y": 61, "z": -142}
-    _fence_drowning(context, death, recovery, position, "minecraft:overworld")
-    _fence_drowning(context, death, recovery, position, "minecraft:overworld")
+    hazards.fence_drowning_death(state, client, death, recovery, position, "minecraft:overworld")
+    hazards.fence_drowning_death(state, client, death, recovery, position, "minecraft:overworld")
     assert state.custom_data[hazards.HAZARD_KEY] == [{"x": -411, "y": 61, "z": -142, "deaths": 1}]
-    assert context.client._drowning_hazards == ((-411, 61, -142),)
+    assert client._drowning_hazards == ((-411, 61, -142),)
 
-    _fence_drowning(context, {"last_damage_source": {"type": "mob"}}, {}, {"x": 5, "y": 64, "z": 5}, "minecraft:overworld")
+    mob = {"last_damage_source": {"type": "mob"}}
+    hazards.fence_drowning_death(state, client, mob, {}, {"x": 5, "y": 64, "z": 5}, "minecraft:overworld")
     assert len(state.custom_data[hazards.HAZARD_KEY]) == 1
+
+
+def test_hunting_for_emergency_food_never_routes_through_water(monkeypatch):
+    from baritone_client.common import emergency_food
+
+    monkeypatch.setattr(hazards.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(emergency_food.time, "sleep", lambda _s: None)
+    transport = _Recorder([(0, 64, 0)])
+    client = SimpleNamespace(transport=transport)
+    emergency_food.hunt_target(client, {"type": "pig"}, minimum_health=12.0,
+                               recovery_complete=lambda _s=None: False)
+    chats = transport.chats()
+    assert chats[0].startswith("#set blocksToAvoid minecraft:water")
+    assert chats[-1] == "#set reset blocksToAvoid"
+
+
+def test_controller_start_clears_a_saved_water_ban():
+    from baritone_client.common.home_surface import bind_home_surface
+
+    transport = _Recorder()
+    client = SimpleNamespace(transport=transport)
+    bind_home_surface(client, _state(), reset_water_routes=True)
+    assert transport.chats() == ["#set reset blocksToAvoid"]
+    bind_home_surface(client, _state())
+    assert transport.chats() == ["#set reset blocksToAvoid"]
 
 
 def test_home_binding_installs_checkpointed_hazards():

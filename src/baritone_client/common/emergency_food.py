@@ -15,7 +15,7 @@ from .movement_recovery import (
 from .site_selection import surface_y_at
 from .surface_egress import try_lower_surface_egress
 from .tasks import PlayerDeathDetected
-from .water_hazards import allow_water, avoid_water, fenced_hazard
+from .water_hazards import allow_water, avoid_water, avoiding_water, fenced_hazard
 
 
 PRIMARY_LAND_FOOD = ("cow", "pig")
@@ -609,6 +609,7 @@ class EmergencyExploration:
     sprint_suppressed: bool = False
     surface_egress_attempted: bool = False
     waypoint_cursor: int = field(default=0, init=False)
+    clear_of_fences: Optional[tuple] = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.waypoints = ExplorationWaypoints(
@@ -651,6 +652,29 @@ class EmergencyExploration:
 
     def observe(self, state: Dict) -> None:
         self.movement.observe(state)
+
+    def turn_back_at_fence(self, client: Any, state: Dict) -> bool:
+        """Leave a drowning fence the search walked into from outside.
+
+        Seven drownings at one riverbed: turn back at the fence rather than
+        trusting the next waypoint to route around it. A search that starts
+        inside a fence (a pond at home) may still leave.
+        """
+        here = block_position(state)
+        hazard = fenced_hazard(client, here[0], here[2])
+        if hazard is None:
+            self.clear_of_fences = here
+            return False
+        if not self.exploring or self.clear_of_fences is None:
+            return False
+        from .navigation import recovery_goto
+
+        print(f"RECOVERY: food search reached the fence around drowning spot {hazard}; turning back")
+        self.stop(client)
+        recovery_goto(client, *self.clear_of_fences, timeout=20, check_interval=0.5, tolerance=2.0)
+        self.start(client, client.transport.dispatch("get_state", {}))
+        time.sleep(3)
+        return True
 
     def needs_rotation(self, state: Dict) -> bool:
         return (
@@ -703,6 +727,7 @@ class EmergencyExploration:
             self.sprint_suppressed = False
 
 
+@avoiding_water
 def hunt_target(
     client: Any,
     target: Dict,

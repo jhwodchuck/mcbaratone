@@ -126,3 +126,34 @@ def restore_water_routes(function: Callable) -> Callable:
             except Exception as exc:
                 print(f"WATER: could not restore water routing ({exc})")
     return wrapped
+
+
+def avoiding_water(function: Callable) -> Callable:
+    """Route the wrapped approach around water; an animal across a river is
+    unreachable for a starving bot."""
+    @wraps(function)
+    def wrapped(client: Any, *args: Any, **kwargs: Any) -> Any:
+        avoid_water(client)
+        try:
+            return function(client, *args, **kwargs)
+        finally:
+            allow_water(client)
+    return wrapped
+
+
+def fence_drowning_death(state: Any, client: Any, death: Any, recovery: dict, position: Any, dimension: str) -> None:
+    """Record a drowning once per death so food searches avoid the spot."""
+    if not drowned(death) or not position:
+        return
+    try:
+        spot = [int(position[axis]) for axis in ("x", "y", "z")]
+    except (KeyError, TypeError, ValueError):
+        return
+    # Death recovery re-runs while the player is still dead; count it once.
+    if recovery.get("drowning_recorded") == spot:
+        return
+    recovery["drowning_recorded"] = spot
+    hazard = record_drowning(state, position, dimension)
+    if hazard is not None:
+        bind_drowning_hazards(client, state)
+        print(f"RECOVERY: fenced drowning spot {hazard} for later food searches")
