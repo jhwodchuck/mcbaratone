@@ -22,7 +22,9 @@ FENCE_RADIUS = 16.0
 _MERGE_RADIUS = 4.0
 _MAX_HAZARDS = 32
 #: Waterlogged plants occupy water blocks, so the pathfinder must avoid them too.
+#: The list replaces Baritone's default (tripwire), so it repeats that entry.
 _WATER_BLOCKS = (
+    "minecraft:tripwire",
     "minecraft:water",
     "minecraft:seagrass",
     "minecraft:tall_seagrass",
