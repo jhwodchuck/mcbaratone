@@ -138,7 +138,7 @@ def _bank(client, state, x, y, z, required, items, retains):
             if (position is None or math.dist(position, anchor) > 32
                     or abs(position[1] - anchor[1]) > 8):
                 return False
-            _return(client, *anchor)
+            _return(client, *anchor, state)
             if not _at_home(client, anchor):
                 return False
         # Recheck the target after gathering/crafting; never clear an obstruction.
@@ -172,7 +172,7 @@ def bank_mining_overflow(client, state, anchor, required, items, retains):
             if (position is None or math.dist(position, anchor) > 32
                     or abs(position[1] - anchor[1]) > 2):
                 return False
-            _return(client, *anchor)
+            _return(client, *anchor, state)
             if not _at_home(client, anchor):
                 return False
         return _bank(client, state, *anchor, required, items, retains)

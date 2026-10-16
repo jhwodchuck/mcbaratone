@@ -16,8 +16,12 @@ HOME_RADIUS = 24.0
 HOME_FLOOR_MARGIN = 2.0
 
 
-def bind_home_surface(client, state):
-    """Install a finite home anchor, clearing stale state on invalid input."""
+def bind_home_surface(client, state, *, reset_water_routes=False):
+    """Install a finite home anchor, clearing stale state on invalid input.
+
+    ``reset_water_routes`` is for controller start: Baritone saves ``#set``
+    changes, so never inherit a crashed food search's ban on water routes.
+    """
     custom = getattr(state, "custom_data", {})
     anchor = custom.get("base_location") if isinstance(custom, dict) else None
     valid = isinstance(anchor, (list, tuple)) and len(anchor) == 3
@@ -26,6 +30,14 @@ def bind_home_surface(client, state):
         client._protected_home_anchor = tuple(float(v) for v in anchor) if valid else None
     except (TypeError, ValueError):
         client._protected_home_anchor = None
+    from .water_hazards import allow_water, bind_drowning_hazards
+
+    bind_drowning_hazards(client, state)
+    if reset_water_routes:
+        try:
+            allow_water(client, force=True)
+        except Exception as exc:
+            print(f"Water routing reset deferred: {exc}")
 
 
 def home_route_floor(client, x, y, z):

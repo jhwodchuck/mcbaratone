@@ -28,6 +28,7 @@ from .emergency_food import (
     wait_for_safe_regeneration,
 )
 from .health_recovery import recover_health
+from .water_hazards import restore_water_routes, turn_back_at_fence
 from .movement_recovery import block_position
 from .passive_hunt_navigation import (
     PassiveHuntNavigation,
@@ -512,6 +513,7 @@ def heal_if_needed(client, threshold: float = 10.0) -> bool:
 
 
 @allow_recovery_navigation
+@restore_water_routes
 def acquire_emergency_food(
     client,
     minimum_health: float = 12.0,
@@ -656,6 +658,8 @@ def acquire_emergency_food(
         if not enforce_dry_food_search_state(client, state, stop_exploring):
             return False
         exploration.observe(state)
+        if turn_back_at_fence(exploration, client, state):
+            continue
         if recovery_complete(state):
             stop_exploring()
             return True
@@ -791,11 +795,8 @@ def acquire_emergency_food(
 
         stop_exploring()
         outcome = hunt_target(
-            client,
-            target,
-            minimum_health=minimum_health,
-            recovery_complete=recovery_complete,
-            unreachable=unreachable_food,
+            client, target, minimum_health=minimum_health,
+            recovery_complete=recovery_complete, unreachable=unreachable_food,
         )
         if outcome is False:
             return False
