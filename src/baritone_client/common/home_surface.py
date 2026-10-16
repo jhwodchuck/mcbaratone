@@ -26,6 +26,9 @@ def bind_home_surface(client, state):
         client._protected_home_anchor = tuple(float(v) for v in anchor) if valid else None
     except (TypeError, ValueError):
         client._protected_home_anchor = None
+    from .water_hazards import bind_drowning_hazards
+
+    bind_drowning_hazards(client, state)
 
 
 def home_route_floor(client, x, y, z):

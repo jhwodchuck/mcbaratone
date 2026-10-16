@@ -225,6 +225,26 @@ def _death_details(client, state: Dict) -> Tuple[Dict, str, bool]:
     return position, dimension, _death_was_aquatic(client, position, dimension)
 
 
+def _fence_drowning(context, state: Dict, recovery_state: Dict, position: Dict, dimension: str) -> None:
+    """Record a drowning once per death so food searches avoid the spot."""
+    from ..common.water_hazards import bind_drowning_hazards, drowned, record_drowning
+
+    if not drowned(state) or not position:
+        return
+    try:
+        spot = [int(position[axis]) for axis in ("x", "y", "z")]
+    except (KeyError, TypeError, ValueError):
+        return
+    # Death recovery re-runs while the player is still dead; count it once.
+    if recovery_state.get("drowning_recorded") == spot:
+        return
+    recovery_state["drowning_recorded"] = spot
+    hazard = record_drowning(context.state, position, dimension)
+    if hazard is not None:
+        bind_drowning_hazards(context.client, context.state)
+        print(f"RECOVERY: fenced drowning spot {hazard} for later food searches")
+
+
 def _bootstrap_starter_pickaxe(client) -> bool:
     """Re-craft a minimum wooden pickaxe after a lost grave.
 
@@ -648,6 +668,7 @@ class DeathRecoveryAction(BaseAction):
             recovery_state = context.state.custom_data.setdefault(
                 "death_recovery", {}
             )
+            _fence_drowning(context, state, recovery_state, death_position, death_dimension)
             pending_location = recovery_state.get("pending_location")
             resuming_pending = (
                 isinstance(pending_location, (list, tuple))

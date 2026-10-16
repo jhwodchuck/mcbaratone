@@ -28,6 +28,7 @@ from .emergency_food import (
     wait_for_safe_regeneration,
 )
 from .health_recovery import recover_health
+from .water_hazards import allow_water, avoid_water, fenced_hazard, restore_water_routes
 from .movement_recovery import block_position
 from .passive_hunt_navigation import (
     PassiveHuntNavigation,
@@ -512,6 +513,7 @@ def heal_if_needed(client, threshold: float = 10.0) -> bool:
 
 
 @allow_recovery_navigation
+@restore_water_routes
 def acquire_emergency_food(
     client,
     minimum_health: float = 12.0,
@@ -639,6 +641,9 @@ def acquire_emergency_food(
     unreachable_food: set = set()
     hold_cycles = 0
     max_hold_cycles = 3
+    clear_of_fences = None
+    from .navigation import recovery_goto
+
     while time.time() - start < timeout:
         try:
             state = client.transport.dispatch("get_state", {})
@@ -656,6 +661,20 @@ def acquire_emergency_food(
         if not enforce_dry_food_search_state(client, state, stop_exploring):
             return False
         exploration.observe(state)
+        here = block_position(state)
+        hazard = fenced_hazard(client, here[0], here[2])
+        if hazard is None:
+            clear_of_fences = here
+        elif exploration.exploring and clear_of_fences is not None:
+            # Seven drownings at one riverbed: turn back at the fence rather
+            # than trusting the next waypoint to route around it. A search
+            # that starts inside a fence (a pond at home) may still leave.
+            print(f"RECOVERY: food search reached the fence around drowning spot {hazard}; turning back")
+            stop_exploring()
+            recovery_goto(client, *clear_of_fences, timeout=20, check_interval=0.5, tolerance=2.0)
+            exploration.start(client, client.transport.dispatch("get_state", {}))
+            time.sleep(3)
+            continue
         if recovery_complete(state):
             stop_exploring()
             return True
@@ -674,8 +693,6 @@ def acquire_emergency_food(
             ):
                 time.sleep(2.0)
                 continue
-        from .navigation import recovery_goto
-
         if collect_edible_drop(
             client,
             get_nearby_entities(client, radius=48),
@@ -790,13 +807,18 @@ def acquire_emergency_food(
             continue
 
         stop_exploring()
-        outcome = hunt_target(
-            client,
-            target,
-            minimum_health=minimum_health,
-            recovery_complete=recovery_complete,
-            unreachable=unreachable_food,
-        )
+        # An animal across a river is unreachable for a starving bot.
+        avoid_water(client)
+        try:
+            outcome = hunt_target(
+                client,
+                target,
+                minimum_health=minimum_health,
+                recovery_complete=recovery_complete,
+                unreachable=unreachable_food,
+            )
+        finally:
+            allow_water(client)
         if outcome is False:
             return False
         if outcome is True:
