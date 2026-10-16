@@ -9,7 +9,7 @@ from baritone_client.automator import iron_preparation as prep
 
 @pytest.fixture
 def setup(monkeypatch):
-    observed = SimpleNamespace(free=1, tool=False, deposits=[], withdrawals=[], shed=[], drops=[])
+    observed = SimpleNamespace(free=1, tool=False, deposits=[], withdrawals=[], shed=[], drops=[], thrown=[])
     monkeypatch.setattr("baritone_client.automator.armor_recovery._home", lambda _s: (0, 70, 0))
     monkeypatch.setattr("baritone_client.common.inventory.resolve_storage_location", lambda *_a, **_k: (2, 70, 2))
     monkeypatch.setattr("baritone_client.common.tunnel_miner.free_slots", lambda _c: observed.free)
@@ -24,6 +24,8 @@ def setup(monkeypatch):
     monkeypatch.setattr("baritone_client.common.inventory.drop_items",
                         lambda _c, items, max_stacks=None, retain_counts=None:
                         observed.drops.append((set(items), max_stacks, retain_counts)) or 0)
+    monkeypatch.setattr("baritone_client.common.inventory_disposal.throw_clutter",
+                        lambda _c: observed.thrown.append(True) or 0)
     return observed
 
 
@@ -251,5 +253,49 @@ def test_spoil_is_kept_when_banking_already_made_room(setup, monkeypatch):
         return 3
 
     monkeypatch.setattr("baritone_client.common.inventory.deposit_excess_to_chest", bank)
+    assert prep.prepare_iron_inventory(object(), object()) == ""
+    assert setup.drops == []
+
+
+def test_eggs_and_snowballs_are_thrown_before_anything_is_dropped(setup, monkeypatch):
+    """Live A1 2026-10-16: 6 free slots, full chests, and the pack held eggs,
+    snowballs, a feather and four wool colours the drop list did not cover."""
+    setup.tool, setup.free = True, 6
+    order = []
+
+    def throw(_c):
+        order.append("throw")
+        setup.free += 2
+        return 2
+
+    def drop(_c, items, max_stacks=None, retain_counts=None):
+        order.append("drop")
+        setup.drops.append((set(items), max_stacks, retain_counts))
+        setup.free += max_stacks
+        return max_stacks
+
+    monkeypatch.setattr("baritone_client.common.inventory_disposal.throw_clutter", throw)
+    monkeypatch.setattr("baritone_client.common.inventory.drop_items", drop)
+    monkeypatch.setattr("baritone_client.common.inventory.get_inventory", lambda _c: {
+        "minecraft:white_wool": 7, "minecraft:light_gray_wool": 2, "minecraft:black_wool": 1,
+        "minecraft:gray_wool": 1, "minecraft:feather": 1, "minecraft:string": 4,
+    })
+    assert prep.prepare_iron_inventory(object(), object()) == ""
+    assert order == ["throw", "drop"]
+    items, max_stacks, _retains = setup.drops[0]
+    assert max_stacks == 2
+    assert {"minecraft:feather", "minecraft:light_gray_wool", "minecraft:black_wool", "minecraft:gray_wool"} <= items
+    assert "minecraft:white_wool" not in items, "the biggest wool stack stays for a bed"
+    assert "minecraft:string" not in items
+
+
+def test_throwing_alone_can_make_the_room(setup, monkeypatch):
+    setup.tool, setup.free = True, 8
+
+    def throw(_c):
+        setup.free = 10
+        return 2
+
+    monkeypatch.setattr("baritone_client.common.inventory_disposal.throw_clutter", throw)
     assert prep.prepare_iron_inventory(object(), object()) == ""
     assert setup.drops == []

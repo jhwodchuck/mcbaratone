@@ -17,6 +17,9 @@ SEED_CARRY_CAP = 32
 _THROW_REACH = 2.0
 #: Vanilla pickup reach is the player box inflated by one block.
 _PICKUP_CLEARANCE = 2.0
+#: Thrown, never dropped: an egg may hatch a chick near home, and a thrown
+#: snowball is gone for good, so neither comes back as a re-picked stack.
+THROWN_CLUTTER = ("minecraft:egg", "minecraft:snowball")
 
 def drop_items(
     client: Any,
@@ -255,3 +258,34 @@ def shed_surplus_seeds(client: Any, keep: int = SEED_CARRY_CAP) -> int:
     if dropped:
         print(f"  SEEDS: shed {dropped} surplus stack(s); keeping about {keep}")
     return dropped
+
+
+def throw_clutter(client: Any, items=THROWN_CLUTTER, *, limit: int = 16) -> int:
+    """Throw eggs and snowballs onto open ground; return slots emptied.
+
+    Each throw must lower the carried count, or that item stops: a held use
+    the server ignored is not disposal.
+    """
+    from . import inventory as api
+
+    emptied = 0
+    plan = _retreat_plan(client)  # open, floored ground to throw toward
+    for item in items:
+        if api.count_item(client, item) <= 0 or not api.select_item(client, item, allow_swap=True):
+            continue
+        if plan is not None:
+            x, y, z, dx, dz, _steps = plan
+            client.transport.dispatch("look_at", {"x": x + 0.5 + dx * 4, "y": y + 1.0, "z": z + 0.5 + dz * 4})
+            time.sleep(0.15)
+        for _ in range(limit):
+            before = api.count_item(client, item)
+            if before <= 0:
+                break
+            client.transport.dispatch("use_item", {"hand": "MAIN_HAND"})
+            time.sleep(0.25)
+            if api.count_item(client, item) >= before:
+                break
+        if api.count_item(client, item) <= 0:
+            emptied += 1
+            print(f"  CLUTTER: threw every {item.split(':')[-1]}")
+    return emptied
