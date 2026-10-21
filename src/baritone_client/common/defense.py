@@ -406,6 +406,13 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
                 and math.isfinite(player_y)
                 and player_y - mob_y >= 6.0
             )
+            if velocity_is_finite and -0.1 <= float(player_velocity["y"]) <= 0.05:
+                # A grounded player is reported falling at -0.0784. With a
+                # sealed mob four blocks below, that phantom fall read as
+                # ~0.06 closing, over the 0.05 limit: live A1 2026-10-16 froze
+                # for 35+ minutes beside a buried, blind, motionless skeleton.
+                # The mob's own motion still counts, as for creepers.
+                closing = _closing_speed(entity, state, ignore_grounded_vertical_velocity=True)
         except (KeyError, TypeError, ValueError, OverflowError):
             vertically_separated = False
     if not (
