@@ -237,3 +237,37 @@ def test_callback_aborts_when_defense_processing_fails(monkeypatch):
     assert callback.preflight()
     assert callback() is True
     assert "failed" in callback.abort_reason
+
+
+
+def _floors(lost=(), length=12, unknown=False):
+    def get_block(cell):
+        x, y, z = cell
+        if unknown:
+            raise RuntimeError("chunk not loaded")
+        if y == 69:
+            return "minecraft:air" if x in lost else "minecraft:stone"
+        return "minecraft:air"
+    return [(n, 70, 0) for n in range(length)], get_block
+
+
+def test_an_intact_route_keeps_its_start():
+    from baritone_client.common.tunnel_travel_defense import intact_route_start
+    assert intact_route_start(*_floors()) == 0
+
+
+def test_a_lost_prefix_is_skipped_onto_the_first_intact_run():
+    from baritone_client.common.tunnel_travel_defense import intact_route_start
+    assert intact_route_start(*_floors(lost=(1, 2, 3, 4))) == 5
+
+
+def test_a_single_intact_step_between_gaps_is_not_enough():
+    from baritone_client.common.tunnel_travel_defense import intact_route_start
+    assert intact_route_start(*_floors(lost=(1, 2, 4, 5))) == 6
+
+
+def test_a_deep_break_or_unknown_terrain_keeps_the_route_and_its_abort():
+    from baritone_client.common.tunnel_travel_defense import intact_route_start
+    spine, get_block = _floors(lost=tuple(range(1, 20)), length=30)
+    assert intact_route_start(spine, get_block) == 0
+    assert intact_route_start(*_floors(unknown=True)) == 0

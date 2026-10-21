@@ -457,3 +457,30 @@ def test_a_trip_starts_by_walking_home_when_the_bot_is_far_away(bot):
     finally:
         nav.goto = real_goto
     assert ok and visited[0] == (0, 70, 0)
+
+
+
+def test_a_route_that_lost_its_first_steps_is_entered_at_the_first_intact_step(bot, monkeypatch):
+    """Live A1 2026-10-16..20: a pit took the floor from the first four steps
+    of a 283-step tunnel; 63 trips refused step 1 and mined nothing."""
+    bot.torches = 12
+    spine = [[16 + n, 70, 0] for n in range(12)]
+    floors = {(16 + n, 69, 0): "minecraft:stone" for n in range(12)}
+    for lost in (1, 2, 3, 4):
+        floors[(16 + lost, 69, 0)] = "minecraft:air"
+    monkeypatch.setattr(iron_stockpile, "_block", lambda _c, x, y, z: floors.get((x, y, z), "minecraft:air"))
+    st = state({iron_stockpile.KEY: {"entrance": spine[0], "spine": spine, "torch_retry": 9000}})
+    arrivals, walked = [], []
+    def goto(client, x, y, z, **kwargs):
+        arrivals.append((x, y, z))
+        return bot.goto(client, x, y, z, **kwargs)
+
+    monkeypatch.setattr("baritone_client.common.navigation.goto", goto)
+    monkeypatch.setattr(iron_stockpile, "_at_cell", lambda _c, cell: tuple(cell) == arrivals[-1])
+    monkeypatch.setattr(tm.TunnelMiner, "descend", lambda miner, route: walked.append(list(route)))
+    monkeypatch.setattr(tm.TunnelMiner, "mine", lambda *_a: "no reachable iron")
+    monkeypatch.setattr(tm.TunnelMiner, "retreat", lambda _miner: True)
+    iron_stockpile.run_supply_trip(bot, st, now=1000)
+    assert (21, 70, 0) in arrivals and (16, 70, 0) not in arrivals, "walk to step 5, the first supported step"
+    assert walked[0][0] == (21, 70, 0) and len(walked[0]) == 7
+    assert st.custom_data[iron_stockpile.KEY]["entrance"] == spine[0], "the surface entrance still anchors the miner"

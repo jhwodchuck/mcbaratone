@@ -58,6 +58,29 @@ def _supported_open_cell(cell: Cell, get_block: Callable[[Cell], str]) -> bool:
     return is_support(floor) and feet in _OPEN and head in _OPEN
 
 
+def intact_route_start(spine, get_block: Callable[[Cell], str], *, max_skip: int = 16, run: int = 3) -> int:
+    """Where a saved route can be re-entered past a lost prefix; 0 keeps it.
+
+    Live A1 2026-10-16..20: a pit near the entrance took the floor from the
+    first four steps of a 283-step tunnel. All 63 trips refused that first
+    unsupported step and mined no iron, while the tunnel from step 5 down
+    was intact. Only a short prefix is skipped, and only onto a run of
+    supported, open steps; anything else keeps the route and its abort.
+    """
+    cells = [tuple(cell) for cell in spine]
+    try:
+        broken = next((index for index, cell in enumerate(cells[: max_skip + run])
+                       if not _supported_open_cell(cell, get_block)), None)
+        if broken is None:
+            return 0
+        for start in range(broken + 1, min(max_skip, len(cells) - run) + 1):
+            if all(_supported_open_cell(cell, get_block) for cell in cells[start:start + run]):
+                return start
+    except Exception:
+        return 0  # unknown terrain is not evidence the route moved
+    return 0
+
+
 def _distance_to_segment(point, start, end) -> float:
     direction = tuple(end[i] - start[i] for i in range(3))
     length_squared = sum(component * component for component in direction)
