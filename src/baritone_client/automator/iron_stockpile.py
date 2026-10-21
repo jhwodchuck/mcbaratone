@@ -352,9 +352,17 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
     if not prepare_house_door_for_departure(client, state, anchor):
         return done(False, "saved-house doorway is not safe for mine travel", retry_after=600.0)
     rec["entrance"] = list(entrance)
+    spine: List[Tuple[int, int, int]] = [tuple(c) for c in rec.get("spine", [])] or [entrance]
+    from ..common.tunnel_travel_defense import intact_route_start
+
+    start = intact_route_start(spine, lambda cell: _block(client, *cell))
+    if start:
+        # Walk to the intact part; the entrance height still anchors the miner.
+        print(f"IRON SUPPLY: saved route lost its floor near the entrance; starting at step {start} {spine[start]}")
+        spine = spine[start:]
     if (
-        not goto(client, *entrance, timeout=150, tolerance=0.8)
-        or not _at_cell(client, entrance)
+        not goto(client, *spine[0], timeout=150, tolerance=0.8)
+        or not _at_cell(client, spine[0])
     ):
         rec["approach_failures"] = int(rec.get("approach_failures", 0) or 0) + 1
         # Interrupted travel does not establish bad terrain or depleted ore.
@@ -362,7 +370,6 @@ def run_supply_trip(client: Any, state: Any, *, now: Optional[float] = None) -> 
         return done(False, "could not reach the mine entrance", retry_after=600.0)
     rec["approach_failures"] = 0
 
-    spine: List[Tuple[int, int, int]] = [tuple(c) for c in rec.get("spine", [])] or [entrance]
     miner = TunnelMiner(
         client, surface_y=entrance[1],
         deadline=time.monotonic() + route_travel_seconds(spine),
