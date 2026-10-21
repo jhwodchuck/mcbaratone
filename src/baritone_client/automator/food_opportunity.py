@@ -291,10 +291,18 @@ def _return_home_for_food(client: Any, home) -> bool:
     observed = _distance_and_health(client, home)
     if observed is None or observed[0] <= HOME_FOOD_REACH or observed[1] < 10.0:
         return False
-    from ..common.emergency_food import return_to_food_search_anchor
+    from ..common.navigation import recovery_goto
+    from ..common.staged_approach import staged_goto
 
+    # Baritone rejects an exact goal in unloaded terrain, so a single goto
+    # from 154 blocks out failed in four seconds (live A1 2026-10-20). Walk
+    # in legs; partial progress survives for the next cycle.
     print(f"RECOVERY: hungry {observed[0]:.0f} blocks from home; returning to its farm and food storage first")
-    return return_to_food_search_anchor(client, home, timeout=120.0)
+    live = client.transport.dispatch("get_state", {})
+    position = live.get("block_position", live.get("position", {}))
+    origin = tuple(int(position[axis]) for axis in ("x", "y", "z"))
+    target = tuple(int(round(value)) for value in home)
+    return staged_goto(client, target, origin, navigate=recovery_goto)
 
 
 def _current_center(client: Any) -> tuple[float, float, float] | None:

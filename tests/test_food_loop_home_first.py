@@ -49,21 +49,26 @@ def recovery(monkeypatch):
 def test_a_hungry_able_bot_far_from_home_walks_back_before_searching(recovery, monkeypatch):
     client, live = _client(10, 17.7, -548, 58)  # live A1, 2026-10-20
 
-    def walk_home(_client, anchor, timeout):
-        recovery.append(("home", anchor))
+    def walk_home(_client, target, origin, navigate):
+        from baritone_client.common.navigation import recovery_goto
+
+        # Staged legs: one exact goto from 154 blocks out failed in four
+        # seconds live, because the home chunk was not loaded.
+        assert navigate is recovery_goto and origin == (-548, 90, 58)
+        recovery.append(("home", target))
         live["block_position"] = {"x": -411, "y": 79, "z": -12}
         return True
 
-    monkeypatch.setattr("baritone_client.common.emergency_food.return_to_food_search_anchor", walk_home)
+    monkeypatch.setattr("baritone_client.common.staged_approach.staged_goto", walk_home)
     food_opportunity.run_scheduled_food_recovery(client, _state())
-    assert recovery[0] == ("home", HOME)
+    assert recovery[0] == ("home", (-411, 79, -12))
     assert recovery[1:3] == ["farm", "storage"]
     assert recovery[-1] == ("search", HOME), "search around home, not where the bot wandered"
 
 
 def test_a_critically_hurt_bot_searches_where_it_is(recovery, monkeypatch):
     client, _live = _client(4, 6.0, -548, 58)
-    monkeypatch.setattr("baritone_client.common.emergency_food.return_to_food_search_anchor",
+    monkeypatch.setattr("baritone_client.common.staged_approach.staged_goto",
                         lambda *_a, **_k: pytest.fail("too hurt for a 140-block walk"))
     food_opportunity.run_scheduled_food_recovery(client, _state())
     assert recovery[-1] == ("search", (-548.0, 90.0, 58.0))
@@ -71,7 +76,7 @@ def test_a_critically_hurt_bot_searches_where_it_is(recovery, monkeypatch):
 
 def test_a_bot_already_near_home_does_not_walk(recovery, monkeypatch):
     client, _live = _client(10, 17.7, -420, -5)
-    monkeypatch.setattr("baritone_client.common.emergency_food.return_to_food_search_anchor",
+    monkeypatch.setattr("baritone_client.common.staged_approach.staged_goto",
                         lambda *_a, **_k: pytest.fail("already in reach of storage"))
     food_opportunity.run_scheduled_food_recovery(client, _state())
     assert recovery[-1] == ("search", HOME)
