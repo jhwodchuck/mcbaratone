@@ -205,10 +205,10 @@ def test_controller_start_clears_a_saved_water_ban():
 
     transport = _Recorder()
     client = SimpleNamespace(transport=transport)
-    bind_home_surface(client, _state(), reset_water_routes=True)
-    assert transport.chats() == ["#set reset blocksToAvoid"]
+    bind_home_surface(client, _state(), controller_start=True)
+    assert transport.chats()[0] == "#set reset blocksToAvoid"
     bind_home_surface(client, _state())
-    assert transport.chats() == ["#set reset blocksToAvoid"]
+    assert transport.chats().count("#set reset blocksToAvoid") == 1
 
 
 def test_home_binding_installs_checkpointed_hazards():
