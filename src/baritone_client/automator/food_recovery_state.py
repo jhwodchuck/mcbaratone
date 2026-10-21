@@ -21,6 +21,10 @@ _STORED_FOOD_TARGETS = {
     "minecraft:cooked_rabbit": 8,
     "minecraft:cooked_salmon": 8,
     "minecraft:golden_carrot": 8,
+    # Raw but edible. Live A1 2026-10-18..20 starved for two days with 3159
+    # carrots banked at home because this list never asked for them.
+    "minecraft:carrot": 16,
+    "minecraft:apple": 8,
     # Last resort, and deliberately included. The fleet had 199 rotten flesh
     # banked while bots starved at food 0, because withdrawal only ever asked
     # for good food. Eating it is already safe and already last in

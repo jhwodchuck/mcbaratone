@@ -23,7 +23,7 @@ from .inventory import (
     resolve_storage_location,
 )
 from .navigation import find_nearby_block, find_water_source
-from .survival_farm import local_farm_wait_reason
+from .survival_farm import fed_enough_for_home_farm, local_farm_wait_reason
 from .farm_site_travel import (
     approach_candidate as _approach_candidate,
     horizontal_distance as _horizontal_distance,
@@ -678,7 +678,7 @@ def run_food_cycle(
         _flush(state, client)
         return _result(worker, False, "survival state is unsafe for farm travel")
     try:
-        safe_to_work = eat_until_hunger(client, minimum_food=14)
+        safe_to_work = eat_until_hunger(client, minimum_food=14) or fed_enough_for_home_farm(client)
     except Exception:
         safe_to_work = False
     if safe_to_work and _count(get_inventory(client), WHEAT) >= 3:
