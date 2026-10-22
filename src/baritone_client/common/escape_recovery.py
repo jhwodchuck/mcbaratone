@@ -469,4 +469,13 @@ def run_away(
             if not stopped:
                 verified = False
                 client._last_escape_failure_reason = "route_stop_unverified"
+                if previous_break == "true":
+                    # Silently leaving digging off is the leak the home-route
+                    # guard had: one unverified flee stop on live A1
+                    # 2026-10-21 17:50 kept allowBreak false for 16 hours.
+                    # Owe it; the guard's retry restores it once nothing moves.
+                    from .home_surface import _owe
+
+                    _owe(client, {"allowBreak": "true"})
+                    print("FLEE: route stop unverified; digging stays off until it can be restored")
     return verified
