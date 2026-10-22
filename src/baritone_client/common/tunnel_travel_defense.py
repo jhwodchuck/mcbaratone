@@ -58,6 +58,29 @@ def _supported_open_cell(cell: Cell, get_block: Callable[[Cell], str]) -> bool:
     return is_support(floor) and feet in _OPEN and head in _OPEN
 
 
+def intact_route_start(spine, get_block: Callable[[Cell], str], *, max_skip: int = 16, run: int = 3) -> int:
+    """Where a saved route can be re-entered past a lost prefix; 0 keeps it.
+
+    Live A1 2026-10-16..20: a pit near the entrance took the floor from the
+    first four steps of a 283-step tunnel. All 63 trips refused that first
+    unsupported step and mined no iron, while the tunnel from step 5 down
+    was intact. Only a short prefix is skipped, and only onto a run of
+    supported, open steps; anything else keeps the route and its abort.
+    """
+    cells = [tuple(cell) for cell in spine]
+    try:
+        broken = next((index for index, cell in enumerate(cells[: max_skip + run])
+                       if not _supported_open_cell(cell, get_block)), None)
+        if broken is None:
+            return 0
+        for start in range(broken + 1, min(max_skip, len(cells) - run) + 1):
+            if all(_supported_open_cell(cell, get_block) for cell in cells[start:start + run]):
+                return start
+    except Exception:
+        return 0  # unknown terrain is not evidence the route moved
+    return 0
+
+
 def _distance_to_segment(point, start, end) -> float:
     direction = tuple(end[i] - start[i] for i in range(3))
     length_squared = sum(component * component for component in direction)
@@ -69,9 +92,20 @@ def _distance_to_segment(point, start, end) -> float:
     return math.dist(point, projection)
 
 
-def _valid_player_corridor(player: Dict[str, Any], origin: Cell, target: Cell) -> bool:
+def _valid_player_corridor(player: Dict[str, Any], origin: Cell, target: Cell, beyond: Optional[Cell] = None) -> bool:
+    """Prove the player is on this hop, or overshot onto the route's next step.
+
+    Live A1 2026-10-21: every downward hop of a 1-wide staircase carried the
+    bot one step past its target before it settled. That put it a block
+    lower, about 1.4 blocks off the hop and up to 2 blocks into a fall, so
+    each snapshot was rejected and the trip retreated with 0 iron.
+    """
     if not isinstance(player, dict):
         return False
+    cells = [tuple(origin), tuple(target)]
+    if beyond is not None and _valid_step(target, beyond):
+        cells.append(tuple(beyond))
+    overshoot_drop = max(0, cells[1][1] - cells[-1][1])
     position = _finite_vector(player.get("position"))
     block_position = _finite_vector(player.get("block_position"))
     velocity = _finite_vector(player.get("velocity"))
@@ -84,7 +118,7 @@ def _valid_player_corridor(player: Dict[str, Any], origin: Cell, target: Cell) -
         or health is None
         or health <= 0
         or fall_distance is None
-        or not 0 <= fall_distance <= 1.0
+        or not 0 <= fall_distance <= 1.0 + overshoot_drop
         or player.get("is_dead") is not False
         or not isinstance(player.get("is_on_ground"), bool)
         or player.get("dimension") != "minecraft:overworld"
@@ -96,15 +130,15 @@ def _valid_player_corridor(player: Dict[str, Any], origin: Cell, target: Cell) -
     if horizontal_speed > 0.65 or not -0.7 <= velocity[1] <= 0.6:
         return False
 
-    start = (origin[0] + 0.5, float(origin[1]), origin[2] + 0.5)
-    end = (target[0] + 0.5, float(target[1]), target[2] + 0.5)
-    if _distance_to_segment(position, start, end) > _CORRIDOR_TOLERANCE:
+    points = [(cell[0] + 0.5, float(cell[1]), cell[2] + 0.5) for cell in cells]
+    if min(_distance_to_segment(position, points[i], points[i + 1])
+           for i in range(len(points) - 1)) > _CORRIDOR_TOLERANCE:
         return False
-    low_y, high_y = min(origin[1], target[1]), max(origin[1], target[1])
+    low_y, high_y = min(cell[1] for cell in cells), max(cell[1] for cell in cells)
     return low_y - 0.25 <= position[1] <= high_y + 1.25
 
 
-def _valid_snapshot(snapshot: Any, origin: Cell, target: Cell) -> bool:
+def _valid_snapshot(snapshot: Any, origin: Cell, target: Cell, beyond: Optional[Cell] = None) -> bool:
     if not isinstance(snapshot, dict):
         return False
     tick = snapshot.get("tick")
@@ -126,7 +160,7 @@ def _valid_snapshot(snapshot: Any, origin: Cell, target: Cell) -> bool:
         or skipped != 0
     ):
         return False
-    if not _valid_player_corridor(snapshot.get("player"), origin, target):
+    if not _valid_player_corridor(snapshot.get("player"), origin, target, beyond):
         return False
     for entity in entities:
         if (
@@ -175,9 +209,9 @@ def _stationary_occluded_creeper(entity: Dict[str, Any], player: Dict[str, Any])
     )
 
 
-def corridor_snapshot(snapshot: Any, origin: Cell, target: Cell):
+def corridor_snapshot(snapshot: Any, origin: Cell, target: Cell, beyond: Optional[Cell] = None):
     """Return a fresh snapshot with only a proven harmless travel creeper omitted."""
-    if not _valid_step(origin, target) or not _valid_snapshot(snapshot, origin, target):
+    if not _valid_step(origin, target) or not _valid_snapshot(snapshot, origin, target, beyond):
         return None
     player = snapshot["player"]
     suppressed = [
@@ -198,10 +232,11 @@ def corridor_snapshot(snapshot: Any, origin: Cell, target: Cell):
 class CorridorStepDefense:
     """Navigation callback scoped to one freshly verified adjacent hop."""
 
-    def __init__(self, client: Any, origin: Cell, target: Cell, get_block):
+    def __init__(self, client: Any, origin: Cell, target: Cell, get_block, beyond: Optional[Cell] = None):
         self.client = client
         self.origin = tuple(origin)
         self.target = tuple(target)
+        self.beyond = tuple(beyond) if beyond is not None else None
         self.get_block = get_block
         self.abort_reason: Optional[str] = None
 
@@ -238,7 +273,7 @@ class CorridorStepDefense:
             return True
         try:
             snapshot = combat._get_combat_snapshot(self.client, radius=16)
-            filtered = corridor_snapshot(snapshot, self.origin, self.target)
+            filtered = corridor_snapshot(snapshot, self.origin, self.target, self.beyond)
             if filtered is None:
                 self.abort_reason = "tunnel corridor combat observation is incomplete or unsafe"
                 return True

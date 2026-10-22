@@ -23,7 +23,7 @@ from .inventory import (
     resolve_storage_location,
 )
 from .navigation import find_nearby_block, find_water_source
-from .survival_farm import local_farm_wait_reason
+from .survival_farm import fed_enough_for_home_farm, local_farm_wait_reason
 from .farm_site_travel import (
     approach_candidate as _approach_candidate,
     horizontal_distance as _horizontal_distance,
@@ -31,6 +31,7 @@ from .farm_site_travel import (
 from .food_workstation import craft_bread_at_saved_home
 from .house_door_travel import prepare_house_door_for_departure
 from .food_return import return_after_food_cycle
+from .inventory_disposal import shed_surplus_seeds
 
 
 WHEAT = "minecraft:wheat"
@@ -677,7 +678,7 @@ def run_food_cycle(
         _flush(state, client)
         return _result(worker, False, "survival state is unsafe for farm travel")
     try:
-        safe_to_work = eat_until_hunger(client, minimum_food=14)
+        safe_to_work = eat_until_hunger(client, minimum_food=14) or fed_enough_for_home_farm(client)
     except Exception:
         safe_to_work = False
     if safe_to_work and _count(get_inventory(client), WHEAT) >= 3:
@@ -722,6 +723,10 @@ def run_food_cycle(
     )
     if unreachable_result is not None:
         return unreachable_result
+    if harvested:
+        # Each harvest returns more seed than replanting needs; shed it at
+        # the farm instead of carrying it home into the chests.
+        shed_surplus_seeds(client)
 
     new_plots = 0
     crop_tiles = 0

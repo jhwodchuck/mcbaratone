@@ -242,3 +242,67 @@ def test_unsafe_or_moving_player_never_pulses_door(monkeypatch, state, field, va
 
     assert not house_door_travel.prepare_house_door_for_entry(client, state, HOME)
     assert not any(route == "use_item" for route, _ in client.routes)
+
+
+def test_lit_exterior_stand_remains_usable_for_door_entry(monkeypatch, state):
+    from baritone_client.common import farming
+    client = _DoorClient((HOME[0], HOME[1], HOME[2]))
+    _world(monkeypatch, client)
+    stand = (HOUSE[0]+3, HOUSE[1]+1, HOUSE[2]-1)
+    def block(_client, x, y, z):
+        return {"id": "minecraft:torch" if (x,y,z) == stand else
+                "minecraft:stone" if y == HOUSE[1] else "minecraft:air"}
+    monkeypatch.setattr(farming, "_block_data", block)
+    assert house_door_travel.prepare_house_door_for_entry(client, state, HOME)
+
+
+def test_home_return_uses_exterior_doorway_then_verified_interior(monkeypatch, state):
+    from baritone_client.common import navigation
+    client = _DoorClient((30, 65, 30))
+    _world(monkeypatch, client)
+    goals = []
+    def travel(_client, x, y, z, **_kwargs):
+        goals.append((x,y,z))
+        client.position = (x,y,z)
+        return True
+    monkeypatch.setattr(navigation, "goto", travel)
+    assert house_door_travel.return_to_saved_house(client, state, HOME)
+    assert goals == [(12,66,8), (12,66,9), (10,66,10)]
+    assert client.open
+
+
+@pytest.mark.parametrize("stage", [0,1,2])
+def test_acknowledged_staged_return_without_exact_displacement_is_rejected(monkeypatch, state, stage):
+    from baritone_client.common import navigation
+    client = _DoorClient((30,65,30));_world(monkeypatch, client)
+    goals = []
+    def travel(_client, x,y,z,**_kwargs):
+        goals.append((x,y,z))
+        if len(goals)-1 != stage:client.position=(x,y,z)
+        return True
+    monkeypatch.setattr(navigation,"goto",travel)
+    assert not house_door_travel.return_to_saved_house(client,state,HOME)
+    assert len(goals)==stage+1
+
+
+@pytest.mark.parametrize("feet,head,floor", [
+    ("minecraft:water", "minecraft:air", "minecraft:stone"),
+    ("minecraft:lava", "minecraft:air", "minecraft:stone"),
+    ("minecraft:stone", "minecraft:air", "minecraft:stone"),
+    ("minecraft:torch", "minecraft:stone", "minecraft:stone"),
+    ("minecraft:torch", "minecraft:air", "minecraft:air"),
+    ("minecraft:torch", "minecraft:air", "minecraft:gravel"),
+    (None, "minecraft:air", "minecraft:stone"),
+])
+def test_unknown_obstructed_or_unsupported_door_stand_cannot_start_return(monkeypatch, state, feet,head,floor):
+    from baritone_client.common import farming,navigation
+    client=_DoorClient((30,65,30));_world(monkeypatch,client)
+    exterior=(12,66,8)
+    def block(_client,x,y,z):
+        if (x,z)==(exterior[0],exterior[2]):
+            return {"id":{65:floor,66:feet,67:head}.get(y,"minecraft:air")}
+        return {"id":"minecraft:stone" if y==65 else "minecraft:air"}
+    monkeypatch.setattr(farming,"_block_data",block)
+    monkeypatch.setattr(navigation,"goto",lambda *_a,**_k:pytest.fail("unsafe stand"))
+    assert not house_door_travel.return_to_saved_house(client,state,HOME)
+    assert not any(route=="use_item" for route,_ in client.routes)

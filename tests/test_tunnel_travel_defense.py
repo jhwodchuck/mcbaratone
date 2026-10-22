@@ -237,3 +237,85 @@ def test_callback_aborts_when_defense_processing_fails(monkeypatch):
     assert callback.preflight()
     assert callback() is True
     assert "failed" in callback.abort_reason
+
+
+
+def _floors(lost=(), length=12, unknown=False):
+    def get_block(cell):
+        x, y, z = cell
+        if unknown:
+            raise RuntimeError("chunk not loaded")
+        if y == 69:
+            return "minecraft:air" if x in lost else "minecraft:stone"
+        return "minecraft:air"
+    return [(n, 70, 0) for n in range(length)], get_block
+
+
+def test_an_intact_route_keeps_its_start():
+    from baritone_client.common.tunnel_travel_defense import intact_route_start
+    assert intact_route_start(*_floors()) == 0
+
+
+def test_a_lost_prefix_is_skipped_onto_the_first_intact_run():
+    from baritone_client.common.tunnel_travel_defense import intact_route_start
+    assert intact_route_start(*_floors(lost=(1, 2, 3, 4))) == 5
+
+
+def test_a_single_intact_step_between_gaps_is_not_enough():
+    from baritone_client.common.tunnel_travel_defense import intact_route_start
+    assert intact_route_start(*_floors(lost=(1, 2, 4, 5))) == 6
+
+
+def test_a_deep_break_or_unknown_terrain_keeps_the_route_and_its_abort():
+    from baritone_client.common.tunnel_travel_defense import intact_route_start
+    spine, get_block = _floors(lost=tuple(range(1, 20)), length=30)
+    assert intact_route_start(spine, get_block) == 0
+    assert intact_route_start(*_floors(unknown=True)) == 0
+
+
+
+# -- staircase overshoot (A1 2026-10-21) ---------------------------------------
+BEYOND = (2, 68, 0)  # the route's next step, one further down
+
+
+def overshot(**overrides):
+    """Settling one step past the target: a block lower, mid-fall."""
+    values = {
+        "position": {"x": 2.4, "y": 68.0, "z": 0.5},
+        "block_position": {"x": 2, "y": 68, "z": 0},
+        "velocity": {"x": 0.1, "y": -0.3, "z": 0},
+        "fall_distance": 1.9,
+    }
+    values.update(overrides)
+    return values
+
+
+def test_an_overshoot_onto_the_next_staircase_step_is_still_on_the_route():
+    assert corridor_snapshot(snapshot(**overshot()), ORIGIN, TARGET, BEYOND) is not None
+
+
+def test_without_the_next_step_the_same_overshoot_still_fails_closed():
+    assert corridor_snapshot(snapshot(**overshot()), ORIGIN, TARGET) is None
+
+
+@pytest.mark.parametrize("changes", [
+    {"fall_distance": 2.1},  # more than the two steps' drop
+    {"position": {"x": 3.6, "y": 67.0, "z": 0.5}, "block_position": {"x": 3, "y": 67, "z": 0}},  # two past
+    {"position": {"x": 2.4, "y": 68.0, "z": 2.5}, "block_position": {"x": 2, "y": 68, "z": 2}},  # sideways
+])
+def test_the_overshoot_allowance_does_not_widen_further(changes):
+    assert corridor_snapshot(snapshot(**overshot(**changes)), ORIGIN, TARGET, BEYOND) is None
+
+
+def test_a_next_step_that_is_not_adjacent_is_ignored():
+    assert corridor_snapshot(snapshot(**overshot()), ORIGIN, TARGET, (5, 60, 0)) is None
+
+
+def test_the_hop_callback_uses_the_next_step(monkeypatch):
+    seen = []
+    monkeypatch.setattr(combat, "_get_combat_snapshot", lambda *_a, **_k: snapshot(**overshot()))
+    monkeypatch.setattr(combat, "defend_or_flee", lambda _c, observed_snapshot: seen.append(observed_snapshot) or False)
+    monkeypatch.setattr("baritone_client.common.home_surface._read_break_setting", lambda _c: "false")
+    defense = CorridorStepDefense(SimpleNamespace(), ORIGIN, TARGET, block_reader(), beyond=BEYOND)
+    assert defense() is False
+    assert defense.abort_reason is None and len(seen) == 1

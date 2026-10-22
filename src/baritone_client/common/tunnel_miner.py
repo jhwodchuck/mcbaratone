@@ -424,7 +424,8 @@ class TunnelMiner:
             raise MineAbort(f"cannot verify digging is disabled for tunnel travel: {exc}") from exc
         try:
             here = self.cell()
-            for target in cells:
+            for index, target in enumerate(cells):
+                beyond = cells[index + 1] if index + 1 < len(cells) else None
                 if return_deadline is not None and time.monotonic() >= return_deadline:
                     raise MineAbort("return route time limit")
                 dx, dy, dz = (target[i] - here[i] for i in range(3))
@@ -438,7 +439,7 @@ class TunnelMiner:
                     from .tunnel_travel_defense import CorridorStepDefense
 
                     on_defense = CorridorStepDefense(
-                        self.client, here, target, self.block
+                        self.client, here, target, self.block, beyond=beyond
                     )
                     if not on_defense.preflight():
                         raise MineAbort(on_defense.abort_reason or "tunnel corridor is unsafe")
@@ -462,13 +463,25 @@ class TunnelMiner:
         finally:
             # Navigation must have stopped before restoring a setting that
             # could let Baritone break terrain on its next path.
-            live = self._call("get_state")
+            # An unverified stop still leaves digging off, but owes it back:
+            # silently leaving it off is how A1 was trapped in a shaft.
+            from .home_surface import _owe
+
+            try:
+                live = self._call("get_state")
+            except MineAbort:
+                if setting == "true":
+                    _owe(self.client, {"allowBreak": "true"})
+                raise
             if live.get("is_pathing") is not False:
+                if setting == "true":
+                    _owe(self.client, {"allowBreak": "true"})
                 raise MineAbort("tunnel travel stop was not verified")
             if setting == "true":
                 try:
                     _write_break_setting(self.client, "true")
                 except Exception as exc:
+                    _owe(self.client, {"allowBreak": "true"})
                     raise MineAbort(f"could not restore allowBreak after tunnel travel: {exc}") from exc
 
     def descend(self, spine: Sequence[Cell]) -> None:

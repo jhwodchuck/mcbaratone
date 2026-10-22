@@ -282,3 +282,27 @@ def test_fresh_visibility_observation_reactivates_defense():
     assert assess_threats([mob], PLAYER) == []
     mob["can_see_player"] = True
     assert assess_threats([mob], PLAYER)[0].entity["id"] == 42
+
+
+
+def buried_skeleton(**velocity):
+    """Live A1 2026-10-16: sealed in a pocket four blocks below a standing bot."""
+    return {
+        **sheltered_mob("skeleton", 5.1),
+        "position": {"x": 2, "y": 16, "z": 4},
+        "velocity": {"x": 0, "y": 0, "z": 0, **velocity},
+    }
+
+
+def test_a_buried_motionless_skeleton_is_not_closing_on_a_standing_bot():
+    """The grounded phantom fall (-0.0784) read as ~0.06 closing."""
+    assert assess_threats([buried_skeleton()], grounded_surface_player()) == []
+
+
+def test_a_buried_skeleton_that_really_moves_closer_still_counts():
+    assert assess_threats([buried_skeleton(x=-0.2, z=-0.3)], grounded_surface_player())
+
+
+@pytest.mark.parametrize("on_ground", [False, None])
+def test_the_phantom_fall_is_only_ignored_for_a_grounded_bot(on_ground):
+    assert assess_threats([buried_skeleton()], grounded_surface_player(on_ground=on_ground))

@@ -9,7 +9,7 @@ from baritone_client.automator import iron_preparation as prep
 
 @pytest.fixture
 def setup(monkeypatch):
-    observed = SimpleNamespace(free=1, tool=False, deposits=[], withdrawals=[])
+    observed = SimpleNamespace(free=1, tool=False, deposits=[], withdrawals=[], shed=[], drops=[], thrown=[])
     monkeypatch.setattr("baritone_client.automator.armor_recovery._home", lambda _s: (0, 70, 0))
     monkeypatch.setattr("baritone_client.common.inventory.resolve_storage_location", lambda *_a, **_k: (2, 70, 2))
     monkeypatch.setattr("baritone_client.common.tunnel_miner.free_slots", lambda _c: observed.free)
@@ -19,6 +19,13 @@ def setup(monkeypatch):
     monkeypatch.setattr("baritone_client.common.inventory.deposit_excess_to_chest", lambda *_a, **k: observed.deposits.append(k) or 4)
     monkeypatch.setattr("baritone_client.common.home_respawn.withdraw_from_home_containers", lambda *_a, **k: observed.withdrawals.append(k))
     monkeypatch.setattr("baritone_client.automator.mining_storage.bank_mining_overflow", lambda *_a: False)
+    monkeypatch.setattr("baritone_client.common.inventory_disposal.shed_surplus_seeds",
+                        lambda _c, keep: observed.shed.append(keep) or 0)
+    monkeypatch.setattr("baritone_client.common.inventory.drop_items",
+                        lambda _c, items, max_stacks=None, retain_counts=None:
+                        observed.drops.append((set(items), max_stacks, retain_counts)) or 0)
+    monkeypatch.setattr("baritone_client.common.inventory_disposal.throw_clutter",
+                        lambda _c: observed.thrown.append(True) or 0)
     return observed
 
 
@@ -26,7 +33,7 @@ def test_successful_report_without_space_or_tool_does_not_start_mining(setup):
     assert prep.prepare_iron_inventory(object(), object()) == "no durable stone-or-better pickaxe for iron"
     assert setup.deposits[0]["retain_counts"] == {
         "minecraft:carrot": 64, "minecraft:cobblestone": 64,
-        "minecraft:wheat_seeds": 16,
+        "minecraft:wheat_seeds": 32,
     }
     assert "minecraft:cobblestone" in setup.deposits[0]["deposit_items"]
     assert "minecraft:enchanted_book" in setup.deposits[0]["deposit_items"]
@@ -83,7 +90,7 @@ def test_rubble_and_valuable_but_non_trip_items_are_banked_with_food_and_seed_re
     assert {"minecraft:lead", "minecraft:bell", "minecraft:leaf_litter"} <= bank["deposit_items"]
     assert bank["retain_counts"] == {
         "minecraft:carrot": 64, "minecraft:cobblestone": 64,
-        "minecraft:wheat_seeds": 16,
+        "minecraft:wheat_seeds": 32,
     }
 
 
@@ -197,3 +204,98 @@ def test_unknown_building_inventory_cannot_authorize_preparation(setup, monkeypa
     with pytest.raises(RuntimeError, match="inventory unavailable"):
         prep.prepare_iron_inventory(object(), object())
     assert setup.deposits == []
+
+
+def test_surplus_seeds_are_shed_before_banking_and_never_banked(setup):
+    """Live A1 2026-10-15: 548 carried seeds plus 3307 banked filled every
+    home chest, so banking freed nothing and ~350 iron trips were refused."""
+    setup.tool = True
+    prep.prepare_iron_inventory(object(), object())
+    assert setup.shed == [32]
+    assert "minecraft:wheat_seeds" not in setup.deposits[0]["deposit_items"]
+
+
+def test_shedding_seeds_alone_can_admit_the_trip(setup, monkeypatch):
+    setup.tool, setup.free = True, 2
+
+    def shed(_c, keep):
+        setup.free = 10
+        return 8
+
+    monkeypatch.setattr("baritone_client.common.inventory_disposal.shed_surplus_seeds", shed)
+    assert prep.prepare_iron_inventory(object(), object()) == ""
+    assert setup.deposits == [] and setup.drops == []
+
+
+def test_full_chests_fall_back_to_dropping_only_plain_spoil(setup, monkeypatch):
+    setup.tool, setup.free = True, 7
+
+    def drop(_c, items, max_stacks=None, retain_counts=None):
+        setup.drops.append((set(items), max_stacks, retain_counts))
+        setup.free += max_stacks
+        return max_stacks
+
+    monkeypatch.setattr("baritone_client.common.inventory.drop_items", drop)
+    assert prep.prepare_iron_inventory(object(), object()) == ""
+    items, max_stacks, retains = setup.drops[0]
+    assert max_stacks == 3
+    assert {"minecraft:dirt", "minecraft:gravel", "minecraft:rotten_flesh"} <= items
+    assert not {"minecraft:bread", "minecraft:raw_iron", "minecraft:iron_ingot", "minecraft:torch",
+                "minecraft:stone_pickaxe", "minecraft:string", "minecraft:wheat_seeds"} & items
+    assert retains["minecraft:cobblestone"] == 64
+
+
+def test_spoil_is_kept_when_banking_already_made_room(setup, monkeypatch):
+    setup.tool = True
+
+    def bank(*_a, **_k):
+        setup.free = 10
+        return 3
+
+    monkeypatch.setattr("baritone_client.common.inventory.deposit_excess_to_chest", bank)
+    assert prep.prepare_iron_inventory(object(), object()) == ""
+    assert setup.drops == []
+
+
+def test_eggs_and_snowballs_are_thrown_before_anything_is_dropped(setup, monkeypatch):
+    """Live A1 2026-10-16: 6 free slots, full chests, and the pack held eggs,
+    snowballs, a feather and four wool colours the drop list did not cover."""
+    setup.tool, setup.free = True, 6
+    order = []
+
+    def throw(_c):
+        order.append("throw")
+        setup.free += 2
+        return 2
+
+    def drop(_c, items, max_stacks=None, retain_counts=None):
+        order.append("drop")
+        setup.drops.append((set(items), max_stacks, retain_counts))
+        setup.free += max_stacks
+        return max_stacks
+
+    monkeypatch.setattr("baritone_client.common.inventory_disposal.throw_clutter", throw)
+    monkeypatch.setattr("baritone_client.common.inventory.drop_items", drop)
+    monkeypatch.setattr("baritone_client.common.inventory.get_inventory", lambda _c: {
+        "minecraft:white_wool": 7, "minecraft:light_gray_wool": 2, "minecraft:black_wool": 1,
+        "minecraft:gray_wool": 1, "minecraft:feather": 1, "minecraft:string": 4,
+    })
+    assert prep.prepare_iron_inventory(object(), object()) == ""
+    assert order == ["throw", "drop"]
+    items, max_stacks, _retains = setup.drops[0]
+    assert max_stacks == 2
+    assert {"minecraft:feather", "minecraft:light_gray_wool", "minecraft:black_wool", "minecraft:gray_wool"} <= items
+    assert "minecraft:white_wool" not in items, "the biggest wool stack stays for a bed"
+    assert "minecraft:string" not in items
+
+
+def test_throwing_alone_can_make_the_room(setup, monkeypatch):
+    setup.tool, setup.free = True, 8
+
+    def throw(_c):
+        setup.free = 10
+        return 2
+
+    monkeypatch.setattr("baritone_client.common.inventory_disposal.throw_clutter", throw)
+    assert prep.prepare_iron_inventory(object(), object()) == ""
+    assert setup.drops == []

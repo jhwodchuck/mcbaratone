@@ -407,3 +407,100 @@ def test_death_propagates_through_home_route_cleanup():
         raise PlayerDeathDetected("dead")
     with pytest.raises(PlayerDeathDetected):
         dead(client, 100, 64, 100)
+
+
+# -- leaked conservative settings (A1 2026-10-15..21) ------------------------
+def _settings_client(settings, *, pathing, lag_reads=0):
+    """A bridge that applies a setting only after ``lag_reads`` read-backs."""
+    pending = {}
+    reads = {"n": 0}
+
+    def dispatch(route, payload=None):
+        if route == "settings":
+            name = payload.get("get", payload.get("set"))
+            if "set" in payload:
+                pending[name] = [payload["value"], lag_reads]
+            elif name in pending:
+                pending[name][1] -= 1
+                if pending[name][1] < 0:
+                    settings[name] = pending.pop(name)[0]
+            return {"key": name, "value": settings[name]}
+        if route == "get_state":
+            return {"is_pathing": pathing["value"]}
+        return {}
+
+    return SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch), _protected_home_anchor=(1, 64, 1))
+
+
+def _route(safe_movement=True):
+    @home_surface.protect_home_route(safe_movement=safe_movement)
+    def route(client, x, y, z):
+        return True
+    return route
+
+
+def test_a_lagging_bridge_still_confirms_the_restore(monkeypatch):
+    """Three 50 ms reads called correct restores 'not observed' on a busy client."""
+    monkeypatch.setattr(home_surface.time, "sleep", lambda *_a: None)
+    settings = {"allowBreak": "true", "allowParkour": "true", "maxFallHeightNoWater": "3"}
+    client = _settings_client(settings, pathing={"value": False}, lag_reads=5)
+    assert _route()(client, 1, 64, 1)
+    assert settings == {"allowBreak": "true", "allowParkour": "true", "maxFallHeightNoWater": "3"}
+
+
+def test_an_unverified_stop_is_owed_and_the_next_route_restores_the_originals(monkeypatch):
+    """The old guard re-read the leftover 'false' and kept it forever."""
+    monkeypatch.setattr(home_surface.time, "sleep", lambda *_a: None)
+    settings = {"allowBreak": "true", "allowParkour": "true", "maxFallHeightNoWater": "3"}
+    pathing = {"value": True}
+    client = _settings_client(settings, pathing=pathing)
+    assert not _route()(client, 1, 64, 1)
+    assert settings == {"allowBreak": "false", "allowParkour": "false", "maxFallHeightNoWater": "1"}
+    assert client._home_route_owed == {"allowBreak": "true", "allowParkour": "true", "maxFallHeightNoWater": "3"}
+
+    pathing["value"] = False
+    assert _route()(client, 1, 64, 1)
+    assert settings == {"allowBreak": "true", "allowParkour": "true", "maxFallHeightNoWater": "3"}
+    assert client._home_route_owed == {}
+
+
+def test_owed_settings_are_restored_once_nothing_is_moving(monkeypatch):
+    monkeypatch.setattr(home_surface.time, "sleep", lambda *_a: None)
+    settings = {"allowBreak": "true", "allowParkour": "true", "maxFallHeightNoWater": "3"}
+    pathing = {"value": True}
+    client = _settings_client(settings, pathing=pathing)
+    _route()(client, 1, 64, 1)
+    state = SimpleNamespace(custom_data={"base_location": [1, 64, 1]})
+
+    home_surface.bind_home_surface(client, state)  # still pathing: keep waiting
+    assert settings["allowBreak"] == "false"
+    pathing["value"] = False
+    client._home_route_active = 1  # another guarded route is underway
+    home_surface.bind_home_surface(client, state)
+    assert settings["allowBreak"] == "false"
+    client._home_route_active = 0
+    home_surface.bind_home_surface(client, state)
+    assert settings == {"allowBreak": "true", "allowParkour": "true", "maxFallHeightNoWater": "3"}
+    assert client._home_route_owed == {}
+
+
+def test_a_callers_deliberate_no_digging_is_left_alone(monkeypatch):
+    """base.py and the phases turn digging off around their own work."""
+    monkeypatch.setattr(home_surface.time, "sleep", lambda *_a: None)
+    settings = {"allowBreak": "false"}
+    client = _settings_client(settings, pathing={"value": False})
+    assert _route(safe_movement=False)(client, 1, 64, 1)
+    assert settings == {"allowBreak": "false"}
+    assert not getattr(client, "_home_route_owed", None)
+
+
+def test_controller_start_resets_every_guarded_setting(monkeypatch):
+    monkeypatch.setattr(home_surface.time, "sleep", lambda *_a: None)
+    chats = []
+    client = SimpleNamespace(transport=SimpleNamespace(
+        dispatch=lambda route, payload=None: chats.append(payload["message"]) if route == "chat" else {}))
+    client._home_route_owed = {"allowBreak": "true"}
+    home_surface.bind_home_surface(client, SimpleNamespace(custom_data={}), controller_start=True)
+    for name in ("allowBreak", "allowSprint", "allowParkour", "maxFallHeightNoWater"):
+        assert f"#set reset {name}" in chats
+    assert client._home_route_owed == {}

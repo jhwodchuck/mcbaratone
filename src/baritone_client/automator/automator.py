@@ -251,7 +251,7 @@ class EndGameAutomator:
             print(f"Shared landmark import deferred: {exc}")
 
         from ..common.home_surface import bind_home_surface
-        bind_home_surface(self.client, self.state)
+        bind_home_surface(self.client, self.state, controller_start=True)
         return self.state.get_current_phase()
 
 
