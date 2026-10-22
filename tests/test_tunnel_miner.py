@@ -741,6 +741,9 @@ def test_tunnel_travel_refuses_unverified_stop_and_keeps_digging_disabled(world)
     for cell in tp.required_cells(*spine):
         world.blocks.pop(cell, None)
     world.pathing = True
+    miner = make_miner(world, spine=spine)
     with pytest.raises(tm.MineAbort, match="stop was not verified"):
-        make_miner(world, spine=spine).descend(spine)
+        miner.descend(spine)
     assert world.allow_break == "false"
+    # Owed, not silently dropped: the home-surface retry restores it.
+    assert miner.client._home_route_owed == {"allowBreak": "true"}
