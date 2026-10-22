@@ -366,6 +366,39 @@ def test_run_away_keeps_digging_disabled_when_stop_is_unverified(monkeypatch):
     assert transport.setting == "false"
     assert client._last_escape_failure_reason == "route_stop_unverified"
     assert ("chat", {"message": "#stop"}) in transport.calls
+    # Live A1 2026-10-21: this used to leave digging off for 16 hours.
+    assert client._home_route_owed == {"allowBreak": "true"}
+
+
+def test_an_unverified_flee_stop_is_restored_once_nothing_moves(monkeypatch):
+    from baritone_client.common import home_surface
+
+    threat = _entity(1, "zombie", 10, 4, 0)
+    transport = EscapeTransport(threat)
+    client = SimpleNamespace(transport=transport)
+    original_dispatch = transport.dispatch
+    moving = {"value": True}
+    state_reads = {"count": 0}
+
+    def dispatch(route, payload=None):
+        response = original_dispatch(route, payload)
+        if route == "get_state":
+            state_reads["count"] += 1
+            if state_reads["count"] > 1:
+                response["is_pathing"] = moving["value"]
+        return response
+
+    monkeypatch.setattr(transport, "dispatch", dispatch)
+    monkeypatch.setattr(combat, "scan_for_threats", lambda *_a, **_k: [threat])
+    monkeypatch.setattr(escape_recovery, "verify_escape_from_threats", lambda *_a, **_k: True)
+    monkeypatch.setattr(home_surface.time, "sleep", lambda *_a: None)
+    combat.run_away(client, threat, timeout=1)
+    assert transport.setting == "false"
+
+    moving["value"] = False
+    assert home_surface.restore_owed_home_route_settings(client)
+    assert transport.setting == "true"
+    assert client._home_route_owed == {}
 
 
 def test_escape_verification_fails_when_fresh_position_crosses_floor(monkeypatch):
