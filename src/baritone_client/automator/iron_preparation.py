@@ -77,6 +77,20 @@ def prepare_iron_inventory(client, state):
     if not has_mining_pickaxe(client):
         return "no durable stone-or-better pickaxe for iron"
     if free_slots(client) < ROOM_WANTED:
+        from .spoil_purge import purge_home_spoil
+
+        # The trip is about to leave: spoil thrown out of full home chests
+        # despawns while the bot is away, and the freed slots take the
+        # carried surplus (live A1 2026-10-21: four stacks of carrots).
+        for purged in purge_home_spoil(client, state, anchor, ROOM_WANTED - free_slots(client) + 2):
+            try:
+                deposit_excess_to_chest(
+                    client, purged, deposit_items=prep_bank_items,
+                    retain_counts=retains, state=state,
+                )
+            except CommandError as exc:
+                print(f"IRON PREPARATION: purged chest interaction rejected ({exc})")
+    if free_slots(client) < ROOM_WANTED:
         from .mining_storage import bank_mining_overflow
 
         bank_mining_overflow(client, state, anchor, ROOM_WANTED, prep_bank_items, retains)
@@ -90,8 +104,8 @@ def prepare_iron_inventory(client, state):
         carried = get_inventory(client)
         wool = sorted((item for item in WOOL_ITEMS if carried.get(item, 0) > 0), key=lambda item: -carried[item])
         drop_items(
-            client, sorted(set(DIGGING_JUNK) | LAST_RESORT_JUNK | set(wool[1:])),
-            max_stacks=missing, retain_counts=retains,
+            client, sorted(set(DIGGING_JUNK) | LAST_RESORT_JUNK | set(wool[1:]) | {"minecraft:wheat_seeds"}),
+            max_stacks=missing, retain_counts=retains,  # seeds keep SEED_CARRY_CAP
         )
     if free_slots(client) < ROOM_WANTED:
         return "not enough verified inventory space for iron"
