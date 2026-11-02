@@ -26,6 +26,9 @@ def setup(monkeypatch):
                         observed.drops.append((set(items), max_stacks, retain_counts)) or 0)
     monkeypatch.setattr("baritone_client.common.inventory_disposal.throw_clutter",
                         lambda _c: observed.thrown.append(True) or 0)
+    observed.purges = []
+    monkeypatch.setattr("baritone_client.automator.spoil_purge.purge_home_spoil",
+                        lambda _c, _s, anchor, max_stacks: observed.purges.append(max_stacks) or [])
     return observed
 
 
@@ -241,8 +244,10 @@ def test_full_chests_fall_back_to_dropping_only_plain_spoil(setup, monkeypatch):
     assert max_stacks == 3
     assert {"minecraft:dirt", "minecraft:gravel", "minecraft:rotten_flesh"} <= items
     assert not {"minecraft:bread", "minecraft:raw_iron", "minecraft:iron_ingot", "minecraft:torch",
-                "minecraft:stone_pickaxe", "minecraft:string", "minecraft:wheat_seeds"} & items
+                "minecraft:stone_pickaxe", "minecraft:string"} & items
     assert retains["minecraft:cobblestone"] == 64
+    # A spare seed stack may go, but never below the carried cap.
+    assert "minecraft:wheat_seeds" in items and retains["minecraft:wheat_seeds"] == 32
 
 
 def test_spoil_is_kept_when_banking_already_made_room(setup, monkeypatch):
@@ -299,3 +304,34 @@ def test_throwing_alone_can_make_the_room(setup, monkeypatch):
     monkeypatch.setattr("baritone_client.common.inventory_disposal.throw_clutter", throw)
     assert prep.prepare_iron_inventory(object(), object()) == ""
     assert setup.drops == []
+
+
+
+def test_full_chests_are_purged_of_spoil_and_the_surplus_banked_there(setup, monkeypatch):
+    """Live A1 2026-10-21: every home chest 27/27, 45 trips refused for room."""
+    setup.tool, setup.free = True, 6
+    purged_chest = (5, 70, 5)
+
+    def purge(_c, _s, anchor, max_stacks):
+        setup.purges.append(max_stacks)
+        return [purged_chest]
+
+    def deposit(_c, chest, deposit_items=None, retain_counts=None, **_k):
+        setup.deposits.append({"chest": chest, "deposit_items": deposit_items, "retain_counts": retain_counts})
+        if chest == purged_chest:
+            setup.free = 10  # the carried carrots now fit
+        return 3
+
+    monkeypatch.setattr("baritone_client.automator.spoil_purge.purge_home_spoil", purge)
+    monkeypatch.setattr("baritone_client.common.inventory.deposit_excess_to_chest", deposit)
+    assert prep.prepare_iron_inventory(object(), object()) == ""
+    assert setup.purges == [6], "the room still missing plus two spare"
+    banked = [entry for entry in setup.deposits if entry["chest"] == purged_chest]
+    assert banked and "minecraft:carrot" in banked[0]["deposit_items"]
+    assert banked[0]["retain_counts"]["minecraft:carrot"] == 64
+
+
+def test_spoil_is_never_purged_when_the_trip_will_not_leave(setup):
+    setup.tool, setup.free = False, 6  # no durable pickaxe
+    assert "pickaxe" in prep.prepare_iron_inventory(object(), object())
+    assert setup.purges == []
