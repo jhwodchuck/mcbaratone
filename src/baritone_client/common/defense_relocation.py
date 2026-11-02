@@ -112,12 +112,22 @@ def relocate(client, threat, *, distance=28, timeout=30):
             verified = False
             previous = None
         if previous is not None:
+            restored = previous != "true"
             try:
                 stopped = client.transport.dispatch("get_state", {})
                 if stopped.get("is_pathing") is not False:
                     verified = False
                 elif previous == "true":
                     _write_break_setting(client, previous)
+                    restored = True
             except Exception:
                 verified = False  # Unknown stop: leave excavation disabled.
+            if not restored:
+                # Excavation stays off for now, but is owed back. Leaving it
+                # off silently kept live A1 from digging for 11 days after one
+                # relocation on 2026-10-22, until it was sealed underground.
+                from .home_surface import _owe
+
+                _owe(client, {"allowBreak": "true"})
+                print("DEFENSE: relocation stop unverified; digging stays off until it can be restored")
     return verified

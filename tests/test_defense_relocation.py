@@ -98,6 +98,15 @@ def test_uncertain_stop_keeps_excavation_disabled(route, monkeypatch):
     monkeypatch.setattr(client.transport, "dispatch", dispatch)
     assert not recovery.relocate(client, threat)
     assert client.transport.setting == "false"
+    # Live A1 2026-10-22: this left digging off for 11 days, sealed underground.
+    assert client._home_route_owed == {"allowBreak": "true"}
+
+
+def test_a_verified_relocation_owes_nothing(route):
+    client, threat = route
+    recovery.relocate(client, threat)
+    assert client.transport.setting == "true"
+    assert not getattr(client, "_home_route_owed", None)
 
 
 def test_active_surface_work_floor_applies_outside_home_radius():
