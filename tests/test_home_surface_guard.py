@@ -504,3 +504,80 @@ def test_controller_start_resets_every_guarded_setting(monkeypatch):
     for name in ("allowBreak", "allowSprint", "allowParkour", "maxFallHeightNoWater"):
         assert f"#set reset {name}" in chats
     assert client._home_route_owed == {}
+
+
+
+# -- sealed below the home floor (A1 2026-10-28..11-02) ------------------------
+def _below_home_client(position):
+    calls = []
+
+    def dispatch(route, payload=None):
+        calls.append((route, payload))
+        if route == "get_state":
+            return {"block_position": dict(zip(("x", "y", "z"), position)), "is_pathing": False}
+        if route == "settings":
+            name = payload.get("get", payload.get("set"))
+            return {"key": name, "value": "true" if name == "allowBreak" else ("false" if name == "allowParkour" else "3")}
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch), _protected_home_anchor=(-411, 79, -12))
+    return client, calls
+
+
+def test_a_failed_route_home_from_a_sealed_pocket_excavates_away_from_the_house(monkeypatch):
+    """Guarded routes dig nothing, so A1 failed 416 trips home from below."""
+    monkeypatch.setattr(home_surface.time, "sleep", lambda *_a: None)
+    client, _calls = _below_home_client((-425, 67, 4))
+    tunnels = []
+    monkeypatch.setattr("baritone_client.common.build_site_recovery.excavate_surface_egress",
+                        lambda c, origin, expected_y, avoid, avoid_radius: tunnels.append((origin, expected_y, avoid, avoid_radius)) or origin)
+
+    @home_surface.protect_home_route(safe_movement=True)
+    def route_home(client, x, y, z):
+        return False
+
+    assert not route_home(client, -411, 79, -12)
+    assert tunnels == [((-425, 67, 4), 79, (-411, 79, -12), 8.0)]
+    route_home(client, -411, 79, -12)
+    assert len(tunnels) == 1, "rate-limited: once per five minutes"
+
+
+@pytest.mark.parametrize("position", [(-413, 67, -10), (-425, 79, 4), (-425, 77, 4)])
+def test_no_excavation_under_the_house_or_from_the_surface(monkeypatch, position):
+    monkeypatch.setattr(home_surface.time, "sleep", lambda *_a: None)
+    client, _calls = _below_home_client(position)
+    monkeypatch.setattr("baritone_client.common.build_site_recovery.excavate_surface_egress",
+                        lambda *_a, **_k: pytest.fail("must not excavate here"))
+
+    @home_surface.protect_home_route(safe_movement=True)
+    def route_home(client, x, y, z):
+        return False
+
+    route_home(client, -411, 79, -12)
+
+
+def test_egress_tunnels_skip_targets_at_the_house(monkeypatch):
+    from baritone_client.common import build_site_recovery
+
+    tunnels = []
+    client = SimpleNamespace(transport=SimpleNamespace(
+        dispatch=lambda route, payload=None: tunnels.append(payload) if route == "tunnel" else {"block_position": {"x": 0, "y": 60, "z": 0}, "is_pathing": False}))
+    monkeypatch.setattr(build_site_recovery.time, "sleep", lambda *_a: None)
+    build_site_recovery.excavate_surface_egress(client, origin=(0, 60, 0), expected_y=79,
+                                                timeout_per_attempt=0.01, avoid=(8, 79, 0), avoid_radius=8.0)
+    assert {(t["x"], t["z"]) for t in tunnels} == {(-8, 0), (0, 8), (0, -8)}
+
+
+
+def test_a_failed_hop_toward_the_mine_entrance_does_not_excavate(monkeypatch):
+    """The mine entrance is inside the guarded radius, but it is not home."""
+    monkeypatch.setattr(home_surface.time, "sleep", lambda *_a: None)
+    client, _calls = _below_home_client((-425, 67, 4))
+    monkeypatch.setattr("baritone_client.common.build_site_recovery.excavate_surface_egress",
+                        lambda *_a, **_k: pytest.fail("a tunnel retreat hop is not a route home"))
+
+    @home_surface.protect_home_route(safe_movement=True)
+    def hop(client, x, y, z):
+        return False
+
+    hop(client, -421, 79, 8)

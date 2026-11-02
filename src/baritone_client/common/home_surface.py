@@ -293,6 +293,48 @@ def protect_home_route(*, horizontal=False, surface_work=False, safe_movement=Fa
                     client._home_route_owed = pending
                     if owing:
                         _owe(client, owing)
+            if not result and guarded:
+                excavate_out_from_below_home(client, x, z)
             return result
         return wrapped
     return decorate
+
+
+#: A bot this close to home may be under the house; never excavate there.
+_HOUSE_CLEARANCE = 8.0
+_EGRESS_RETRY_SECONDS = 300.0
+
+
+def excavate_out_from_below_home(client, goal_x, goal_z):
+    """Dig an upward exit for a bot sealed in a pocket below the home floor.
+
+    Guarded homeward routes run with digging off, so from a sealed pocket
+    below the floor they have no path at all. Live A1 sat at (-425,67,4),
+    21 blocks from home and 10 below its floor, failing 416 "could not get
+    home" trips in three days. Tunnel to the surface away from the house;
+    the next ordinary route then starts above the floor.
+    """
+    anchor = getattr(client, "_protected_home_anchor", None)
+    now = time.monotonic()
+    if anchor is None or now < getattr(client, "_below_home_egress_after", 0.0):
+        return False
+    if math.hypot(goal_x - anchor[0], goal_z - anchor[2]) > _HOUSE_CLEARANCE:
+        return False  # only a route home; a failed hop near the mine entrance is not this
+    try:
+        live = client.transport.dispatch("get_state", {})
+        position = live.get("block_position", live.get("position", {}))
+        here = tuple(int(position[axis]) for axis in ("x", "y", "z"))
+    except Exception:
+        return False
+    guard = home_route_floor(client, here[0], anchor[1], here[2])
+    if (not below_home_surface(guard, dict(zip(("x", "y", "z"), here)))
+            or math.hypot(here[0] - anchor[0], here[2] - anchor[2]) <= _HOUSE_CLEARANCE):
+        return False
+    client._below_home_egress_after = now + _EGRESS_RETRY_SECONDS
+    from .build_site_recovery import excavate_surface_egress
+
+    print(f"HOME ROUTE: sealed below the home floor at {here}; excavating an upward exit away from the house")
+    return excavate_surface_egress(
+        client, origin=here, expected_y=int(anchor[1]),
+        avoid=anchor, avoid_radius=_HOUSE_CLEARANCE,
+    ) is not None
