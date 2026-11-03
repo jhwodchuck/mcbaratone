@@ -342,18 +342,24 @@ def _sealed_above(entity, state, distance):
     the player's head space. Live A1 2026-11-03: two creepers, a skeleton
     and a zombie in a sealed pocket on its mine tunnel's ceiling, 3.6-6m
     away, cancelled every walk home for 5+ hours with an evade that a
-    1-wide tunnel cannot perform. Fuse and melee range stay actionable.
+    1-wide tunnel cannot perform. Fuse and melee range stay actionable,
+    and the reported distance must match the observed positions.
     """
     try:
         if state.get("is_on_ground") is not True:
             return False
-        player = state.get("block_position", state.get("position"))
-        values = (float(state["velocity"]["y"]), float(entity["position"]["y"]), float(player["y"]))
+        vertical = state["velocity"]["y"]
+        mob, player = entity["position"], state.get("position", state.get("block_position"))
+        values = [vertical] + [vector[axis] for vector in (mob, player) for axis in ("x", "y", "z")]
+        if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+               for value in values):
+            return False
+        observed = math.dist([mob[axis] for axis in ("x", "y", "z")],
+                             [player[axis] for axis in ("x", "y", "z")])
     except (KeyError, TypeError, ValueError, OverflowError):
         return False
-    vertical, mob_y, player_y = values
-    return (all(math.isfinite(value) for value in values) and -0.1 <= vertical <= 0.05
-            and mob_y - player_y >= 3.0 and distance > 3.0)
+    return (-0.1 <= vertical <= 0.05 and mob["y"] - player["y"] >= 3.0
+            and distance > 3.0 and abs(distance - observed) <= 0.25)
 
 
 def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):

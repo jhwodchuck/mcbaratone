@@ -1,3 +1,4 @@
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -311,28 +312,38 @@ def test_the_phantom_fall_is_only_ignored_for_a_grounded_bot(on_ground):
 # -- a sealed pocket on the tunnel ceiling (live A1 2026-11-03) ----------------
 TUNNEL_PLAYER = {
     **PLAYER,
+    "position": {"x": -437.7, "y": 66.0, "z": 6.6},
     "block_position": {"x": -438, "y": 66, "z": 6},
     "is_on_ground": True,
     "velocity": {"x": 0, "y": -0.0784000015258789, "z": 0},
 }
 
 
+def _at(x, y, z):
+    """A mob position with the distance the bridge would report from it."""
+    here = TUNNEL_PLAYER["position"]
+    return {"position": {"x": x, "y": y, "z": z},
+            "distance": math.dist((x, y, z), (here["x"], here["y"], here["z"]))}
+
+
 def ceiling_pocket():
-    def mob(kind, x, y, z, distance, vy=0.0):
-        return {"id": hash((kind, x)) % 1000, "type": f"minecraft:{kind}", "distance": distance,
-                "position": {"x": x, "y": y, "z": z}, "velocity": {"x": 0.0, "y": vy, "z": 0.0},
+    def mob(kind, x, y, z, vy=0.0):
+        return {"id": hash((kind, x)) % 1000, "type": f"minecraft:{kind}", **_at(x, y, z),
+                "velocity": {"x": 0.0, "y": vy, "z": 0.0},
                 "can_see_player": False, "is_aggressive": False, "target_id": None}
 
+    # Positions as observed live; feet at y=69-72 over a tunnel at y=66.
     return [
-        mob("zombie", -437.44, 72.0, 9.56, 6.53),
-        mob("creeper", -436.30, 71.0, 9.70, 5.82),
-        mob("creeper", -439.01, 69.0, 8.86, 3.85, vy=-0.0297),
-        mob("skeleton", -438.41, 69.0, 9.21, 3.85, vy=-0.0322),
+        mob("zombie", -437.44, 72.0, 9.56),
+        mob("creeper", -436.30, 71.0, 9.70),
+        mob("creeper", -439.01, 69.0, 8.86, vy=-0.0297),
+        mob("skeleton", -438.41, 69.0, 9.21, vy=-0.0322),
     ]
 
 
 def test_blind_calm_mobs_sealed_over_a_tunnel_ceiling_are_not_threats():
     """A1 sat 5+ hours evading these from a 1-wide tunnel it could not leave."""
+    assert sum(mob["distance"] < 5.0 for mob in ceiling_pocket()) == 2  # inside the old action range
     assert assess_threats(ceiling_pocket(), TUNNEL_PLAYER) == []
 
 
@@ -340,13 +351,14 @@ def test_blind_calm_mobs_sealed_over_a_tunnel_ceiling_are_not_threats():
     {"can_see_player": True},
     {"is_aggressive": True},
     {"target_id": 99},
-    {"distance": 2.9},                                   # fuse / melee range
-    {"position": {"x": -439.01, "y": 68.0, "z": 8.86}},  # no layer over the head
+    _at(-437.7, 69.0, 6.6),                              # 3.0m: fuse / melee range
+    _at(-439.01, 68.0, 8.86),                            # no layer over the head
+    {"distance": 3.5},                                   # disagrees with the positions
     {"velocity": {"x": 0.0, "y": 0.0, "z": -0.25}},      # coming toward the player
 ])
 @pytest.mark.parametrize("kind", ["creeper", "skeleton"])
 def test_a_ceiling_mob_stays_a_threat_once_any_sealing_evidence_is_missing(kind, change):
-    mob = next(m for m in ceiling_pocket() if m["type"] == f"minecraft:{kind}" and m["distance"] < 4)
+    mob = next(m for m in ceiling_pocket() if m["type"] == f"minecraft:{kind}" and m["position"]["y"] == 69.0)
     assert assess_threats([dict(mob, **change)], TUNNEL_PLAYER)
 
 
