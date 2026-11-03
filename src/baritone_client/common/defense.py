@@ -335,6 +335,27 @@ def _creeper_below_work_floor(entity, state, distance, closing):
         return False
 
 
+def _sealed_above(entity, state, distance):
+    """A blind, calm mob standing on a ceiling over the player's head.
+
+    Feet three blocks over the player's leave a block between the mob and
+    the player's head space. Live A1 2026-11-03: two creepers, a skeleton
+    and a zombie in a sealed pocket on its mine tunnel's ceiling, 3.6-6m
+    away, cancelled every walk home for 5+ hours with an evade that a
+    1-wide tunnel cannot perform. Fuse and melee range stay actionable.
+    """
+    try:
+        if state.get("is_on_ground") is not True:
+            return False
+        player = state.get("block_position", state.get("position"))
+        values = (float(state["velocity"]["y"]), float(entity["position"]["y"]), float(player["y"]))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    vertical, mob_y, player_y = values
+    return (all(math.isfinite(value) for value in values) and -0.1 <= vertical <= 0.05
+            and mob_y - player_y >= 3.0 and distance > 3.0)
+
+
 def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
     """Keep shelter only on explicit, fresh evidence of a non-actionable mob.
 
@@ -425,7 +446,8 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
         and math.isfinite(distance)
         and distance < 999.0
         and (distance > (6.0 if calm_creeper else 5.0)
-             or (calm_creeper and _creeper_below_work_floor(entity, state, distance, closing)))
+             or (calm_creeper and _creeper_below_work_floor(entity, state, distance, closing))
+             or _sealed_above(entity, state, distance))
         and (not calm_creeper or stationary_creeper)
         and (closing <= 0.05 or vertically_separated or stationary_creeper)
     ):
