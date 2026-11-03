@@ -66,6 +66,14 @@ class MineAbort(Exception):
         self.reason = reason
 
 
+class RouteBroken(MineAbort):
+    """A saved step is proven broken; ``index`` is the last cell reached."""
+
+    def __init__(self, reason: str, index: int) -> None:
+        super().__init__(reason)
+        self.index = index
+
+
 @dataclass
 class TripStats:
     moves: int = 0
@@ -436,13 +444,17 @@ class TunnelMiner:
                     self.check(returning=returning)
                     if return_deadline is not None and time.monotonic() >= return_deadline:
                         raise MineAbort("return route time limit")
-                    from .tunnel_travel_defense import CorridorStepDefense
+                    from .tunnel_travel_defense import TARGET_UNSUPPORTED, CorridorStepDefense, broken_step
 
                     on_defense = CorridorStepDefense(
                         self.client, here, target, self.block, beyond=beyond
                     )
                     if not on_defense.preflight():
-                        raise MineAbort(on_defense.abort_reason or "tunnel corridor is unsafe")
+                        reason = on_defense.abort_reason or "tunnel corridor is unsafe"
+                        if (not returning and reason == TARGET_UNSUPPORTED
+                                and broken_step(target, self.block)):
+                            raise RouteBroken(reason, index)
+                        raise MineAbort(reason)
                     goto(
                         self.client, *target,
                         timeout=min(timeout, max(1, int(return_deadline - time.monotonic())))
@@ -485,11 +497,26 @@ class TunnelMiner:
                     raise MineAbort(f"could not restore allowBreak after tunnel travel: {exc}") from exc
 
     def descend(self, spine: Sequence[Cell]) -> None:
-        """Walk a recorded spine from the entrance to its end."""
+        """Walk a recorded spine from the entrance to its end.
+
+        A step proven broken partway down ends the descent at the last good
+        step: mining starts there and the saved route is cut to it. Live A1
+        2026-11-02 walked 83 steps down to y=48, found two floorless steps,
+        and climbed all the way back with 0 iron, as every trip would.
+        """
         if len(spine) > 1:
             if self.cell() != spine[0]:
                 raise MineAbort("not at the recorded tunnel entrance")
-            self._hop(spine[1:])
+            try:
+                self._hop(spine[1:])
+            except RouteBroken as broken:
+                reached = tuple(spine[broken.index])
+                if broken.index < 1 or self.cell() != reached:
+                    raise  # the entrance prefix has its own skip; keep the route
+                print(f"TUNNEL MINER: saved route broken at step {broken.index + 1} "
+                      f"{tuple(spine[broken.index + 1])}; mining from step {broken.index} {reached}")
+                self.trail = [tuple(cell) for cell in spine[: broken.index + 1]]
+                self._note_progress()
 
     def retreat(self) -> bool:
         """Retrace our own trail to the entrance; True when the bot got there."""
@@ -624,5 +651,6 @@ class TunnelMiner:
 
 
 __all__ = [
-    "DIGGING_JUNK", "HOSTILES", "MineAbort", "TripStats", "TunnelMiner", "free_slots", "own_cells_of",
+    "DIGGING_JUNK", "HOSTILES", "MineAbort", "RouteBroken", "TripStats", "TunnelMiner", "free_slots",
+    "own_cells_of",
 ]
