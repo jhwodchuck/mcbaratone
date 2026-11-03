@@ -335,22 +335,43 @@ def _creeper_below_work_floor(entity, state, distance, closing):
         return False
 
 
+#: Vanilla gravity a grounded entity reports every tick (-0.0784 Y).
+_GROUNDED_FALL = 0.0785
+
+
+def _settled(entity):
+    """Drop a mob's grounded-gravity Y velocity, as #88 did for the player.
+
+    A mob standing over the player reported -0.0784 Y and read as closing
+    at 0.055-0.077: live A1 2026-11-03 evaded blind, calm mobs 8-13m away.
+    """
+    try:
+        velocity = entity["velocity"]
+        if -_GROUNDED_FALL <= float(velocity["y"]) <= 0.0:
+            return {**entity, "velocity": {**velocity, "y": 0.0}}
+    except (KeyError, TypeError, ValueError):
+        pass
+    return entity
+
+
 def _sealed_above(entity, state, distance):
     """A blind, calm mob standing on a ceiling over the player's head.
 
     Feet three blocks over the player's leave a block between the mob and
-    the player's head space. Live A1 2026-11-03: two creepers, a skeleton
-    and a zombie in a sealed pocket on its mine tunnel's ceiling, 3.6-6m
-    away, cancelled every walk home for 5+ hours with an evade that a
-    1-wide tunnel cannot perform. Fuse and melee range stay actionable,
-    and the reported distance must match the observed positions.
+    the player's head space; its jumps and steps stay inside its pocket,
+    so only sideways approach counts. Live A1 2026-11-03: two creepers, a
+    skeleton and a zombie wandering a sealed pocket over its mine tunnel,
+    3.6-13m away, cancelled every walk home for 5+ hours with an evade
+    that a 1-wide tunnel cannot perform. Fuse and melee range stay
+    actionable, and the reported distance must match the positions. The
+    separation is measured from the live position, so a player stepping
+    up its staircase need not be grounded.
     """
     try:
-        if state.get("is_on_ground") is not True:
-            return False
-        vertical = state["velocity"]["y"]
         mob, player = entity["position"], state.get("position", state.get("block_position"))
-        values = [vertical] + [vector[axis] for vector in (mob, player) for axis in ("x", "y", "z")]
+        velocity = entity["velocity"]
+        values = [velocity["x"], velocity["z"]] + [state["velocity"][axis] for axis in ("x", "y", "z")] + [
+            vector[axis] for vector in (mob, player) for axis in ("x", "y", "z")]
         if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
                for value in values):
             return False
@@ -358,8 +379,11 @@ def _sealed_above(entity, state, distance):
                              [player[axis] for axis in ("x", "y", "z")])
     except (KeyError, TypeError, ValueError, OverflowError):
         return False
-    return (-0.1 <= vertical <= 0.05 and mob["y"] - player["y"] >= 3.0
-            and distance > 3.0 and abs(distance - observed) <= 0.25)
+    dx, dz = player["x"] - mob["x"], player["z"] - mob["z"]
+    across = math.hypot(dx, dz)
+    approach = (velocity["x"] * dx + velocity["z"] * dz) / across if across > 0 else 0.0
+    return (mob["y"] - player["y"] >= 3.0 and distance > 3.0
+            and abs(distance - observed) <= 0.25 and approach <= 0.1)
 
 
 def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
@@ -379,7 +403,8 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
     calm_creeper = entity_type == "creeper"
     stationary_creeper = False
     vertically_separated = False
-    if calm_creeper:
+    sealed = _sealed_above(entity, state, distance)
+    if calm_creeper and not sealed:
         # Fabric can report vanilla grounded gravity (-0.0784 Y velocity)
         # even while `is_on_ground` is true. That artificial vertical component
         # made a stationary creeper below the player look like it was closing.
@@ -397,7 +422,7 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
         except (KeyError, TypeError, ValueError, OverflowError):
             return False
         try:
-            velocity = entity["velocity"]
+            velocity = _settled(entity)["velocity"]
             components = [float(velocity[axis]) for axis in ("x", "y", "z")]
             stationary_creeper = (
                 all(math.isfinite(component) for component in components)
@@ -406,7 +431,7 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
         except (KeyError, TypeError, ValueError, OverflowError):
             return False
         closing = _closing_speed(
-            entity, state, ignore_grounded_vertical_velocity=True
+            _settled(entity), state, ignore_grounded_vertical_velocity=True
         )
     elif (
         profile.style in (AttackStyle.MELEE, AttackStyle.RANGED)
@@ -439,7 +464,7 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
                 # ~0.06 closing, over the 0.05 limit: live A1 2026-10-16 froze
                 # for 35+ minutes beside a buried, blind, motionless skeleton.
                 # The mob's own motion still counts, as for creepers.
-                closing = _closing_speed(entity, state, ignore_grounded_vertical_velocity=True)
+                closing = _closing_speed(_settled(entity), state, ignore_grounded_vertical_velocity=True)
         except (KeyError, TypeError, ValueError, OverflowError):
             vertically_separated = False
     if not (
@@ -451,11 +476,11 @@ def _occluded_calm_mob(entity, state, entity_type, profile, distance, closing):
         and _explicit_aggression(entity, state) is False
         and math.isfinite(distance)
         and distance < 999.0
-        and (distance > (6.0 if calm_creeper else 5.0)
-             or (calm_creeper and _creeper_below_work_floor(entity, state, distance, closing))
-             or _sealed_above(entity, state, distance))
-        and (not calm_creeper or stationary_creeper)
-        and (closing <= 0.05 or vertically_separated or stationary_creeper)
+        and (sealed or (
+            (distance > (6.0 if calm_creeper else 5.0)
+             or (calm_creeper and _creeper_below_work_floor(entity, state, distance, closing)))
+            and (not calm_creeper or stationary_creeper)
+            and (closing <= 0.05 or vertically_separated or stationary_creeper)))
     ):
         return False
     target = entity.get("target_id")

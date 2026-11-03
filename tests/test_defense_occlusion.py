@@ -363,10 +363,35 @@ def test_a_ceiling_mob_stays_a_threat_once_any_sealing_evidence_is_missing(kind,
 
 
 @pytest.mark.parametrize("player_change", [
-    {"is_on_ground": False},
-    {"velocity": {"x": 0, "y": 0.42, "z": 0}},  # jumping up toward it
     {"velocity": None},
+    {"velocity": {"x": 0, "y": float("nan"), "z": 0}},
+    {"position": {"x": -437.7, "y": 66.5, "z": 6.6}},  # no longer 3 below the creeper
 ])
 @pytest.mark.parametrize("index", [2, 3])  # the creeper and the skeleton
-def test_a_ceiling_mob_stays_a_threat_unless_the_player_is_grounded(player_change, index):
+def test_a_ceiling_mob_stays_a_threat_on_unknown_or_closer_player_state(player_change, index):
     assert assess_threats([ceiling_pocket()[index]], {**TUNNEL_PLAYER, **player_change})
+
+
+def test_stepping_up_the_tunnel_staircase_keeps_sealed_mobs_quiet():
+    """Live frame: airborne mid-step at +0.08 Y; evading here cancels the walk home."""
+    player = {**TUNNEL_PLAYER, "is_on_ground": False,
+              "velocity": {"x": -0.011, "y": 0.083, "z": 0.034}}
+    assert assess_threats(ceiling_pocket(), player) == []
+
+
+def test_mobs_hopping_and_wandering_in_a_sealed_pocket_stay_quiet():
+    """Live frames: jumps (+0.33 / -0.52 Y), grounded gravity, 0.06 sideways strolls."""
+    pocket = ceiling_pocket()
+    pocket[0]["velocity"] = {"x": 0.02, "y": -0.5169, "z": 0.0}
+    pocket[1]["velocity"] = {"x": 0.03, "y": -0.0784, "z": 0.05}
+    pocket[2]["velocity"] = {"x": 0.0, "y": 0.3332, "z": 0.012}
+    pocket[3]["velocity"] = {"x": 0.0, "y": -0.0784, "z": 0.041}
+    assert assess_threats(pocket, TUNNEL_PLAYER) == []
+
+
+@pytest.mark.parametrize("vy,threat", [(-0.0784, False), (0.0, False), (-0.2, True)])
+def test_a_grounded_creepers_own_gravity_is_not_motion(vy, threat):
+    """Mirror of #88: a still creeper reports -0.0784 Y while standing."""
+    creeper = sheltered_mob("creeper", 9.2)
+    creeper["velocity"]["y"] = vy
+    assert bool(assess_threats([creeper], GROUNDED_PLAYER)) is threat
