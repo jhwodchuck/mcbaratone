@@ -39,4 +39,3 @@ def nearest_local_crafting_table(
         return None
     _, x, y, z = min(candidates)
     return (x, y, z)
-
