@@ -58,13 +58,59 @@ def home_route_floor(client, x, y, z):
     return hx, floor, hz
 
 
-def below_home_surface(guard, position):
-    """A cave elsewhere is not this guard's concern."""
+#: Open sky proves surface ground this far under the flat floor; deeper,
+#: the flat floor alone decides.
+_OPEN_SKY_DEPTH = 12.0
+_ROOF_VIEW = 8
+_ROOF_REACH = 6
+_ROOF_TTL = 20.0
+
+
+def below_home_surface(guard, position, client=None, *, anywhere=False):
+    """A cave elsewhere is not this guard's concern.
+
+    With ``client``, ground under open sky is surface however low it lies.
+    Live A1's house sits on a hill: its yard, farm and mine entrance lie
+    2-5 blocks under the flat floor, so 152 walks home in one night were
+    aborted as "underground", and the egress then dug staircases into the
+    yard. ``anywhere``: outside home, a proven roof still counts, so a
+    route out of a mine tunnel has not yet reached the surface.
+    """
     if guard is None:
         return False
     hx, floor, hz = guard
-    return (math.hypot(position["x"] - hx, position["z"] - hz) <= HOME_RADIUS
-            and position["y"] < floor)
+    if position["y"] >= floor:
+        return False
+    if math.hypot(position["x"] - hx, position["z"] - hz) > HOME_RADIUS:
+        return anywhere and client is not None and _under_roof(client, position) is True
+    if client is None or position["y"] < floor - _OPEN_SKY_DEPTH:
+        return True
+    return _under_roof(client, position) is not False
+
+
+def _under_roof(client, position):
+    """One fresh view: True roofed, False open sky, None unknown."""
+    cell = tuple(int(position[axis]) for axis in ("x", "y", "z"))
+    now = time.monotonic()
+    cache = getattr(client, "_home_roof_cache", None)
+    if not isinstance(cache, dict) or len(cache) > 256:
+        cache = client._home_roof_cache = {}
+    if cell in cache and cache[cell][1] > now:
+        return cache[cell][0]
+    x, y, z = cell
+    try:
+        view = client.transport.dispatch("get_view", {"radius": _ROOF_VIEW})
+        if view.get("success") is False:
+            raise ValueError("view refused")
+        roofed = any(
+            int(v["x"]) == x and int(v["z"]) == z and y + 2 <= int(v["y"]) <= y + 1 + _ROOF_REACH
+            and not str(v.get("id", "")).endswith("_leaves")
+            for v in view.get("data", view)["voxels"]
+        )
+    except Exception:
+        roofed = None  # unproven sky keeps the flat floor
+    cache[cell] = (roofed, now + _ROOF_TTL)
+    return roofed
 
 
 def _checked_response_data(response, operation):
@@ -327,7 +373,7 @@ def excavate_out_from_below_home(client, goal_x, goal_z):
     except Exception:
         return False
     guard = home_route_floor(client, here[0], anchor[1], here[2])
-    if (not below_home_surface(guard, dict(zip(("x", "y", "z"), here)))
+    if (not below_home_surface(guard, dict(zip(("x", "y", "z"), here)), client)
             or math.hypot(here[0] - anchor[0], here[2] - anchor[2]) <= _HOUSE_CLEARANCE):
         return False
     client._below_home_egress_after = now + _EGRESS_RETRY_SECONDS

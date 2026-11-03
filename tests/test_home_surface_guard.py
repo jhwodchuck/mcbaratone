@@ -581,3 +581,94 @@ def test_a_failed_hop_toward_the_mine_entrance_does_not_excavate(monkeypatch):
         return False
 
     hop(client, -421, 79, 8)
+
+
+# -- a hilly home: open-sky yard under the flat floor (A1 2026-11-03) ----------
+def _walk_home(monkeypatch, path, roofs=(), view=None):
+    """goto home over scripted positions; ``roofs`` are solid cells overhead."""
+    reads, views = [], []
+    settings = {"allowBreak": "true", "allowParkour": "false", "maxFallHeightNoWater": "3"}
+
+    def dispatch(route, payload=None, **_kw):
+        if route == "settings":
+            name = payload.get("get", payload.get("set"))
+            if "set" in payload:
+                settings[name] = payload["value"]
+            return {"key": name, "value": settings[name]}
+        if route == "get_state":
+            x, y, z = path[min(len(reads), len(path) - 1)]
+            reads.append((x, y, z))
+            return {"health": 20, "food_level": 20, "is_pathing": False,
+                    "block_position": {"x": x, "y": y, "z": z}}
+        if route == "get_view":
+            views.append(reads[-1])
+            if view is not None:
+                return view
+            return {"success": True, "data": {"voxels": [
+                {"x": x, "y": y, "z": z, "id": block} for (x, y, z), block in roofs]}}
+        return {}
+
+    client = SimpleNamespace(transport=SimpleNamespace(dispatch=dispatch),
+                             _protected_home_anchor=(-411, 79, -12))
+    monkeypatch.setattr(combat, "survival_tick", lambda *_a: False)
+    monkeypatch.setattr(navigation, "run_navigation_defense", lambda *_a: False)
+    monkeypatch.setattr(navigation.time, "sleep", lambda *_a: None)
+    result = navigation.goto(client, -411, 79, -12, tolerance=2.0)
+    return result, client._last_navigation_outcome, views
+
+
+# From just outside the disc, through the low south yard and up to the house.
+YARD_WALK = [(-418, 76, 12), (-415, 76, 11), (-414, 75, 4), (-412, 78, -6), (-411, 79, -12)]
+
+
+def test_a_walk_home_through_the_open_sky_yard_is_not_underground(monkeypatch):
+    """Live A1: 152 trips aborted entering the yard at y=74-76 (floor 77)."""
+    result, outcome, views = _walk_home(monkeypatch, YARD_WALK,
+                                        roofs=[((-414, 82, 4), "minecraft:oak_leaves")])
+    assert result and outcome == "arrived"
+    # One view per cell under the floor, the starting cell included.
+    assert views == [(-418, 76, 12), (-415, 76, 11), (-414, 75, 4)]
+
+
+@pytest.mark.parametrize("roof", [(-414, 77, 4), (-414, 82, 4)])
+def test_a_roofed_dip_under_home_still_aborts(monkeypatch, roof):
+    result, outcome, _views = _walk_home(monkeypatch, YARD_WALK, roofs=[(roof, "minecraft:stone")])
+    assert not result and outcome == "home_surface_abort"
+
+
+@pytest.mark.parametrize("view", [{}, {"success": False, "data": {"voxels": []}}, {"data": None}])
+def test_unproven_sky_keeps_the_flat_floor(monkeypatch, view):
+    result, outcome, _views = _walk_home(monkeypatch, YARD_WALK, view=view)
+    assert not result and outcome == "home_surface_abort"
+
+
+def test_a_drop_deep_under_home_aborts_without_asking_about_sky(monkeypatch):
+    path = [(-418, 76, 12), (-415, 64, 11), (-411, 79, -12)]
+    result, outcome, views = _walk_home(monkeypatch, path)
+    assert not result and outcome == "home_surface_abort" and views == [(-418, 76, 12)]
+
+
+def test_a_route_starting_underground_outside_home_may_climb_out(monkeypatch):
+    """A1 sat in its own mine tunnel, outside the disc, for 5+ hours."""
+    tunnel = [(-440, 64, 1), (-430, 70, 6), (-424, 74, 8), (-418, 78, 0), (-411, 79, -12)]
+    roofs = [((-440, 70, 1), "minecraft:stone"), ((-430, 74, 6), "minecraft:dirt"),
+             ((-424, 79, 8), "minecraft:dirt")]
+    result, outcome, _views = _walk_home(monkeypatch, tunnel, roofs=roofs)
+    assert result and outcome == "arrived"
+
+
+def test_no_excavation_from_the_open_sky_crater(monkeypatch):
+    """A1 dug staircases into its own yard from open ground at y=74-76."""
+    monkeypatch.setattr(home_surface.time, "sleep", lambda *_a: None)
+    client, _calls = _below_home_client((-417, 74, 6))
+    plain = client.transport.dispatch
+    client.transport.dispatch = lambda route, payload=None: (
+        {"data": {"voxels": []}} if route == "get_view" else plain(route, payload))
+    monkeypatch.setattr("baritone_client.common.build_site_recovery.excavate_surface_egress",
+                        lambda *_a, **_k: pytest.fail("open sky is not a sealed pocket"))
+
+    @home_surface.protect_home_route(safe_movement=True)
+    def route_home(client, x, y, z):
+        return False
+
+    route_home(client, -411, 79, -12)

@@ -140,9 +140,11 @@ def goto(client, x: int, y: int, z: int, timeout: int = 120,
         if navigation._refuse_critical_long_travel(client, x, y, z, state=initial_state):
             return False
         home_guard = home_route_floor(client, x, y, z)
-        # A player already below home may attempt an exact upward exit. Once
-        # the floor is reached, dropping back below it must abort the route.
-        surface_reached = not below_home_surface(home_guard, initial_state["block_position"])
+        # A player already below home, or underground anywhere, may attempt
+        # an exact upward exit. Once the floor is reached, dropping back
+        # below it must abort the route.
+        surface_reached = not below_home_surface(
+            home_guard, initial_state["block_position"], client, anywhere=True)
         payload = {"x": x, "y": y, "z": z}
         if int(radius) > 0:
             payload["radius"] = int(radius)
@@ -167,10 +169,12 @@ def goto(client, x: int, y: int, z: int, timeout: int = 120,
                 _sleep_until(navigation, min(float(check_interval), defense_check_interval), deadline)
                 continue
             last_state = state
-            below = below_home_surface(home_guard, state["block_position"])
+            below = below_home_surface(home_guard, state["block_position"], client)
             if below and surface_reached:
                 return _end_navigation(client, cancelled, "home_surface_abort", last_state=state)
-            surface_reached = surface_reached or not below
+            # Tunnel cells outside home are still underground, not surface.
+            surface_reached = surface_reached or not below_home_surface(
+                home_guard, state["block_position"], client, anywhere=True)
             from .combat import survival_tick
 
             if survival_tick(client, state):
@@ -244,7 +248,7 @@ def goto_xz(client, x: int, z: int, timeout: int = 120,
             return False
         anchor = getattr(client, "_protected_home_anchor", None)
         home_guard = home_route_floor(client, x, anchor[1] if anchor else initial_y, z)
-        if below_home_surface(home_guard, initial_state["block_position"]):
+        if below_home_surface(home_guard, initial_state["block_position"], client):
             return False  # A column goal cannot prove upward egress.
         navigation._dispatch_indeterminate_goal(client, "chat", {"message": f"#goto {x} {z}"})
         goal_active = True
@@ -265,7 +269,7 @@ def goto_xz(client, x: int, z: int, timeout: int = 120,
                 _sleep_until(navigation, min(float(check_interval), defense_check_interval), deadline)
                 continue
             last_state = state
-            if below_home_surface(home_guard, state["block_position"]):
+            if below_home_surface(home_guard, state["block_position"], client):
                 return _end_navigation(client, cancelled, "home_surface_abort", last_state=state)
             from .combat import survival_tick
 
