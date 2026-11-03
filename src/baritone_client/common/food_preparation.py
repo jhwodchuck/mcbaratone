@@ -38,5 +38,3 @@ def _prepare_bread(client, state, personal_food_reserve, seed_reserve):
         if deposited >= 0:
             banked = max(0, api._count(after, api.BREAD) - api._count(api.get_inventory(client), api.BREAD))
     return crafted, banked
-
-
