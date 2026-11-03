@@ -562,6 +562,54 @@ def test_recorded_spine_refuses_a_floor_removed_since_last_trip(world):
     assert world.allow_break == "true"
 
 
+def _open_spine(world, spine):
+    for frm, to in zip(spine, spine[1:]):
+        for cell in tp.required_cells(frm, to):
+            world.blocks.pop(cell, None)
+
+
+MID_SPINE = [(0, 70, 0), (1, 69, 0), (2, 68, 0), (3, 67, 0), (4, 66, 0), (5, 65, 0)]
+
+
+def test_a_step_broken_partway_down_mines_from_the_last_good_step(world, capsys):
+    """Live A1 2026-11-02: 83 steps down, two floorless steps, back with 0 iron."""
+    _open_spine(world, MID_SPINE)
+    world.blocks.pop((4, 65, 0))  # step 4 lost its floor
+    world.blocks[(3, 55, 3)] = IRON
+    miner = make_miner(world, spine=MID_SPINE)
+
+    miner.descend(MID_SPINE)
+
+    assert world.pos == (3, 67, 0) and world.allow_break == "true"
+    assert miner.trail == MID_SPINE[:4]
+    assert "saved route broken at step 4 (4, 66, 0); mining from step 3 (3, 67, 0)" in capsys.readouterr().out
+    assert miner.mine(1, lambda: world.raw_iron) == "quota"
+    assert (4, 65, 0) not in {cell for cell, _b in world.dug}
+    assert miner.retreat() is True and world.pos == MID_SPINE[0]
+
+
+@pytest.mark.parametrize("unread", ["minecraft:void_air", ""])
+def test_an_unread_step_is_not_proof_the_route_is_broken(world, unread):
+    _open_spine(world, MID_SPINE)
+    world.blocks[(4, 65, 0)] = unread
+    miner = make_miner(world, spine=MID_SPINE)
+
+    with pytest.raises(tm.MineAbort, match="no longer supported") as raised:
+        miner.descend(MID_SPINE)
+    assert not isinstance(raised.value, tm.RouteBroken) or raised.value.index < 1
+    assert miner.trail == MID_SPINE
+
+
+def test_retreat_never_turns_a_broken_step_into_mining(world):
+    _open_spine(world, MID_SPINE)
+    miner = make_miner(world, spine=MID_SPINE)
+    miner.descend(MID_SPINE)
+    world.blocks.pop((2, 67, 0))  # a step behind the bot lost its floor
+
+    assert miner.retreat() is False
+    assert miner.trail == MID_SPINE
+
+
 def test_retreat_walks_each_recorded_cell_and_proves_the_entrance(world):
     spine = [(0, 70, 0), (1, 69, 0), (2, 68, 0)]
     for frm, to in zip(spine, spine[1:]):

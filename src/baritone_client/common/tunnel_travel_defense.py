@@ -58,6 +58,23 @@ def _supported_open_cell(cell: Cell, get_block: Callable[[Cell], str]) -> bool:
     return is_support(floor) and feet in _OPEN and head in _OPEN
 
 
+#: Preflight's reason when the next saved step lost its floor or headroom.
+TARGET_UNSUPPORTED = "tunnel corridor target is no longer supported and open"
+_UNREAD = frozenset({"", "minecraft:void_air"})
+
+
+def broken_step(cell: Cell, get_block: Callable[[Cell], str]) -> bool:
+    """A saved step that real blocks prove broken; an unread one is not."""
+    x, y, z = cell
+    try:
+        floor, feet, head = (get_block((x, y + dy, z)) for dy in (-1, 0, 1))
+    except Exception:
+        return False
+    if _UNREAD & {floor, feet, head}:
+        return False
+    return not (is_support(floor) and feet in _OPEN and head in _OPEN)
+
+
 def intact_route_start(spine, get_block: Callable[[Cell], str], *, max_skip: int = 16, run: int = 3) -> int:
     """Where a saved route can be re-entered past a lost prefix; 0 keeps it.
 
@@ -254,7 +271,7 @@ class CorridorStepDefense:
                 self.abort_reason = "tunnel corridor origin is no longer supported and open"
                 return False
             if not _supported_open_cell(self.target, self.get_block):
-                self.abort_reason = "tunnel corridor target is no longer supported and open"
+                self.abort_reason = TARGET_UNSUPPORTED
                 return False
         except Exception:
             self.abort_reason = "tunnel corridor support or setting is unknown"
