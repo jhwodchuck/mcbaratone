@@ -124,6 +124,88 @@ def test_existing_overflow_is_reused_without_new_gather_or_build(home):
     assert [a[0] for a in home[5]] == ["deposit"]
 
 
+def test_occupied_corners_can_use_an_observed_wall_cell(home):
+    blocks = home[3]
+    for x, z in ((5, 1), (5, 5), (1, 5), (1, 1)):
+        blocks[(x, 71, z)] = "minecraft:crafting_table"
+    blocks.update({(5, 70, 2): "minecraft:cobblestone", (6, 71, 2): "minecraft:oak_planks"})
+    assert bank(home)
+    assert home[1].custom_data["mining_storage"]["chest"] == [5, 71, 2]
+    assert [a for a in home[5] if a[0] == "place"] == [("place", (5, 71, 2))]
+
+
+def test_floor_corner_home_anchor_does_not_limit_capacity_to_the_workstation(home):
+    home[1].custom_data["structures"]["starter_house"]["crafting_table"] = [1, 71, 1]
+    home[3].update({(1, 71, 1): "minecraft:crafting_table",
+                    (1, 70, 3): "minecraft:cobblestone", (0, 71, 3): "minecraft:oak_planks"})
+    assert storage._spot(home[0], home[1], (0, 70, 0)) == (1, 71, 3)
+
+
+def test_capacity_never_occupies_the_doorway_aisle(home):
+    home[3].clear()
+    home[3].update({(3, 70, 1): "minecraft:cobblestone", (3, 71, 0): "minecraft:oak_planks"})
+    assert not bank(home)
+    assert home[5] == []
+
+
+def test_unrecorded_wall_chest_is_reused_before_building(home):
+    chest = (5, 71, 2)
+    home[3][chest] = "minecraft:chest"
+    assert bank(home)
+    assert [a[0] for a in home[5]] == ["deposit"]
+    assert not home[1].custom_data["mining_storage"]
+
+
+@pytest.mark.parametrize("rejected", [False, True, "command_error"])
+def test_other_observed_capacity_is_tried_before_expansion(home, monkeypatch, rejected):
+    from baritone_client.core.exceptions import CommandError
+
+    old, spare = (5, 71, 1), (5, 71, 2)
+    home[1].custom_data["mining_storage"] = {"chest": list(old)}
+    home[3].update({old: "minecraft:chest", spare: "minecraft:chest"})
+    seen = []
+    def deposit(_c, chest, **kwargs):
+        assert kwargs["retain_counts"] == {"minecraft:carrot": 64}
+        seen.append(chest)
+        if rejected == "command_error" and chest == old:
+            raise CommandError("container interaction rejected")
+        if chest == spare:
+            home[6].free = 10
+        return -1 if rejected and chest == old else 0
+    monkeypatch.setattr("baritone_client.common.inventory.deposit_excess_to_chest", deposit)
+    monkeypatch.setattr(storage, "_full", lambda _c, chest: chest == old)
+    assert bank(home)
+    assert seen == [old, spare]
+    assert home[5] == []
+    assert home[1].custom_data["mining_storage"]["chest"] == list(old)
+
+
+@pytest.mark.parametrize("response", [
+    {"success": False, "id": "minecraft:air"},
+    {"status": "error", "data": {"id": "minecraft:air"}},
+    {"status": "failed", "data": {"id": "minecraft:air"}},
+    {"data": {"status": "failure", "id": "minecraft:air"}},
+    {"id": "minecraft:air", "data": None},
+    None,
+])
+def test_failed_block_envelope_cannot_justify_capacity_placement(home, response):
+    home[0].transport.dispatch = lambda *_a: response
+    assert not storage.bank_mining_overflow(home[0], home[1], home[2], 10, set(), {})
+    assert home[5] == []
+
+
+def test_wrapped_block_observation_is_used(home):
+    home[0].transport.dispatch = lambda *_a: {"success": True, "data": {"id": "minecraft:chest"}}
+    assert storage._block(home[0], (5, 71, 1)) == "minecraft:chest"
+
+
+@pytest.mark.parametrize("origin", [[0.5, 70, 0], [False, 70, 0], [0, float("nan"), 0]])
+def test_unknown_house_geometry_never_places(home, origin):
+    home[1].custom_data["structures"]["starter_house"]["origin"] = origin
+    assert not bank(home)
+    assert home[5] == []
+
+
 @pytest.mark.parametrize("full", [True, False, None])
 def test_full_existing_overflow_adds_only_one_verified_capacity_batch(home, monkeypatch, full):
     old = (5, 71, 1)

@@ -6,7 +6,8 @@ from math import hypot
 from typing import Any, Iterable, Mapping
 
 from ..common.combat import acquire_emergency_food, eat_until_hunger
-from ..common.inventory import count_item
+from ..common.inventory import get_inventory
+from ..common.tasks import PlayerDeathDetected, SurvivalRecoveryRequired
 from .end_readiness import PREPARED_FOOD_ITEMS
 from .local_opportunity import LocalOpportunity, OpportunityKind
 from .food_recovery_state import _durable_food_search_anchor, recover_food_from_known_sources
@@ -192,18 +193,37 @@ def run_balanced_food_production(
     client: Any,
     state: Any,
 ) -> tuple[bool, str, int, int]:
-    """Run one food cycle while retaining A1's required expedition reserve.
+    """Run one food cycle while retaining the required expedition reserve.
 
-    A nearby herd refills the reserve far faster than wheat, so a bounded
-    hunt-and-cook batch runs first; the wheat cycle still follows.
+    Prepare carried grain before collecting more ingredients. A refused
+    local craft must not turn into another farm trip with a full pack.
     """
     from ..common.food_supply import run_food_cycle
     from ..common.livestock_food import run_livestock_food_cycle
 
-    def prepared_total() -> int:
-        return sum(count_item(client, item) for item in PREPARED_FOOD_ITEMS)
+    def observed_inventory() -> tuple[Mapping[str, int], int]:
+        inventory = get_inventory(client)
+        return inventory, sum(inventory.get(item, 0) for item in PREPARED_FOOD_ITEMS)
 
-    before = prepared_total()
+    try:
+        inventory, before = observed_inventory()
+    except (PlayerDeathDetected, SurvivalRecoveryRequired):
+        raise
+    except Exception:
+        return False, "current inventory unavailable; food production deferred", 0, 0
+    if inventory.get("minecraft:wheat", 0) >= 3:
+        try:
+            cycle = run_food_cycle(
+                client, state,
+                personal_food_reserve=BALANCED_PREPARED_FOOD_TARGET,
+                carried_wheat_only=True,
+            )
+            _, after = observed_inventory()
+        except (PlayerDeathDetected, SurvivalRecoveryRequired):
+            raise
+        except Exception:
+            return False, "could not verify prepared food after the carried-wheat attempt", before, before
+        return after > before, str(cycle.detail), before, after
     livestock = run_livestock_food_cycle(
         client,
         state,
@@ -215,9 +235,14 @@ def run_balanced_food_production(
         state,
         personal_food_reserve=BALANCED_PREPARED_FOOD_TARGET,
     )
-    after = prepared_total()
+    try:
+        _, after = observed_inventory()
+    except (PlayerDeathDetected, SurvivalRecoveryRequired):
+        raise
+    except Exception:
+        return False, "could not verify prepared food after production", before, before
     detail = f"{livestock.detail}; {cycle.detail}"
-    return bool(livestock.success or cycle.success), detail, before, after
+    return after > before, detail, before, after
 
 
 def run_food_production(

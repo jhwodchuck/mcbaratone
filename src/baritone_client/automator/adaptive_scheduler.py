@@ -762,13 +762,14 @@ class AdaptiveScheduler:
             runtime = self._runtime()
             runtime["last_borrowed_specialty_at"] = time.time()
             runtime["last_borrowed_specialty_role"] = opportunity.assigned_role
-        record_productive_attempt(
+        attempt = record_productive_attempt(
             self.state,
             opportunity.kind.value,
             productive_before,
             productive_snapshot(self.state),
             detail=result.detail,
         )
+        camp_breaker.self_rescue_if_escalated(self.client, self.state, attempt)
         return result
 
     def _runtime(self) -> Dict[str, Any]:
@@ -790,8 +791,7 @@ class AdaptiveScheduler:
 __all__ = [
     "AdaptiveScheduler",
     "GameSignals",
-    "LocalOpportunity",
-    "OpportunityKind",
+    "LocalOpportunity", "OpportunityKind",
     "OpportunityResult",
     "PhaseScore",
     "SchedulingDecision",

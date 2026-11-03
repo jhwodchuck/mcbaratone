@@ -10,6 +10,7 @@ def _state(data):
 
 def _inventory(monkeypatch, counts):
     monkeypatch.setattr(food_supply, "get_inventory", lambda _client: dict(counts))
+    monkeypatch.setattr(food_supply, "_bread_output_capacity", lambda _client: 128)
     monkeypatch.setattr(food_supply, "_survival_ready", lambda _client: True)
     monkeypatch.setattr(
         food_supply,

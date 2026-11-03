@@ -2141,18 +2141,11 @@ def is_full(client) -> bool:
 
 
 def free_inventory_slots(client) -> int:
-    """Return the number of empty slots in the 36-slot carried inventory."""
+    """Count capacity only from a valid current carried-slot snapshot."""
     try:
-        raw_inv = client.transport.dispatch("get_inventory", {})
-        data = raw_inv.get("data", raw_inv)
-        occupied = {
-            int(item.get("slot", -1))
-            for item in data.get("inventory", [])
-            if 0 <= int(item.get("slot", -1)) < 36
-            and item.get("id") not in (None, "", "minecraft:air")
-            and int(item.get("count", 0)) > 0
-        }
-        return max(0, 36 - len(occupied))
+        from ..inventory_evidence import free_carried_slots
+
+        return free_carried_slots(client.transport.dispatch("get_inventory", {}))
     except Exception:
         return 0
 

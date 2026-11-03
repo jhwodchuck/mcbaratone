@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .food_preparation import _bread_output_capacity, _prepare_bread
 from dataclasses import dataclass
 from math import ceil, hypot, sqrt
 import math
@@ -59,6 +60,8 @@ RETURN_HOME_TIMEOUT = 150
 #: Seed top-up runs every cycle, so it gets a short leash; partial stock is
 #: still progress and the next cycle tries again.
 SEED_STOCK_TIMEOUT = 45
+#: A cycle should prepare at most one output stack before yielding to safety.
+MAX_BREAD_PER_CYCLE = 64
 
 
 @dataclass(frozen=True)
@@ -638,26 +641,6 @@ def _harvest_known_plots(client, state, worker, known, limit, cursor, farm_range
     return harvested, other_edible, None
 
 
-def _prepare_bread(client, state, personal_food_reserve, seed_reserve):
-    before = get_inventory(client)
-    requested = _count(before, WHEAT) // 3
-    if requested:
-        craft_bread_at_saved_home(client, state, _base_anchor(state), requested, survival_ready=_survival_ready, return_home=_return_to_anchor, craft=craft)
-    after = get_inventory(client)
-    crafted = max(0, _count(after, BREAD) - _count(before, BREAD))
-    banked = 0
-    chest = resolve_storage_location(client, state=state, verify=False)
-    if chest is not None and _count(after, BREAD) > max(0, int(personal_food_reserve)):
-        deposited = deposit_excess_to_chest(
-            client, chest, deposit_items={BREAD},
-            retain_counts={BREAD: max(0, int(personal_food_reserve)), SEEDS: max(0, int(seed_reserve))},
-            state=state,
-        )
-        if deposited >= 0:
-            banked = max(0, _count(after, BREAD) - _count(get_inventory(client), BREAD))
-    return crafted, banked
-
-
 @return_after_food_cycle
 def run_food_cycle(
     client: Any,
@@ -670,6 +653,7 @@ def run_food_cycle(
     max_candidate_slots: int = 3,
     personal_food_reserve: int = 8,
     seed_reserve: int = 8,
+    carried_wheat_only: bool = False,
 ) -> FoodCycleResult:
     """Prepare carried grain first, then take one bounded farm/expansion pass."""
     worker = _worker(state)
@@ -689,6 +673,15 @@ def run_food_cycle(
                 worker[key] = int(worker.get(key, 0) or 0) + value
             _flush(state, client)
             return _result(worker, True, f"crafted {crafted} bread from carried wheat; banked {banked}", **values)
+        if carried_wheat_only:
+            _flush(state, client)
+            return _result(
+                worker, False,
+                "carried wheat produced no verified bread; check output space and the saved-home workstation",
+            )
+    if carried_wheat_only and safe_to_work:
+        _flush(state, client)
+        return _result(worker, False, "no craftable carried wheat remains")
     if not safe_to_work or not prepare_house_door_for_departure(
         client, state, _base_anchor(state)
     ):

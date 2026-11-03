@@ -101,25 +101,9 @@ def own_cells_of(spine: Sequence[Cell]) -> Set[Cell]:
 
 def free_slots(client: Any) -> int:
     """Empty main-inventory slots (the hotbar and the 27 above it)."""
-    from ..inventory_evidence import valid_inventory
+    from ..inventory_evidence import free_carried_slots
 
-    raw = client.transport.dispatch("get_inventory", {})
-    data = raw.get("data", raw) if isinstance(raw, dict) else None
-    if not valid_inventory(raw) or not valid_inventory(data) or not isinstance(data.get("inventory"), list):
-        # A missing/partial snapshot must never look like a completely empty
-        # pack. Callers treat zero slots as a reason to stop before digging.
-        return 0
-    items = data["inventory"]
-    occupied = set()
-    for item in items:
-        if item.get("id") in (None, "", "minecraft:air") or int(item.get("count", 0)) <= 0:
-            continue
-        slot = item.get("slot")
-        if isinstance(slot, bool) or not isinstance(slot, int) or not 0 <= slot <= 35 or slot in occupied:
-            return 0
-        occupied.add(slot)
-    used = len(occupied)
-    return 36 - used
+    return free_carried_slots(client.transport.dispatch("get_inventory", {}))
 
 
 class TunnelMiner:

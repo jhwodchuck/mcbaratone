@@ -9,7 +9,15 @@ AIR = {"minecraft:air", "minecraft:cave_air"}
 
 
 def _block(client, cell):
-    return client.transport.dispatch("get_block", dict(zip(("x", "y", "z"), cell))).get("id", "")
+    data = client.transport.dispatch("get_block", dict(zip(("x", "y", "z"), cell)))
+    while isinstance(data, dict):
+        if (data.get("success") is False or data.get("error")
+                or str(data.get("status", "")).lower() in {"error", "failed", "failure"}):
+            raise ValueError("mining storage block read failed")
+        if "data" not in data:
+            return data.get("id", "")
+        data = data["data"]
+    raise ValueError("mining storage block read is unavailable")
 
 
 def _at_home(client, anchor):
@@ -27,29 +35,54 @@ def _at_home(client, anchor):
             and not scan_for_threats(client, radius=8, raise_on_error=True, player_state=live))
 
 
+def _house_cells(state, anchor):
+    """Bounded wall storage, keeping the doorway and its interior aisle clear."""
+    house = state.custom_data.get("structures", {}).get("starter_house", {})
+    origin = house.get("origin")
+    if not isinstance(origin, (list, tuple)) or len(origin) != 3:
+        return []
+    if not all(type(v) is int for v in origin):
+        return []
+    ox, oy, oz = map(int, origin)
+    excluded = {tuple(v) for v in house.values() if isinstance(v, (list, tuple)) and len(v) == 3}
+    corners = ((5, 1), (5, 5), (1, 5), (1, 1))
+    edges = tuple((dx, dz) for dx in range(1, 6) for dz in range(1, 6)
+                  if (dx in (1, 5) or dz in (1, 5)) and dx != 3)
+    cells = []
+    for dx, dz in dict.fromkeys(corners + edges):
+        cell = (ox + dx, oy + 1, oz + dz)
+        if cell in excluded or math.dist(cell, anchor) > 4.5:
+            continue
+        if dx in (1, 5):
+            wall = (ox + (6 if dx == 5 else 0), oy + 1, oz + dz)
+        else:
+            wall = (ox + dx, oy + 1, oz + (6 if dz == 5 else 0))
+        cells.append((cell, wall))
+    return cells
+
+
 def _spot(client, state, anchor):
     from ..common.base import _ALL_PLANKS
 
     house_blocks = {"minecraft:cobblestone", "minecraft:stone"} | set(_ALL_PLANKS)
-    house = state.custom_data.get("structures", {}).get("starter_house", {})
-    origin = house.get("origin")
-    if not isinstance(origin, (list, tuple)) or len(origin) != 3:
-        return None
-    if not all(not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) for v in origin):
-        return None
-    ox, oy, oz = map(int, origin)
-    excluded = {tuple(v) for v in house.values() if isinstance(v, (list, tuple)) and len(v) == 3}
-    for dx, dz in ((5, 1), (5, 5), (1, 5), (1, 1)):
-        cell = (ox + dx, oy + 1, oz + dz)
-        if cell in excluded or math.dist(cell, anchor) > 4.5:
-            continue
-        wall = (ox + (6 if dx == 5 else 0), oy + 1, oz + dz)
+    for cell, wall in _house_cells(state, anchor):
         if (_block(client, cell) in AIR
                 and _block(client, (cell[0], cell[1] + 1, cell[2])) in AIR
                 and _block(client, (cell[0], cell[1] - 1, cell[2])) in house_blocks
                 and _block(client, wall) in house_blocks):
             return cell
     return None
+
+
+def _local_chests(client, state, anchor, saved):
+    """A checkpoint is a hint; observe each nearby chest before reusing it."""
+    candidates = []
+    if (isinstance(saved, (list, tuple)) and len(saved) == 3
+            and all(type(value) is int for value in saved)
+            and math.dist(saved, anchor) <= 4.5):
+        candidates.append(tuple(saved))
+    candidates.extend(cell for cell, _wall in _house_cells(state, anchor))
+    return [cell for cell in dict.fromkeys(candidates) if _block(client, cell) == "minecraft:chest"]
 
 
 def _full(client, chest):
@@ -82,6 +115,7 @@ def _full(client, chest):
 
 @protect_home_route(surface_work=True, safe_movement=True)
 def _bank(client, state, x, y, z, required, items, retains):
+    from ..core.exceptions import CommandError
     from ..common.harness_ops import place_block_exact
     from ..common.inventory import count_item, craft, deposit_excess_to_chest, get_inventory, drop_items
     from ..common.resources import LOG_TO_PLANKS, PLANK_ITEMS
@@ -91,17 +125,27 @@ def _bank(client, state, x, y, z, required, items, retains):
 
     anchor = (x, y, z)
     record = state.custom_data.setdefault("mining_storage", {})
-    saved = record.get("chest")
-    chest = tuple(saved) if isinstance(saved, (list, tuple)) and len(saved) == 3 else None
-    if chest is not None and (math.dist(chest, anchor) > 4.5 or _block(client, chest) != "minecraft:chest"):
-        chest = None
-    if chest is not None:
-        deposited = deposit_excess_to_chest(client, chest, deposit_items=items, retain_counts=retains, state=state)
+    may_expand = True
+    for chest in _local_chests(client, state, anchor, record.get("chest")):
+        if not _at_home(client, anchor):
+            return False
+        try:
+            deposited = deposit_excess_to_chest(client, chest, deposit_items=items, retain_counts=retains, state=state)
+        except CommandError as exc:
+            print(f"IRON PREPARATION: local chest interaction rejected ({exc})")
+            may_expand = False
+            continue
         if free_slots(client) >= required:
             return True
-        if deposited < 0 or not _at_home(client, anchor) or not _full(client, chest):
+        if not _at_home(client, anchor):
             return False
-        chest = None  # Retain the old checkpoint landmark until new placement is verified.
+        # Reuse another observed chest after an inaccessible target, but an
+        # uncertain interaction must never justify building more capacity.
+        if deposited < 0 or not _full(client, chest):
+            may_expand = False
+    if not may_expand:
+        return False
+    chest = None  # Retain the old checkpoint landmark until new placement is verified.
     if chest is None:
         chest = _spot(client, state, anchor)
         if chest is None:

@@ -42,7 +42,9 @@ def test_grounded_hidden_stationary_cave_creeper_leaves_work_clear():
     {"velocity": {}}, {"distance": 5}, {"distance": 4.9},
     {"distance": 6},  # inconsistent with the observed position
     {"position": {"x": -0.5, "y": 75.01, "z": 2.5}},
-    {"position": {"x": -0.5, "y": 85, "z": 2.5}},
+    # Two blocks up leaves no sealing layer; three or more up is #96's
+    # sealed-ceiling exception (test_defense_occlusion).
+    {"position": {"x": -0.5, "y": 82, "z": 4.6}, "distance": 4.336},
     {"position": {"x": -0.5, "y": 80, "z": 2.5}},
     {"position": {"x": True, "y": 75, "z": 2.5}},
     {"position": {"x": float("nan"), "y": 75, "z": 2.5}},
