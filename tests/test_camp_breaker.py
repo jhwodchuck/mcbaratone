@@ -12,6 +12,8 @@ that actually ran, so a bot that holds never counted as making no progress.
 
 from types import SimpleNamespace
 
+import pytest
+
 from baritone_client.automator import camp_breaker
 
 
@@ -65,11 +67,11 @@ def test_break_camp_relocates_a_bounded_distance():
     targets = []
     moved = camp_breaker.break_camp(
         _client(), state,
-        goto=lambda _c, x, y, z, **_k: targets.append((x, y, z)) or True,
+        goto=lambda _c, x, z, **_k: targets.append((x, z)) or True,
     )
 
     assert moved is True
-    (tx, _ty, tz), = targets
+    (tx, tz), = targets
     distance = max(abs(tx - 100), abs(tz - (-200)))
     assert distance == camp_breaker.CAMP_BREAK_DISTANCE
 
@@ -109,7 +111,7 @@ def test_low_escalation_never_breaks_camp():
 
     assert not camp_breaker.self_rescue_if_escalated(
         _client(), state, _attempt(camp_breaker.ESCALATION_SELF_RESCUE_THRESHOLD - 1),
-        goto=lambda _c, x, y, z, **_k: targets.append((x, y, z)) or True,
+        goto=lambda _c, x, z, **_k: targets.append((x, z)) or True,
     )
     assert targets == []
 
@@ -125,11 +127,11 @@ def test_high_escalation_self_rescues_with_no_fleet_to_ask():
 
     moved = camp_breaker.self_rescue_if_escalated(
         _client(), state, _attempt(camp_breaker.ESCALATION_SELF_RESCUE_THRESHOLD),
-        goto=lambda _c, x, y, z, **_k: targets.append((x, y, z)) or True,
+        goto=lambda _c, x, z, **_k: targets.append((x, z)) or True,
     )
 
     assert moved is True
-    (tx, _ty, tz), = targets
+    (tx, tz), = targets
     distance = max(abs(tx - 100), abs(tz - (-200)))
     assert distance == camp_breaker.CAMP_BREAK_DISTANCE
 
@@ -187,3 +189,77 @@ def test_unreadable_position_does_not_crash_the_scheduler():
     state = _state()
     blind = SimpleNamespace(transport=SimpleNamespace(dispatch=lambda *_a, **_k: {}))
     assert camp_breaker.break_camp(blind, state, goto=lambda *_a, **_k: True) is False
+
+
+# -- a relocation must not invent a point in the air (A1 2026-11-08) -----------
+def test_break_camp_lets_baritone_choose_the_ground_height(monkeypatch):
+    """A1, on a y=107 hilltop, was sent to exact y=107 above y=93 trees."""
+    from baritone_client.common import navigation
+
+    columns = []
+    monkeypatch.setattr(
+        navigation, "goto_xz",
+        lambda _c, x, z, **_k: columns.append((x, z)) or True,
+    )
+    monkeypatch.setattr(
+        navigation, "goto",
+        lambda *_a, **_k: pytest.fail("an exact-height goal can be mid-air"),
+    )
+
+    assert camp_breaker.break_camp(_client(x=-461, y=107, z=85), _state())
+    assert columns == [(-365, 85)]
+
+
+# -- escalation must not relocate after every attempt (A1 2026-11-03..08) ------
+COOLDOWN = camp_breaker.ESCALATION_SELF_RESCUE_COOLDOWN
+
+
+def _escalated():
+    return _attempt(camp_breaker.ESCALATION_SELF_RESCUE_THRESHOLD)
+
+
+def test_self_rescue_does_not_relocate_after_every_failed_attempt():
+    """Escalation persists, so A1 broke camp 1,870 times in under six days."""
+    state, moves = _state(), []
+
+    def travel(_client, x, z, **_kwargs):
+        moves.append((x, z))
+        return True
+
+    assert camp_breaker.self_rescue_if_escalated(
+        _client(), state, _escalated(), goto=travel, now=1000.0)
+    for later in (1001.0, 1000.0 + COOLDOWN - 1):
+        assert not camp_breaker.self_rescue_if_escalated(
+            _client(), state, _escalated(), goto=travel, now=later)
+    assert len(moves) == 1
+
+    assert camp_breaker.self_rescue_if_escalated(
+        _client(), state, _escalated(), goto=travel, now=1000.0 + COOLDOWN)
+    assert len(moves) == 2
+
+
+def test_a_failed_self_rescue_also_waits_out_the_cooldown():
+    state, tries = _state(), []
+
+    def travel(*_args, **_kwargs):
+        tries.append(1)
+        return False
+
+    for now in (1000.0, 1010.0):
+        assert not camp_breaker.self_rescue_if_escalated(
+            _client(), state, _escalated(), goto=travel, now=now)
+    assert len(tries) == 1
+
+
+@pytest.mark.parametrize("stamp", ["soon", 5000.0], ids=["corrupt", "future"])
+def test_a_corrupt_or_future_stamp_does_not_block_rescue(stamp):
+    state, moves = _state(), []
+    state.custom_data["camp_holds"] = {"last_self_rescue_at": stamp}
+
+    def travel(_client, x, z, **_kwargs):
+        moves.append((x, z))
+        return True
+
+    assert camp_breaker.self_rescue_if_escalated(
+        _client(), state, _escalated(), goto=travel, now=1000.0)
+    assert len(moves) == 1
