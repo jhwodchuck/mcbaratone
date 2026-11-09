@@ -9,8 +9,13 @@ from .movement_recovery import (
     block_position,
     nearest_lower_surface_candidates,
 )
-from .navigation import goto
-from .shelf_escape import harvest_shelf_dirt, supported_column_descent
+from .navigation import allow_recovery_navigation, goto
+from .shelf_escape import (
+    _supporting_column,
+    _surface_component,
+    harvest_shelf_dirt,
+    supported_column_descent,
+)
 
 
 _SURFACE_BLOCKS = [
@@ -149,6 +154,112 @@ def try_survivable_drop(
     after = block_position(client.transport.dispatch("get_state", {}))
     if after[1] <= y - 2:
         print(f"DEBUG: Drop landed at {after}")
+        return after
+    return None
+
+
+#: Structure cells checked for a pillar; bounds the block reads on broad floors.
+_PILLAR_CANDIDATE_LIMIT = 8
+_OPEN_AIR = ("air", "cave_air")
+
+
+def _block_name(client: Any, x: int, y: int, z: int) -> str:
+    """Bare block name, or "" when the block could not be read."""
+    try:
+        block = client.transport.dispatch("get_block", {"x": x, "y": y, "z": z})
+        return str(block.get("id", "") or "").split(":")[-1]
+    except Exception:
+        return ""
+
+
+def _free_standing_bottom(
+    client: Any, cells: set, x: int, floor_y: int, z: int
+) -> Optional[int]:
+    """Y of the lowest block of a supported pillar topped at this cell, or None.
+
+    Air must be proven on all four sides, so ordinary ground is never dug out.
+    """
+    bottom = floor_y
+    while (x, bottom - 1, z) in cells:
+        bottom -= 1
+    if floor_y - bottom < 2:
+        return None
+    for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        if _block_name(client, x + dx, floor_y - 1, z + dz) not in _OPEN_AIR:
+            return None
+    support = _block_name(client, x, bottom - 1, z)
+    if not support or support in _OPEN_AIR + ("void_air", "water", "lava"):
+        return None
+    return bottom
+
+
+def descend_own_pillar(
+    client: Any,
+    state: Dict[str, Any],
+    *,
+    search_radius: int = 40,
+) -> Optional[Tuple[int, int, int]]:
+    """Walk along a stranded bot's own structure and dig down its pillar.
+
+    Live A1 was left on a 1-wide cobblestone bridge at y=107 with no blocks
+    to place. Mid-bridge there was no landing within 23 blocks, so every
+    rescue gave up for 18 hours, while the 13-block pillar it had
+    climbed stood at the far end of that same bridge. Digging the column
+    underfoot costs no fall damage and hands the blocks back on the way down.
+    """
+    from .stone_descent import manual_column_descend
+
+    x, y, z = block_position(state)
+    floor_y = y - 1
+    start = _supporting_column(client, state, floor_y)
+    material = _block_name(client, start[0], floor_y, start[1])
+    if not material or material in _OPEN_AIR:
+        return None
+    try:
+        found = client.transport.dispatch(
+            "find_blocks",
+            {
+                "blocks": [f"minecraft:{material}"],
+                "radius": int(search_radius),
+                "limit": 4096,
+            },
+        ).get("found", [])
+        cells = {(int(b["x"]), int(b["y"]), int(b["z"])) for b in found}
+    except Exception as exc:
+        print(f"DEBUG: Own-pillar search failed: {exc}")
+        return None
+    component = _surface_component(found, start, floor_y)
+    order = [start] if start in component else []
+    for cx, cz in order:  # breadth-first, so the nearest pillar wins
+        for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            step = (cx + dx, cz + dz)
+            if step in component and step not in order:
+                order.append(step)
+    candidates = [c for c in order if (c[0], floor_y - 1, c[1]) in cells]
+    for cx, cz in candidates[:_PILLAR_CANDIDATE_LIMIT]:
+        bottom = _free_standing_bottom(client, cells, cx, floor_y, cz)
+        if bottom is not None:
+            break
+    else:
+        return None
+
+    @allow_recovery_navigation
+    def _walk(_client: Any) -> Any:
+        return goto(_client, cx, y, cz, timeout=45, tolerance=0.5)
+
+    if (x, z) != (cx, cz):
+        _walk(client)
+    here = block_position(client.transport.dispatch("get_state", {}))
+    if here != (cx, y, cz):
+        print(f"DEBUG: Could not reach own pillar at ({cx}, {y}, {cz}); at {here}")
+        return None
+    print(f"DEBUG: Digging down own pillar at ({cx}, {cz}) from y={y} to y={bottom + 1}")
+    manual_column_descend(
+        client, target_y=bottom + 1, max_steps=floor_y - bottom + 2
+    )
+    after = block_position(client.transport.dispatch("get_state", {}))
+    if after[1] <= y - 2:
+        print(f"DEBUG: Own-pillar descent reached {after}")
         return after
     return None
 
@@ -293,6 +404,9 @@ def try_lower_surface_egress(
     # A bot stranded on a self-built pillar with an empty inventory has
     # neither, so without this it stays there forever.
     latest_state = client.transport.dispatch("get_state", {})
+    descended = descend_own_pillar(client, latest_state)
+    if descended is not None:
+        return descended
     dropped = try_survivable_drop(client, latest_state)
     if dropped is not None or not allow_upward_excavation:
         return dropped

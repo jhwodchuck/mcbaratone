@@ -111,9 +111,15 @@ def break_camp(
     Returns True when the bot actually moved. Failure is not fatal: the streak
     persists, a different heading is tried next time, and the caller may
     escalate further.
+
+    The goal is a column, so Baritone picks the ground height. An exact goal
+    at the bot's own Y is a point in the air whenever the land falls away:
+    live A1, on a y=107 hilltop, was sent to (-365,107,85) over y=93 trees.
+    Baritone pillared 13 blocks up to reach it, then bridged 33 blocks toward
+    the next target until the cobblestone ran out, stranding the bot.
     """
     from ..common.navigation import allow_recovery_navigation
-    from ..common.navigation import goto as default_goto
+    from ..common.navigation import goto_xz as default_goto
 
     travel = default_goto if goto is None else goto
     try:
@@ -123,24 +129,23 @@ def break_camp(
     position = snapshot.get("block_position", snapshot.get("position", {})) or {}
     try:
         x = int(position["x"])
-        y = int(position["y"])
         z = int(position["z"])
     except (KeyError, TypeError, ValueError):
         return False
 
     dx, dz = next_heading(state)
-    target = (x + dx * int(distance), y, z + dz * int(distance))
+    target = (x + dx * int(distance), z + dz * int(distance))
     reason = str(_ledger(state).get("reason", "unknown"))
     print(
         f"  BREAK CAMP: held {hold_streak(state)}x on '{reason}'; "
-        f"relocating {distance} blocks to {target}"
+        f"relocating {distance} blocks to column {target}"
     )
 
     # Recovery-marked: the travel gate must not refuse the escape from the
     # very condition that triggers the gate.
     @allow_recovery_navigation
     def _travel(_client: Any) -> bool:
-        return bool(travel(_client, target[0], target[1], target[2], timeout=120))
+        return bool(travel(_client, target[0], target[1], timeout=120))
 
     try:
         moved = _travel(client)
@@ -185,10 +190,19 @@ def note_hold(client: Any, state: Any, reason: str) -> bool:
 #: mutual_aid.py raises a fleet-aid request at this same threshold; a solo
 #: bot has no fleet to answer it, so this is the self-rescue fallback.
 ESCALATION_SELF_RESCUE_THRESHOLD = 3
+#: Escalation outlives any single attempt, so without spacing every failed
+#: attempt relocated again: live A1 broke camp 1,870 times in under six
+#: days, and 52 of its 67 deaths came within two minutes of a relocation.
+ESCALATION_SELF_RESCUE_COOLDOWN = 1800.0
 
 
 def self_rescue_if_escalated(
-    client: Any, state: Any, attempt: Any, *, goto: Any = None
+    client: Any,
+    state: Any,
+    attempt: Any,
+    *,
+    goto: Any = None,
+    now: float | None = None,
 ) -> bool:
     """Break camp once work_progress reports sustained no-progress escalation.
 
@@ -199,6 +213,16 @@ def self_rescue_if_escalated(
     level = int(getattr(attempt, "escalation_level", 0) or 0)
     if level < ESCALATION_SELF_RESCUE_THRESHOLD:
         return False
+    ledger = _ledger(state)
+    timestamp = time.time() if now is None else float(now)
+    try:
+        elapsed = timestamp - float(ledger["last_self_rescue_at"])
+    except (KeyError, TypeError, ValueError):
+        elapsed = ESCALATION_SELF_RESCUE_COOLDOWN
+    if 0 <= elapsed < ESCALATION_SELF_RESCUE_COOLDOWN:
+        return False
+    # Stamped before moving: a relocation that fails is spaced out as well.
+    ledger["last_self_rescue_at"] = timestamp
     try:
         return break_camp(client, state, goto=goto)
     except Exception as exc:  # best-effort; never kill the scheduler
@@ -211,6 +235,7 @@ __all__ = [
     "self_rescue_if_escalated",
     "CAMP_HOLD_LIMIT",
     "CAMP_BREAK_DISTANCE",
+    "ESCALATION_SELF_RESCUE_COOLDOWN",
     "ESCALATION_SELF_RESCUE_THRESHOLD",
     "break_camp",
     "clear_holds",
