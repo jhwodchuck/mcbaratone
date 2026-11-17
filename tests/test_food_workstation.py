@@ -532,3 +532,69 @@ def test_failed_posttravel_survival_or_height_proof_fails_closed(state, failure)
     assert returns == [True]
     assert len(survival_checks) == 2
     assert crafts == []
+
+
+# -- a stand reached mid-step is allowed to settle (A1 2026-11-17) -------------
+def _craft_after_close(monkeypatch, state, airborne_reads):
+    """Close the door, return to the table stand, then land after N reads."""
+    client = _Client(position=(HOME[0], HOME[1], HOME[2]))
+    lower, _upper = _open_door(client)
+    client.airborne = 0
+    crafts, sheltered_checks, grounded_reads = [], [], []
+    plain = client.dispatch
+
+    def dispatch(route, payload=None):
+        response = plain(route, payload)
+        if route == "get_state":
+            grounded_reads.append(client.airborne == 0)
+            if client.airborne > 0:
+                client.airborne -= 1
+                response = {**response, "is_on_ground": False}
+        return response
+
+    client.transport.dispatch = dispatch
+
+    def goto(_client, x, y, z, **_kwargs):
+        client.live["block_position"] = {"x": x + 0.5, "y": y, "z": z + 0.5}
+        if (x, y, z) != (HOUSE[0] + 3, HOUSE[1] + 1, HOUSE[2] + 1) and \
+                client.blocks[lower]["state"]["open"] == "false":
+            client.airborne = airborne_reads  # stepping down onto the stand
+        return True
+
+    from baritone_client.common import farming, survival_farm
+    monkeypatch.setattr(farming, "_block_data", lambda _c, x, y, z: (
+        {"id": "minecraft:crafting_table"} if (x, y, z) == TABLE
+        else {"id": "minecraft:stone"} if y == HOUSE[1]
+        else {"id": "minecraft:air"}
+    ))
+    monkeypatch.setattr(survival_farm, "_hostile_close", lambda *_a: False)
+    monkeypatch.setattr("baritone_client.common.navigation.goto", goto)
+    monkeypatch.setattr("baritone_client.common.house_door_travel.time.sleep", lambda *_a: None)
+    monkeypatch.setattr(food_workstation.time, "sleep", lambda *_a: None)
+    monkeypatch.setattr(
+        "baritone_client.common.enclosed_workstation.sheltered_bread_table",
+        lambda _c: (
+            sheltered_checks.append(True) or len(sheltered_checks) > 1,
+            TABLE if len(sheltered_checks) > 1 else None,
+        ),
+    )
+    crafted = _call(
+        client, state, survival_ready=lambda _c: True,
+        return_home=lambda *_a: pytest.fail("already near saved home"),
+        craft=lambda _c, item, count: crafts.append((item, count)) or True,
+    )
+    return crafted, crafts, grounded_reads
+
+
+@pytest.mark.parametrize("airborne_reads", [1, 3])
+def test_a_stand_reached_mid_step_is_allowed_to_land(monkeypatch, state, airborne_reads):
+    """A1 stepped off a chest onto the stand; one airborne read lost the craft."""
+    crafted, crafts, grounded = _craft_after_close(monkeypatch, state, airborne_reads)
+    assert crafted and crafts == [(food_workstation.BREAD, 2)]
+    assert grounded.count(False) == airborne_reads
+
+
+def test_a_stand_that_never_lands_still_fails_within_a_bound(monkeypatch, state):
+    crafted, crafts, grounded = _craft_after_close(monkeypatch, state, 1000)
+    assert not crafted and crafts == []
+    assert grounded.count(False) <= 3 * food_workstation._SETTLE_READS
