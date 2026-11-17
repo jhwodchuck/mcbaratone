@@ -211,16 +211,57 @@ def _safe_door_stand(client, position):
         return False
 
 
+#: Centre of an open south-facing door's panel within its cell: the panel is
+#: 3/16 of a block thick and hugs the hinge-side jamb.
+_OPEN_PANEL_X = {"left": 29 / 32, "right": 3 / 32}
+
+
+def _open_panel_x(client, upper):
+    try:
+        block = _data(client.transport.dispatch(
+            "get_block", dict(zip(("x", "y", "z"), upper))
+        ))
+    except Exception:
+        return None
+    state = block.get("state") if block else None
+    hinge = state.get("hinge") if isinstance(state, Mapping) else None
+    return _OPEN_PANEL_X.get(str(hinge).casefold())
+
+
 def _open_from_side(client, origin, side):
+    return _pulse_door_from_side(client, origin, side, want_open=True)
+
+
+def close_house_door_from_inside(client, origin):
+    """Close the saved-house door with one aimed, observed pulse from inside.
+
+    interact_block aims at the block centre, which an open door's thin panel
+    never covers from inside the house, so every close was refused and no
+    bread was crafted at the sheltered table. Aim at the panel, as opening
+    already does.
+    """
+    return _pulse_door_from_side(client, origin, "inside", want_open=False)
+
+
+def _pulse_door_from_side(client, origin, side, *, want_open):
     from .food_workstation import _door_interaction_safe
 
     ox, oy, oz = origin
     lower, upper = (ox + 3, oy + 1, oz), (ox + 3, oy + 2, oz)
+    before = not want_open
     opened = _door_state(client, lower, upper)
-    if opened is True:
+    if opened is want_open:
         return True
-    if opened is not False:
+    if opened is not before:
         return False
+    if want_open:
+        # The closed panel lies on the doorway's north plane.
+        aim = (ox + 3.5, oy + 2.5, oz + 0.05)
+    else:
+        panel_x = _open_panel_x(client, upper)
+        if panel_x is None:
+            return False
+        aim = (ox + 3 + panel_x, oy + 2.5, oz + 0.5)
     stand = (ox + 3, oy + 1, oz + (1 if side == "inside" else -1))
     from .navigation import goto
 
@@ -240,7 +281,7 @@ def _open_from_side(client, origin, side):
         fresh is None
         or tuple(math.floor(value) for value in fresh[1]) != stand
         or math.floor(fresh[1][1]) != oy + 1
-        or _door_state(client, lower, upper) is not False
+        or _door_state(client, lower, upper) is not before
     ):
         return False
     live, _ = fresh
@@ -259,17 +300,15 @@ def _open_from_side(client, origin, side):
         return False
     previous, chosen = slots
     try:
-        # Aim at the known north-facing panel plane, not the unreachable block
-        # center. A single pulse is followed by observed state; never retoggle.
-        client.transport.dispatch(
-            "look_at", {"x": ox + 3.5, "y": oy + 2.5, "z": oz + 0.05}
-        )
+        # Aim at the known panel, not the unreachable block center. A single
+        # pulse is followed by observed state; never retoggle.
+        client.transport.dispatch("look_at", dict(zip(("x", "y", "z"), aim)))
         time.sleep(0.2)
         fresh = _state(client)
         if (
             fresh is None
             or tuple(math.floor(value) for value in fresh[1]) != stand
-            or _door_state(client, lower, upper) is not False
+            or _door_state(client, lower, upper) is not before
             or not _door_interaction_safe(client, lambda _client: True)
         ):
             return False
@@ -284,7 +323,7 @@ def _open_from_side(client, origin, side):
     # Reconcile even an uncertain dispatch, but do not send another toggle.
     for _ in range(8):
         observed = _door_state(client, lower, upper)
-        if observed is True:
+        if observed is want_open:
             return True
         if observed is None:
             return False

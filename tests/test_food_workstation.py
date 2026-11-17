@@ -20,6 +20,8 @@ class _Client:
         }
         self.blocks = {}
         self.routes = []
+        self.selected = 0
+        self.use_closes = True
         self.transport = SimpleNamespace(dispatch=self.dispatch)
 
     def dispatch(self, route, _payload=None):
@@ -30,11 +32,38 @@ class _Client:
             position = tuple(_payload[key] for key in ("x", "y", "z"))
             return self.blocks.get(position, {"id": "minecraft:air"})
         if route == "interact_block":
-            for position, block in list(self.blocks.items()):
-                if block.get("id") == "minecraft:oak_door":
-                    block["state"]["open"] = "false"
+            # Live bridge: an open door's thin panel misses the centre ray.
+            raise RuntimeError(
+                "Target is not visible on a real block ray; fluid use requires use_item"
+            )
+        if route == "get_inventory":
+            return {"selected_slot": self.selected, "inventory": [
+                {"slot": 0, "id": "minecraft:wheat_seeds", "count": 4},
+                {"slot": 1, "id": "minecraft:stone_sword", "count": 1},
+            ]}
+        if route == "select_slot":
+            self.selected = _payload["slot"]
+            return {"accepted": True}
+        if route == "look_at":
+            return {"accepted": True}
+        if route == "use_item":
+            if self.use_closes:
+                for block in self.blocks.values():
+                    if block.get("id") == "minecraft:oak_door":
+                        block["state"]["open"] = "false"
             return {"accepted": True}
         raise AssertionError(f"unexpected route {route}")
+
+
+def _open_door(client, hinge="left"):
+    lower = (HOUSE[0] + 3, HOUSE[1] + 1, HOUSE[2])
+    upper = (HOUSE[0] + 3, HOUSE[1] + 2, HOUSE[2])
+    for position, half in ((lower, "lower"), (upper, "upper")):
+        client.blocks[position] = {
+            "id": "minecraft:oak_door",
+            "state": {"half": half, "open": "true", "facing": "south", "hinge": hinge},
+        }
+    return lower, upper
 
 
 @pytest.fixture
@@ -245,15 +274,13 @@ def test_saved_anchor_outside_house_routes_to_known_interior_table(monkeypatch, 
     assert crafts == [(food_workstation.BREAD, 2)]
 
 
-def test_open_saved_house_door_is_closed_before_strict_table_proof(monkeypatch, state):
+@pytest.mark.parametrize("hinge,panel_x", [("left", 29 / 32), ("right", 3 / 32)])
+def test_open_saved_house_door_is_closed_before_strict_table_proof(
+    monkeypatch, state, hinge, panel_x
+):
+    """Live A1 2026-11-03..17: every centre-aimed close was refused, no bread."""
     client = _Client(position=(HOME[0], HOME[1], HOME[2]))
-    lower = (HOUSE[0] + 3, HOUSE[1] + 1, HOUSE[2])
-    upper = (HOUSE[0] + 3, HOUSE[1] + 2, HOUSE[2])
-    for position, half in ((lower, "lower"), (upper, "upper")):
-        client.blocks[position] = {
-            "id": "minecraft:oak_door",
-            "state": {"half": half, "open": "true", "facing": "south"},
-        }
+    lower, upper = _open_door(client, hinge)
     routes, crafts, sheltered_checks = [], [], []
 
     def goto(_client, x, y, z, **kwargs):
@@ -269,6 +296,7 @@ def test_open_saved_house_door_is_closed_before_strict_table_proof(monkeypatch, 
     ))
     monkeypatch.setattr(survival_farm, "_hostile_close", lambda *_a: False)
     monkeypatch.setattr("baritone_client.common.navigation.goto", goto)
+    monkeypatch.setattr("baritone_client.common.house_door_travel.time.sleep", lambda *_a: None)
     monkeypatch.setattr(
         "baritone_client.common.enclosed_workstation.sheltered_bread_table",
         lambda _c: (
@@ -282,24 +310,21 @@ def test_open_saved_house_door_is_closed_before_strict_table_proof(monkeypatch, 
         return_home=lambda *_a: pytest.fail("already near saved home"),
         craft=lambda _c, item, count: crafts.append((item, count)) or True,
     )
-    interactions = [payload for route, payload in client.routes if route == "interact_block"]
-    assert interactions == [{"x": upper[0], "y": upper[1], "z": upper[2]}]
+    assert not any(route == "interact_block" for route, _ in client.routes)
+    looks = [payload for route, payload in client.routes if route == "look_at"]
+    assert looks == [{"x": HOUSE[0] + 3 + panel_x, "y": HOUSE[1] + 2.5, "z": HOUSE[2] + 0.5}]
+    assert [route for route, _ in client.routes].count("use_item") == 1
     assert client.blocks[lower]["state"]["open"] == "false"
     assert client.blocks[upper]["state"]["open"] == "false"
+    assert client.selected == 0, "the held slot is restored"
     assert len(sheltered_checks) == 2
-    assert any(point == (HOUSE[0] + 4, HOUSE[1] + 1, HOUSE[2] + 1) for point, _ in routes)
+    assert any(point == (HOUSE[0] + 3, HOUSE[1] + 1, HOUSE[2] + 1) for point, _ in routes)
     assert crafts == [(food_workstation.BREAD, 2)]
 
 
-def test_timed_out_door_toggle_is_not_retried_while_still_open(monkeypatch, state):
+def test_an_unknown_hinge_never_pulses_the_door(monkeypatch, state):
     client = _Client(position=(HOME[0], HOME[1], HOME[2]))
-    lower = (HOUSE[0] + 3, HOUSE[1] + 1, HOUSE[2])
-    upper = (HOUSE[0] + 3, HOUSE[1] + 2, HOUSE[2])
-    for position, half in ((lower, "lower"), (upper, "upper")):
-        client.blocks[position] = {
-            "id": "minecraft:oak_door",
-            "state": {"half": half, "open": "true", "facing": "south"},
-        }
+    _open_door(client, hinge="")
     from baritone_client.common import farming, survival_farm
     monkeypatch.setattr(farming, "_block_data", lambda _c, x, y, z: (
         {"id": "minecraft:crafting_table"} if (x, y, z) == TABLE
@@ -314,11 +339,45 @@ def test_timed_out_door_toggle_is_not_retried_while_still_open(monkeypatch, stat
             or True
         ),
     )
+    monkeypatch.setattr(
+        "baritone_client.common.enclosed_workstation.sheltered_bread_table",
+        lambda _c: (False, None),
+    )
+    crafts = []
+
+    assert not _call(
+        client, state, survival_ready=lambda _c: True,
+        return_home=lambda *_a: pytest.fail("already near saved home"),
+        craft=lambda *args: crafts.append(args) or True,
+    )
+    assert not any(route in ("use_item", "look_at") for route, _ in client.routes)
+    assert crafts == []
+
+
+def test_timed_out_door_toggle_is_not_retried_while_still_open(monkeypatch, state):
+    client = _Client(position=(HOME[0], HOME[1], HOME[2]))
+    lower, _upper = _open_door(client)
+    from baritone_client.common import farming, survival_farm
+    monkeypatch.setattr(farming, "_block_data", lambda _c, x, y, z: (
+        {"id": "minecraft:crafting_table"} if (x, y, z) == TABLE
+        else {"id": "minecraft:stone"} if y == HOUSE[1]
+        else {"id": "minecraft:air"}
+    ))
+    monkeypatch.setattr(survival_farm, "_hostile_close", lambda *_a: False)
+    monkeypatch.setattr(
+        "baritone_client.common.navigation.goto",
+        lambda _c, x, y, z, **_kwargs: (
+            client.live.update(block_position={"x": x + 0.5, "y": y, "z": z + 0.5})
+            or True
+        ),
+    )
+    monkeypatch.setattr("baritone_client.common.house_door_travel.time.sleep", lambda *_a: None)
     interactions = []
 
     def dispatch(route, payload=None):
-        if route == "interact_block":
+        if route == "use_item":
             interactions.append(payload)
+            client.routes.append((route, payload))
             raise TimeoutError("uncertain toggle")
         return client.dispatch(route, payload)
 
