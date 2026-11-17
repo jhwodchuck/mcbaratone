@@ -17,6 +17,7 @@ class _DoorClient:
         self.selected = 0
         self.open = False
         self.facing = "south"
+        self.hinge = "left"
         self.use_applies = True
         self.routes = []
         self.transport = SimpleNamespace(dispatch=self.dispatch)
@@ -34,9 +35,9 @@ class _DoorClient:
         if route == "get_block":
             position = tuple(payload[key] for key in ("x", "y", "z"))
             if position == LOWER:
-                return {"id": "minecraft:oak_door", "state": {"half": "lower", "open": self.open, "facing": self.facing}}
+                return {"id": "minecraft:oak_door", "state": {"half": "lower", "open": self.open, "facing": self.facing, "hinge": self.hinge}}
             if position == UPPER:
-                return {"id": "minecraft:oak_door", "state": {"half": "upper", "open": self.open, "facing": self.facing}}
+                return {"id": "minecraft:oak_door", "state": {"half": "upper", "open": self.open, "facing": self.facing, "hinge": self.hinge}}
             return {"id": "minecraft:air"}
         if route == "get_inventory":
             return {
@@ -53,7 +54,7 @@ class _DoorClient:
             return {"accepted": True}
         if route == "use_item":
             if self.use_applies:
-                self.open = True
+                self.open = not self.open
             return {"accepted": True}
         raise AssertionError(f"unexpected route {route}")
 
@@ -306,3 +307,51 @@ def test_unknown_obstructed_or_unsupported_door_stand_cannot_start_return(monkey
     monkeypatch.setattr(navigation,"goto",lambda *_a,**_k:pytest.fail("unsafe stand"))
     assert not house_door_travel.return_to_saved_house(client,state,HOME)
     assert not any(route=="use_item" for route,_ in client.routes)
+
+
+# -- closing from inside aims at the open panel (A1 2026-11-03..17) ------------
+INSIDE = (HOUSE[0] + 3.25, HOUSE[1] + 1, HOUSE[2] + 1.25)
+
+
+@pytest.mark.parametrize("hinge,panel_x", [("left", 29 / 32), ("right", 3 / 32)])
+def test_close_from_inside_aims_at_the_open_panel(monkeypatch, hinge, panel_x):
+    """An open panel hugs a jamb, so the block centre is never on it."""
+    client = _DoorClient(INSIDE)
+    client.open, client.hinge = True, hinge
+    _world(monkeypatch, client)
+
+    assert house_door_travel.close_house_door_from_inside(client, HOUSE)
+    looks = [payload for route, payload in client.routes if route == "look_at"]
+    assert looks == [{"x": HOUSE[0] + 3 + panel_x, "y": HOUSE[1] + 2.5, "z": HOUSE[2] + 0.5}]
+    assert [route for route, _ in client.routes].count("use_item") == 1
+    assert client.open is False and client.selected == 0
+    assert not any(route == "interact_block" for route, _ in client.routes)
+
+
+def test_closing_an_already_closed_door_sends_nothing(monkeypatch):
+    client = _DoorClient(INSIDE)
+    _world(monkeypatch, client)
+
+    assert house_door_travel.close_house_door_from_inside(client, HOUSE)
+    assert not any(route in ("use_item", "look_at", "select_slot") for route, _ in client.routes)
+
+
+@pytest.mark.parametrize("hinge", ["", "middle"])
+def test_an_unknown_hinge_fails_closed(monkeypatch, hinge):
+    client = _DoorClient(INSIDE)
+    client.open, client.hinge = True, hinge
+    _world(monkeypatch, client)
+
+    assert not house_door_travel.close_house_door_from_inside(client, HOUSE)
+    assert not any(route in ("use_item", "look_at") for route, _ in client.routes)
+    assert client.open is True
+
+
+def test_a_close_that_does_not_apply_is_not_retried(monkeypatch):
+    client = _DoorClient(INSIDE)
+    client.open, client.use_applies = True, False
+    _world(monkeypatch, client)
+
+    assert not house_door_travel.close_house_door_from_inside(client, HOUSE)
+    assert [route for route, _ in client.routes].count("use_item") == 1
+    assert client.open is True
