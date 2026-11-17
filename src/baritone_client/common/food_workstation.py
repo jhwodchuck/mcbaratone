@@ -1,6 +1,7 @@
 """Route food-worker bread crafting to an observed saved-home workstation."""
 
 import math
+import time
 from typing import Any, Callable, Mapping, Optional, Sequence, Tuple
 
 from .tasks import PlayerDeathDetected, SurvivalRecoveryRequired
@@ -9,6 +10,23 @@ from .tasks import PlayerDeathDetected, SurvivalRecoveryRequired
 BREAD = "minecraft:bread"
 HOME_HORIZONTAL_TOLERANCE = 8.0
 HOME_FLOOR_MARGIN = 2.0
+#: Arrival is observed as soon as the block position matches, which can be
+#: mid-step. Live A1 stepped down off a chest onto the table stand after
+#: closing the door, and one grounded read abandoned the craft within a
+#: second. Allow about a second and a half to land.
+_SETTLE_READS = 6
+_SETTLE_INTERVAL = 0.25
+
+
+def _settled_safe_position(client: Any) -> Optional[Tuple[float, float, float]]:
+    """A grounded, idle position, giving a player who just arrived time to land."""
+    for attempt in range(_SETTLE_READS):
+        position = _fresh_safe_position(client, require_grounded=True)
+        if position is not None:
+            return position
+        if attempt + 1 < _SETTLE_READS:
+            time.sleep(_SETTLE_INTERVAL)
+    return None
 
 
 def _fresh_safe_position(
@@ -247,9 +265,7 @@ def craft_bread_at_saved_home(
                         client, *stand, timeout=20, tolerance=0.5, radius=0
                     ):
                         return False
-                    restored_stand = _fresh_safe_position(
-                        client, require_grounded=True
-                    )
+                    restored_stand = _settled_safe_position(client)
                     if (
                         restored_stand is None
                         or tuple(math.floor(value) for value in restored_stand) != stand
